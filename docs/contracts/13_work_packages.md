@@ -56,14 +56,14 @@ Every implementation package runs on the current `phase/NN-name` branch. GLM may
 - **Goal:** Establish the repository/runtime baseline without building ERP features.
 - **Inputs:** Existing repository, Technical Architecture and Decision Log.
 - **Required reading:** `00_project_context`, `01_final_implementation_plan_v4`, `02_decision_log_and_scope`, contract index, contracts 01, 12–14, execution index and execution plan.
-- **Expected outputs:** Conversation report of verified workspace, Git/package/runtime/environment inventory, baseline commands, exact candidate module/file allowlists and risks; no file output unless separately authorized.
-- **Implementation notes:** Preserve user files; verify Node 24/Next/React/TypeScript baseline and whether project is empty/partial.
-- **Tests:** Existing install/build/type/lint/test commands or documented absence/failure.
-- **Acceptance:** Current state and safe next setup changes are evidenced.
+- **Expected outputs:** Conversation report of verified workspace, Git/package/runtime/environment inventory, baseline commands, exact candidate module/file allowlists and risks; explicit Docker/container-runtime and Supabase-local feasibility verdict; no file output unless separately authorized.
+- **Implementation notes:** Preserve user files; verify Node 24/Next/React/TypeScript baseline and whether project is empty/partial. Check Docker client/server/daemon access, Compose availability, OS/architecture and material sandbox restrictions using non-mutating diagnostics. Do not install Docker/Supabase CLI, pull images, start containers, or change daemon settings in WP-00-01.
+- **Tests:** Existing install/build/type/lint/test commands or documented absence/failure; run/read `docker version`, `docker info`, `docker compose version`, and an already-installed Supabase CLI version command where available. Record exact command, exit code and safe output summary.
+- **Acceptance:** Current state and safe next setup changes are evidenced. Docker verdict is exactly `confirmed_available_for_WP-00-02`, `unavailable`, or `unconfirmed_due_to_sandbox_policy`; if not confirmed, name the hosted-development fallback and the authorization it requires.
 - **Dependencies:** None.
 - **What not to change:** Everything: this package is read-only and may not repair `.git`, scaffold/install packages, create evidence files, mutate provider data or deploy.
 - **Common failures:** Assuming empty repo; upgrading packages without compatibility review.
-- **Completion report:** Standard report plus repository-state evidence.
+- **Completion report:** Standard report plus repository-state evidence, Docker/Compose/daemon verdict, Supabase CLI availability and the local-versus-hosted development-test recommendation.
 
 ### WP-00-02 — Technical Stack and Environment Setup
 

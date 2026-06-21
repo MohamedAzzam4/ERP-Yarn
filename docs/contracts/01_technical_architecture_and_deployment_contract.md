@@ -306,6 +306,8 @@ supabase stop when finished
 
 The exact CLI commands and versions are pinned in WP-00-02. Local databases are disposable, contain no official client data, and may be reset between packages. Migration tests must start from an empty database and from the agreed representative prior schema. Auth uses synthetic test identities; Storage uses private test buckets and synthetic files.
 
+WP-00-01 must first report Docker client/server/daemon access, Compose availability, installed Supabase CLI availability, and sandbox policy/resource limitations using non-mutating diagnostics. It does not install tooling, pull images, or start containers. Its Docker result is one of `confirmed_available_for_WP-00-02`, `unavailable`, or `unconfirmed_due_to_sandbox_policy`; WP-00-02 performs the first authorized local-stack start when the result permits it.
+
 ### Hosted development/test project — required fallback and preview target
 
 If the sandbox cannot run the local stack, integration tests use a separately authorized Supabase development/test project. The same project may serve Vercel preview deployments only while it remains isolated, resettable, synthetic-data-only, and free of demo/pilot/production credentials or data.
@@ -389,6 +391,25 @@ The exact production tier/budget, retention, RPO, and RTO remain:
 ## Vercel Deployment Contract
 
 Vercel hosts the Next.js application for the online demo and intended limited pilot.
+
+### GitHub versus Runtime Hosting
+
+GitHub is the authoritative source repository, review/history system, branch-protection surface, and optional CI/CD orchestrator. GitHub Actions may install dependencies, run checks, build artifacts, and trigger/verify deployments. It is not the continuously available runtime that serves ERP requests after a workflow finishes.
+
+GitHub Pages publishes static HTML/CSS/JavaScript output. It cannot execute the ERP's authenticated Next.js Route Handlers, server-side permission/field filtering, PostgreSQL transactions, row locks, approval orchestration, or server-only Supabase/database credentials. Therefore GitHub Pages is not an approved host for this application.
+
+Vercel is used because it runs the complete Next.js application: rendered frontend, server components where applicable, middleware/session integration, and Node.js Route Handlers/API commands. Supabase remains responsible for PostgreSQL, Auth, and Storage. The normal path is:
+
+```text
+GitHub phase branch / pull request
+→ GitHub checks and review
+→ Vercel Preview build and Next.js runtime
+→ development/test Supabase
+→ passing phase gate and owner-authorized merge
+→ main online-demo deployment
+```
+
+GitHub Actions can replace or supplement CI and deployment orchestration, but cannot replace the Vercel/compatible Node.js runtime merely because the repository is hosted on GitHub. Replacing Vercel requires another compatible dynamic Node.js host and a reviewed architecture/deployment-contract update; it is not a switch to GitHub Pages.
 
 Required rules:
 
