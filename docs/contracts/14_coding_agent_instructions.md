@@ -144,6 +144,7 @@ Do not start code while a blocking contract/decision/dependency is absent.
 
 ## 11. Required Tests
 
+- Follow DEC-058's cumulative cadence: focused tests continuously during implementation, the complete package gate after every WP, and the integrated phase gate before merge. Do not postpone all testing until the package or phase ends.
 - Implement tests in the same package as behavior.
 - Run package tests, phase smoke and regression matrix entries from `12_testing_and_regression_plan.md`.
 - High-risk operations require service transaction, permission, tenant, concurrency, idempotency, rollback and audit tests.

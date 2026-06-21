@@ -4,6 +4,8 @@
 
 This catalog splits the MVP into dependency-ordered units. GLM implements exactly one package at a time and may not pull downstream behavior into an earlier package.
 
+Within that package, GLM runs focused tests continuously as coherent changes are made. It then runs the complete package gate before completion. After all packages in the phase pass individually, GLM runs the integrated phase gate before requesting merge. No layer replaces another.
+
 Every package starts only after its dependencies pass and ends with a completion report containing:
 
 ```text

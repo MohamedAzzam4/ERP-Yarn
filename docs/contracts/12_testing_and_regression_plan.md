@@ -13,6 +13,14 @@ Mandatory rules:
 - Tests use decimal-safe values and compare exact expected quantities/money; they do not bless floating-point approximations.
 - Test evidence records command, environment, fixture/seed version, result, failure, date, and relevant screenshots/log references without secrets.
 
+### Three-Layer Test Cadence
+
+1. **Continuous implementation tests:** after each coherent implementation step, run the smallest relevant fast tests—such as the changed unit/component test, typecheck for the touched boundary, targeted service/database test, or focused lint. Fix failures before building further behavior on top of the change. Continuous tests are development feedback and do not by themselves complete the package.
+2. **Work-package completion gate:** after implementation is complete, run the package's full required tests, package smoke test, every triggered regression row, and all required permission/concurrency/rollback/accessibility/manual checks. The package remains `incomplete` when any required check fails, is skipped, cannot run, or lacks evidence; GLM must not begin the next package.
+3. **Integrated phase gate:** after all required phase packages are individually complete, synchronize the phase branch with current `main` and rerun the phase build, typecheck, lint, integrated workflows, phase smoke catalog, cumulative triggered regressions, and relevant hosted Supabase/Vercel Preview/browser/security checks. Only a passing documented phase gate may be presented for owner-authorized merge.
+
+The layers are cumulative. Phase testing never substitutes for package testing, and package testing never excuses missing focused feedback during implementation.
+
 ## 2. Test Levels
 
 1. **Unit:** pure decimal calculation, state/validation, mapping, DTO/redaction, formatting and permission policy.

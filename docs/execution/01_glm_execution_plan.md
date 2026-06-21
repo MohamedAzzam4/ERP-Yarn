@@ -17,6 +17,7 @@ GLM must:
 - implement each numbered phase on its own `phase/NN-name` branch and push only that branch;
 - never push implementation directly to `main` or merge a phase PR without passing required checks and explicit owner authorization for that merge;
 - use disposable local Supabase or a separately authorized hosted development/test project for integration testing, never online-demo/pilot/production data.
+- follow the cumulative DEC-058 test cadence: focused tests during implementation, full tests after each WP, and integrated phase tests before merge; never defer all testing to the end.
 
 Authority is Decision Log owner decisions → approved contracts → v4 where not superseded → remaining authorized context. This execution plan can narrow scope/order only.
 

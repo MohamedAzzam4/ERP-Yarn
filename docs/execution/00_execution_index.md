@@ -84,7 +84,8 @@ Every future work package should contain:
 ```text
 ready
 → contracts read
-→ implementation in progress
+→ implementation step ↔ focused test/fix loop
+→ implementation complete
 → package tests
 → smoke test
 → required regression
@@ -94,6 +95,8 @@ ready
 ```
 
 Any failure returns the package to implementation or marks it blocked/incomplete. It does not authorize GLM to continue to the next package.
+
+After every required package in the phase reaches `complete`, run a separate integrated phase gate. Package evidence cannot be reused as a claim that untested cross-package integration passed.
 
 ## No-Jump-Ahead Rule
 
