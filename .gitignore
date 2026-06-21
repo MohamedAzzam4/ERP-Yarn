@@ -22,6 +22,10 @@ techstack.txt
 !.env.example
 node_modules/
 .next/
+.vercel/
+supabase/.temp/
 coverage/
 dist/
 *.log
+*.pem
+*.key

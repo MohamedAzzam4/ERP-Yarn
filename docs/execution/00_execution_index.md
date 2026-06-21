@@ -20,6 +20,8 @@ Canonical authority is: Decision Log owner decisions → approved contracts → 
 8. GLM must not mark a work package or phase complete without required automated tests, smoke tests, regression checks, and acceptance evidence—or a precise record of failures that means the package remains incomplete.
 9. A documented failure is not a passing gate. It permits transparent handoff; it does not permit completion status.
 10. GLM must preserve role, field, tenant, audit, backup, migration, and correction safeguards even when implementing a narrow feature.
+11. GLM implements each numbered phase on a dedicated `phase/NN-name` branch, pushes only that branch, and never pushes implementation directly to `main`.
+12. A phase reaches `main` only through a pull request after all required checks and preview/integration tests pass and the owner explicitly authorizes that exact merge.
 
 ## Package Entry Gate
 
@@ -47,6 +49,8 @@ Before starting a work package, GLM must confirm:
 - the executable package instance contains an exact changed-path allowlist, smoke test/expected result, triggered regressions, rollback/recovery, fixture version and evidence destination;
 - every dependency is a completed package ID/evidence record or an explicitly resolved owner decision—not “base slice,” “affected domain,” “as applicable,” or another undefined phrase;
 - any cloud project/deployment/paid-plan/real-data action has separate explicit authorization.
+- the active phase branch, remote push scope, pull-request target, and merge authority are recorded;
+- required local Supabase or authorized hosted-development test access exists for packages that need database/Auth/Storage integration.
 
 If any required item is missing, GLM must not fill the gap with an assumption.
 
@@ -70,6 +74,7 @@ Every future work package should contain:
 - regression tests triggered by the change;
 - manual role/browser checks where relevant;
 - rollback/recovery procedure;
+- active phase branch, permitted remote, pull-request target and merge authorization state;
 - known risks;
 - evidence required for acceptance;
 - completion status and documented failures.
@@ -157,6 +162,9 @@ A package is complete only when:
 - implementation is checked against the controlling contracts;
 - known limitations and failures are documented;
 - rollback/recovery remains viable.
+- the package commit is on the active phase branch, never directly on `main`.
+
+Package completion permits the next dependency-ready package on the same active phase branch. It does not permit a merge. The phase pull request may merge only after all phase checks and relevant Vercel Preview/Supabase development tests pass and the owner explicitly authorizes that merge.
 
 If a test cannot run, GLM must record the exact command, environment limitation, error, risk, and required follow-up. The package remains incomplete unless the approved package contract explicitly permits a different gate.
 

@@ -268,6 +268,63 @@ Rules:
 - approved/posted business data must not be destroyed to simplify a schema change;
 - migration credentials remain separate from browser/runtime public configuration.
 
+## Git Branch, Test and Promotion Workflow
+
+Implementation uses one branch per numbered phase, for example `phase/00-foundation`, `phase/01-auth-reference-gate`, and `phase/02-raw-materials`. GLM implements and commits only one work package at a time on the active phase branch. A new phase branch starts from the current tested `main`; it must not start from an unmerged or failed earlier phase.
+
+Rules:
+
+- GLM must not push implementation commits directly to `main`.
+- Package commits may be pushed to the active phase branch for review and preview testing only after that package's required local checks complete; a failed package remains clearly incomplete on the branch.
+- The phase pull request is opened only when all required packages and owner-decision gates for that phase are complete.
+- Before merge, synchronize the branch with current `main`, then rerun the phase build, typecheck, lint, automated tests, required database tests, smoke tests, mapped regressions, security/permission checks, and relevant browser/RTL/accessibility checks.
+- A Vercel preview and hosted-development Supabase smoke test are required when the phase changes deployed runtime, database integration, Auth, Storage, routes, or browser behavior.
+- Failed, skipped, unavailable, or undocumented required checks block merge. A documented failure is evidence, not a pass.
+- Merge to `main` requires owner authorization after reviewing the completion/evidence report. GLM may merge only when that authorization is explicit for the specific phase pull request.
+- After merge, verify the `main` online-demo deployment and run its non-destructive smoke checks. Provider terminology such as Vercel “Production” does not make the ERP business-production-ready.
+- Branch deletion occurs only after the merged commit and online-demo smoke evidence are confirmed.
+
+Repository visibility does not grant write authority. GitHub credentials are supplied through the sandbox/host secret or credential manager, never through repository files, prompts intended for persistence, Git remote URLs containing credentials, logs, or completion evidence. A repository-scoped fine-grained token needs only `Contents: read and write` for Git pushes; pull-request permission is added only when the agent must create/manage pull requests. Workflow permission is not granted unless a package explicitly changes workflow files.
+
+## Supabase Development and Integration-Test Workflow
+
+The GLM sandbox must not depend on the online-demo/pilot database for ordinary implementation tests.
+
+### Local disposable stack — preferred
+
+When the sandbox supports Docker or a compatible container runtime, use the Supabase CLI local stack for PostgreSQL, Auth, and Storage:
+
+```text
+supabase init
+supabase start
+supabase status
+apply reviewed migrations
+reset/seed synthetic fixtures
+run database/service/API/Auth/Storage tests
+supabase stop when finished
+```
+
+The exact CLI commands and versions are pinned in WP-00-02. Local databases are disposable, contain no official client data, and may be reset between packages. Migration tests must start from an empty database and from the agreed representative prior schema. Auth uses synthetic test identities; Storage uses private test buckets and synthetic files.
+
+### Hosted development/test project — required fallback and preview target
+
+If the sandbox cannot run the local stack, integration tests use a separately authorized Supabase development/test project. The same project may serve Vercel preview deployments only while it remains isolated, resettable, synthetic-data-only, and free of demo/pilot/production credentials or data.
+
+Creating/linking a hosted Supabase project, applying remote migrations, setting secrets, resetting remote data, or creating Vercel resources is an external-state action requiring explicit owner authorization. The agent must record project/environment identifiers without recording credentials.
+
+Hosted-development procedure:
+
+1. Owner creates or explicitly authorizes creation of the Europe/Frankfurt development project.
+2. Secrets are injected through the GLM sandbox secret manager and Supabase/Vercel dashboards or approved CLI secret commands.
+3. GLM links only to the development project and verifies the project reference/environment before every remote migration or reset.
+4. Reviewed migrations run first against the disposable local/test database, then the hosted development project.
+5. Synthetic seed data and test users exercise PostgreSQL transactions/locks, RLS defense in depth, Auth sessions, private Storage access, API commands, and role/field redaction.
+6. A non-production phase branch deploys to Vercel Preview using only development/preview Supabase variables.
+7. Required browser/API smoke and regression checks run against the preview URL.
+8. Test data is reset or retained only under the documented fixture/evidence policy; no client source file is used without separate approval and sanitization.
+
+Neither a local pass nor a Vercel preview pass authorizes migration against online-demo, pilot, or production data.
+
 ## Environment Model
 
 ### 1. GLM Sandbox / Local Development
@@ -281,6 +338,8 @@ Purpose:
 - no official business data.
 
 The GLM sandbox is not the online host. It produces repository changes that are later deployed through an authorized workflow.
+
+It receives secrets only through an approved sandbox secret mechanism. Typical tooling secrets include `GITHUB_TOKEN`, `SUPABASE_ACCESS_TOKEN`, a development database password/URL, and `VERCEL_TOKEN`; these are operational credentials and must never be committed or printed. Application runtime variables remain those defined under Environment Variables below.
 
 ### 2. Online Demo
 
@@ -335,7 +394,9 @@ Required rules:
 
 - deployments originate from the controlled repository;
 - production-branch deployment and preview deployment are distinct;
+- non-production phase branches and pull requests create Preview deployments; `main` is the provider production branch for the online-demo environment until a separately approved real production environment exists;
 - preview deployments never receive production database credentials;
+- previews use the isolated development/test Supabase project or another explicitly authorized disposable preview project;
 - environment variables are configured separately by environment;
 - server-only variables are not exposed through `NEXT_PUBLIC_`;
 - high-risk route handlers explicitly use the Node.js runtime;

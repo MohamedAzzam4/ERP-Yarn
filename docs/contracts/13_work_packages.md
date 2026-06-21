@@ -40,11 +40,14 @@ The catalog defines business/dependency scope. Except for read-only WP-00-01, a 
 - exact regression-matrix rows/commands triggered;
 - exact rollback/recovery procedure appropriate to whether business data exists;
 - fixture/version and evidence destination;
+- active phase branch name, permitted remote, pull-request target and merge authority;
 - explicit external-state authorization, if any.
 
 After implementation, changed paths must be wholly inside the allowlist. Missing/vague dependencies such as “base slice,” “affected domain,” “as applicable,” or “relevant module” make the package blocked, not discretionary. Every non-reference package that creates or changes UI has an additional mandatory dependency on **WP-01-08**, even if a package record accidentally omits it.
 
 WP-00-01 itself is read-only across the workspace: it may inspect files/commands and report in the conversation, but creates/repairs no repository, package baseline, evidence file, cloud project or deployment without separate explicit authorization.
+
+Every implementation package runs on the current `phase/NN-name` branch. GLM may push only that branch, never `main`. Package completion does not authorize merge: the phase PR remains unmergeable until every phase gate and required preview/integration check passes and the owner explicitly authorizes that phase merge.
 
 ## 2. Phase 0 — Foundation and Risk Controls
 
@@ -67,9 +70,9 @@ WP-00-01 itself is read-only across the workspace: it may inspect files/commands
 - **Goal:** Configure the contracted Next.js/Vercel/Supabase/Drizzle development baseline.
 - **Inputs:** WP-00-01 report; resolved Europe-region decision.
 - **Required reading:** Contracts 01, 03, 09, 11, 12, 14.
-- **Expected outputs:** Reproducible package lock, environment schema/examples, server/client secret boundary, local/test configuration, deployment skeleton.
-- **Implementation notes:** Pin compatible stable versions; Node runtime for high-risk handlers; prepared statements disabled on pooled postgres.js path.
-- **Tests:** Clean install/build/typecheck; unsafe/missing env rejection; no secrets in client bundle/log.
+- **Expected outputs:** Reproducible package lock, environment schema/examples, server/client secret boundary, Supabase CLI local/test configuration, synthetic seed boundary, and deployment skeleton.
+- **Implementation notes:** Pin compatible stable versions; Node runtime for high-risk handlers; prepared statements disabled on pooled postgres.js path. Prefer disposable local Supabase; record an explicit hosted-development fallback when the sandbox lacks Docker.
+- **Tests:** Clean install/build/typecheck; local Supabase start/status/reset or documented unavailable-Docker blocker; unsafe/missing env rejection; no secrets in client bundle/log.
 - **Acceptance:** App can start without domain features and configuration is reproducible.
 - **Dependencies:** WP-00-01.
 - **What not to change:** Auth method remains unresolved; no production tier decision; no cloud project/deployment/paid change without separate explicit authorization.
@@ -165,9 +168,9 @@ WP-00-01 itself is read-only across the workspace: it may inspect files/commands
 - **Goal:** Deploy the non-business foundation online for development/demo verification.
 - **Inputs:** Technical/database/RTL foundations.
 - **Required reading:** Contracts 01, 03, 12, 14.
-- **Expected outputs:** Vercel deployment, Supabase Europe-region evidence, server health check, migration status visibility.
-- **Implementation notes:** Record assigned region and Egyptian latency; demo/free tier is not production.
-- **Tests:** Online open, DB health, secret boundary, preview/environment separation smoke.
+- **Expected outputs:** Vercel phase-branch Preview, separately authorized Supabase development/test integration, Europe-region evidence, server health check, migration status visibility, and post-merge online-demo evidence only after owner-authorized merge.
+- **Implementation notes:** Record assigned region and Egyptian latency; Preview points only to development/test Supabase; demo/free tier is not production. Project creation, linking, secret configuration, remote migration, deployment and merge each require recorded external authorization.
+- **Tests:** Preview open, synthetic DB/Auth/Storage health, secret boundary, preview/environment separation, migration status, logs, and post-merge online-demo smoke when merge is authorized.
 - **Acceptance:** Foundation is deployable and labeled development/demo.
 - **Dependencies:** WP-00-02, WP-00-03A, WP-00-05.
 - **What not to change:** No real/pilot data; no production claim.

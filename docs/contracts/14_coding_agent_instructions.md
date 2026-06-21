@@ -43,6 +43,17 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Do not start the next package when any dependency is described vaguely, lacks a completed package ID/evidence record, or remains unresolved.
 - Phrases such as “base slice,” “affected domain,” “as applicable,” and “daily-approval authority” are blockers until replaced by explicit package/contract references.
 
+### Phase Branch and Main Protection
+
+- Work on exactly one `phase/NN-name` branch created from the latest tested `main`.
+- Keep one work package per bounded commit or clearly identified commit series; do not mix packages in one commit.
+- Push only the authorized phase branch. Never push implementation directly to `main`.
+- Do not open the phase PR until its required packages and owner gates are complete.
+- Before requesting merge, synchronize with current `main` and rerun all phase-required checks and preview smoke/regression tests.
+- Any failed, skipped, unavailable, flaky without resolution, or undocumented required check blocks merge.
+- Merge only after explicit owner authorization for that exact phase PR. Passing tests alone is necessary but not merge authority.
+- Verify the post-merge online-demo deployment before deleting the phase branch or recommending the next phase.
+
 ## 4. Business and Data Integrity Rules
 
 - Do not change, generalize, simplify, or invent business rules/statuses.
@@ -108,6 +119,11 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Keep private sign-in/recovery unresolved until owner decision; do not invent auth UX.
 - Supabase project uses Europe general region; if specific, prefer Central EU/Frankfurt; record assigned region and Egyptian latency.
 - Free/low-cost deployment is development/demo/controlled-pilot only, never production-ready by default.
+- Use the Supabase CLI disposable local stack for database/Auth/Storage integration tests when the sandbox supports it. Otherwise use only a separately authorized hosted development/test project with synthetic data.
+- Vercel phase-branch previews use Preview-scoped variables pointing to development/test Supabase. Never expose online-demo, pilot, or production credentials to Preview.
+- Creating/linking/resetting a hosted project, applying a remote migration, configuring provider secrets, deploying, or merging remains an explicit external-state action.
+- GitHub, Supabase, Vercel, database, service-role and signing credentials belong only in approved secret/credential managers. Never place them in tracked or untracked project files, commands likely to be logged, remote URLs, screenshots, test evidence, or prompts intended for persistence.
+- If any credential is disclosed in chat, logs, screenshots, or files, treat it as compromised: stop using it, revoke/rotate it, and verify repository/provider history before continuing.
 - Keep production tier/budget, retention/RPO/RTO and monitoring provider unresolved.
 - Exports are internal reports, not backups or legal documents.
 - No real pilot/migration data before backup and separate-target restore evidence.

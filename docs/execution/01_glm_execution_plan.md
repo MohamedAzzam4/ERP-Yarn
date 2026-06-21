@@ -14,6 +14,9 @@ GLM must:
 - keep unresolved setup/deployment markers rather than guessing;
 - stop on contract conflict and report clauses;
 - preserve user changes and execute only the authorized package scope.
+- implement each numbered phase on its own `phase/NN-name` branch and push only that branch;
+- never push implementation directly to `main` or merge a phase PR without passing required checks and explicit owner authorization for that merge;
+- use disposable local Supabase or a separately authorized hosted development/test project for integration testing, never online-demo/pilot/production data.
 
 Authority is Decision Log owner decisions → approved contracts → v4 where not superseded → remaining authorized context. This execution plan can narrow scope/order only.
 
@@ -23,9 +26,9 @@ The package registry in `docs/contracts/13_work_packages.md` is incorporated int
 
 ## 2. Entry and Exit Gates
 
-Before a package: dependencies complete; contracts/clauses listed; repository state inspected; scope/non-goals stated; fixtures/tests/rollback available; owner decision/reference-screen gate satisfied where relevant.
+Before a package: dependencies complete; contracts/clauses listed; repository state inspected; correct phase branch checked; scope/non-goals stated; fixtures/tests/rollback available; owner decision/reference-screen gate satisfied where relevant; local or authorized hosted-development Supabase access available when integration testing requires it.
 
-After a package: deliverables reviewed against contracts; package tests and phase smoke/regression evidence recorded; failures/risks/intentional omissions listed; rollback viable; only then may the next dependency-ready package start.
+After a package: deliverables reviewed against contracts; package tests and phase smoke/regression evidence recorded; failures/risks/intentional omissions listed; rollback viable; only then may the package commit be pushed to the phase branch and the next dependency-ready package start. A phase PR can merge to `main` only after all phase checks and relevant Vercel Preview/Supabase development smoke tests pass and the owner authorizes the merge.
 
 ## 3. Phase 0 — Foundation and Risk Controls
 
@@ -51,7 +54,7 @@ After a package: deliverables reviewed against contracts; package tests and phas
 ### Phase 0 Package Execution Records
 
 - **WP-00-01 Project/Bootstrap Verification** — **Goal/inputs:** read-only inspection of existing repo. **Read:** context, v4, Decision Log, both indexes, 01,12–14 and this plan. **Outputs/notes:** conversation report, exact baseline/allowlists; no files, Git repair, scaffold/install/cloud action. **Tests/acceptance:** existing commands run/read-only or absence documented. **Dependencies:** none. **Report:** evidence and recommended WP-00-02.
-- **WP-00-02 Technical Stack Setup** — **Goal/inputs:** contracted stack/environment from WP-00-01. **Read:** 01,03,09,11–14. **Outputs/notes:** pinned lock/config/env boundaries. **Tests/acceptance:** clean build/type/env/secret checks. **Dependencies:** WP-00-01. **Do not/failures:** auth method/production tier not guessed; no client secret. **Report:** exact versions/config.
+- **WP-00-02 Technical Stack Setup** — **Goal/inputs:** contracted stack/environment from WP-00-01. **Read:** 01,03,09,11–14. **Outputs/notes:** pinned lock/config/env boundaries and Supabase CLI disposable-local setup with hosted-development fallback marker. **Tests/acceptance:** clean build/type/env/secret checks plus local Supabase start/status/reset or an explicit unavailable-Docker blocker. **Dependencies:** WP-00-01. **Do not/failures:** auth method/production tier not guessed; no client secret or cloud creation. **Report:** exact versions/config.
 - **WP-00-03A Platform/Security Schema** — tenant/auth/RBAC/settings/sequence/approval-hash/audit/idempotency-lease/alerts only; read 01,03,06,11–14; depends on WP-00-02, PCD-AUTH-003, PCD-SEC-001 and PCD-SEC-002.
 - **WP-00-03B Inventory Identity/Ledger Schema** — batch/lot one-to-one item identity and inventory structures; read 03–04,06,11–14; depends on WP-00-03A, PCD-INV-001 and PCD-SALE-001.
 - **WP-00-03C Production/WIP Schema** — many-to-many production/WIP/events; read 03–06,12–14; depends on WP-00-03B.
@@ -59,7 +62,7 @@ After a package: deliverables reviewed against contracts; package tests and phas
 - **WP-00-03E Historical Migration Schema** — staging/provenance/status/cutover structures; read 03,08,11–14; depends on WP-00-03A, PCD-MIG-001, PCD-MIG-002, PCD-MIG-003 and PCD-MIG-004.
 - **WP-00-04 Theme/Design Foundation** — **Goal/inputs:** semantic light-theme system. **Read:** 02,10,12–14. **Outputs/notes:** tokens/fonts/primitives, provisional values. **Tests/acceptance:** no literal colors, fonts/contrast basics. **Dependencies:** WP-00-02. **Do not/failures:** no dark mode/broad screen. **Report:** token inventory.
 - **WP-00-05 Arabic RTL/Layout Foundation** — **Goal/inputs:** root direction, LTR isolation and accessible layouts. **Read:** 02,10,12–14. **Outputs/notes:** RTL/state/layout primitives. **Tests/acceptance:** mixed direction, keyboard/focus/reduced motion/zoom/360px. **Dependencies:** WP-00-04. **Do not/failures:** no `dir=auto` sentences/invented labels. **Report:** visual QA.
-- **WP-00-06 Demo Deployment/Health** — deploy only with separate explicit external authorization; read 01,03,12–14; depends on WP-00-02, WP-00-03A and WP-00-05; test online/DB/secret/environment; no real data/production claim.
+- **WP-00-06 Demo Deployment/Health** — create/link hosted development Supabase and Vercel only with separate explicit external authorization; phase-branch Preview uses synthetic development credentials; read 01,03,12–14; depends on WP-00-02, WP-00-03A and WP-00-05; test Preview DB/Auth/Storage/secret/environment separation, then owner-authorized merge and online-demo smoke; no real data/production claim.
 
 ## 4. Phase 1 — Auth, RBAC, Audit, Shells and Reference Gate
 
