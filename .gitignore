@@ -2,6 +2,10 @@
 .agents/
 .codex/
 
+# Archived source/planning files (current folder spelling and intended spelling)
+old_fiels/
+old_files/
+
 # Superseded or non-authoritative planning/review material
 Implementation-Plan-v3.txt
 Architecture-Decision-Addendum.txt
