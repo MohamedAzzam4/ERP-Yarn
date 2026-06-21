@@ -68,14 +68,14 @@ Every implementation package runs on the current `phase/NN-name` branch. GLM may
 ### WP-00-02 — Technical Stack and Environment Setup
 
 - **Goal:** Configure the contracted Next.js/Vercel/Supabase/Drizzle development baseline.
-- **Inputs:** WP-00-01 report; resolved Europe-region decision.
+- **Inputs:** WP-00-01 report; DEC-053 region decision; DEC-056 hosted-development availability; DEC-057 key/environment model.
 - **Required reading:** Contracts 01, 03, 09, 11, 12, 14.
 - **Expected outputs:** Reproducible package lock, environment schema/examples, server/client secret boundary, Supabase CLI local/test configuration, synthetic seed boundary, and deployment skeleton.
-- **Implementation notes:** Pin compatible stable versions; Node runtime for high-risk handlers; prepared statements disabled on pooled postgres.js path. Prefer disposable local Supabase; record an explicit hosted-development fallback when the sandbox lacks Docker.
-- **Tests:** Clean install/build/typecheck; local Supabase start/status/reset or documented unavailable-Docker blocker; unsafe/missing env rejection; no secrets in client bundle/log.
+- **Implementation notes:** Pin compatible stable versions; Node runtime for high-risk handlers; prepared statements disabled on pooled postgres.js transaction-pooler path. Pin Supabase CLI as a project development dependency if needed; do not install it globally. Docker is currently unavailable, so preserve the hosted-development fallback marker without connecting to it in this package. `.env.example` uses only the DEC-057 variable names with empty values.
+- **Tests:** Clean install/build/typecheck; retain the documented `unavailable` Docker/local-Supabase result; unsafe/missing env rejection; legacy key-name rejection; no secrets in client bundle/log. Do not perform hosted connectivity, health checks, remote migrations, schema application, Auth/Storage integration, or remote data mutation in WP-00-02.
 - **Acceptance:** App can start without domain features and configuration is reproducible.
 - **Dependencies:** WP-00-01.
-- **What not to change:** Auth method remains unresolved; no production tier decision; no cloud project/deployment/paid change without separate explicit authorization.
+- **What not to change:** Auth method remains unresolved; no production tier decision; no cloud project/deployment/paid change; no hosted Supabase connection/health route; no database schema or migration; no legacy Supabase key fallback without a separate approved compatibility decision.
 - **Common failures:** `NEXT_PUBLIC_` secret, runtime migration, Edge high-risk writes.
 - **Completion report:** Include exact dependency versions and unresolved markers.
 

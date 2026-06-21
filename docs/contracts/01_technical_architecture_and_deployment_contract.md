@@ -308,18 +308,22 @@ The exact CLI commands and versions are pinned in WP-00-02. Local databases are 
 
 WP-00-01 must first report Docker client/server/daemon access, Compose availability, installed Supabase CLI availability, and sandbox policy/resource limitations using non-mutating diagnostics. It does not install tooling, pull images, or start containers. Its Docker result is one of `confirmed_available_for_WP-00-02`, `unavailable`, or `unconfirmed_due_to_sandbox_policy`; WP-00-02 performs the first authorized local-stack start when the result permits it.
 
+Current GLM sandbox evidence records Docker as `unavailable`; local Supabase is therefore unavailable in that sandbox. WP-00-02 must retain this as a documented environment limitation and must not attempt to install Docker or claim a local-stack pass.
+
 ### Hosted development/test project — required fallback and preview target
 
 If the sandbox cannot run the local stack, integration tests use a separately authorized Supabase development/test project. The same project may serve Vercel preview deployments only while it remains isolated, resettable, synthetic-data-only, and free of demo/pilot/production credentials or data.
+
+Current status: the owner has provisioned the dedicated hosted development/test project. Its project reference is available as non-secret metadata and all actual credentials are available only through the sandbox/provider secret mechanism. This availability does not expand WP-00-02: hosted connectivity, health checks, remote migrations, schema application, Auth/Storage integration tests, and remote data mutation remain assigned to their contracted later packages.
 
 Creating/linking a hosted Supabase project, applying remote migrations, setting secrets, resetting remote data, or creating Vercel resources is an external-state action requiring explicit owner authorization. The agent must record project/environment identifiers without recording credentials.
 
 Hosted-development procedure:
 
-1. Owner creates or explicitly authorizes creation of the Europe/Frankfurt development project.
+1. Verify the owner-provisioned Europe/Frankfurt development project reference and environment classification before use; do not create a replacement project implicitly.
 2. Secrets are injected through the GLM sandbox secret manager and Supabase/Vercel dashboards or approved CLI secret commands.
 3. GLM links only to the development project and verifies the project reference/environment before every remote migration or reset.
-4. Reviewed migrations run first against the disposable local/test database, then the hosted development project.
+4. When a local disposable stack exists, reviewed migrations run there first. In the current Docker-less GLM sandbox, the controlling schema package must review generated SQL and apply it only to the resettable hosted development project under explicit package authorization, with the required pre-state/evidence and reset/rollback procedure. This exception never permits pilot/production migration.
 5. Synthetic seed data and test users exercise PostgreSQL transactions/locks, RLS defense in depth, Auth sessions, private Storage access, API commands, and role/field redaction.
 6. A non-production phase branch deploys to Vercel Preview using only development/preview Supabase variables.
 7. Required browser/API smoke and regression checks run against the preview URL.
@@ -437,6 +441,9 @@ public:
   NEXT_PUBLIC_SUPABASE_URL
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 
+non-secret server/tooling metadata:
+  SUPABASE_PROJECT_REF
+
 server-only runtime:
   DATABASE_URL
   SUPABASE_SECRET_KEY
@@ -447,6 +454,8 @@ server-only migration/administration:
 ```
 
 Provide an `.env.example` containing names and descriptions only. Never commit live values. Environment validation must fail fast with a safe message when required server configuration is absent.
+
+For the current project, `.env.example` lists these names with empty values only. `SUPABASE_PROJECT_REF` is non-secret because it identifies the project and appears in the project URL, but it is not made browser-visible unless a later contract requires that. `DATABASE_URL`, its embedded database password, and `SUPABASE_SECRET_KEY` are secret. Use the new publishable/secret key model; do not add `NEXT_PUBLIC_SUPABASE_ANON_KEY` or `SUPABASE_SERVICE_ROLE_KEY` unless a reviewed compatibility requirement explicitly authorizes the legacy fallback.
 
 ## Backup and Restore Contract
 
