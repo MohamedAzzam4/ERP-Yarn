@@ -1,0 +1,2524 @@
+# Architecture Blueprint v2
+
+## Specialized Yarn Trading & Outsourced Manufacturing ERP
+
+---
+
+# 0. Project Context
+
+We are building a specialized ERP system for a specific client working in the yarn and textile domain, especially yarn trading and outsourced yarn manufacturing.
+
+The current client does not own internal production factories. Instead, the client buys raw fiber materials and sends them to external factories for single yarn production and twisted yarn production. These external factories also act as temporary inventory locations because materials and produced yarn can remain there for weeks or months before being transferred, sold, returned, further processed, or sold directly from the factory location.
+
+However, the system should not be hardcoded for only this client. The long-term goal is to build a scalable and configurable ERP product that can later serve other yarn/textile trading and manufacturing clients with different workflows, terminology, costing rules, transport rules, approval rules, reporting needs, and operational constraints.
+
+Therefore, the architecture should support:
+
+* The current client’s actual workflow.
+* Future clients with different outsourced manufacturing and reservation workflows.
+* External factories as both service providers and inventory locations.
+* Configurable terminology, warehouses, factories, users, reports, approval rules, backup policy, costing rules, transport payer rules, and profitability settings.
+* A practical MVP that is close to the final product but avoids unnecessary complexity in phase one.
+* A product foundation that avoids major refactoring when adapting the system for future companies.
+
+The MVP should focus on the critical business value:
+
+* Track raw material batches / رسائل خام.
+* Track yarn lots / لوطات خيط.
+* Manage internal and external inventory locations.
+* Manage outsourced single yarn production and twisted yarn production.
+* Track sales, payments, customer accounts, partial payments, and advance payments.
+* Track supplier and external factory accounts.
+* Track production costs separately from actual payments.
+* Support factory production cost based on input quantity for the current client, while keeping the cost basis configurable for future clients.
+* Track optional transport costs and allow flexible payer handling.
+* Track quality, complaints, returns, and discounted or quality-risk sales approvals.
+* Provide approximate profitability at first, with a configurable foundation for more accurate profitability later.
+* Provide approval workflows, daily approvals, audit logs, and internal document numbering from day one.
+* Support historical data migration from the client’s Excel files as approved historical imported records after validation and reconciliation.
+* Preserve Arabic business terminology from the client’s existing Excel workbook as much as possible.
+* Provide backup capability from MVP and test backup/restore, while allowing backup frequency to be configurable.
+
+The MVP should be cloud-first and may use free-tier cloud deployment during validation to reduce early cost. Free-tier MVP hosting is intended for testing, demo, workflow validation, Excel migration validation, and client feedback. It should not be treated as the final production infrastructure.
+
+The system should be production-minded even in MVP. It should not be a throwaway demo.
+
+The correct balance is:
+
+* Build simple enough to deliver the MVP quickly.
+* Design core entities and workflows strongly enough to support real business operations.
+* Avoid hardcoding business rules that are likely to differ across future clients.
+* Avoid building a full dynamic rule engine too early.
+* Store important rule snapshots inside transactions so future setting changes do not rewrite historical records.
+
+---
+
+0.1 Blueprint v2 Composition
+
+This Architecture Blueprint v2 consists of:
+1. The original Architecture Blueprint v1.
+2. The Data Migration, Terminology, Backup, and Cost Handling Addendum.
+3. The Architecture Decision Addendum — Binding Business & Productization Decisions.
+
+---
+
+# 1. Product Definition
+
+## 1.1 Product Name
+
+Specialized Yarn Trading & Outsourced Manufacturing ERP
+
+Arabic description:
+
+نظام إدارة تجارة وتشغيل الغزل لدى الغير
+
+## 1.2 Core Business Model
+
+The client:
+
+* Buys raw fibers such as cotton, polyester, acrylic, viscose, and blends.
+* Stores raw materials in internal warehouses and port warehouses.
+* Sends raw materials to external factories for single yarn production.
+* Sends single yarn lots to external twisting factories for twisted yarn production.
+* Can sell raw material, single yarn, or twisted yarn.
+* Can sell goods directly from external factory locations.
+* Tracks customer accounts, partial payments, advance payments, and short-term credit.
+* Handles customer complaints and returns.
+* May sell products with quality issues after approval and discount.
+* Needs approximate profitability in MVP and accurate profitability later.
+
+---
+
+# 2. Guiding Architecture Principles
+
+## 2.1 Traceability First
+
+The system must be built around traceability.
+
+The most important question the ERP should answer:
+
+Where did this material come from, where did it go, what was produced from it, who bought it, and did it cause quality or financial problems?
+
+Traceability must work across:
+
+* Raw material batch.
+* Single yarn lot.
+* Twisted yarn lot.
+* Warehouse/location.
+* External factory.
+* Sales.
+* Customer.
+* Quality tests.
+* Complaints.
+* Returns.
+* Financial impact.
+
+## 2.2 Multi-location Inventory
+
+Every physical place holding company-owned material must be modeled as an inventory location.
+
+Locations include:
+
+* Internal warehouse.
+* Port warehouse.
+* External single yarn factory.
+* External twisting factory.
+* Temporary warehouse.
+* In-transit location.
+* Returned stock location.
+
+External factories are not only vendors. They are also temporary inventory locations.
+
+## 2.3 Outsourced Production
+
+Production is not internal manufacturing in the current client’s case.
+
+The system must model production as outsourced transformation:
+
+Raw Material Batch → External Single Yarn Factory → Single Yarn Lot
+Single Yarn Lot → External Twisting Factory → Twisted Yarn Lot
+
+The system must support:
+
+* Sending material to an external factory.
+* Keeping stock at the external factory.
+* Receiving produced yarn.
+* Tracking input quantity, output quantity, waste, and expected waste.
+* Calculating production cost.
+* Tracking factory performance.
+
+## 2.4 Approval and Audit from Day One
+
+The ERP must not allow silent destructive changes.
+
+Important actions require approval or audit:
+
+* Sales approval before execution.
+* Daily approval for normal operational entries.
+* Inventory adjustments.
+* Returns.
+* Discounts due to quality issues.
+* Price changes.
+* Quantity changes after approval.
+* Reversing movements.
+* Cancelling documents.
+* Selling quality-risk stock.
+
+Every important action must have an audit trail.
+
+## 2.5 MVP Must Be Simple but Not Naive
+
+The MVP should avoid overengineering, but the data model should not block future expansion.
+
+For example:
+
+* Current client usually produces a yarn lot from one raw material batch.
+* Future clients may produce one yarn lot from multiple raw material batches.
+* Current client usually produces one twisted lot from one single yarn lot.
+* Future clients may combine multiple single yarn lots into one twisted yarn lot.
+
+The MVP UI may support one-to-one input selection for simplicity, but the underlying data model should be many-to-many capable where needed.
+
+---
+
+# 3. User Roles and Access Model
+
+## 3.1 Owner / صاحب المصنع
+
+Full access.
+
+Can:
+
+* View all dashboards.
+* View all financial reports.
+* Approve all operations.
+* Manage users.
+* Export PDF/Excel.
+* View profitability.
+* View audit logs.
+* Override warnings with approval.
+* Configure system settings.
+
+## 3.2 Accountant / المحاسب
+
+Full operational and financial authority.
+
+Can:
+
+* Approve daily operations.
+* Approve sales.
+* Manage customer accounts.
+* Manage supplier/factory accounts.
+* View prices and costs.
+* View profitability.
+* Export PDF/Excel.
+* Review payments.
+* Review financial reports.
+
+## 3.3 Warehouse Employee / موظف المخزن
+
+Data entry only.
+
+Can:
+
+* Enter stock movements.
+* Receive raw materials.
+* Transfer stock.
+* Issue material to production.
+* Receive production into stock.
+* See quantities and locations.
+
+Cannot:
+
+* See prices.
+* See costs.
+* See profitability.
+* Export PDF/Excel.
+* Approve sensitive actions.
+* Delete approved records.
+
+Can edit own entries before daily approval only.
+
+## 3.4 Production Employee / موظف الإنتاج
+
+Data entry only.
+
+Can:
+
+* Enter single yarn production records.
+* Enter twisted yarn production records.
+* Enter input/output quantities.
+* Enter production dates and factories.
+* See quantities and production status.
+
+Cannot:
+
+* See financial prices.
+* See profitability.
+* Export PDF/Excel.
+* Approve sensitive actions.
+* Delete approved records.
+
+Can edit own entries before daily approval only.
+
+## 3.5 Quality Employee / موظف الجودة
+
+Data entry only.
+
+Can:
+
+* Enter raw material quality tests.
+* Enter yarn quality tests.
+* Enter complaint investigation results.
+* Mark quality status.
+
+Cannot:
+
+* See financial reports.
+* See profitability.
+* Export PDF/Excel.
+* Approve sales or discounts.
+
+---
+
+# 4. Core Domain Entities
+
+## 4.1 Tenant / Client Company
+
+Needed for future scalability.
+
+Fields:
+
+* Tenant ID.
+* Company name.
+* Default language.
+* Currency.
+* Time zone.
+* Feature flags.
+* Custom terminology settings.
+* Active/inactive status.
+
+MVP may use one tenant, but the system should not be designed in a way that prevents multi-client usage later.
+
+## 4.2 User
+
+Fields:
+
+* User ID.
+* Tenant ID.
+* Name.
+* Email/phone.
+* Role.
+* Status.
+* Language preference.
+* Created at.
+* Last login.
+
+## 4.3 Raw Material Batch / رسالة خام
+
+Represents a raw fiber batch.
+
+Fields:
+
+* Batch ID.
+* Internal batch number.
+* Supplier batch/reference number if available.
+* Fiber type.
+* Origin country.
+* Season.
+* Supplier.
+* Number of bales.
+* Gross weight kg.
+* Net weight kg.
+* Remaining weight kg.
+* Purchase price per ton.
+* Total purchase cost.
+* Current status.
+* Current locations.
+* Received date.
+* Documents.
+* Notes.
+
+Important decisions:
+
+* Bale-level tracking is not required in MVP.
+* Bales are stored as count/metadata only.
+* Batch-level tracking is mandatory.
+
+## 4.4 Yarn Lot / لوط خيط
+
+Represents produced yarn.
+
+Types:
+
+* Single yarn lot.
+* Twisted yarn lot.
+
+Fields:
+
+* Lot ID.
+* Lot number.
+* Lot type.
+* Source raw batch or source lot relationship.
+* Yarn count / نمرة الخيط.
+* Twist factor / معامل البرم.
+* Twists per meter where applicable.
+* Factory.
+* Input quantity kg.
+* Output quantity kg.
+* Remaining quantity kg.
+* Waste kg.
+* Waste percentage.
+* Quality status.
+* Current location.
+* Production date.
+* Notes.
+
+Important decisions:
+
+* Current client usually maps one raw material batch to one single yarn lot.
+* Current client may split one single yarn lot into multiple twisted yarn lots.
+* Future clients may combine multiple single yarn lots into one twisted yarn lot.
+* Data model should support multiple inputs per output lot even if MVP UI starts simple.
+
+## 4.5 Location / Warehouse
+
+Represents any place that can hold stock.
+
+Types:
+
+* Internal warehouse.
+* Port warehouse.
+* External single yarn factory.
+* External twisting factory.
+* In-transit.
+* Returned stock.
+* Other temporary location.
+
+Fields:
+
+* Location ID.
+* Name.
+* Type.
+* Address.
+* Contact person.
+* Related supplier/factory if applicable.
+* Active/inactive.
+
+Important decision:
+
+External factories must be represented as inventory locations.
+
+## 4.6 External Factory
+
+Represents production service providers.
+
+Fields:
+
+* Factory ID.
+* Name.
+* Type: single yarn, twisting, both.
+* Contact details.
+* Default pricing rules.
+* Location reference.
+* Active/inactive.
+* Notes.
+
+A factory can also have an associated inventory location.
+
+## 4.7 Supplier
+
+Fields:
+
+* Supplier ID.
+* Name.
+* Material types supplied.
+* Contact details.
+* Account balance.
+* Quality history.
+* Notes.
+
+## 4.8 Customer
+
+Fields:
+
+* Customer ID.
+* Name.
+* Contact details.
+* Account balance.
+* Credit terms.
+* Credit limit optional.
+* Payment history.
+* Complaint history.
+* Notes.
+
+## 4.9 Stock Movement
+
+Represents any inventory movement.
+
+Types:
+
+* Raw material receipt.
+* Transfer between locations.
+* Issue to production.
+* Receive from production.
+* Sale issue.
+* Return receipt.
+* Inventory adjustment.
+* Reversal.
+* In-transit movement.
+
+Fields:
+
+* Movement ID.
+* Internal document number.
+* Tenant ID.
+* Movement type.
+* Item type: raw batch, single yarn lot, twisted yarn lot.
+* Item ID.
+* From location.
+* To location.
+* Quantity kg.
+* Movement date.
+* Status.
+* Created by.
+* Approved by.
+* Approval status.
+* Notes.
+
+Important decision:
+
+Negative stock should not be hidden. It should appear as a serious data integrity alert.
+
+## 4.10 Production Order
+
+Represents outsourced production.
+
+Types:
+
+* Single yarn production.
+* Twisted yarn production.
+
+Fields:
+
+* Production order ID.
+* Internal document number.
+* Production type.
+* External factory.
+* Input items.
+* Output lot.
+* Input quantity kg.
+* Output quantity kg.
+* Waste kg.
+* Waste percentage.
+* Expected waste percentage.
+* Pricing rule or manual production price.
+* Production cost.
+* Send date.
+* Receive date.
+* Status.
+* Approval status.
+* Notes.
+
+## 4.11 Sales Request / Sales Order
+
+Sales require approval before execution.
+
+Fields:
+
+* Sales ID.
+* Internal document number.
+* Customer.
+* Product type.
+* Batch/lot ID.
+* Source location.
+* Quantity kg.
+* Price per ton.
+* Discount.
+* Total amount.
+* Payment status.
+* Delivery status.
+* Quality warning status.
+* Approval status.
+* Created by.
+* Approved by.
+* Notes.
+
+Important decision:
+
+Sales before approval should not be treated as final sales.
+
+After approval:
+
+* Stock is reduced officially.
+* Customer account is updated.
+* Document becomes printable/exportable.
+
+## 4.12 Payment
+
+Supports:
+
+* Advance payment.
+* Partial payment.
+* Payment after sale.
+* Customer credit settlement.
+
+Fields:
+
+* Payment ID.
+* Customer/supplier/factory account.
+* Related sale or account-level payment.
+* Amount.
+* Payment method.
+* Payment date.
+* Attachment optional.
+* Notes.
+* Approval status if needed.
+
+## 4.13 Quality Test
+
+Types:
+
+* Raw material quality test.
+* Yarn quality test.
+
+Raw material fields may include:
+
+* mic.
+* length.
+* strength.
+* color.
+* trash.
+* neps/gram.
+* maturity.
+* SCI.
+* Result status.
+
+Yarn fields may include:
+
+* Lot number.
+* Yarn count.
+* Twists.
+* Twist factor.
+* Factory.
+* Source batch.
+* Result.
+* Notes.
+* Status.
+
+Statuses:
+
+* Accepted.
+* Needs review.
+* Rejected.
+
+Important decision:
+
+Rejected or needs-review stock may still be sold, but requires warning and approval.
+
+## 4.14 Complaint
+
+Fields:
+
+* Complaint ID.
+* Internal document number.
+* Customer.
+* Product.
+* Lot/batch.
+* Related sale.
+* Affected quantity kg.
+* Complaint reason.
+* Complaint date.
+* Status.
+* Investigation result.
+* Responsible user.
+* Notes.
+
+Statuses:
+
+* Open.
+* Under review.
+* Resolved.
+* Rejected.
+
+## 4.15 Return
+
+Fields:
+
+* Return ID.
+* Related sale.
+* Customer.
+* Returned item.
+* Quantity kg.
+* Return reason.
+* Return location.
+* Resale status.
+* Discount/replacement/refund info.
+* Approval status.
+* Notes.
+
+Important decision:
+
+Returned stock should return to inventory, usually as sellable stock, but with status:
+
+* Sellable as is.
+* Sellable with discount.
+* Needs quality review.
+* Needs reprocessing.
+* Temporarily blocked.
+
+## 4.16 Approval Request
+
+Generic approval entity.
+
+Fields:
+
+* Approval ID.
+* Related entity type.
+* Related entity ID.
+* Request type.
+* Requested by.
+* Requested at.
+* Reason.
+* Risk level.
+* Status.
+* Approved/rejected by.
+* Decision date.
+* Decision notes.
+
+## 4.17 Audit Log
+
+Fields:
+
+* Audit ID.
+* Tenant ID.
+* User ID.
+* Entity type.
+* Entity ID.
+* Action type.
+* Old values.
+* New values.
+* Reason.
+* Timestamp.
+* Approval reference if applicable.
+* IP/device metadata optional.
+
+Audit logging is mandatory for:
+
+* Price changes.
+* Quantity changes.
+* Stock movements.
+* Sales approvals.
+* Returns.
+* Adjustments.
+* Reversals.
+* Cancellations.
+* Permission changes.
+* User changes.
+
+---
+
+# 5. Core Workflows
+
+## 5.1 Raw Material Purchase and Receipt
+
+Flow:
+
+1. Create raw material batch.
+2. Enter supplier, material type, origin, number of bales, weights, purchase price.
+3. Generate internal document number.
+4. Receive into a location.
+5. Create stock movement.
+6. Add quality test if available.
+7. Mark as pending daily approval.
+8. Owner/accountant approves at end of day.
+9. Record becomes approved and locked.
+
+MVP:
+
+* Manual entry.
+* Excel import supported.
+* Documents optional.
+
+Future:
+
+* Supplier portal.
+* OCR.
+* Purchase order module.
+
+## 5.2 Transfer to External Factory
+
+Flow:
+
+1. Select raw material batch or yarn lot.
+2. Select source location.
+3. Select external factory location.
+4. Enter quantity.
+5. Create transfer movement.
+6. Stock appears at destination location.
+7. Movement enters daily approval.
+
+Important:
+
+* Source can be internal warehouse, port warehouse, or another factory.
+* Destination can be external factory.
+* Transport cost can be optional in MVP.
+
+## 5.3 Single Yarn Production
+
+Flow:
+
+1. Create production order.
+2. Select raw material batch input.
+3. Select external single yarn factory.
+4. Enter input quantity.
+5. Create issue-to-production movement.
+6. Material remains tracked at factory location.
+7. Enter output single yarn lot when production is received.
+8. Enter output quantity.
+9. System calculates waste.
+10. System creates single yarn lot.
+11. System updates inventory.
+12. Order enters daily approval.
+
+Important:
+
+* One raw batch may be split across many factories.
+* One raw batch may produce multiple single yarn lots.
+* MVP UI may select one input batch per production order.
+
+## 5.4 Twisted Yarn Production
+
+Flow:
+
+1. Create twisting order.
+2. Select single yarn lot input.
+3. Select twisting factory.
+4. Enter input quantity.
+5. Create issue-to-twisting movement.
+6. Enter output twisted yarn lot.
+7. Enter output quantity.
+8. System calculates waste.
+9. System creates twisted yarn lot.
+10. System updates inventory.
+11. Order enters daily approval.
+
+Important:
+
+* One single yarn lot can be split into multiple twisted yarn lots.
+* Future model should support one twisted lot from multiple single yarn lots.
+* MVP UI can support one input single yarn lot.
+
+## 5.5 Sale Approval Workflow
+
+All sales require approval before execution.
+
+Flow:
+
+1. User creates sales request.
+2. Select customer.
+3. Select product: raw material, single yarn, or twisted yarn.
+4. Select source batch/lot.
+5. Select source location.
+6. Enter quantity.
+7. Enter price per ton.
+8. Enter payment terms.
+9. System shows quality warnings and stock warnings.
+10. Request status becomes pending approval.
+11. Owner/accountant reviews.
+12. If approved:
+
+    * Stock is reduced.
+    * Customer account is updated.
+    * Sale becomes approved.
+    * Document becomes printable/exportable.
+13. If rejected:
+
+    * No stock impact.
+    * No customer account impact.
+
+Important:
+
+* Sales can happen from external factory locations.
+* Quality-risk sales require visible warning and approval.
+* Discounted sales require approval.
+
+## 5.6 Return Workflow
+
+Flow:
+
+1. Create return request.
+2. Link to sale if possible.
+3. Select returned item and quantity.
+4. Enter reason.
+5. Enter return location.
+6. Mark resale status.
+7. Request approval.
+8. If approved:
+
+   * Stock is returned to inventory.
+   * Customer account is adjusted if needed.
+   * Return is linked to complaint if applicable.
+
+Important:
+
+Returned stock is not automatically waste. It usually returns as inventory but with condition/status.
+
+## 5.7 Daily Approval Workflow
+
+Normal operational entries can be entered during the day and reviewed later.
+
+Daily approval includes:
+
+* Raw material receipts.
+* Stock transfers.
+* Production entries.
+* Production receipts.
+* Quality entries.
+* Normal inventory movements.
+
+Flow:
+
+1. Data-entry users enter operations.
+2. Operations appear as unapproved.
+3. Owner/accountant opens Daily Approval screen.
+4. Reviews grouped operations.
+5. Approves, rejects, or requests correction.
+6. Approved records become locked.
+7. Later changes require approval and audit log.
+
+MVP display:
+
+* Show current stock with a badge that some movements are unapproved.
+* Do not build separate approved/unapproved stock balances in MVP.
+
+Future:
+
+* Approved balance.
+* Pending movement balance.
+* Expected balance.
+
+## 5.8 Inventory Adjustment Workflow
+
+Sensitive workflow.
+
+Flow:
+
+1. User creates adjustment request.
+2. Enters reason.
+3. Shows current quantity and adjusted quantity.
+4. Requires approval.
+5. If approved:
+
+   * Adjustment movement is created.
+   * Audit log is recorded.
+
+Adjustment examples:
+
+* Stock count difference.
+* Negative balance correction.
+* Weight correction.
+* Data entry correction after approval.
+
+## 5.9 Quality-risk Sale Workflow
+
+If item quality status is:
+
+* Needs review.
+* Rejected.
+* Returned.
+* Under complaint.
+
+Then sale is allowed only with explicit approval.
+
+Flow:
+
+1. User creates sale request.
+2. System detects quality warning.
+3. Warning appears.
+4. Sale requires approval.
+5. Approval record stores reason.
+
+## 5.10 No Silent Delete Workflow
+
+Important records should not be hard-deleted.
+
+Instead:
+
+* Cancel.
+* Reverse.
+* Adjust.
+* Mark inactive.
+* Create audit record.
+
+Applies to:
+
+* Stock movements.
+* Sales.
+* Production orders.
+* Returns.
+* Adjustments.
+* Payments.
+
+---
+
+# 6. Approval Rules
+
+## 6.1 Requires Daily Approval
+
+* Raw material receipt.
+* Normal stock transfer.
+* Issue to production.
+* Receive from production.
+* Quality test entry.
+* Normal production entry.
+
+## 6.2 Requires Approval Before Posting
+
+* All sales.
+* Returns.
+* Inventory adjustments.
+* Discounts.
+* Price changes.
+* Quantity changes after approval.
+* Cost changes after approval.
+* Reversal/cancellation.
+* Selling quality-risk stock.
+* Negative stock correction.
+
+## 6.3 Approval Authorities
+
+Owner:
+
+* Can approve everything.
+
+Accountant:
+
+* Can approve daily operations.
+* Can approve sales.
+* Can approve financial operations.
+* Can approve exports.
+* Can approve most corrections.
+
+Future option:
+
+* Some high-risk actions may require owner-only approval.
+
+---
+
+# 7. Document Numbering
+
+Every major transaction must have an internal document number.
+
+Suggested formats:
+
+* RM-YYYY-0001: Raw material receipt.
+* TR-YYYY-0001: Stock transfer.
+* PROD-S-YYYY-0001: Single yarn production.
+* PROD-T-YYYY-0001: Twisted yarn production.
+* SO-YYYY-0001: Sales order/request.
+* PAY-YYYY-0001: Payment.
+* RET-YYYY-0001: Return.
+* ADJ-YYYY-0001: Inventory adjustment.
+* QC-YYYY-0001: Quality test.
+* CMP-YYYY-0001: Complaint.
+* APR-YYYY-0001: Approval request.
+
+All printed/exported documents must show approval status:
+
+* Draft.
+* Pending approval.
+* Approved.
+* Rejected.
+* Cancelled.
+* Reversed.
+
+---
+
+# 8. Inventory Rules
+
+## 8.1 Storage Unit
+
+The internal storage unit should be kilograms.
+
+The UI can display:
+
+* kg.
+* tons with decimal values.
+
+Example:
+
+12,450 kg = 12.45 tons.
+
+## 8.2 Negative Stock
+
+Negative stock should not be hidden.
+
+Rules:
+
+* Allow negative balance to appear.
+* Highlight it as critical.
+* Show it in dashboard alerts.
+* Require review and adjustment.
+* Do not silently auto-fix.
+
+## 8.3 Stock Statuses
+
+Suggested statuses:
+
+* Available.
+* In production.
+* At external factory.
+* In transit.
+* Sold pending approval.
+* Sold.
+* Delivered.
+* Returned.
+* Needs quality review.
+* Quality rejected.
+* Cancelled/reversed.
+
+## 8.4 Current Location
+
+Every item quantity must be traceable to a location.
+
+A single batch or lot can have quantities distributed across multiple locations.
+
+Example:
+
+Raw batch R-2025-001:
+
+* 5 tons in Alexandria warehouse.
+* 8 tons at Single Yarn Factory A.
+* 3 tons at Single Yarn Factory B.
+* 2 tons sold.
+
+---
+
+# 9. Financial Rules
+
+## 9.1 MVP Profitability
+
+Profitability is approximate in MVP.
+
+Approximate profit formula:
+
+Sales revenue
+minus raw material cost
+minus single yarn production cost
+minus twisting cost
+minus optional direct transport cost
+minus optional return/discount impact
+
+## 9.2 Future Accurate Profitability
+
+Future version should support:
+
+* Transport allocation.
+* Storage cost.
+* Customs.
+* Commissions.
+* Financing cost.
+* General overhead allocation.
+* Waste cost.
+* Complaint cost.
+* Return cost.
+* Multi-currency if needed.
+
+## 9.3 Customer Accounts
+
+Must support:
+
+* Advance payments.
+* Partial payments.
+* Short-term credit.
+* Remaining balance.
+* Payment history.
+* Customer statement.
+
+## 9.4 Supplier and Factory Accounts
+
+Must support:
+
+* Supplier purchases.
+* Factory production costs.
+* Payments.
+* Remaining balances.
+* Optional deductions or adjustments.
+
+Current client usually absorbs factory mistakes, but the system should allow future adjustments.
+
+## 9.5 Export Permissions
+
+Only owner and accountant can export:
+
+* Excel.
+* PDF.
+* Financial reports.
+* Customer statements.
+* Profitability reports.
+
+---
+
+# 10. Reports Required in MVP
+
+## 10.1 Purchases Report
+
+Group/filter by:
+
+* Supplier.
+* Material type.
+* Raw material batch.
+* Date range.
+* Weight.
+* Price.
+* Total cost.
+
+## 10.2 Sales Report
+
+Group/filter by:
+
+* Customer.
+* Product type.
+* Raw material/single yarn/twisted yarn.
+* Batch/lot.
+* Date range.
+* Quantity.
+* Price.
+* Total sale.
+* Payment status.
+
+## 10.3 Inventory Balance Report
+
+Group/filter by:
+
+* Location.
+* External factory.
+* Batch.
+* Lot.
+* Product type.
+* Status.
+
+Must show:
+
+* Negative balances.
+* Pending unapproved movements badge.
+* Returned stock.
+* Quality-risk stock.
+
+## 10.4 Customer Accounts Report
+
+Shows:
+
+* Total sales.
+* Paid.
+* Remaining.
+* Advance payments.
+* Last payment.
+* Overdue balance.
+* Open sales.
+
+## 10.5 Supplier and Factory Accounts Report
+
+Shows:
+
+* Supplier/factory.
+* Related orders.
+* Amount due.
+* Paid.
+* Remaining.
+* Due dates.
+
+## 10.6 Production Under Processing Report
+
+Shows all stock currently at external factories:
+
+* Factory.
+* Batch/lot.
+* Quantity sent.
+* Quantity received.
+* Remaining quantity.
+* Send date.
+* Expected receive date if available.
+* Delay indicator.
+
+## 10.7 Waste Report
+
+Group/filter by:
+
+* Raw material batch.
+* Single yarn factory.
+* Twisting factory.
+* Material type.
+* Yarn count.
+* Date range.
+
+Shows:
+
+* Input quantity.
+* Output quantity.
+* Waste kg.
+* Waste percentage.
+* Expected waste percentage.
+* High waste warning.
+
+## 10.8 Approximate Profitability Report
+
+Group/filter by:
+
+* Raw material batch.
+* Single yarn lot.
+* Twisted yarn lot.
+* Customer.
+* Supplier.
+* External factory.
+
+Shows:
+
+* Raw cost.
+* Production cost.
+* Twisting cost.
+* Transport cost optional.
+* Total sales.
+* Profit.
+* Profit margin.
+
+## 10.9 Complaints and Returns Report
+
+Shows:
+
+* Complaint reason.
+* Customer.
+* Lot/batch.
+* Factory.
+* Supplier.
+* Return quantity.
+* Discount value.
+* Resolution status.
+
+## 10.10 Full Traceability Report
+
+Search by:
+
+* Raw material batch.
+* Single yarn lot.
+* Twisted yarn lot.
+
+Shows:
+
+* Supplier.
+* Raw material receipt.
+* Locations.
+* Production orders.
+* Quality tests.
+* Sales.
+* Customer.
+* Complaints.
+* Returns.
+* Financial impact.
+
+---
+
+# 11. Main Screens
+
+## 11.1 Login
+
+* Arabic-first.
+* English supported.
+* Role-based access.
+
+## 11.2 Owner Dashboard
+
+Shows:
+
+* Inventory value.
+* Total stock.
+* Total production.
+* Sales.
+* Approximate profitability.
+* Open approvals.
+* Negative balances.
+* Open complaints.
+* Production at external factories.
+* Quality-risk items.
+
+## 11.3 Accountant Dashboard
+
+Shows:
+
+* Sales.
+* Purchases.
+* Customer balances.
+* Supplier/factory balances.
+* Payment status.
+* Pending sales approvals.
+* Exports.
+* Profitability reports.
+
+## 11.4 Warehouse Data Entry View
+
+Shows:
+
+* Receive raw material.
+* Transfer stock.
+* Issue to production.
+* Receive from production.
+* Stock balance.
+* Recent movements.
+* No prices.
+
+## 11.5 Production Data Entry View
+
+Shows:
+
+* Single yarn production.
+* Twisted yarn production.
+* Input/output quantities.
+* Waste percentage.
+* External factory.
+* Production date.
+* No prices.
+
+## 11.6 Quality Data Entry View
+
+Shows:
+
+* Raw material tests.
+* Yarn tests.
+* Complaint investigation.
+* Quality statuses.
+* No financial data.
+
+## 11.7 Approval Center
+
+Core screen for owner/accountant.
+
+Tabs:
+
+* Sales approvals.
+* Daily operations.
+* Returns.
+* Inventory adjustments.
+* Discounts and price changes.
+* Quality-risk sales.
+* Negative stock alerts.
+* Post-approval change requests.
+
+## 11.8 Traceability Screen
+
+Search by:
+
+* Raw material batch.
+* Single yarn lot.
+* Twisted yarn lot.
+
+Display timeline:
+
+* Purchase.
+* Storage.
+* Transfer.
+* Production.
+* Quality.
+* Sale.
+* Complaint.
+* Return.
+* Financial impact.
+
+## 11.9 Excel Import
+
+Supports transition from Excel.
+
+Features:
+
+* Upload Excel.
+* Preview sheets.
+* Map columns.
+* Validate rows.
+* Import as draft.
+* Approve import.
+
+Sample sheets:
+
+* خام
+* مبيعات خامات
+* انتاج الفرد وتوزيعه
+* انتاج الزوى وتوزيعه
+* حركة المخازن
+* جودة الخامات
+* جودة الخيوط
+* شكاوى العملاء
+
+## 11.10 Reports
+
+Includes all MVP reports listed above.
+
+## 11.11 Settings and Permissions
+
+Includes:
+
+* Users.
+* Roles.
+* Warehouses.
+* External factories.
+* Suppliers.
+* Customers.
+* Product types.
+* Quality parameters.
+* Approval rules.
+* Document numbering.
+* Language settings.
+
+---
+
+# 12. MVP Scope
+
+## 12.1 Must Have in MVP
+
+* Authentication.
+* Role-based access.
+* Arabic/English support foundation.
+* Raw material batch management.
+* Lot management.
+* Multi-location inventory.
+* External factories as inventory locations.
+* Stock movements.
+* Outsourced single yarn production.
+* Outsourced twisted yarn production.
+* Sales request and approval.
+* Customer accounts.
+* Payments and partial payments.
+* Returns.
+* Basic complaints.
+* Basic quality tests.
+* Approval Center.
+* Daily approval workflow.
+* Audit log.
+* Internal document numbering.
+* Excel import as draft.
+* PDF/Excel export for owner/accountant only.
+* MVP reports.
+* Traceability screen.
+* Negative stock alerts.
+* Approximate profitability.
+
+## 12.2 Should Not Be in MVP
+
+* Full tax compliance automation.
+* Advanced official invoicing rules.
+* AI assistant.
+* OCR.
+* Mobile app.
+* Barcode/QR scanning.
+* Advanced reservation planning.
+* Multi-currency.
+* Full accounting ledger.
+* Payroll.
+* HR.
+* Advanced production planning.
+* Supplier portal.
+* Customer portal.
+* Bale-level tracking.
+* Complex overhead allocation.
+* Real-time email alerts for every action.
+
+## 12.3 Future Features
+
+* Mobile responsive operational views.
+* QR/barcode tracking.
+* Advanced reservations.
+* Accurate profitability.
+* Transport cost allocation.
+* Overhead allocation.
+* Advanced quality rules.
+* AI query assistant.
+* OCR invoice/document import.
+* WhatsApp/email alerts.
+* Multi-tenant SaaS admin panel.
+* Customer portal.
+* Supplier/factory portal.
+* Advanced analytics.
+
+---
+
+# 13. Recommended Technical Direction
+
+This section is intentionally high-level. The implementation plan should detail exact subsystems and work packages later.
+
+## 13.1 Suggested Architecture Style
+
+Use a modular monolith for MVP.
+
+Reason:
+
+* Faster to build.
+* Easier to debug.
+* Easier for AI coding agents.
+* Avoids premature microservices complexity.
+* Still allows clean module boundaries.
+
+Suggested modules:
+
+* Auth and Users.
+* Tenant and Settings.
+* Inventory.
+* Production.
+* Sales.
+* Finance.
+* Quality.
+* Complaints/Returns.
+* Approvals.
+* Audit Log.
+* Reports.
+* Excel Import/Export.
+* Document Generation.
+
+## 13.2 Suggested Frontend
+
+Modern web application.
+
+Requirements:
+
+* Arabic RTL first.
+* English support.
+* Role-based UI.
+* Desktop-first.
+* Responsive enough for tablets.
+* Data-entry forms optimized for speed.
+* Tables with filters/search/sorting.
+* Status badges.
+* Approval actions.
+
+## 13.3 Suggested Backend
+
+API-based backend with relational database.
+
+The domain is relational and transactional. The database should support:
+
+* Strong relationships.
+* Transactions.
+* Audit logs.
+* Reporting queries.
+* Role-based access.
+* Data integrity.
+
+## 13.4 Suggested Database
+
+PostgreSQL is recommended.
+
+Reasons:
+
+* Strong relational modeling.
+* Good transaction support.
+* Good reporting capability.
+* Works with Supabase, Neon, Railway, Render, self-hosting, or traditional VPS.
+* Future-proof for SaaS/multi-tenant usage.
+
+## 13.5 Suggested Deployment Strategy
+
+For development/demo:
+
+* Use free or very low-cost hosting where acceptable.
+* Use seed data from Excel.
+* Avoid relying on free-tier production limits for real client operations.
+
+For real MVP production:
+
+* Use low-cost paid hosting or local self-hosted deployment.
+* Set up backups from day one.
+* Use a managed database if possible.
+* Avoid free database plans without reliable backups for real business data.
+
+---
+
+# 14. Testing Strategy Requirements
+
+The implementation plan must include testing after each phase.
+
+Testing must include:
+
+## 14.1 Logic Tests
+
+Test:
+
+* Stock movement calculations.
+* Waste calculations.
+* Sales approval impact.
+* Return impact.
+* Customer account balance.
+* Profitability calculations.
+* Negative stock alerts.
+* Role permissions.
+* Audit logging.
+* Document numbering.
+
+## 14.2 Integration Tests
+
+Test workflows:
+
+* Raw material receipt → inventory.
+* Transfer to factory → production.
+* Single yarn production → lot creation.
+* Single yarn lot split into multiple twisted lots.
+* Twisted yarn production → inventory.
+* Sales request → approval → stock/customer balance.
+* Return → inventory/customer balance.
+* Quality-risk sale → approval required.
+* Adjustment → approval → audit log.
+
+## 14.3 UI/UX Browser Tests
+
+Testing logic only is not enough.
+
+The system must be tested from real user perspective in the browser.
+
+Test:
+
+* Owner dashboard.
+* Accountant approval flow.
+* Warehouse employee data entry.
+* Production employee data entry.
+* Quality employee data entry.
+* Sales approval.
+* Traceability search.
+* Excel import.
+* PDF/Excel export permissions.
+* Arabic RTL layout.
+* English switch.
+* Table filters.
+* Form validation.
+* Browser responsiveness.
+
+## 14.4 Smoke Tests
+
+After every feature or phase, run smoke tests to make sure old features still work.
+
+Minimum smoke tests:
+
+1. Login as owner.
+2. Login as warehouse employee.
+3. Create raw material batch.
+4. Transfer stock to external factory.
+5. Create single yarn production order.
+6. Receive single yarn lot.
+7. Create sales request.
+8. Approve sale.
+9. Verify stock decreased.
+10. Verify customer balance updated.
+11. Create return.
+12. Approve return.
+13. Verify returned stock increased.
+14. Verify audit log exists.
+15. Verify employee cannot see prices.
+16. Verify employee cannot export Excel/PDF.
+17. Verify approval status appears on documents.
+18. Verify traceability timeline works.
+
+## 14.5 Regression Matrix
+
+Every implementation phase should define:
+
+* Features changed.
+* Tests to rerun.
+* Smoke tests to rerun.
+* UI screens to manually inspect.
+* Risk level.
+
+---
+
+# 15. Required Output From Next AI Implementation Planning Stage
+
+The next AI should convert this architecture blueprint into:
+
+1. Implementation Plan.
+2. Subsystem Designs.
+3. Database Schema Draft.
+4. API Route Plan.
+5. Frontend Screen Plan.
+6. Role and Permission Matrix.
+7. Approval Workflow Design.
+8. Audit Log Design.
+9. Excel Import Plan.
+10. Reporting Plan.
+11. Testing Plan.
+12. Smoke Test Plan.
+13. Phase-by-phase Work Packages.
+14. Risk Register.
+15. Open Questions.
+
+Each phase must include:
+
+* Goal.
+* Scope.
+* Work packages.
+* Acceptance criteria.
+* Tests.
+* Smoke tests.
+* Manual browser tests.
+* Rollback notes.
+* Known risks.
+
+---
+
+# 16. Current Open Questions
+
+These should not block MVP planning, but should be clarified before production launch:
+
+1. Are external factories paid based on input quantity or output quantity?
+2. Who usually pays transport cost: company, customer, or factory?
+3. Are transport and production costs paid immediately or recorded as payables?
+4. Which reports must exactly match the old Excel format?
+5. What historical data from 2025 and 2026 must be imported before go-live?
+6. What is the exact list of mandatory fields for each Excel sheet?
+7. What are the final Arabic terms the client prefers?
+8. What backup and restore requirements does the client expect?
+9. Does the client need local/offline access?
+10. What is the minimum acceptable production hosting budget?
+
+---
+
+# 17. Non-goals and Compliance Notes
+
+The system should manage internal operations, stock, costs, customer balances, documents, and reports.
+
+The system should not be designed to hide sales, evade taxes, or automate illegal accounting behavior.
+
+It may support:
+
+* Internal documents.
+* Draft documents.
+* Approved internal records.
+* Exportable reports.
+* Official documents where legally required.
+
+Tax/legal compliance should be handled by the client’s accountant or legal advisor.
+
+---
+
+# 18. Summary
+
+This ERP should be designed as a production-grade modular monolith for specialized yarn trading and outsourced manufacturing.
+
+The core value is not generic accounting. The core value is:
+
+* Traceability.
+* Inventory control.
+* Outsourced production control.
+* Approval workflow.
+* Auditability.
+* Customer account visibility.
+* Quality/complaint linkage.
+* Approximate profitability.
+
+The MVP should be simple enough to build quickly, but structurally close to the final product.
+
+
+
+
+## Data Migration, Terminology, Backup, and Cost Handling Addendum
+
+### 1. Historical Data Migration Strategy
+
+The system must include a dedicated Historical Data Migration & Reconciliation subsystem.
+
+This subsystem is not a daily operational module for normal users. It is an admin/accountant/owner tool used to import and validate historical data from the client’s Excel files, mainly for 2025 and 2026.
+
+Historical imported records must be imported as:
+
+* Approved
+* Historical
+* Imported
+
+They should not enter the normal approval workflow, because they represent past business activity. However, they must still have an import audit trail.
+
+Each imported record should include:
+
+* Source Excel file name
+* Source sheet name
+* Source row number
+* Import batch ID
+* Imported by
+* Imported at
+* Validation status
+* Mapping version
+* Notes or warnings
+
+The import process should prioritize correctness over speed.
+
+The implementation should not leave migration design until the end. The migration strategy, required Excel sheets, required columns, validation rules, and mapping rules must be designed early. However, the full import tool can be implemented near the end after the core entities and workflows are stable.
+
+Recommended execution order:
+
+1. Define Excel sheet mapping early.
+2. Define validation rules early.
+3. Build the core ERP modules.
+4. Build the historical import tool near the end.
+5. Import 2025/2026 data into staging/draft migration tables.
+6. Validate and reconcile imported data.
+7. Approve the import as historical approved records.
+8. Use the ERP as the source of truth after go-live.
+
+Old Excel data should be treated as a migration and reconciliation reference. After go-live, the ERP should become the operational source of truth.
+
+---
+
+### 2. Arabic Terminology Source
+
+The Arabic terminology in the system should be based on the client’s existing Excel workbook.
+
+The implementation team should not invent new labels unless required for clarity. Existing business terms from the Excel file should be preserved as much as possible.
+
+Core Arabic terminology includes:
+
+* الخامات
+* مبيعات خامات
+* انتاج الفرد وتوزيعه
+* انتاج الزوى وتوزيعه
+* حركة المخازن
+* شكاوى العملاء
+* جودة الخيوط
+* جودة الخامات
+* المشتريات
+* الموردين والعملاء
+* التكاليف والارباح
+* المبيعات
+* العملاء
+* انتاج الخيوط
+* المخازن والمخزون
+* مواصفات الخامات الفنية
+
+Important raw material terms:
+
+* تاريخ استلام الخامات
+* نوع الخام
+* صنف الخام
+* مورد الخام
+* رسالة الخام
+* موسم
+* عدد بال الرسالة
+* وزن قائم الرسالة
+* مكان التخزين
+* سعر الطن جنيه
+* اجمالى الثمن جنيه
+* رقم عملية الشراء
+
+Important production terms:
+
+* الشركة المنتجة للخيط الفرد
+* لوط الفرد
+* خيط
+* م برم الفرد
+* رصيد فرد بالشركة قبل النقل
+* نقل فرد للزوى كجم
+* مصنع الزوى
+* نقل مخزن كجم
+* رصيد باقى بالشركة
+* الخام المستهلك
+* سعر تشغيل الطن
+* ثمن التشغيل جنيه
+* كمية الخيط المزوى كجم
+* نمرة الخيط المزوى Ne
+* برمات المتر للزوى
+* معامل برم المزوى
+
+Important quality and complaint terms:
+
+* تحليل الخام مختبر بريمن
+* mic
+* length
+* strength
+* color
+* trash
+* Neps/gram
+* SCI
+* نمرة الخيط الفرد
+* البرمات المطلوبة للمتر
+* البرمات المطلوبة للبوصة
+* معامل البرم
+* المستوى المحقق
+* تاريخ شكوى العميل
+* عميل النسيج
+* رسالة قطن
+* الشكوى سبب الرفض
+* التحقق من الشكوى وحل المشكلة
+* اعادة تحليل الخيط
+
+The system should support a terminology/configuration layer in the future, so future clients can customize labels without changing core code.
+
+---
+
+### 3. Backup Strategy
+
+The system is cloud-first.
+
+Daily automated backup is required from MVP.
+
+Backups should include:
+
+1. Database backup:
+
+   * Inventory
+   * Raw material batches
+   * Yarn lots
+   * Stock movements
+   * Production orders
+   * Sales
+   * Payments
+   * Customers
+   * Suppliers
+   * External factories
+   * Quality tests
+   * Complaints
+   * Returns
+   * Approvals
+   * Audit logs
+   * Settings
+   * Users and permissions
+
+2. File/storage backup:
+
+   * Uploaded Excel files
+   * Imported source files
+   * Quality documents
+   * Purchase documents
+   * Sales documents
+   * Generated PDF documents if stored
+   * Attachments
+
+3. Migration backup:
+
+   * Original imported Excel files
+   * Import batch logs
+   * Mapping rules
+   * Validation results
+
+Backup should be system-managed and automatic. User exports are not a replacement for backups.
+
+Owner/accountant may have permission to export Excel/PDF reports, but this should be treated as reporting/export functionality, not disaster recovery.
+
+Future option:
+
+* Owner-only full company data archive download.
+* This action must be recorded in the audit log.
+
+---
+
+### 4. Transport Cost Handling
+
+Transport cost should be modeled as an optional direct cost linked to stock movement, sale, production transfer, or return.
+
+Transport cost fields should include:
+
+* Related movement/order
+* Transport amount
+* Payer type:
+
+  * Company
+  * Customer
+  * External factory
+  * Shared
+  * Other
+  * Unknown
+* Amount paid by company
+* Amount paid by customer
+* Amount paid by factory
+* Payment status
+* Payment date
+* Notes
+
+In MVP, transport cost can be optional. It should not block stock movement entry.
+
+Transport costs may later be included in profitability calculations.
+
+---
+
+### 5. External Factory Production Cost Handling
+
+External factories are paid based on input quantity.
+
+Production cost formula:
+
+Input quantity × production price per ton
+
+The production price can depend on:
+
+* Factory
+* Production type
+* Yarn count / نمرة الخيط
+* Twists / عدد البرمات
+* Material type if needed
+
+Production costs should be recorded as payables to the external factory, even if they are usually paid shortly after the operation.
+
+Payment status should support:
+
+* Unpaid
+* Partially paid
+* Paid
+
+Future versions should support due dates, payment reminders, and factory account statements.
+
+---
+
+### 6. Cost Payment Timing
+
+Although the current client usually pays production and related costs within a short period, sometimes around two weeks, the system should not assume immediate payment.
+
+Costs should be recorded independently from payments.
+
+This allows the system to support:
+
+* Immediate payment
+* Short delayed payment
+* Partial payment
+* Future longer-term payable workflows
+
+This applies to:
+
+* External factory production cost
+* Transport cost
+* Supplier payments
+* Other direct costs
+
+
+# Architecture Decision Addendum
+
+## Binding Business & Productization Decisions
+
+This addendum is part of the Architecture Blueprint and should be treated as authoritative for the Implementation Plan and Attack Review.
+
+The system is being built for one specific yarn trading and outsourced manufacturing client first, but it must also remain productizable for future textile/yarn clients with different business rules.
+
+The MVP should stay practical and avoid overengineering, but the architecture must not hardcode business rules that are likely to vary across future clients.
+
+---
+
+## 1. Cloud-First Deployment
+
+Decision:
+
+The system is cloud-first.
+
+Rationale:
+
+The client needs access from multiple roles and locations. The system should be easy to demo, test, and operate without depending on a local machine inside the company.
+
+Architecture impact:
+
+* No local-only architecture in MVP.
+* No offline sync engine in MVP.
+* Must include cloud security, role-based access, environment configuration, database backup, file backup, and production upgrade path.
+* Local/offline support is future scope unless later required.
+
+---
+
+## 2. Free-Tier MVP, Production-Minded Architecture
+
+Decision:
+
+The MVP may use free-tier cloud deployment where possible.
+
+Rationale:
+
+The goal is to validate workflow, data model, Excel migration, approvals, and traceability with minimal cost before committing to paid infrastructure.
+
+Important nuance:
+
+Free-tier MVP does not mean throwaway architecture.
+
+Architecture impact:
+
+* The system must be built so it can move to paid production hosting without major refactoring.
+* Free-tier limits must be documented.
+* Backup and restore capability must be tested.
+* Real production use requires a clear upgrade path.
+* Business data must not be trapped in a weak hosting setup.
+
+---
+
+## 3. Modular Monolith
+
+Decision:
+
+Use a modular monolith for MVP.
+
+Rationale:
+
+The project needs fast delivery, simpler debugging, strong consistency, easier testing, and lower complexity for AI-assisted development.
+
+Architecture impact:
+
+* Avoid microservices in MVP.
+* Define clear module boundaries.
+* Keep business logic out of UI components.
+* Use service/domain layers for core rules.
+* Use transactions for workflows that affect stock, accounts, approvals, or audit logs.
+
+---
+
+## 4. PostgreSQL / Relational Database
+
+Decision:
+
+Use a relational database, preferably PostgreSQL.
+
+Rationale:
+
+The domain is highly relational and transactional.
+
+Architecture impact:
+
+The database must safely model:
+
+* Raw material batches.
+* Yarn lots.
+* Stock movements.
+* Production orders.
+* Sales.
+* Payments.
+* Quality tests.
+* Complaints.
+* Returns.
+* Approvals.
+* Audit logs.
+* Traceability.
+
+A purely document-based database should not be used for the core ERP data model.
+
+---
+
+## 5. External Factories as Inventory Locations
+
+Decision:
+
+External factories must be modeled as inventory locations.
+
+Rationale:
+
+The client’s materials and produced yarn can remain at external factories for weeks or months. Even though factories are vendors/service providers, they also physically hold company-owned stock.
+
+Architecture impact:
+
+* External factories must have inventory balances.
+* Stock can exist at internal warehouses, port warehouses, external factories, in-transit locations, and return locations.
+* Production and stock reports must show factory-held stock.
+* Sales can occur from stock located at an external factory.
+
+---
+
+## 6. Historical Data Imported as Approved Historical Records
+
+Decision:
+
+Historical data should be imported as:
+
+* Approved.
+* Historical.
+* Imported.
+
+It should not go through the normal per-record approval workflow.
+
+Rationale:
+
+The data represents past business activity. Re-approving every historical sale, movement, production order, or payment one by one would be operationally unrealistic.
+
+Important nuance:
+
+Approved historical import does not mean unsafe import.
+
+Architecture impact:
+
+* Historical data must pass strong validation and reconciliation before commit.
+* Each imported record must store source file, source sheet, source row, import batch ID, imported by, imported at, and validation status.
+* Imported records should be locked after commit.
+* Corrections after import should happen through adjustments, reversals, or audited correction flows.
+* Historical records should not be silently recalculated later.
+
+---
+
+## 7. Historical Migration Designed Early, Tool Built Later
+
+Decision:
+
+Historical migration strategy must be designed early, but the full import tool can be implemented near the end.
+
+Rationale:
+
+The system cannot design entities blindly and later discover that Excel data cannot map into them. However, building the full import tool before core entities stabilize may waste effort.
+
+Architecture impact:
+
+* Early phase must define Excel sheet mapping.
+* Early phase must define mandatory columns.
+* Early phase must define validation rules.
+* Early phase must define staging/import tables.
+* Full migration tool can be built after core modules stabilize.
+* Migration and reconciliation must happen before go-live.
+
+---
+
+## 8. Arabic Terminology Based on Existing Excel Workbook
+
+Decision:
+
+Arabic terminology should be based on the client’s current Excel workbook.
+
+Rationale:
+
+The client already uses specific business terms, and changing them unnecessarily will make adoption harder.
+
+Core terminology includes:
+
+* الخامات
+* مبيعات خامات
+* انتاج الفرد وتوزيعه
+* انتاج الزوى وتوزيعه
+* حركة المخازن
+* جودة الخامات
+* جودة الخيوط
+* شكاوى العملاء
+* رسالة الخام
+* لوط الفرد
+* مصنع الزوى
+* سعر تشغيل الطن
+* ثمن التشغيل جنيه
+* وزن قائم الرسالة
+* عدد بال الرسالة
+* نمرة الخيط المزوى Ne
+* برمات المتر للزوى
+* معامل برم المزوى
+
+Architecture impact:
+
+* UI labels should use client terminology by default.
+* Internal code may use English domain names, but mapping to Arabic UI labels must be explicit.
+* Future versions should support client-specific terminology customization.
+
+---
+
+## 9. Factory Cost Basis for Current Client
+
+Decision:
+
+For the current client, external factories are paid based on input quantity sent to the factory, not output quantity produced.
+
+Formula:
+
+factory_cost = input_quantity_kg / 1000 × factory_cost_per_input_ton
+
+Rationale:
+
+This reflects the current client’s real business practice.
+
+Architecture impact:
+
+* Waste must not reduce factory payable for the current client.
+* Factory payable must be created based on input quantity.
+* Profitability must use input-based factory cost.
+* The cost rule used must be snapshotted on each production order.
+* Production output quantity is still used for inventory and waste calculation, not for factory payable calculation for this client.
+
+---
+
+## 10. Configurable Factory Cost Basis for Future Clients
+
+Decision:
+
+Even though the current client uses input quantity, the system should support future configuration.
+
+Supported future cost bases:
+
+* input_quantity
+* output_quantity
+* fixed_amount
+* manual_amount
+
+Rationale:
+
+Other companies may pay factories differently.
+
+Architecture impact:
+
+* Do not hardcode input_quantity in a way that blocks future clients.
+* Do not build a complex rule engine in MVP.
+* Use simple settings/defaults.
+* Allow per-factory override if needed.
+* Snapshot the cost basis on the production order.
+* Future clients should not require major refactoring to use another cost basis.
+
+---
+
+## 11. Transport Cost Flexibility
+
+Decision:
+
+Transport cost should be optional in MVP and flexible in ownership.
+
+Possible payer types:
+
+* Company.
+* Customer.
+* External factory.
+* Shared.
+* Other.
+* Unknown.
+
+Rationale:
+
+Transport cost may be split between parties, paid by the client company, paid by the customer, paid by the factory, or handled differently per case.
+
+Architecture impact:
+
+* Transport cost should not block stock movement in MVP.
+* Transport can be attached to movement, production, sale, or return.
+* Payer type must be stored.
+* Split payment should be possible or future-compatible.
+* Transport can optionally affect profitability.
+* Missing transport cost should not break core operations.
+
+---
+
+## 12. Profitability Must Be Configurable but Not Overengineered
+
+Decision:
+
+Profitability should be configurable over time, but MVP should use a clear simple formula.
+
+MVP default may include:
+
+* Raw material cost.
+* Single yarn production cost.
+* Twisting cost.
+* Transport cost if entered.
+* Discounts.
+* Return impact.
+
+Future versions may include:
+
+* Storage.
+* Customs.
+* Commissions.
+* Financing.
+* Overhead allocation.
+* Complaint compensation.
+* Multi-currency effects.
+
+Rationale:
+
+Different companies calculate profitability differently.
+
+Architecture impact:
+
+* MVP should clearly label profitability as approximate.
+* Cost components should be configurable enough for future expansion.
+* Profitability calculations should snapshot inputs used at calculation time.
+* Historical profitability should not silently change when settings change later.
+
+---
+
+## 13. Costs and Payments Must Be Separate
+
+Decision:
+
+Costs should be recorded independently from payments.
+
+This applies to:
+
+* Factory production cost.
+* Twisting cost.
+* Transport cost.
+* Supplier purchases.
+* Other direct costs.
+
+Rationale:
+
+The client may pay costs immediately, after around two weeks, partially, or later. The system should not assume immediate payment.
+
+Architecture impact:
+
+* Creating a cost does not mean it is paid.
+* The system must support unpaid, partially paid, and paid statuses.
+* Payment records must be separate from cost records.
+* Factory, supplier, and transport account statements should be possible.
+
+---
+
+## 14. Backup Design for MVP
+
+Decision:
+
+Backup capability must be designed from MVP and tested during MVP.
+
+Important nuance:
+
+Daily backup is recommended for production. In free-tier MVP, daily automated backup may not be a hard blocker from day one, but backup and restore capability must exist and be tested.
+
+Architecture impact:
+
+* User exports are not backups.
+* Database backup and file backup must be considered separately.
+* Imported Excel source files and migration logs must be included in backup planning.
+* Restore testing must be part of the plan.
+* Production upgrade path must include reliable automated backups.
+* Backup operations should be audited where appropriate.
+
+---
+
+## 15. Configurable Backup Frequency
+
+Decision:
+
+Owner/Admin should be able to configure backup policy.
+
+Possible frequencies:
+
+* Manual.
+* Daily.
+* Weekly.
+* Monthly.
+
+Rationale:
+
+Different clients and deployment plans may need different backup frequencies.
+
+Architecture impact:
+
+* Backup settings must not be fake UI.
+* Backup frequency should map to real implementation behavior.
+* Production should support daily or better backups.
+* MVP should at least prove manual or scheduled backup and restore.
+* Report exports must not be treated as backup.
+
+---
+
+## 16. Flexibility Without Making Everything Dynamic
+
+Decision:
+
+The system should be designed for future configurability, but MVP should not make everything dynamic from day one.
+
+Rationale:
+
+Overengineering will slow the MVP and make it fragile. Underengineering will make future client customization expensive.
+
+Architecture impact:
+
+* Stable core domain model.
+* Likely-to-change business rules should be settings.
+* Transactions must store snapshots of rules used at creation time.
+* Sensitive setting changes must be audited.
+* Advanced rule engines are future scope.
+* Historical records should not be recalculated silently.
+* Use tenant default, factory override, and transaction override where appropriate, but keep MVP implementation simple.
+
+---
+
+## 17. Approved Decision Hierarchy
+
+If the Blueprint, Implementation Plan, and Reviewer Context appear to differ, use this hierarchy:
+
+1. Architecture Blueprint + Architecture Decision Addendum.
+2. Explicit approved business decisions from the conversation.
+3. Implementation Plan.
+4. Reviewer Context.
+
+The Reviewer Context explains how to review decisions, but the Blueprint/Addendum defines the decisions themselves.

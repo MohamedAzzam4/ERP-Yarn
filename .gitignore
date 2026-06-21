@@ -1,0 +1,23 @@
+# Local AI-agent configuration and caches
+.agents/
+.codex/
+
+# Superseded or non-authoritative planning/review material
+Implementation-Plan-v3.txt
+Architecture-Decision-Addendum.txt
+Attack Review Report 1.txt
+Attack Review Report 2.txt
+Attack-Prompt.txt
+Reviewer-Context&Decision-Rationale.txt
+remaining prompts.txt
+techstack.txt
+
+# Local environment and generated artifacts
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+coverage/
+dist/
+*.log

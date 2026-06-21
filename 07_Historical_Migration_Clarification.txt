@@ -1,0 +1,609 @@
+# Historical Migration Integration Notes
+
+## 1. Historical Data Source Clarification
+
+The currently provided Excel workbook should **not** be treated as the final official historical data source format.
+
+It appears to be an internal attempt by someone inside the company to organize historical information, not a fully official ERP export, accounting export, or normalized historical database.
+
+Therefore, the migration strategy should **not** assume that this workbook’s structure is the permanent source-of-truth format.
+
+The workbook is still useful because it reveals real migration risks, such as:
+
+* messy business sheets
+* embedded master data
+* inconsistent names
+* formulas
+* blank cells
+* mixed date formats
+* Arabic terminology variations
+* unclear calculation basis
+* missing values
+* possible logical date issues
+* possible mismatch between historical cost calculations and new ERP rules
+
+These findings should be treated as **migration risk signals**, not as proof that the ERP must permanently support this exact workbook structure as the official migration schema.
+
+---
+
+## 2. Final Historical Migration Strategy
+
+Historical migration should support two tracks.
+
+---
+
+# Track 1 — Normalized Historical Import Templates
+
+The ERP project should define clean, normalized historical import templates that match the target ERP schema.
+
+These templates should become the preferred target format for reviewed historical data.
+
+The company, owner, accountant, or implementation team can manually review, correct, complete, and prepare old data into these templates before final import.
+
+This reduces the risk of building a fragile permanent importer around one unofficial messy workbook.
+
+The normalized templates should cover, at minimum:
+
+* suppliers
+* customers
+* locations
+* external factories
+* raw material batches
+* single yarn lots
+* twisted yarn lots
+* inventory opening balances
+* inventory movements
+* raw material purchases/receipts
+* single yarn production records
+* twisting production records
+* sales
+* customer payments
+* supplier payments
+* factory payments
+* quality records
+* complaints
+* returns
+* direct costs if available
+
+The goal of these templates is not to force the client to manually rewrite everything forever.
+
+The goal is to create a clean target structure that old messy data can be transformed into before import.
+
+---
+
+# Track 2 — Optional AI-Assisted Transformation from Messy Historical Files
+
+AI may be used to help transform messy or unofficial historical Excel files into the normalized import templates.
+
+AI can assist with:
+
+* extracting candidate rows
+* identifying table-like regions inside messy sheets
+* mapping columns to ERP fields
+* detecting supplier names
+* detecting customer names
+* detecting factory names
+* detecting location names
+* suggesting duplicate/alias mappings
+* identifying formulas
+* extracting formula text
+* comparing calculated values with visible values
+* converting dates
+* normalizing Arabic terminology
+* flagging missing values
+* flagging suspicious calculations
+* generating draft normalized import sheets
+
+However, AI output must **never** be committed directly into operational ERP tables.
+
+AI is allowed to prepare draft migration files.
+
+AI is not allowed to approve historical truth.
+
+AI-transformed data must go through:
+
+1. normalized import template generation
+2. staging import
+3. validation
+4. reconciliation
+5. manual review
+6. owner/accountant approval
+7. approved historical import commit
+
+If the AI cannot confidently map or interpret a row, it must mark the row for human review instead of guessing silently.
+
+---
+
+## 3. AI-Assisted Migration Safety Rules
+
+AI-assisted migration is allowed only as a preparation tool.
+
+It must not be treated as an authority.
+
+The system or migration process must record AI transformation metadata where applicable:
+
+* original file name
+* source sheet name
+* source row number
+* original cell value
+* formula text if present
+* calculated value if available
+* AI transformation version
+* transformation notes
+* confidence level if available
+* human reviewer
+* review status
+* approval status
+
+Rows with uncertainty should be marked as:
+
+```text id="9bj6vs"
+needs_human_review
+```
+
+Rows with unresolved critical errors should not be committed.
+
+AI must not invent missing prices, missing quantities, missing dates, or missing relationships.
+
+If a value is inferred, it must be clearly marked as inferred and reviewed by a human before commit.
+
+---
+
+## 4. Workbook-Specific Mapping Remains Useful, But Not Permanent
+
+The current Excel workbook should not become the permanent migration schema.
+
+However, workbook-specific mapping may still be useful for the current client if the implementation team chooses to use this workbook as one of the historical source files.
+
+If used, the workbook-specific mapping should be treated as a one-time or client-specific migration adapter, not as the core ERP import design.
+
+The final ERP should prefer:
+
+```text id="nej1i4"
+messy source files
+→ optional AI-assisted transformation
+→ normalized import templates
+→ staging
+→ validation
+→ reconciliation
+→ human approval
+→ approved historical import
+```
+
+rather than:
+
+```text id="gss6tk"
+messy source file
+→ direct operational import
+```
+
+---
+
+## 5. Staging Remains Mandatory
+
+Even if historical data is manually prepared into normalized templates, it must not be inserted directly into operational tables.
+
+All historical imports must first go into staging tables.
+
+Required staging metadata should include:
+
+* import batch ID
+* original file name
+* source sheet name
+* source row number
+* normalized template name
+* original value
+* transformed value
+* validation status
+* warning status
+* reviewer notes
+* approved by
+* approved at
+
+Suggested staging tables:
+
+```text id="37oj6h"
+import_batches
+import_files
+import_template_versions
+import_staging_rows
+import_staging_entities
+import_validation_errors
+import_validation_warnings
+import_reconciliation_results
+import_human_review_items
+```
+
+---
+
+## 6. Validation Remains Mandatory
+
+Historical data must pass validation before commit.
+
+Validation should include:
+
+## Basic validation
+
+* required fields
+* valid dates
+* valid numbers
+* valid quantities
+* valid units
+* valid document numbers
+* valid item types
+* valid status values
+
+## Duplicate validation
+
+* duplicate raw batch numbers
+* duplicate single yarn lot numbers
+* duplicate twisted yarn lot numbers
+* duplicate sales document numbers
+* duplicate payment document numbers
+* duplicate production document numbers
+* duplicate movement document numbers
+
+## Master data validation
+
+* unknown supplier
+* unknown customer
+* unknown factory
+* unknown location
+* unresolved alias
+* conflicting names
+* missing required master data
+
+## Relationship validation
+
+* sale linked to unknown item
+* production linked to unknown raw batch or yarn lot
+* payment linked to unknown customer/supplier/factory account
+* complaint linked to unknown customer/sale/item
+* return linked to unknown sale/item where required
+* broken raw batch to single yarn lineage
+* broken single yarn to twisted yarn lineage
+
+## Quantity and stock validation
+
+* negative stock warnings
+* impossible stock movements
+* output quantity greater than reasonable input quantity where not explained
+* missing waste
+* suspicious waste percentage
+* stock balance mismatch
+* location balance mismatch
+
+## Logical date validation
+
+Date validation must not only check date format.
+
+It must also check logical sequence.
+
+Examples:
+
+* sale date should not be before item receipt date unless accepted as a historical inconsistency
+* production date should not be before material availability
+* twisting date should not be before single yarn availability
+* return date should not be before sale date
+* payment date should be checked against related sale/account context
+* quality test date should be checked against related item availability where possible
+
+Historical inconsistencies may be allowed only as warnings if explicitly reviewed and approved.
+
+---
+
+## 7. Reconciliation Remains Mandatory
+
+Before committing historical data, the system should show reconciliation summaries.
+
+Reconciliation should include:
+
+* total raw material quantity
+* total single yarn quantity
+* total twisted yarn quantity
+* stock by item
+* stock by location
+* stock at external factories
+* production under processing
+* total sales
+* total payments
+* customer balances
+* supplier balances
+* factory balances
+* negative stock warnings
+* broken relationship count
+* missing cost count
+* missing price count
+* unresolved alias count
+* critical validation errors
+* accepted warnings
+
+Historical import can proceed only after owner/accountant approval.
+
+---
+
+## 8. Master Data Extraction
+
+Historical files may not contain clean master data sheets.
+
+Suppliers, customers, factories, and locations may be embedded inside transaction sheets.
+
+Therefore, the migration process should support master data extraction.
+
+The process should:
+
+1. Extract candidate supplier names.
+2. Extract candidate customer names.
+3. Extract candidate factory names.
+4. Extract candidate location names.
+5. Detect duplicates and spelling variations.
+6. Suggest aliases.
+7. Let the owner/accountant approve normalized names.
+8. Map historical transaction rows to approved master records.
+
+Example:
+
+```text id="4qjpcw"
+مصر ايران
+مصر إيران
+مخزن مصر ايران
+```
+
+These may or may not refer to the same entity.
+
+The system or migration team must not assume automatically.
+
+Human approval is required for ambiguous mappings.
+
+---
+
+## 9. Arabic Terminology and Alias Dictionary
+
+Historical migration should build or use a terminology and alias dictionary.
+
+The dictionary should include:
+
+* canonical Arabic label
+* Excel/source aliases
+* module
+* ERP field mapping
+* user-facing label
+* import-only label
+* notes
+* confidence level if AI-assisted
+* approved by
+
+This helps with:
+
+* Arabic-first UI consistency
+* import mapping
+* report naming
+* reducing duplicate entities
+* preserving client terminology
+
+The current workbook can be used as one source for terminology discovery, but not as the only authority.
+
+---
+
+## 10. Historical Formula Handling
+
+If an Excel cell contains a formula, the migration process should preserve formula information where possible.
+
+For formula-based cells, store:
+
+* original cell value
+* formula text
+* calculated value
+* source sheet
+* source row
+* mapped ERP meaning
+* migration warning if formula implies hidden business logic
+
+This matters because formulas may reveal old assumptions about:
+
+* yield
+* waste
+* consumed raw material
+* output quantity
+* factory cost
+* price calculation
+* total cost
+* customer balance
+* stock balance
+
+The migration process should not blindly import formula results without understanding what they represent.
+
+---
+
+## 11. Imported Historical Cost Preservation
+
+New live ERP transactions should use the approved current-client rule:
+
+```text id="hrx7sv"
+factory cost = input quantity × factory rate
+```
+
+However, historical files may contain old costs that were calculated differently, entered manually, or derived from unofficial formulas.
+
+For historical imported production records:
+
+* preserve the original imported total factory cost
+* do not force recalculation using the new live formula
+* store source formula if available
+* store calculated value if available
+* store historical cost basis source
+* show a warning if imported cost differs from the current live formula
+* mark uncertain cost basis for accountant review
+
+Use the term:
+
+```text id="dwmk7k"
+Imported Historical Cost Preservation
+```
+
+Do not call this a general user override.
+
+Allowed historical cost basis values:
+
+```text id="1wxd9a"
+imported_excel
+input_based
+output_based
+manual
+unknown
+```
+
+Suggested fields:
+
+```text id="aa51fd"
+imported_total_factory_cost
+erp_calculated_factory_cost
+historical_cost_basis_source
+source_formula_text
+cost_difference_amount
+cost_difference_percent
+migration_warning
+review_status
+approved_by
+approved_at
+```
+
+Important rule:
+
+Historical cost preservation applies to imported historical records only.
+
+It must not allow normal users to freely override live production cost calculations.
+
+---
+
+## 12. Historical Records Classification
+
+Historical imported records should be classified clearly.
+
+Suggested fields:
+
+```text id="dcxhma"
+record_origin = excel_import / ai_assisted_import / manual_historical_entry
+record_period = historical
+approval_status = approved_after_import_review
+import_batch_id
+source_file_id
+source_row_reference
+```
+
+Historical records should not go through the normal daily operational approval flow.
+
+Instead, they are approved through the import batch approval process after validation and reconciliation.
+
+---
+
+## 13. Historical Records Locking
+
+After commit, historical imported records should be locked.
+
+They should not be directly edited through normal forms.
+
+Corrections should happen only through controlled workflows.
+
+This protects traceability and prevents silent changes to imported history.
+
+---
+
+## 14. Historical Correction Workflow
+
+Historical data will probably contain mistakes.
+
+Therefore, v4 must define a correction workflow.
+
+Correction should happen through:
+
+1. correction request
+2. explanation/reason
+3. owner/accountant review
+4. approval or rejection
+5. reversal or adjustment entry
+6. link to original imported record
+7. audit log
+8. updated reconciliation if needed
+
+Do not allow direct editing of approved historical records.
+
+Do not allow developers or users to silently patch historical data in the database.
+
+---
+
+## 15. Manual Work Is Expected
+
+Historical migration may require significant manual work.
+
+This is not a system failure.
+
+The ERP should reduce manual effort through:
+
+* normalized templates
+* validation
+* reconciliation
+* AI-assisted transformation
+* alias suggestions
+* formula detection
+* error reports
+* review queues
+
+But the ERP should not pretend that messy historical data can be imported perfectly without human review.
+
+The final plan should communicate this clearly to the client.
+
+---
+
+## 16. Recommended Historical Migration Flow
+
+Final recommended flow:
+
+```text id="eq2os1"
+Historical source files
+→ optional AI-assisted transformation
+→ normalized import templates
+→ upload to ERP
+→ staging tables
+→ validation
+→ reconciliation
+→ human review
+→ owner/accountant approval
+→ commit as approved historical records
+→ lock records
+→ corrections only through reversal/adjustment workflow
+```
+
+---
+
+## 17. Impact on Previous Attack Findings
+
+Previous attack findings about the Excel workbook remain useful, but they should be interpreted correctly.
+
+They are not proof that the current workbook must define the final import schema.
+
+They are proof that historical data is likely messy, inconsistent, formula-heavy, and not safely importable without a strict migration pipeline.
+
+Therefore, v4 should not say:
+
+```text id="nbt0ts"
+The ERP must permanently support the current Excel workbook format as the historical import format.
+```
+
+Instead, v4 should say:
+
+```text id="y97rt2"
+The ERP should provide normalized historical import templates, while optionally supporting AI-assisted or workbook-specific transformation from messy source files into those templates.
+```
+
+---
+
+## 18. Final Historical Migration Rule
+
+The current Excel workbook is a useful migration risk example, not the permanent migration schema.
+
+The final ERP should prefer normalized historical import templates.
+
+AI may help transform messy files into those templates, but AI must not approve data.
+
+All historical data must pass staging, validation, reconciliation, and human approval before becoming approved historical ERP records.
