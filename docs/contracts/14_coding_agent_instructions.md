@@ -127,6 +127,7 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Creating/linking/resetting a hosted project, applying a remote migration, configuring provider secrets, deploying, or merging remains an explicit external-state action.
 - GitHub, Supabase, Vercel, database, service-role and signing credentials belong only in approved secret/credential managers. Never place them in tracked or untracked project files, commands likely to be logged, remote URLs, screenshots, test evidence, or prompts intended for persistence.
 - If any credential is disclosed in chat, logs, screenshots, or files, treat it as compromised: stop using it, revoke/rotate it, and verify repository/provider history before continuing.
+- If the sandbox has no owner-controlled secret channel, use DEC-059 credentialless handoff: export a verified Git bundle after the package gate, provide its SHA-256 as a downloadable artifact, and leave status `incomplete/publication_pending`. Do not ask the owner to paste a replacement token into chat and do not start the next WP before trusted import, retest, push and remote verification.
 - Keep production tier/budget, retention/RPO/RTO and monitoring provider unresolved.
 - Exports are internal reports, not backups or legal documents.
 - No real pilot/migration data before backup and separate-target restore evidence.

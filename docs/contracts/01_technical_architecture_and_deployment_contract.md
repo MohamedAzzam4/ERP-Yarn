@@ -286,6 +286,28 @@ Rules:
 
 Repository visibility does not grant write authority. GitHub credentials are supplied through the sandbox/host secret or credential manager, never through repository files, prompts intended for persistence, Git remote URLs containing credentials, logs, or completion evidence. A repository-scoped fine-grained token needs only `Contents: read and write` for Git pushes; pull-request permission is added only when the agent must create/manage pull requests. Workflow permission is not granted unless a package explicitly changes workflow files.
 
+### Credentialless Sandbox Git Handoff
+
+If the GLM sandbox has no owner-controlled secret manager or native GitHub integration, this is an expected environment boundary—not permission to weaken credential handling. GLM must not request or use a token pasted into chat. Instead:
+
+1. finish the active WP on the authorized phase branch;
+2. run the complete package gate and repository secret scan;
+3. confirm the working tree is clean and record branch/base/commit IDs;
+4. create a full Git bundle outside the repository, for example:
+
+   ```text
+   git bundle create /tmp/WP-ID-phase.bundle phase/NN-name
+   git bundle verify /tmp/WP-ID-phase.bundle
+   git bundle list-heads /tmp/WP-ID-phase.bundle
+   sha256sum /tmp/WP-ID-phase.bundle
+   ```
+
+5. expose the bundle as a downloadable sandbox artifact together with its SHA-256, without embedding it or any credential in chat;
+6. in a trusted authenticated workspace, verify the bundle/hash, inspect its commits/diff, apply the WP commit onto the latest `main`, rerun the package and any newly triggered regression gates, then push the authorized phase branch;
+7. verify the remote branch commit before changing package status or starting the next WP.
+
+If downloadable artifacts are unavailable, GLM may export a binary-safe `git format-patch` artifact under the same verification rules. It must not paste large encoded Git objects or secrets into chat. Until the trusted import and remote verification finish, status is `incomplete` with reason `publication_pending`; implementation/test success alone is not remote publication.
+
 ## Supabase Development and Integration-Test Workflow
 
 The GLM sandbox must not depend on the online-demo/pilot database for ordinary implementation tests.

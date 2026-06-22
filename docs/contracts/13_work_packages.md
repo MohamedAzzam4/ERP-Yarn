@@ -43,6 +43,7 @@ The catalog defines business/dependency scope. Except for read-only WP-00-01, a 
 - exact rollback/recovery procedure appropriate to whether business data exists;
 - fixture/version and evidence destination;
 - active phase branch name, permitted remote, pull-request target and merge authority;
+- publication method: authenticated phase-branch push or DEC-059 verified credentialless bundle handoff;
 - explicit external-state authorization, if any.
 
 After implementation, changed paths must be wholly inside the allowlist. Missing/vague dependencies such as “base slice,” “affected domain,” “as applicable,” or “relevant module” make the package blocked, not discretionary. Every non-reference package that creates or changes UI has an additional mandatory dependency on **WP-01-08**, even if a package record accidentally omits it.
@@ -50,6 +51,8 @@ After implementation, changed paths must be wholly inside the allowlist. Missing
 WP-00-01 itself is read-only across the workspace: it may inspect files/commands and report in the conversation, but creates/repairs no repository, package baseline, evidence file, cloud project or deployment without separate explicit authorization.
 
 Every implementation package runs on the current `phase/NN-name` branch. GLM may push only that branch, never `main`. Package completion does not authorize merge: the phase PR remains unmergeable until every phase gate and required preview/integration check passes and the owner explicitly authorizes that phase merge.
+
+When the sandbox lacks a secure credential channel, GLM follows DEC-059 and exports a verified bundle instead of using a chat-disclosed token. The next package remains blocked until the bundle is imported into a trusted workspace, rebased/cherry-picked onto current `main` as required, retested, pushed to the phase branch, and remotely verified.
 
 ## 2. Phase 0 — Foundation and Risk Controls
 
