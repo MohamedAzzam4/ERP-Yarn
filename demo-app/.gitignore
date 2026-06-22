@@ -1,0 +1,7 @@
+dist
+node_modules
+coverage
+*.local
+.vite
+tsconfig.tsbuildinfo
+*.tsbuildinfo

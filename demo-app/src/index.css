@@ -1,0 +1,125 @@
+@import "@fontsource/tajawal/400.css";
+@import "@fontsource/tajawal/500.css";
+@import "@fontsource/tajawal/700.css";
+@import "@fontsource/alexandria/500.css";
+@import "@fontsource/alexandria/600.css";
+@import "@fontsource/alexandria/700.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Modern Industrial light palette — navy primary, teal accent, amber warning, red danger, slate neutrals */
+    --color-background: 241 245 249; /* slate-100 */
+    --color-surface: 255 255 255;
+    --color-surface-elevated: 255 255 255;
+    --color-foreground: 15 23 42; /* slate-900 */
+    --color-muted: 226 232 240; /* slate-200 */
+    --color-muted-foreground: 71 85 105; /* slate-600 */
+    --color-primary: 11 37 69; /* deep navy */
+    --color-primary-foreground: 255 255 255;
+    --color-accent: 13 148 136; /* teal-600 */
+    --color-accent-foreground: 255 255 255;
+    --color-border: 203 213 225; /* slate-300 */
+    --color-input: 203 213 225;
+    --color-ring: 11 37 69;
+    --color-overlay: 15 23 42;
+
+    --color-success: 5 122 85; /* emerald-700 */
+    --color-success-foreground: 255 255 255;
+    --color-warning: 180 83 9; /* amber-700 */
+    --color-warning-foreground: 255 255 255;
+    --color-danger: 153 27 27; /* red-800 */
+    --color-danger-foreground: 255 255 255;
+    --color-info: 1 99 159; /* blue-700 */
+    --color-info-foreground: 255 255 255;
+
+    --color-pending: 180 83 9; /* amber-700 */
+    --color-approved: 5 122 85;
+    --color-rejected: 153 27 27;
+    --color-blocked: 153 27 27;
+    --color-negative-stock: 153 27 27;
+    --color-needs-review: 180 83 9;
+
+    --color-sidebar: 11 37 69;
+    --color-sidebar-foreground: 226 232 240;
+    --color-sidebar-active: 13 148 136;
+
+    --color-chart-1: 11 37 69;
+    --color-chart-2: 13 148 136;
+    --color-chart-3: 180 83 9;
+    --color-chart-4: 1 99 159;
+    --color-chart-5: 153 27 27;
+  }
+
+  * {
+    border-color: rgb(var(--color-border));
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: rgb(var(--color-background));
+    color: rgb(var(--color-foreground));
+    font-family: "Tajawal", "Noto Sans Arabic", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  .font-heading {
+    font-family: "Alexandria", "Tajawal", "Noto Sans Arabic", system-ui, sans-serif;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--color-ring));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}
+
+@layer components {
+  .demo-banner {
+    background-color: rgb(var(--color-warning));
+    color: rgb(var(--color-warning-foreground));
+  }
+
+  .ltr-isolate {
+    direction: ltr;
+    unicode-bidi: isolate;
+    display: inline-block;
+  }
+
+  .touch-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .numeric-cell {
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+}
