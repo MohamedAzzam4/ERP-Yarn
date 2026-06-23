@@ -1,0 +1,419 @@
+# Deterministic Static UI/UX Prototype Plan
+
+## Summary
+
+Create a separate, stricter UI/UX demo plan for a static ERP prototype. This is not the real ERP implementation. It is a visual-only prototype with fake data, no backend, no database, no auth logic, and no operational actions.
+
+The new plan should replace vague screen generation with deterministic instructions: exact screen purpose, allowed KPIs, forbidden wording, required sections, required tables/cards, role visibility, visual states, and acceptance checks.
+
+The most important correction: the ERP must look like a yarn trading and outsourced manufacturing system, not a factory-floor manufacturing system. Avoid generic manufacturing metrics such as “production efficiency” or “active machine orders” unless they are explicitly reframed as outsourced-factory tracking.
+
+## Key UI/UX Decisions
+
+- Global shell must have a collapsible RTL side menu.
+  - Expanded state: icons + Arabic labels.
+  - Collapsed state: icons only.
+  - Toggle button always visible.
+  - Worker mode should not show a complex side menu; it should show task cards.
+
+- Owner dashboard must stay simple.
+  - Show high-level KPI cards only.
+  - Show total required reviews as one clear red/amber card.
+  - Show total warnings as one clear alert card.
+  - Include a few useful charts.
+  - Include latest activity / latest operation timeline.
+  - Do not overload it with detailed review queues.
+
+- Detailed reviews should live in a separate review page.
+  - Use the existing `APPR-01-REVIEW-QUEUE` screen as the “Review Center”.
+  - Dashboard cards can link visually to it.
+  - This page should show counts by review type, filters, a review table, and a review/audit log.
+  - My recommendation: do not color whole departments differently at first. Use neutral layout with category chips/icons and status colors. Full department color-coding can become visually noisy.
+
+- Forbidden generic manufacturing concepts:
+  - Do not use “كفاءة الإنتاج” as an owner KPI.
+  - Do not use “عدد الأوامر النشطة” if it implies internal factory production control.
+  - Do not show machine utilization, shift efficiency, line productivity, or labor productivity.
+
+- Use outsourced-manufacturing wording instead:
+  - خام لدى المصانع الخارجية
+  - تشغيل لدى مصنع خارجي
+  - أوامر تشغيل مفتوحة
+  - كميات خام مصروفة للتشغيل
+  - كميات منتج مستلمة
+  - هالك / مرتجع من التشغيل
+  - مستحقات مصانع خارجية
+  - عمليات تحتاج مراجعة
+  - تحذيرات مخزون / جودة / ترحيل تاريخي
+
+## Phased Static Prototype Implementation
+
+### Phase 0 — Freeze visual direction and rules
+
+Define the approved visual direction before implementation starts.
+
+Must freeze:
+
+- color palette;
+- typography;
+- spacing;
+- border radius;
+- shadows;
+- card style;
+- table style;
+- chart style;
+- sidebar style;
+- button style;
+- status chip style;
+- Arabic RTL rules;
+- LTR isolation rules.
+
+Visual test at end:
+
+- confirm the prototype uses only the approved direction;
+- confirm no extra visual theme appears;
+- confirm Arabic RTL and Western numerals are consistent.
+
+Requirement test at end:
+
+- confirm no backend, database, API, auth provider, Supabase, Firebase, or secrets were added.
+
+### Phase 1 — Build app shell and navigation
+
+Implement the static shell.
+
+Required:
+
+- Arabic RTL root.
+- Synthetic-data banner on every screen.
+- Collapsible side menu with toggle.
+- Header with page title, fake user, fake environment label.
+- Screen index page.
+- Role presentation modes:
+  - Worker Task Mode.
+  - Accountant/Management Console.
+  - Owner Dashboard mode.
+
+Visual test at end:
+
+- expanded/collapsed sidebar screenshots;
+- 1440px management layout;
+- 390px worker layout.
+
+Requirement test at end:
+
+- all navigation links point to static screens only;
+- no operational button performs a real mutation.
+
+### Phase 2 — Dashboard and Review Center
+
+Implement:
+
+- `DASH-01-OWNER`
+- `DASH-02-ACCOUNTANT`
+- `APPR-01-REVIEW-QUEUE`
+
+Owner dashboard requirements:
+
+- KPI cards:
+  - إجمالي المخزون المتاح
+  - خام لدى المصانع الخارجية
+  - مبيعات هذا الشهر
+  - عمليات تحتاج مراجعة
+  - تحذيرات مهمة
+  - شكاوى مفتوحة
+  - ربحية تقريبية
+- Charts:
+  - stock by location/factory;
+  - sales trend;
+  - review/warning trend;
+  - external factory stock distribution.
+- Latest activity timeline:
+  - استلام خام
+  - صرف خام لمصنع خارجي
+  - استلام منتج
+  - اعتماد بيع
+  - تسجيل شكوى
+
+Forbidden on dashboard:
+
+- كفاءة الإنتاج
+- تشغيل الماكينات
+- إنتاجية العمال
+- أوامر إنتاج داخلية as internal factory control
+
+Review Center requirements:
+
+- summary cards by review type:
+  - مبيعات تحتاج اعتماد
+  - خام مستلم بدون سعر
+  - تشغيل يحتاج مراجعة تكلفة
+  - مرتجعات تحتاج قرار
+  - تحذيرات ترحيل تاريخي
+- filter bar.
+- review table.
+- persistent detail drawer.
+- audit/review log table showing:
+  - من أدخل البيانات
+  - وقت الإدخال
+  - القسم
+  - نوع العملية
+  - الحالة
+  - آخر إجراء مراجعة
+
+Visual test at end:
+
+- dashboard must feel quick and simple;
+- review page may be denser but still readable;
+- warning hierarchy must be clear.
+
+Requirement test at end:
+
+- forbidden manufacturing terms are absent;
+- review detail is not mixed into the dashboard.
+
+### Phase 3 — Worker task screens
+
+Implement warehouse, production, and quality worker screens.
+
+Worker rules:
+
+- task-first, not module-first;
+- large buttons;
+- minimal fields;
+- no prices;
+- no balances;
+- no profitability;
+- no accounting terms;
+- no factory payable information.
+
+Required worker screens:
+
+- raw material receipt;
+- stock transfer;
+- customer return receipt;
+- worker recent activity;
+- material issue to external factory;
+- single yarn receipt;
+- twisted yarn receipt;
+- WIP/residual return;
+- quality test entry;
+- quality facts / hold-release facts;
+- complaint investigation facts.
+
+Visual test at end:
+
+- 390px layout works;
+- touch targets are at least 44px;
+- worker screens do not feel like accounting screens.
+
+Requirement test at end:
+
+- scan worker screens for financial terms and remove them.
+
+### Phase 4 — Management operation screens
+
+Implement inventory, WIP, sales, payments, party balances, direct costs, quality/returns, and traceability screens.
+
+Required behavior:
+
+- static tables;
+- static filters;
+- static detail drawers;
+- static status chips;
+- disabled approve/reject/save buttons or clearly labeled non-operational controls.
+
+Important outsourced-manufacturing framing:
+
+- WIP means material issued to external factories and pending output/return.
+- Factory balances mean external-factory financial/quantity settlement view for management only.
+- Production review is about issued input, received output, waste, return, rate/cost review, and payable presentation.
+
+Visual test at end:
+
+- tables remain readable;
+- management screens have consistent density;
+- drawers/dialogs match the approved visual system.
+
+Requirement test at end:
+
+- no direct balance editing;
+- no fake posting success;
+- no business calculation claims.
+
+### Phase 5 — Migration, reports, backup, admin
+
+Implement:
+
+- historical migration screens;
+- report hub/result;
+- backup/restore status screen;
+- users/roles;
+- settings.
+
+Rules:
+
+- historical imported records must look locked/read-only;
+- migration must clearly show staging, validation, approval, and lock states;
+- exports must not be presented as backups;
+- backup screen must show restore-test evidence/status but no destructive action;
+- settings must not expose unrestricted formula/rule builders.
+
+Visual test at end:
+
+- warning/read-only/locked states are visually obvious;
+- admin screens look controlled, not open-ended.
+
+Requirement test at end:
+
+- migration output is never shown as directly entering operational tables;
+- backup/export language is correct.
+
+### Phase 6 — Full prototype verification
+
+Run a full review after all phases.
+
+Must verify:
+
+- every required screen exists;
+- sidebar toggle works visually;
+- worker mode is simple;
+- owner dashboard is not overloaded;
+- review center contains the detailed review work;
+- no generic internal-manufacturing KPIs exist;
+- Arabic RTL is correct;
+- LTR values are isolated;
+- no real backend/cloud/secrets exist;
+- all fake operational actions are disabled or clearly static;
+- screenshots exist for key desktop/tablet/mobile views.
+
+## Universal AI Implementation Prompt
+
+Use this prompt with any coding/design AI, not only Google Stitch:
+
+```text
+You are building a static Arabic-first UI/UX prototype for a specialized Yarn Trading & Outsourced Manufacturing ERP.
+
+This is NOT the real ERP implementation.
+
+Do not add backend code, API routes, database access, authentication logic, Supabase, Firebase, cloud SDKs, secrets, real mutations, real client data, or business calculations.
+
+The goal is to create a deterministic visual prototype that demonstrates the full ERP UI with synthetic data only.
+
+Use the approved visual direction that I provide below. Do not invent a new style.
+
+APPROVED VISUAL DIRECTION:
+[PASTE APPROVED COLORS, TYPOGRAPHY, SPACING, CARD STYLE, TABLE STYLE, SIDEBAR STYLE, CHART STYLE, AND REFERENCE NOTES HERE]
+
+GLOBAL RULES:
+- Arabic-first RTL.
+- Use Western numerals: 123.
+- Dates display as DD/MM/YYYY.
+- Locally isolate LTR values such as codes, batch IDs, dates, numbers, money, emails, phones, and URLs.
+- Every shell must show: "نموذج واجهة فقط — بيانات تجريبية غير حقيقية".
+- Use professional SVG icons only. No emoji icons.
+- All operational controls must be disabled or clearly marked as non-operational.
+- Worker users must never see prices, balances, direct costs, profitability, accounting terms, or factory payables.
+- Historical imported records must appear locked/read-only.
+- Approximate profitability must be labeled "ربحية تقريبية".
+- Exports must not be presented as backups.
+- Do not invent business rules or operational logic.
+
+BUSINESS FRAMING:
+This ERP is for yarn trading and outsourced manufacturing.
+External factories are inventory/WIP locations and service providers.
+Do not design it like an internal machine/factory-floor system.
+
+FORBIDDEN TERMS AND IDEAS:
+- "كفاءة الإنتاج" as a dashboard KPI.
+- machine utilization.
+- worker productivity.
+- shift efficiency.
+- internal production line efficiency.
+- active machine orders.
+- any metric that assumes the client manufactures everything internally.
+
+USE THESE CONCEPTS INSTEAD:
+- خام لدى المصانع الخارجية
+- تشغيل لدى مصنع خارجي
+- أوامر تشغيل مفتوحة
+- كميات خام مصروفة للتشغيل
+- كميات منتج مستلمة
+- هالك / مرتجع من التشغيل
+- مستحقات مصانع خارجية
+- عمليات تحتاج مراجعة
+- تحذيرات مخزون / جودة / ترحيل تاريخي
+
+PHASED IMPLEMENTATION:
+Implement the prototype in phases. At the end of each phase, perform:
+1. visual review;
+2. requirement coverage review;
+3. forbidden-term review;
+4. route/screen completeness review.
+
+PHASE 1 — Shell and navigation:
+Create Arabic RTL shell, collapsible side menu, header, synthetic-data banner, screen index, worker mode, and management console mode.
+The side menu must always have a visible toggle to expand/collapse.
+
+PHASE 2 — Dashboard and Review Center:
+Create owner dashboard, accountant dashboard, and review center.
+
+Owner dashboard must be simple and insight-first.
+It must include:
+- KPI cards for stock, external factory stock, monthly sales, required reviews, important warnings, open complaints, approximate profitability.
+- A total required reviews card.
+- A total warnings card.
+- Charts for stock by location/factory, sales trend, review/warning trend, and external factory stock distribution.
+- Latest activity timeline.
+
+Do not place all review details on the dashboard.
+
+Create a separate Review Center page with:
+- counts by review category;
+- filters;
+- review table;
+- detail drawer;
+- review/audit log showing who entered data, when, department, operation type, status, and last review action.
+
+Use neutral page colors. Use category/status chips instead of coloring whole departments differently.
+
+PHASE 3 — Worker screens:
+Create warehouse, production, and quality task screens.
+Worker screens must be simple, large, mobile/tablet friendly, and free of financial/accounting complexity.
+
+PHASE 4 — Management operation screens:
+Create inventory, WIP, sales, payments, party statements, direct cost review, quality/returns, and traceability screens.
+Use static tables, filters, drawers, status chips, timelines, and disabled actions.
+
+PHASE 5 — Migration, reports, backup, admin:
+Create historical migration, reports, backup/restore status, users/roles, and settings screens.
+Migration must be staging/validation/approval/locked oriented.
+Backup screen must not imply that exports are backups.
+
+PHASE 6 — Final verification:
+Confirm all required screens exist.
+Confirm sidebar toggle exists.
+Confirm dashboard is simple.
+Confirm detailed reviews are in the Review Center.
+Confirm no forbidden internal-manufacturing KPIs exist.
+Confirm worker screens contain no financial/accounting complexity.
+Confirm Arabic RTL and LTR isolation.
+Confirm no backend/cloud/secrets were added.
+Confirm all actions are static/non-operational.
+
+OUTPUT REQUIRED:
+- list of completed screens/routes;
+- screenshots or visual evidence for key screens;
+- visual consistency notes;
+- requirement checklist;
+- forbidden-term scan result;
+- known gaps;
+- confirmation that this is only a static UI/UX prototype, not the ERP MVP.
+```
+
+## Assumptions
+
+- The existing 46-screen list can remain, but `APPR-01-REVIEW-QUEUE` should be treated as the detailed Review Center.
+- No new backend or database work is needed.
+- The dashboard should prioritize fast owner insight, not operational detail.
+- Department-based colors should be avoided for now except as small chips/icons, because full-page department coloring can make the interface noisy.
