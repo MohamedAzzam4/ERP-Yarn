@@ -284,11 +284,42 @@ Rules:
 - After merge, verify the `main` online-demo deployment and run its non-destructive smoke checks. Provider terminology such as Vercel “Production” does not make the ERP business-production-ready.
 - Branch deletion occurs only after the merged commit and online-demo smoke evidence are confirmed.
 
-Repository visibility does not grant write authority. GitHub credentials are supplied through the sandbox/host secret or credential manager, never through repository files, prompts intended for persistence, Git remote URLs containing credentials, logs, or completion evidence. A repository-scoped fine-grained token needs only `Contents: read and write` for Git pushes; pull-request permission is added only when the agent must create/manage pull requests. Workflow permission is not granted unless a package explicitly changes workflow files.
+Repository visibility does not grant write authority. GitHub credentials should be supplied through the sandbox/host secret or credential manager when that channel exists. If no owner-controlled secret channel exists, DEC-060 permits the owner to provide a short-lived, repository-scoped token in the active chat for the specific development operation being requested. A repository-scoped fine-grained token needs only `Contents: read and write` for Git pushes; pull-request permission is added only when the agent must create/manage pull requests. Workflow permission is not granted unless a package explicitly changes workflow files.
+
+Chat-provided GitHub credentials under DEC-060 are temporary operational inputs, not repository content. They must not be stored in tracked or untracked files, committed, written into `.env`, saved in Git remote URLs, echoed in commands or reports, captured in screenshots/test evidence, or reused beyond the authorized push/PR operation. The owner should revoke/rotate the token after use.
+
+### Owner-Authorized Temporary Credential Exception
+
+DEC-060 exists only because some sandboxes expose no secret manager, no owner-controlled environment injection, and no practical artifact publication path. It is a development/test convenience exception, not the default security model.
+
+It may be used only when all conditions are true:
+
+1. the owner explicitly authorizes the exact operation in the active chat;
+2. the credential is short-lived and scoped to the minimum provider/project/repository permissions;
+3. the target is development, preview, demo, or synthetic-data testing only;
+4. the current work package or owner message authorizes the external action;
+5. no real client data, pilot database, production database, production restore, production deployment, or paid-plan mutation is involved;
+6. the agent can use the credential without persisting or echoing it.
+
+Allowed temporary uses:
+
+- GitHub: push the authorized phase branch, create/update the authorized PR when explicitly requested, or verify the remote commit.
+- Supabase: connect only to the separately authorized development/test project, run package-authorized health checks/integration tests/migrations/seeds against synthetic/resettable data, or configure non-production test variables.
+- Vercel: link/configure/deploy only preview/demo environments or run preview verification when explicitly authorized.
+
+Prohibited uses even under DEC-060:
+
+- writing credentials to repository files, `.env`, `.env.local`, logs, screenshots, remote URLs, package scripts, test fixtures, or completion evidence;
+- using chat credentials for pilot/production credentials, real client data, online-demo-to-production promotion, production restore, or backup credentials;
+- using Supabase secret keys or database URLs in browser/client code;
+- using Vercel production deployment or production environment variables unless a separate explicit owner authorization names that production action;
+- broad provider administration outside the named task.
+
+If a credential appears outside the DEC-060 path, or is persisted/echoed accidentally, treat it as compromised: stop using it, report where it may have appeared, and ask the owner to revoke/rotate it.
 
 ### Credentialless Sandbox Git Handoff
 
-If the GLM sandbox has no owner-controlled secret manager or native GitHub integration, this is an expected environment boundary—not permission to weaken credential handling. GLM must not request or use a token pasted into chat. Instead:
+If the GLM sandbox has no owner-controlled secret manager or native GitHub integration and the owner does not authorize DEC-060 temporary chat credentials, use credentialless artifact handoff:
 
 1. finish the active WP on the authorized phase branch;
 2. run the complete package gate and repository secret scan;

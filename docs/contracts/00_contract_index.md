@@ -35,7 +35,7 @@ Contracts may clarify implementation detail but may not alter business rules, ex
 
 ### `02_design_system_and_ux_contract.md`
 
-**Purpose:** Freeze Arabic-first RTL behavior, the Modern Industrial visual direction, role-based UX modes, design tokens, typography, responsive behavior, forms, tables, dashboards, motion, accessibility, visual QA, and the three-screen approval gate.
+**Purpose:** Freeze Arabic-first RTL behavior, the Calm Enterprise visual direction, role-based UX modes, design tokens, typography, responsive behavior, forms, tables, dashboards, motion, accessibility, visual QA, and the three-screen approval gate.
 
 **Why it exists:** Client confidence and worker adoption depend on a coherent, simple, attractive interface. GLM must not generate unrelated screens, leak financial complexity into worker flows, or assume a component library automatically solves RTL and accessibility.
 

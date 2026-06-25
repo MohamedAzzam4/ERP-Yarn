@@ -50,7 +50,7 @@ Before starting a work package, GLM must confirm:
 - every dependency is a completed package ID/evidence record or an explicitly resolved owner decision—not “base slice,” “affected domain,” “as applicable,” or another undefined phrase;
 - any cloud project/deployment/paid-plan/real-data action has separate explicit authorization.
 - the active phase branch, remote push scope, pull-request target, and merge authority are recorded;
-- the publication path is recorded: secure authenticated push or DEC-059 verified bundle handoff through a trusted workspace;
+- the publication path is recorded: secure authenticated push, DEC-060 owner-authorized temporary credential push, or DEC-059 verified bundle handoff through a trusted workspace;
 - required local Supabase or authorized hosted-development test access exists for packages that need database/Auth/Storage integration.
 
 If any required item is missing, GLM must not fill the gap with an assumption.
@@ -170,7 +170,7 @@ A package is complete only when:
 
 Package completion permits the next dependency-ready package on the same active phase branch. It does not permit a merge. The phase pull request may merge only after all phase checks and relevant Vercel Preview/Supabase development tests pass and the owner explicitly authorizes that merge.
 
-If the package was produced in a credentialless sandbox, local completion does not permit the next package. DEC-059 bundle import, update onto current `main`, required retest, remote phase-branch push, and remote commit verification must complete first.
+If the package was produced in a credentialless sandbox without DEC-060 authorization, local completion does not permit the next package. DEC-059 bundle import, update onto current `main`, required retest, remote phase-branch push, and remote commit verification must complete first. If DEC-060 is explicitly authorized and used, the next package remains blocked until the authorized remote phase-branch push and remote commit verification complete.
 
 If a test cannot run, GLM must record the exact command, environment limitation, error, risk, and required follow-up. The package remains incomplete unless the approved package contract explicitly permits a different gate.
 

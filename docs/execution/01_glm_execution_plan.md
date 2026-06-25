@@ -18,7 +18,7 @@ GLM must:
 - never push implementation directly to `main` or merge a phase PR without passing required checks and explicit owner authorization for that merge;
 - use disposable local Supabase or a separately authorized hosted development/test project for integration testing, never online-demo/pilot/production data.
 - follow the cumulative DEC-058 test cadence: focused tests during implementation, full tests after each WP, and integrated phase tests before merge; never defer all testing to the end.
-- use DEC-059 verified Git bundle handoff when the sandbox has no secure credential channel; never substitute a chat-pasted token, and do not start the next WP until trusted import/retest/push verification completes.
+- use a normal secret channel when available; when unavailable, use DEC-060 owner-authorized temporary chat credentials for the exact development/test operation or DEC-059 verified Git bundle handoff. Do not start the next WP until the authorized remote push is verified or trusted import/retest/push verification completes.
 
 Authority is Decision Log owner decisions → approved contracts → v4 where not superseded → remaining authorized context. This execution plan can narrow scope/order only.
 

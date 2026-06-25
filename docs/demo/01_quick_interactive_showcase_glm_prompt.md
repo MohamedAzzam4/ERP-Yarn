@@ -22,7 +22,7 @@ Perform the following:
 4. Do not modify the real application scaffold, migrations, contract rules, or execution work packages.
 5. Documentation corrections needed specifically for this showcase may be made only under `/docs/demo`.
 6. Do not merge or push directly to `main`.
-7. If push credentials are unavailable, create a credentialless Git bundle and provide exact import instructions; do not request or persist credentials in chat or files.
+7. If push credentials are unavailable and the owner does not explicitly authorize DEC-060 temporary chat credentials, create a credentialless Git bundle and provide exact import instructions; do not persist credentials in chat-derived files, repository files, remotes, logs, or evidence.
 
 This one-run showcase exception does not change the one-work-package-at-a-time rule for the real ERP implementation.
 
@@ -85,7 +85,7 @@ Requirements:
 - Simulate short loading states and clear success/error feedback.
 - Never call a real backend or external business API.
 - Never use real client, supplier, factory, financial, or historical data.
-- Never request secrets.
+- Never request application, database, Supabase, Vercel production, or real-data secrets. A GitHub push credential is allowed only under DEC-060 when the owner explicitly authorizes a short-lived scoped token for publication.
 - Never imply that localStorage is a database, audit log, or backup.
 - Mark simulated backup, migration, approval, accounting, and profitability information visibly as demo-only.
 - Do not implement exports that could be mistaken for backups.
@@ -97,7 +97,7 @@ Follow `/docs/contracts/02_design_system_and_ux_contract.md` rather than inventi
 
 Mandatory presentation rules:
 
-- light-only Modern Industrial visual language;
+- light-only Calm Enterprise visual language;
 - navy/deep blue primary, teal or emerald accent, amber warning, red danger, slate neutrals, pale gray background, and white cards;
 - Tajawal for body text, forms, tables, and worker UI;
 - Alexandria for headings, navigation, dashboard titles, and actions;
