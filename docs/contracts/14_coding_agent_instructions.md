@@ -103,7 +103,7 @@ Do not start code while a blocking contract/decision/dependency is absent.
 
 - Read Design System and Frontend Screen contracts before any UI change.
 - Use semantic Tailwind utilities mapped to centralized design tokens; no literal colors in components.
-- MVP is light-only, Modern Industrial, Tajawal body/data and Alexandria headings/actions.
+- MVP is light-only Calm Enterprise; use the approved Arabic typography from the Design System contract.
 - Root is `<html lang="ar" dir="rtl">`.
 - Do not use `dir="auto"` for full Arabic sentences or critical messages.
 - Isolate codes, dates, quantities, money, numeric cells, emails, phones, URLs and identifiers locally LTR.
@@ -142,6 +142,19 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Never commit secrets, credentials, source business files, dumps or signed URLs.
 - Keep generated artifacts, caches and evidence in approved locations.
 - Use non-destructive diagnostics first and explain any operation requiring external authority.
+
+### Code Style, Maintainability, and Component Structure
+
+- Follow the existing project architecture, naming conventions, import style, file organization, component patterns, and test style. If no convention exists yet, establish the simplest consistent pattern allowed by the architecture/contracts and use it consistently within the package.
+- Keep functions small, focused, and easy to read. Prefer roughly 10–40 lines when practical. Avoid functions above roughly 60–80 lines unless there is a clear reason, and state that reason when material.
+- Do not split code into tiny meaningless helpers merely to reduce line count. Extract helpers only when they improve naming, reuse, testing, or separation of concerns.
+- Prefer one main exported UI component per component file. Reusable, stateful, or large components must have their own files. Tiny private subcomponents may stay in the same file when used only there.
+- Keep React components presentational/orchestration-focused. Do not place authoritative inventory, accounting, approval, costing, permission, migration, backup, or profitability rules inside components.
+- Use existing shared primitives, hooks, helpers, and services before adding new ones. Do not add a new dependency or a second UI library when the approved stack already solves the problem.
+- Avoid `any`, broad casts, duplicated DTOs, and local shadow types for contracted data. Use or extend the approved types at the boundary authorized by the work package.
+- Comments should explain non-obvious why, risk, or contract linkage. Avoid comments that merely repeat code. Vague TODOs are prohibited; unresolved behavior must use **Unresolved / requires owner decision** with the controlling context.
+- Do not refactor, rename, move, reformat, or restyle unrelated files to satisfy personal preference or make a patch look cleaner.
+- Preserve existing tests and add or update behavior tests for changed behavior. Do not update snapshots or expected values merely to match unexplained output.
 
 ## 11. Required Tests
 

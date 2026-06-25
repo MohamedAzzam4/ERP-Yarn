@@ -38,20 +38,20 @@ All exact installed versions must be recorded in the repository lockfile. Contex
 
 ## Product Experience Goals
 
-The ERP must feel:
+The owner-approved visual baseline is **Calm Enterprise**. The ERP must feel:
 
 ```text
-modern industrial
-structured
-geometric
-operational
 professional
+calm
+trustworthy
+structured
 clear
 fast
-factory/workflow oriented
+operational
+outsourced-manufacturing oriented
 ```
 
-It must not feel like a generic accounting template, a decorative consumer application, or an AI-generated dashboard collage.
+It must not feel like a generic accounting template, a decorative consumer application, an internal machine/factory-floor control system, or an AI-generated dashboard collage.
 
 The quality of the interface comes primarily from hierarchy, typography, spacing, consistent states, accurate content, and low cognitive load—not visual effects.
 
@@ -73,7 +73,20 @@ The MVP is **light-theme only**. Dark mode is deferred.
 
 The theme is centrally configurable through semantic CSS variables and Tailwind v4 theme mappings. There is no end-user theme editor in MVP.
 
-Initial color values are provisional until the three reference screens pass owner visual approval. The token structure and semantic use are binding even while values are calibrated.
+Initial color values are based on the owner-selected Calm Enterprise direction and remain subject to final calibration through the three reference screens. The token structure and semantic use are binding even while values are calibrated.
+
+Calm Enterprise baseline palette:
+
+```text
+primary cobalt: #2457C5
+slate neutral: #52657A
+mint/teal accent: #2A9D8F
+background: #F4F7FB
+surface/card: #FFFFFF
+main text: #1E293B
+warning amber: #C47A12
+danger red: #C2414A
+```
 
 Changing the approved palette later must require edits only in the central theme layer, not component-by-component color replacement.
 
@@ -308,6 +321,8 @@ Worker Task Mode requires:
 - minimal navigation;
 - minimum required operational fields;
 - clear defaults;
+- predefined choices for routine fields, with a safe "other / not listed" path when the required option is missing;
+- missing-option entries must be saved as review-needed operational text/notes and must not silently create official master data;
 - clear save/draft/review actions;
 - plain Arabic validation and recovery guidance;
 - no prices, balances, payables, receivables, profitability, settlement, allocation, or accounting terminology;
@@ -369,6 +384,8 @@ Accountant emphasis includes payments, balances, cost review, settlements, missi
 - current draft/review status visible;
 - recent relevant operations only when useful.
 
+"My recent activity" must use stacked expandable activity strips/cards where details can be opened inline. This is a multi-open accordion pattern: opening one activity must not automatically close previously opened activities.
+
 ### Management Navigation
 
 - consistent sidebar using approved Arabic terminology;
@@ -377,6 +394,17 @@ Accountant emphasis includes payments, balances, cost review, settlements, missi
 - approval counts and critical alert counts may appear as restrained badges;
 - permission-hidden destinations must not render or be discoverable through client navigation;
 - global search is added only when its data scope and permission filtering are contracted.
+
+The Management Console sidebar must support two separate collapse behaviors:
+
+- whole-sidebar collapse/expand through an always-visible toggle;
+- independent expand/collapse for grouped navigation categories.
+
+Navigation categories should be stable, permission-filtered, and organized around business areas such as dashboard, inventory, outsourced production/WIP, sales, quality/returns, accounts/reviews, reports, and administration.
+
+Header utilities may include permission-filtered quick search, notifications, and manual refresh. Quick search may search only authorized entities and references such as batch, lot, document, sale, customer, supplier, factory, complaint, migration batch, and traceability references. Notifications summarize new review items, warnings, complaints, corrections, migration warnings, and backup/restore-test warnings without leaking unauthorized detail. Manual refresh is the MVP alternative to real-time updates and must expose last-refreshed or stale-data feedback.
+
+Global search, notifications, refresh, and drill-down links are navigation/read affordances only. They must never become client-side authorization shortcuts or operational commands.
 
 ## Forms Contract
 
@@ -432,16 +460,36 @@ Dashboards communicate decisions and exceptions, not decoration.
 
 ### Owner Dashboard
 
-May include:
+The owner dashboard is an insight cockpit, not the main work queue. It must stay simple and route users to detailed screens instead of embedding all review details.
+
+May include high-level KPI cards for:
 
 - total stock;
 - stock at external factories;
-- pending approvals;
-- negative-stock alerts;
+- current-month sales;
+- total operations needing review;
+- total important warnings;
+- negative-stock or stock-risk alerts;
 - open complaints;
 - approximate profitability with its label/profile state;
 - customer and factory balance summaries;
 - recent important operations.
+
+Dashboard KPI cards are navigational. A card click opens the relevant permission-safe detail screen, preferably with the relevant filter already selected. Examples:
+
+- total available stock -> inventory balances;
+- raw material at external factories -> inventory balances filtered to external-factory locations;
+- current-month sales -> sales list filtered to the current month;
+- operations needing review -> Approval/Review Center;
+- important warnings -> Review Center or warning-filtered operational screen;
+- open complaints -> quality and complaints;
+- approximate profitability -> report/profitability summary;
+- external-factory payables/balances -> party statements filtered to factories;
+- open outsourced-production orders -> WIP overview.
+
+The dashboard must not use internal factory-floor KPIs such as machine utilization, shift efficiency, worker productivity, production-line efficiency, or unlabeled "production efficiency". Outsourced-manufacturing wording must be used instead: external-factory stock, open outsourced-production orders, issued raw material, received yarn, waste/returned material, factory payables, and review warnings.
+
+Useful dashboard charts may include stock by location/factory, external-factory stock distribution, monthly sales trend, review/warning trend, and complaints by status. Charts should increase scanability and must not replace the separate Review Center.
 
 ### Accountant Dashboard
 
@@ -461,6 +509,8 @@ May include:
 - use responsive containers with a defined parent height/aspect;
 - enable the Recharts accessibility layer where supported;
 - provide visible labels, units, legend, and tooltip content in Arabic;
+- provide hover/focus feedback, tooltips, and active segment/bar highlighting where useful;
+- use subtle chart entry animation for management dashboards only, such as bars growing into place or donut/pie segments drawing smoothly;
 - provide numeric summary or table access to the underlying important values;
 - do not rely on color alone to distinguish critical series;
 - disable or reduce animation under `prefers-reduced-motion`;
@@ -691,6 +741,7 @@ The MVP design system does not include:
 - full dashboard customization;
 - drag-and-drop layout builders;
 - user-defined table schemas;
+- AI summarization, chat, or Q&A experiences;
 - a second non-Arabic primary UI;
 - flashy page transitions;
 - a separate visual system for Owner and Accountant;
@@ -708,6 +759,11 @@ The design system is ready for broad frontend implementation only when:
 - dates, timezone conversion, Western numerals, and decimal formatting follow this contract;
 - forms and tables demonstrate accessible error/loading/empty states;
 - role-based information exposure matches the permission rules;
+- worker "other / not listed" paths route to review without creating official master data;
+- dashboard KPI cards provide authorized navigation to detail screens/filters without performing operations;
+- Management Console navigation demonstrates whole-sidebar collapse and independent category collapse;
+- quick search, notifications, and manual refresh respect permission filtering and stale-data feedback;
+- dashboards avoid generic internal-factory KPIs and use outsourced-manufacturing terminology;
 - keyboard, focus, reduced-motion, contrast, and 200% zoom checks pass;
 - no screen depends on literal colors or color-only status;
 - visual polish does not weaken operational clarity or business safeguards.

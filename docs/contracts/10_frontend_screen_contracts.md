@@ -19,7 +19,7 @@ These rules apply to every screen below unless a stricter screen rule is stated:
 - Root document: `<html lang="ar" dir="rtl">`.
 - Arabic sentences and critical messages remain RTL; do not use `dir="auto"` for them.
 - Isolate codes, batch/lot/document identifiers, emails, phone numbers, URLs, dates, quantities, money, numeric cells, and technical identifiers with the shared LTR-isolation component/equivalent `<bdi dir="ltr">`.
-- Light-only Modern Industrial design; Tajawal for body/data and Alexandria for headings/navigation/actions.
+- Light-only Calm Enterprise design; Tajawal or another approved modern Arabic sans for body/data and Alexandria or the approved heading/action font for headings/navigation/actions.
 - Western numerals; display date `DD/MM/YYYY`; internal date handling remains ISO-compatible and date-only values cannot timezone-shift.
 - Semantic design tokens/Tailwind utilities only; no literal component colors.
 - Every screen defines initial/empty, loading, success, validation, permission-denied, not-found, state/idempotency conflict, server, and network states as applicable.
@@ -29,6 +29,7 @@ These rules apply to every screen below unless a stricter screen rule is stated:
 - Management Console is desktop-first/tablet-supported; phone supports practical summaries/approvals, with an explicit larger-screen message for unsupported dense work.
 - Owner and Accountant share shell, navigation logic, table/filter/detail/drawer/card patterns. Permissions, data, actions, and default widgets differ.
 - Worker Task Mode is task-first, not a reduced management console, and never receives price, cost, rate, payable, receivable, balance, settlement, allocation, payer, profitability, or financial audit data.
+- Worker choice controls use predefined options for routine fields, but must provide a safe "other / not listed" path when the required option is missing; that path captures temporary operational text/notes and routes the record for review instead of creating official master data.
 - Client forms do not submit calculated stock/account/cost/profitability effects or authoritative tenant/role/actor data.
 - Every management screen contract/package must declare phone support as exactly `full`, `summary_only`, `approval_only`, or `unsupported_requires_larger_screen`; “where practical” is not implementation discretion and is blocked by PCD-UX-003 until declared.
 - Worker row visibility/write scope follows PCD-SEC-001. Until resolved, a frontend must not imply tenant-wide worker access.
@@ -113,19 +114,19 @@ PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD
 - **Purpose:** Provide one coherent management information architecture for Owner and Accountant.
 - **Target roles:** Owner, Accountant.
 - **UX mode:** Management Console.
-- **Visible fields:** Permission-filtered sidebar, breadcrumb/context, alerts/approval counts, account menu, current tenant label.
+- **Visible fields:** Permission-filtered grouped RTL sidebar, always-visible sidebar collapse toggle, independently collapsible sidebar categories, breadcrumb/context, quick search, notifications, manual refresh, alerts/approval counts, account menu, current tenant label, last-refreshed/stale-data indicator.
 - **Hidden fields:** Destinations/actions lacking backend permission; secrets and provider internals.
-- **Allowed actions:** Navigate authorized management areas; open alerts/approvals/search only where contracted.
+- **Allowed actions:** Navigate authorized management areas; collapse/expand sidebar; collapse/expand sidebar categories; open permission-filtered alerts, approvals, notifications, and quick-search results only where contracted; manually refresh authorized reads.
 - **Forbidden actions:** Client permission escalation; generic table/module access; assuming Owner and Accountant are equivalent.
-- **API dependencies:** Session/user/permission summary and safe queue counts.
+- **API dependencies:** Session/user/permission summary, safe queue counts, contracted permission-filtered quick search/notification/read-refresh endpoints.
 - **Validation:** Server protects every destination; stale permission refresh results in safe denial.
 - **RTL/LTR:** RTL sidebar/breadcrumb/drawers; identifiers isolated LTR; directional icons reviewed for RTL meaning.
 - **Redaction/simplification:** Accountant does not receive Owner-only user/security controls; shared visual language remains.
 - **Accessibility/responsive:** Keyboard sidebar, skip navigation, landmarks, tablet support; phone only practical summaries/approvals.
-- **States:** Shell loading, no permitted destination, permission revoked, offline, service error.
+- **States:** Shell loading, no permitted destination, permission revoked, offline, service error, stale data, refresh in progress, no search results, notification read/unread.
 - **Acceptance:** Direct URL and navigation produce the same backend-enforced result.
 - **Common failures:** Separate visual systems, full permission payload trusted client-side, hidden links still callable.
-- **AI coding note:** Do not build global search until its permission-filtered contract exists.
+- **AI coding note:** Do not build quick search, notification drill-down, or refresh behavior as client-only authorization shortcuts. If a current work package lacks the contracted permission-filtered backend, show a disabled/static visual placeholder or mark **Unresolved / requires owner decision**.
 
 ## 6. Dashboards
 
@@ -134,18 +135,18 @@ PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD
 - **Purpose:** Present high-level decisions, exceptions, and drill-downs without replacing source reports.
 - **Target roles:** Owner.
 - **UX mode:** Management Console.
-- **Visible fields:** Total stock, factory-held stock, approvals, negative-stock alerts, balances summary, approximate profitability label/profile/missing flags, complaints, quality-risk stock, backup and migration status, recent important operations.
+- **Visible fields:** Total stock, stock/raw material at external factories, current-month sales, total operations needing review, total important warnings, negative-stock/stock-risk alerts, open complaints, approximate profitability label/profile/missing flags, customer/factory balance summaries, backup and migration status, recent important operations, chart summaries for stock by location/factory, external-factory stock distribution, monthly sales trend, review/warning trend, and complaints by status where useful.
 - **Hidden fields:** Secrets, raw audit payloads, unapproved calculated/client values.
-- **Allowed actions:** Open permission-safe detail/report/approval/traceability; acknowledge only where contracted.
-- **Forbidden actions:** Edit posted data from cards, approve via undocumented quick toggle, treat approximate profit as statutory.
+- **Allowed actions:** Open permission-safe detail/report/approval/traceability screens; click KPI cards/numbers as navigation shortcuts to the relevant detail screen with the relevant filter selected where supported; acknowledge only where contracted.
+- **Forbidden actions:** Edit posted data from cards, approve via undocumented quick toggle, treat approximate profit as statutory, turn the dashboard into the main review work queue, use internal factory-floor KPIs such as machine utilization/shift efficiency/worker productivity/production-line efficiency, or use unlabeled "production efficiency" metrics.
 - **API dependencies:** Permission-filtered dashboard/read services; Approval/Reports/Backup/Migration DTOs; no browser aggregation of restricted raw rows.
 - **Validation:** Date/filter bounds; missing/incomplete metrics explicitly labeled.
 - **RTL/LTR:** Arabic hierarchy RTL; KPI numbers/currency/dates/codes LTR-isolated.
-- **Redaction/simplification:** Owner financial visibility allowed; cards prioritize exceptions over decorative charts.
+- **Redaction/simplification:** Owner financial visibility allowed; dashboard is an insight cockpit with high-level KPI cards, simple charts, and a latest-activity timeline. Detailed review rows belong in the Approval/Review Center, not on the dashboard.
 - **Accessibility/responsive:** Keyboard cards/drill-downs, chart accessible summary, desktop/tablet; phone summaries only.
-- **States:** No data/demo, partial metric failure, stale timestamp, missing-cost warning, loading/error/success.
+- **States:** No data/demo, partial metric failure, stale timestamp, manual refresh in progress, missing-cost warning, loading/error/success.
 - **Acceptance:** Reference-screen evidence passes gate; fixture totals match backend; no color-only alert.
-- **Common failures:** Decorative chart overload, unlabeled approximate profit, dashboard-calculated balances, toast-only alert.
+- **Common failures:** Decorative chart overload, unlabeled approximate profit, dashboard-calculated balances, toast-only alert, generic internal-manufacturing KPIs, crowded embedded review tables.
 - **AI coding note:** Do not scale dashboard patterns until owner approval records final tokens/density.
 
 ### 6.2 Accountant Dashboard
@@ -179,7 +180,7 @@ PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD
 - **API dependencies:** Lower-risk draft/query services; adjustment/request flows; high-risk receipt/transfer/return approvals remain management commands.
 - **Validation:** Required operational facts; decimal string quantity; valid tenant item/location; server stock/state checks.
 - **RTL/LTR/redaction:** Arabic labels; batch/document/date/quantity isolated LTR; forbidden fields omitted from DTO and payload.
-- **Worker simplification:** One task per screen, one-column narrow layout, clear draft/submission status.
+- **Worker simplification:** One task per screen, one-column narrow layout, clear draft/submission status, safe "other / not listed" note path for missing item/location/supplier/customer/factory options without creating official master data.
 - **Accessibility/responsive:** 360px+, 44×44px controls, accessible comboboxes/date/error summary.
 - **States:** Draft, submitted/read-only, correction requested, validation failure, conflict, network retry, success.
 - **Acceptance:** Worker raw-receipt reference fields/actions match Design Contract; no financial data in network response.
@@ -198,7 +199,7 @@ PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD
 - **API dependencies:** Draft services; `/production/orders/:orderId/return-from-wip-requests`; management high-risk issue/receipt/return approval endpoints.
 - **Validation:** Positive decimal quantities, valid order/factory/lot/location; server validates stock/WIP/lineage.
 - **RTL/LTR/redaction:** Codes/dates/quantities LTR-isolated; financial fields absent.
-- **Worker simplification:** Guided sequence and reconciliation summary in quantities only.
+- **Worker simplification:** Guided sequence and reconciliation summary in quantities only; safe "other / not listed" note path for missing factory/input-lot/output-lot/detail options without creating official master data.
 - **Accessibility/responsive/states:** 360px+, clear step/status, accessible quantity errors; partial-receipt and correction states explicit.
 - **Acceptance:** Cannot post output/payable or receive financial fields; WIP facts reconcile visibly.
 - **Common failures:** Factory stock confused with WIP, payable shown, output-only form hides consumed/waste.
@@ -216,7 +217,7 @@ PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD
 - **API dependencies:** Quality/complaint draft/query services; approval handled by Owner/Accountant workflows.
 - **Validation:** Parameter/value/date/reference validity; server owns status and disposition rules.
 - **RTL/LTR/redaction:** Test codes/values/dates isolated LTR; Arabic explanations RTL.
-- **Worker simplification:** Test-first forms; no accounting vocabulary.
+- **Worker simplification:** Test-first forms; no accounting vocabulary; safe "other / not listed" note path for missing test type/reference/detail options without creating official master data.
 - **Accessibility/responsive/states:** 360px+, accessible parameter groups and status text; empty/history/review states.
 - **Acceptance:** Quality can record facts but cannot mutate financial/stock effects.
 - **Common failures:** Quality status directly unblocks sale; financial return controls exposed.
@@ -229,7 +230,7 @@ PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD
 - **Purpose:** One permission-filtered queue for high-risk decisions and incomplete financial-adjacent work.
 - **Target roles:** Owner, Accountant.
 - **UX mode:** Management Console.
-- **Visible fields:** Tabs/counts for sales, daily operations, returns, adjustments, production receipts, payment reversals, quality-risk sales, negative stock, corrections, migration; missing-price/cost/direct-cost/settlement warnings; permitted detail fields.
+- **Visible fields:** Tabs/counts for sales, daily operations, returns, adjustments, outsourced-production receipts, payment reversals, quality-risk sales, negative stock, corrections, migration; missing-price/cost/direct-cost/settlement warnings; permitted detail fields; review/audit log showing who entered the data, entry time, department, operation type, current status, and last review action where permitted.
 - **Hidden fields:** Actions/financial fields beyond current permission; full audit payload unless audit permission.
 - **Allowed actions:** Open detail drawer; approve/reject/request correction/cancel/retry only through dedicated commands with reason/idempotency.
 - **Forbidden actions:** Generic `PATCH status`, batch approve without contract, approval from stale client calculations.
@@ -424,15 +425,15 @@ PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD
 - **Purpose:** Manage allowed users/permissions and safe/restricted settings without a product rule engine.
 - **Target roles:** Owner manages; Accountant has limited view/request only; workers none.
 - **UX mode:** Management Console.
-- **Visible fields:** Active users, seeded roles/permissions, status, terminology, safe settings, restricted setup values/read-only metadata as permitted.
+- **Visible fields:** Active users, seeded roles, exact effective permissions by screen/action/role, user status, last activity where permitted, terminology, safe settings, restricted setup values/read-only metadata, and permission/audit logs as permitted.
 - **Hidden fields:** Secrets, deferred productization controls, unrestricted formula/status/workflow editors.
-- **Allowed actions:** Owner-controlled provisioning/activation/role assignment, approved terminology/settings changes with reason/audit.
+- **Allowed actions:** Owner-controlled provisioning/activation/role assignment only when the current work package explicitly includes it; otherwise show permissions as read-only/deferred setup. Approved terminology/settings changes require reason/audit.
 - **Forbidden actions:** Accountant self-grant, public signup, hard delete referenced users/data, alter approved snapshot history.
 - **API dependencies:** Auth/user/permission/settings services; exact login/recovery controls remain unresolved.
 - **Validation:** Stable permission keys, tenant scope, effective settings, reason and audit; future-only effect.
 - **RTL/LTR/redaction:** Emails/phones/codes/technical keys isolated LTR.
 - **Accessibility/responsive/states:** Accessible permission tables/forms; desktop/tablet; phone read summary only.
-- **Acceptance:** Only Owner changes roles; approved history unaffected; deferred settings absent.
+- **Acceptance:** Users and exact effective permissions are visible to authorized Owner/Admin view; only Owner changes roles where explicitly contracted; read-only/deferred permission editing is clearly labeled; approved history unaffected; deferred settings absent.
 - **Common failures:** Generic Admin role, wildcard worker permission, secrets displayed, settings mutate history.
 - **AI coding note:** Do not resolve sign-in/recovery or deferred productization by preference.
 
@@ -447,9 +448,16 @@ No frontend screen is accepted until:
 - required responsive states pass;
 - critical state is not color- or toast-only;
 - no worker request/response contains forbidden financial data;
+- worker "other / not listed" entries route to review and do not create official master data automatically;
+- dashboard KPI cards navigate only to authorized detail screens/filters and do not perform operations;
+- Management Console sidebar has whole-sidebar collapse plus independent category collapse;
+- quick search, notifications, and manual refresh are permission-filtered and do not expose unauthorized details;
+- generic internal-manufacturing KPIs are absent from dashboards and reports unless explicitly owner-approved in a later contract;
 - high-risk commands use dedicated API/service contracts and idempotency;
 - reference-screen approval exists before broad expansion.
 
 ## 13. Notes for AI Coding Agents
 
 List the screen and domain contracts read before implementation. Build only screens authorized by the current work package. Do not invent read/write APIs, Arabic labels, auth behavior, business states, calculations, colors, or permissions. Do not reuse management density in Worker Task Mode. Do not calculate business money with JavaScript floating point. Do not submit server-derived effects from forms. Do not hide forbidden data after fetching it. If a required field/action/state lacks a binding rule, write **Unresolved / requires owner decision** and stop that path.
+
+For UI files, follow the code-style and maintainability rules in `14_coding_agent_instructions.md`: usually one main exported UI component per component file; large, reusable, or stateful components get their own files; tiny private subcomponents may remain local when only used there; preserve existing component/test style; do not refactor unrelated UI files or split components into meaningless fragments merely to reduce line count.

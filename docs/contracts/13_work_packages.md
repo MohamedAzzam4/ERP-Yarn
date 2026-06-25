@@ -30,6 +30,7 @@ Common prohibitions for every package:
 - no hardcoded design colors; use centralized semantic tokens;
 - no broad frontend expansion before reference-screen approval;
 - no JavaScript floating-point authority for business calculations;
+- no inconsistent coding style, unrelated refactors, meaningless helper splitting, or large unstructured functions/components that violate `14_coding_agent_instructions.md`;
 - no direct edit of approved/posted/committed history.
 
 ### Mandatory Executable Package Instance
