@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind v4 CSS-first theme tokens for ERP-Yarn.
+ *
+ * WP-00-02 scope: structural placeholders only. Final Calm Enterprise token
+ * values land in WP-00-04 (Theme and Design-System Foundation) after the
+ * three reference screens are owner-approved. The token STRUCTURE here is
+ * binding per Contract 02 §Semantic Design Tokens, but the color VALUES are
+ * provisional placeholders that WP-00-04 will calibrate.
+ *
+ * Contract: docs/contracts/02_design_system_and_ux_contract.md
+ *   - Light-theme only in MVP (DEC-039).
+ *   - Centralized semantic CSS variables mapped to Tailwind semantic utilities.
+ *   - Components must not hardcode literal palette colors.
+ */
+
+@theme {
+  /* Surface tokens — provisional placeholders. */
+  --color-background: #f4f7fb;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-foreground: #1e293b;
+  --color-muted: #f1f5f9;
+  --color-muted-foreground: #64748b;
+  --color-border: #e2e8f0;
+  --color-input: #e2e8f0;
+  --color-ring: #2457c5;
+
+  /* Brand tokens (provisional). */
+  --color-primary: #2457c5;
+  --color-primary-foreground: #ffffff;
+  --color-accent: #2a9d8f;
+  --color-accent-foreground: #ffffff;
+  --color-overlay: rgba(15, 23, 42, 0.4);
+
+  /* Status tokens (provisional). */
+  --color-success: #2a9d8f;
+  --color-success-foreground: #ffffff;
+  --color-warning: #c47a12;
+  --color-warning-foreground: #ffffff;
+  --color-danger: #c2414a;
+  --color-danger-foreground: #ffffff;
+  --color-info: #2457c5;
+  --color-info-foreground: #ffffff;
+
+  /* Workflow status tokens (provisional). */
+  --color-pending: #c47a12;
+  --color-approved: #2a9d8f;
+  --color-rejected: #c2414a;
+  --color-blocked: #c2414a;
+  --color-negative-stock: #c2414a;
+  --color-needs-review: #c47a12;
+
+  /* Chart palette (provisional). */
+  --color-chart-1: #2457c5;
+  --color-chart-2: #2a9d8f;
+  --color-chart-3: #c47a12;
+  --color-chart-4: #52657a;
+  --color-chart-5: #c2414a;
+
+  /* Sidebar (provisional). */
+  --color-sidebar: #ffffff;
+  --color-sidebar-foreground: #1e293b;
+  --color-sidebar-active: #2457c5;
+
+  /* Typography — Tajawal body, Alexandria headings.
+   * Fonts will be wired through next/font in WP-00-04. Here we declare
+   * the family stacks so semantic utilities resolve from the start. */
+  --font-sans: "Tajawal", "Noto Sans Arabic", system-ui, sans-serif;
+  --font-heading: "Alexandria", "Noto Sans Arabic", system-ui, sans-serif;
+}
+
+/*
+ * Global base styles.
+ * Root MUST be `<html lang="ar" dir="rtl">` per Contract 02 / DEC-040.
+ * Critical Arabic sentences must NOT use `dir="auto"`.
+ */
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+}
+
+/* Reduced-motion baseline (Contract 02 §Accessibility). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

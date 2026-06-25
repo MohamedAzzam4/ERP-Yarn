@@ -29,3 +29,23 @@ dist/
 *.log
 *.pem
 *.key
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+next-env.d.ts.bak
+
+# Drizzle output (migrations generated in later packages)
+drizzle/output/
+
+# Vitest temp / browser artifacts
+.vitest-temp/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# OS
+.DS_Store
+Thumbs.db
