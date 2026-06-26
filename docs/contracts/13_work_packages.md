@@ -100,11 +100,11 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-00-03B — Inventory Identity and Ledger Schema
 
 - **Goal:** Implement inventory-item/batch/lot identity, locations/factories, movement/balance/reservation/adjustment structures.
-- **Inputs:** Approved Schema/Inventory contracts and the status of PCD-INV-001 and PCD-SALE-001.
+- **Inputs:** Approved Schema/Inventory contracts and resolved decisions DEC-064 and DEC-065.
 - **Required reading:** Contracts 03 §§8–9, 04, 06, 11–14.
 - **Expected outputs:** Inventory migration with one-to-one batch/lot item identity and constraints/indexes.
 - **Tests/Acceptance:** Tenant identity, uniqueness, decimal scales, protected dimensions, movement/idempotency/reversal constraints.
-- **Dependencies:** WP-00-03A, PCD-INV-001 and PCD-SALE-001 before classification/reservation structures.
+- **Dependencies:** WP-00-03A.
 - **What not to change/Common failures:** No service/UI, generic movement or negative flag.
 - **Completion report:** Inventory migration evidence.
 
@@ -122,22 +122,22 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-00-03D — Sales, Returns, Subledger and Cost Schema
 
 - **Goal:** Implement exact sales/return/profitability/account/payment/settlement/direct-cost persistence vocabulary.
-- **Inputs:** Resolved PCD-PAY-001, PCD-RAW-001, PCD-RET-001 and approved financial contracts.
+- **Inputs:** Resolved decisions DEC-066, DEC-067, DEC-068 and approved financial contracts.
 - **Required reading:** Contracts 03 §§11–12, 06–07, 09, 11–14.
 - **Expected outputs:** Financial/domain migration, enums/checks/subject versions/source uniqueness.
 - **Tests/Acceptance:** Exact decimal fields, line totals, entry/direction/settlement values, return caps, immutability.
-- **Dependencies:** WP-00-03A, WP-00-03B, PCD-PAY-001, PCD-RAW-001 and PCD-RET-001.
+- **Dependencies:** WP-00-03A and WP-00-03B.
 - **What not to change/Common failures:** No payment-method guesses or editable balances.
 - **Completion report:** Financial schema evidence/blockers.
 
 ### WP-00-03E — Historical Migration Schema
 
 - **Goal:** Implement versioned file/staging/validation/reconciliation/approval/cutover/commit metadata without operational commit behavior.
-- **Inputs:** Resolved PCD-MIG-001, PCD-MIG-002, PCD-MIG-003 and PCD-MIG-004, plus the Migration contract.
+- **Inputs:** Resolved decisions DEC-069, DEC-070, DEC-071, DEC-072 plus the Migration contract.
 - **Required reading:** Contracts 03 §14, 08, 11–14.
 - **Expected outputs:** Migration structures/statuses/checksums/provenance/cutover-lock schema.
 - **Tests/Acceptance:** Tenant/file/source/version/status constraints and invalid obsolete status rejection.
-- **Dependencies:** WP-00-03A, PCD-MIG-001, PCD-MIG-002, PCD-MIG-003 and PCD-MIG-004.
+- **Dependencies:** WP-00-03A.
 - **What not to change/Common failures:** No current-workbook schema or direct operational FK shortcut.
 - **Completion report:** Migration schema evidence/blockers.
 
@@ -330,16 +330,16 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-02-03 — SubledgerService Account and Payable Primitive
 
 - **Goal:** Implement minimal accounts/immutable entry posting required by raw supplier payable.
-- **Inputs:** Account schema, audit/idempotency/sequence, PCD-RAW-001 status.
+- **Inputs:** Account schema, audit/idempotency/sequence, and DEC-067 raw payable basis/authority.
 - **Required reading:** Contracts 03 §12, 06 §17.1, 07 §§7–12, 09 §§5–7/20.1–20.2, 11–14.
 - **Expected outputs:** SubledgerService entry interface, supplier-payable handler, source uniqueness and derived balance query; no payment UI.
-- **Implementation notes:** If PCD-RAW-001 remains unresolved, implement schema/service boundary and missing-price no-posting path only; do not invent the amount formula.
+- **Implementation notes:** Use DEC-067 for priced payable paths; missing price still posts stock without payable and routes to Accountant Review.
 - **Tests:** Entry sign/source uniqueness, replay/concurrency, no zero payable, audit failure rollback, derived balance.
 - **Acceptance:** One effective supplier entry can participate in an outer transaction or no entry is created.
 - **Dependencies:** WP-01-03, WP-02-01.
 - **What not to change:** No payment/settlement/factory/customer handlers yet.
 - **Common failures:** Editable stored balance or payable posted outside caller transaction.
-- **Completion report:** Service boundary and blocked formula status.
+- **Completion report:** Service boundary and DEC-067 formula evidence.
 
 ### WP-02-04 — Raw Receipt Draft and Worker Screen Wiring
 
@@ -358,13 +358,13 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-02-05 — Raw Receipt Approval and Late-Price Path
 
 - **Goal:** Atomically post raw stock and optional confirmed-price payable, with append-only late completion.
-- **Inputs:** Submitted receipt, WP-02-02 and WP-02-03 services, and resolved PCD-RAW-001 for any price-dependent path.
+- **Inputs:** Submitted receipt, WP-02-02 and WP-02-03 services, and DEC-067 for any price-dependent path.
 - **Required reading:** Contracts 03 §9.3.1, 04, 06 §17.1, 07 §11, 09 §§20.1–20.2, 11–14.
 - **Expected outputs:** Dedicated approval/late-confirmation commands, movement/balance, payable or review, audit/idempotency.
 - **Implementation notes:** InventoryLedgerService and SubledgerService share one outer transaction.
 - **Tests:** Known/missing/late price, exact signs, duplicate confirmation, concurrency/idempotency/orphan recovery, failure injection/audit rollback.
 - **Acceptance:** Fixture stock/payable/review exact with no partial effect or direct receipt edit.
-- **Dependencies:** WP-02-02, WP-02-03, WP-02-04 and PCD-APR-001; PCD-RAW-001 for priced scenarios.
+- **Dependencies:** WP-02-02, WP-02-03, WP-02-04 and PCD-APR-001.
 - **What not to change:** No worker approval, zero payable or in-place price update.
 - **Common failures:** Movement commits before payable/audit; duplicate late payable.
 - **Completion report:** Exact transaction/API tests.
@@ -422,7 +422,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Source/destination commit together; no in-transit workflow.
 - **Tests:** Availability, block classification, rollback, duplicate, inverse/dependencies.
 - **Acceptance:** Exact source decrease/destination increase and original retained.
-- **Dependencies:** WP-03-01, WP-01-08, PCD-APR-001 and PCD-INV-001.
+- **Dependencies:** WP-03-01, WP-01-08 and PCD-APR-001.
 - **What not to change:** No two-step transfer or target balance UI.
 - **Common failures:** Destination posts after source commit.
 - **Completion report:** Exact quantity/effect evidence.
@@ -436,7 +436,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Draft does not reserve; Owner/Accountant completes commercial data.
 - **Tests:** Fixture, concurrent oversell, cancellation/rejection/manual release, idempotency.
 - **Acceptance:** On-hand unchanged at submission and reservation reconciles.
-- **Dependencies:** WP-03-01 and PCD-SALE-001 before quality-risk reservation/submission is enabled.
+- **Dependencies:** WP-03-01. Quality-risk reservation/submission remains blocked by DEC-065 until review/disposition makes stock accepted/sellable.
 - **What not to change:** No automatic expiry or approval issue.
 - **Common failures:** Reservation reduces on-hand.
 - **Completion report:** Concurrency and reconciliation results.
@@ -524,7 +524,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Decimal only; posted lines/residual/document total contract.
 - **Tests:** zero/discount, tie/largest residual, precision, role fields, submission reservations.
 - **Acceptance:** Exact totals and no worker price/submit authority.
-- **Dependencies:** WP-03-03, WP-01-08, WP-00-03D, and PCD-SALE-001 for quality-risk stock.
+- **Dependencies:** WP-03-03, WP-01-08 and WP-00-03D. Quality-risk stock follows DEC-065.
 - **What not to change:** No client-authoritative totals or single-line-only backend.
 - **Common failures:** Floating-point and early rounding.
 - **Completion report:** Exact fixture output.
@@ -566,7 +566,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Balance derived by signed sum; payment separate from cost.
 - **Tests:** Customer/supplier/factory fixtures, advance/partial/over-settlement/reversal/idempotency.
 - **Acceptance:** Exact signs/balances and original entries immutable.
-- **Dependencies:** WP-02-03, WP-04-03, WP-05-03, WP-01-08 and PCD-APR-001; PCD-PAY-001 before user-facing method implementation.
+- **Dependencies:** WP-02-03, WP-04-03, WP-05-03, WP-01-08 and PCD-APR-001. User-facing methods follow DEC-066.
 - **What not to change:** No editable balance or direct entry UI.
 - **Common failures:** Sign inferred from UI label.
 - **Completion report:** Statement/entry evidence.
@@ -624,7 +624,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Quantity/value cap and returned/blocked dimensions.
 - **Tests:** Prior returns, cap, classification availability, treatment, rollback/idempotency/redaction.
 - **Acceptance:** Stock/customer impact exact and risky return unavailable.
-- **Dependencies:** WP-06-01, WP-06-02, WP-01-08, PCD-APR-001 and PCD-RET-001.
+- **Dependencies:** WP-06-01, WP-06-02, WP-01-08 and PCD-APR-001. Partial return residual follows DEC-068.
 - **What not to change:** No worker financial treatment or returned quantity double-count.
 - **Common failures:** Return instantly sellable.
 - **Completion report:** Stock/account fixture evidence.
@@ -654,7 +654,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Checksums/provenance; optional adapter isolated; no operational effect.
 - **Tests:** Tenant/file privacy, metadata, duplicate source, staging isolation, AI direct-commit denial.
 - **Acceptance:** Source-to-cell trace exists and operations unchanged.
-- **Dependencies:** WP-00-03E, WP-02-05, WP-02-06, WP-03-04, WP-04-04, WP-05-05, WP-06-04, WP-01-08, PCD-MIG-001, PCD-MIG-003 and PCD-MIG-004.
+- **Dependencies:** WP-00-03E, WP-02-05, WP-02-06, WP-03-04, WP-04-04, WP-05-05, WP-06-04 and WP-01-08. Historical approval/cutover/reconciliation follow DEC-069/071/072.
 - **What not to change:** Current workbook not permanent schema.
 - **Common failures:** Copy staging rows into domain tables.
 - **Completion report:** Provenance/isolation evidence.
@@ -696,7 +696,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** All-or-nothing supported batch; technical rollback retry; stop if resumable design required.
 - **Tests:** One approval denial, stale approval, blocker, concurrency/idempotency, every injected failure, invalid status, locks.
 - **Acceptance:** One complete locked history set or none.
-- **Dependencies:** WP-07-03, WP-02-06, PCD-APR-001 and PCD-MIG-001.
+- **Dependencies:** WP-07-03, WP-02-06 and PCD-APR-001. Distinct historical approval identity follows DEC-069.
 - **What not to change:** No partial commit or `approved_after_import_review`.
 - **Common failures:** Transformed rows accepted in commit request.
 - **Completion report:** Atomicity/effect/provenance evidence.
@@ -710,7 +710,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Original remains locked and visible.
 - **Tests:** Direct edit denied, permission/reason/dependency, linked inverse/new record, report update.
 - **Acceptance:** Correction is traceable and non-destructive.
-- **Dependencies:** WP-07-04, PCD-MIG-002 and PCD-APR-001. Any correction UI additionally depends on WP-01-08.
+- **Dependencies:** WP-07-04 and PCD-APR-001. Renewed dual approval follows DEC-070. Any correction UI additionally depends on WP-01-08.
 - **What not to change:** No DB/manual patch.
 - **Common failures:** Reopen committed batch.
 - **Completion report:** Original/correction chain.
@@ -741,7 +741,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-08-01C — Sales and Approval-Center Expansion
 
 - **Goal:** Complete sales management and wire the approved review-queue pattern to real commands.
-- **Inputs/Dependencies:** WP-01-08, WP-05-03, PCD-SALE-001 for quality-risk flows.
+- **Inputs/Dependencies:** WP-01-08 and WP-05-03. Quality-risk flows follow DEC-065.
 - **Required reading:** Contracts 02, 04, 06, 07, 09 §§8–10/20.4, 10 §§8.1/8.4, 11–14.
 - **Expected outputs:** Sales draft/detail/approval/failure-resolution and queue categories.
 - **Tests/Acceptance:** Exact totals, role actions, stale hash/failure messages, RTL/a11y/responsive.
@@ -751,7 +751,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-08-01D — Payments, Accounts and Direct-Cost Screens
 
 - **Goal:** Complete statements/payment/settlement/direct-cost review screens.
-- **Inputs/Dependencies:** WP-01-08, WP-05-05, PCD-PAY-001.
+- **Inputs/Dependencies:** WP-01-08 and WP-05-05. Payment methods follow DEC-066.
 - **Required reading:** Contracts 02, 06 §17.3–17.4, 07, 09 §§18/20.5–20.6, 10 §§8.5–8.6, 11–14.
 - **Expected outputs:** Account statements, payment/settlement/reversal, direct-cost queue/detail.
 - **Tests/Acceptance:** Signs/balances/allocation, redaction, RTL/a11y/responsive/states.
@@ -761,7 +761,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-08-01E — Quality, Complaint, Return and Replacement Screens
 
 - **Goal:** Complete role-safe quality/complaint/return/replacement UX.
-- **Inputs/Dependencies:** WP-01-08, WP-06-04, PCD-RET-001.
+- **Inputs/Dependencies:** WP-01-08 and WP-06-04. Return residuals follow DEC-068.
 - **Required reading:** Contracts 02, 04, 06, 07, 09 §11, 10 §§7.3/8.7, 11–14.
 - **Expected outputs:** Worker quality/investigation tasks and management return/replacement details.
 - **Tests/Acceptance:** Block/risk/caps/equal-higher-lower fixtures, redaction, RTL/a11y/responsive.
@@ -771,7 +771,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-08-01F — Historical Migration Screens
 
 - **Goal:** Complete migration batch/file/staging/validation/reconciliation/approval/lock/correction UI.
-- **Inputs/Dependencies:** WP-01-08, WP-07-05, PCD-MIG-001, PCD-MIG-002, PCD-MIG-003 and PCD-MIG-004.
+- **Inputs/Dependencies:** WP-01-08 and WP-07-05. Historical approval/correction/cutover/reconciliation follow DEC-069/070/071/072.
 - **Required reading:** Contracts 02, 08–14.
 - **Expected outputs:** Historical Migration Screen Contract §9 implementation.
 - **Tests/Acceptance:** Provenance/warnings/dual approval/lock/redaction, desktop/tablet/phone summary, a11y/RTL.

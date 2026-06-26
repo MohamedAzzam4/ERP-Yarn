@@ -367,9 +367,9 @@ Two simultaneous approvals; same idempotency key with changed body; failure afte
 
 ### 11.3 Classification, Quality and Return Rounding
 
-- Partial blocked/returned-stock transfer remains blocked until PCD-INV-001; after resolution, exact classification is preserved source-to-destination.
-- Quality-risk reservation/submission remains blocked until PCD-SALE-001; then test the approved sequence and races.
-- Final partial-return credit remains blocked until PCD-RET-001; then verify cumulative posted credits equal but never exceed original posted line net value.
+- Partial blocked/returned/risky-stock ordinary transfer is blocked by DEC-064 until approved disposition/correction makes the quantity explicitly transferable; test ordinary accepted/sellable transfer and rejection of risky classifications.
+- Quality-risk reservation/submission is blocked by DEC-065 until review/disposition makes stock accepted/sellable; test accepted/sellable reservation and rejection of needs-review/blocked/discounted-return stock.
+- Final partial-return credit follows DEC-068; verify cumulative posted credits equal but never exceed original posted line net value.
 
 ### 11.4 Migration Cutover and Capacity
 
@@ -378,7 +378,7 @@ Two simultaneous approvals; same idempotency key with changed body; failure afte
 - Migration commit versus concurrent live posting respects the cutover lock/boundary.
 - WIP opening/incomplete production does not duplicate issue, receipt, waste or payable.
 - Measured maximum supported import batch size, timeout margin, rollback and retry behavior.
-- Owner/Accountant approval identity behavior matches PCD-MIG-001.
+- Owner/Accountant historical migration approval identity behavior matches DEC-069: two distinct user identities are required.
 
 ### 11.5 Recovery and Manual Accessibility Evidence
 

@@ -161,7 +161,7 @@ return_credit_value
 
 The original approved net unit value is snapshotted at `DECIMAL(18,6)`. Calculate credit at high precision and quantize the official credit to two decimals with `ROUND_HALF_UP` only when posted. Prior effective returns are included so cumulative return quantity and credit cannot exceed the remaining original approved sale-line quantity/value.
 
-The final partial-return monetary residual policy is **Unresolved / requires owner/accountant decision** under PCD-RET-001. Until resolved, partial return credit posting is blocked; coding agents must not allow cumulative rounding to under-credit the final full return or exceed the original posted line net value.
+DEC-068 resolves the final partial-return monetary residual policy. Each partial return credit uses the original approved sale-line net unit value after allocated discount. On the final effective return for the sale line, adjust the posted rounding residual so cumulative posted credits equal the original posted sale-line net value exactly and never exceed it. The residual adjustment is stored and audited; coding agents must not silently under-credit the final full return or over-credit beyond the original posted line net value.
 
 Replacement is two linked events:
 
@@ -187,7 +187,7 @@ When price is missing:
 - Accountant/Owner later confirms price through a controlled transaction;
 - that transaction snapshots price/amount, creates the payable once, and audits.
 
-Late completion is append-only through `raw_purchase_price_confirmations`; it does not edit the approved receipt. The accepted quantity basis and authority are blocked by PCD-RAW-001. Concurrent/duplicate confirmation must create one effective payable and correction uses linked reversal/new confirmation.
+Late completion is append-only through `raw_purchase_price_confirmations`; it does not edit the approved receipt. DEC-067 fixes the accepted quantity basis and authority: payable uses net accepted kg, Accountant confirms late price, Owner may approve/correct where required, and Workers cannot enter or view price/payable. Concurrent/duplicate confirmation must create one effective payable and correction uses linked reversal/new confirmation.
 
 No worker may enter/see supplier payable or price.
 
@@ -211,7 +211,7 @@ Waste does not reduce payable. Each receipt creates one unique negative factory 
 
 Payment stores positive absolute amount, direction, method, account, date, state, notes and optional attachment. Posting creates one signed account entry based on party/direction.
 
-Direction uses the constrained company-perspective vocabulary in the Schema Contract. User-facing payment method keys remain blocked by PCD-PAY-001 and must not be guessed or seeded by a coding agent.
+Direction uses the constrained company-perspective vocabulary in the Schema Contract. DEC-066 fixes MVP user-facing payment method keys as `cash`, `bank_transfer`, `check`, `wallet_instapay`, and `other`; coding agents must not guess or seed additional methods.
 
 - Customer receipt: negative customer entry.
 - Supplier/factory payment by company: positive supplier/factory entry.

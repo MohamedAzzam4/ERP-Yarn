@@ -211,7 +211,7 @@ Fields: company name, default language `ar`, ISO currency code, required timezon
 
 ### 7.2 `users`, `roles`, `permissions`, `user_roles`, `role_permissions`
 
-`users` maps one Supabase Auth identity to an ERP tenant user and stores name, email, phone, status, language and last login. Require unique `(tenant_id, email)` and unique auth identity mapping. The join-table schema remains capable of multiple role assignments under DEC-061, but MVP seeds/UI use one normal active operational role per user. Multi-role assignment is Owner-only, audited, exceptional, and evaluated by union of allowed actions except where a stricter denial/field ceiling applies. Worker-family financial denial always wins under DEC-063. PCD-MIG-001 remains separate and unresolved for dual historical approval identity.
+`users` maps one Supabase Auth identity to an ERP tenant user and stores name, email, phone, status, language and last login. Require unique `(tenant_id, email)` and unique auth identity mapping. The join-table schema remains capable of multiple role assignments under DEC-061, but MVP seeds/UI use one normal active operational role per user. Multi-role assignment is Owner-only, audited, exceptional, and evaluated by union of allowed actions except where a stricter denial/field ceiling applies. Worker-family financial denial always wins under DEC-063. DEC-069 separately requires historical migration dual approvals to come from two distinct user identities.
 
 `roles` requires unique `(tenant_id, role_code)`. `permissions` stores stable key, module, action, optional field key, and description. Join tables use composite primary keys and tenant-consistency constraints. Only Owner manages users/permissions in MVP; every assignment change is audited.
 
@@ -293,7 +293,7 @@ Item, lot number/type, yarn specifications, production order, factory, dates, su
 
 Append-only controlled completion for an approved physical receipt whose price was unknown. Store raw batch/receipt, confirmed price per ton, contracted quantity basis, precise calculated amount, posted payable amount, currency, subject version/hash, approval request, confirmer/approver/time/reason, idempotency, account entry and reversal/correction links. Allow only one effective confirmation per source receipt; correction uses a linked reversal and new confirmation.
 
-The exact net-versus-gross accepted weight basis and late-price authority are blocked by PCD-RAW-001. No schema or raw-posting package may invent the formula. When resolved, calculation uses high-precision decimal arithmetic and `ROUND_HALF_UP` only at payable posting.
+DEC-067 resolves the quantity basis and authority: raw purchase payable uses net accepted kg as the tonnage basis, with `payable = net_accepted_kg / 1000 × price_per_ton`. Accountant may enter/confirm late price; Owner may approve/correct where required. Workers cannot enter, see or confirm purchase price/payable. Calculation uses high-precision decimal arithmetic and `ROUND_HALF_UP` only at payable posting.
 
 ### 9.4 `stock_movements`
 
@@ -421,7 +421,7 @@ One account per tenant/owner type/owner/currency. Current-client entries use ISO
 
 ### 12.2 `payments` and `payment_settlements`
 
-Payments store number/date/account, positive amount, constrained `payment_direction`, method key, state, notes, attachment, posted entry, reversal and idempotency. Allowed user-facing payment-method keys are blocked by PCD-PAY-001; do not seed an arbitrary list. Settlements link payment entry to receivable/payable entry with positive settled amount and constrained state. Transaction locking/validation prevents over-settlement.
+Payments store number/date/account, positive amount, constrained `payment_direction`, method key, state, notes, attachment, posted entry, reversal and idempotency. DEC-066 fixes MVP user-facing payment method keys as `cash`, `bank_transfer`, `check`, `wallet_instapay`, and `other`; do not seed arbitrary additional methods. Settlements link payment entry to receivable/payable entry with positive settled amount and constrained state. Transaction locking/validation prevents over-settlement.
 
 ### 12.3 `direct_costs` and `direct_cost_allocations`
 

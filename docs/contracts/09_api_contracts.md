@@ -126,7 +126,7 @@ Request: optional Arabic reason/notes; no stock deltas or totals from client; id
 
 `sales.submit` is an Owner/Accountant management action in MVP because a warehouse-created operational draft contains no authorized price. Warehouse may create/update an enabled operational sales draft, but cannot invoke this posting/reservation submission until authorized management completes commercial fields.
 
-Preconditions: sale is `draft` or an authorized revised `approval_failed`/`needs_review` sale whose prior reservation state has been resolved according to its failure reason; lines valid; customer/item/location active; Accountant/Owner-completed quantities/prices/totals valid; available stock covers every line; no unresolved forbidden quality state. PCD-SALE-001 must be resolved before enabling reservation/submission for `needs_review`, blocked, or discounted-return stock. Resubmission must not assume every prior failure released reservations.
+Preconditions: sale is `draft` or an authorized revised `approval_failed`/`needs_review` sale whose prior reservation state has been resolved according to its failure reason; lines valid; customer/item/location active; Accountant/Owner-completed quantities/prices/totals valid; available stock covers every line; no unresolved forbidden quality state. DEC-065 allows reservation/submission only for accepted/sellable stock; `needs_review`, blocked, discounted-return or other quality-risk stock must go through review/disposition first. Resubmission must not assume every prior failure released reservations.
 
 Transaction: lock sale/lines/balances; create reservations; update reserved balances; create approval request; set pending; audit.
 
@@ -168,7 +168,7 @@ permission: returns.approve
 
 Request: approved return financial treatment, returned-stock classification, decision reason/notes. Client cannot submit balance deltas, account-entry signs, return-credit values, replacement receivable, or other calculated effects.
 
-Preconditions/locks/writes: Approval Contract §9. Posts return stock/classification/customer entry when required, updates sale return state, approves/audits atomically. Return lines must reference the original sale and original sale line. For `replacement`, the server calculates return credit from the original approved line net unit value after allocated discount and enforces prior-return quantity/value caps. Partial return credit posting remains blocked until PCD-RET-001 defines the final residual behavior.
+Preconditions/locks/writes: Approval Contract §9. Posts return stock/classification/customer entry when required, updates sale return state, approves/audits atomically. Return lines must reference the original sale and original sale line. For `replacement`, the server calculates return credit from the original approved line net unit value after allocated discount and enforces prior-return quantity/value caps. Partial return credit posting follows DEC-068: the final effective return adjusts the residual so cumulative posted credits equal and never exceed the original posted sale-line net value.
 
 The linked replacement order is a normal sales order: it stores `return_request_id` and original-sale links, reserves on submission, and uses `/sales/:saleId/approve` for issue, approved net receivable, and profitability. Before replacement approval, the server requires the return/replacement linkage and applicable approved return state. Equal/higher/lower value outcomes are derived from the linked negative return credit and positive replacement receivable. Refund uses a separate payment command and is never an automatic side effect.
 
@@ -303,7 +303,7 @@ POST /api/v1/inventory/raw-receipts/:receiptId/approve
 permission: inventory.receive.approve
 ```
 
-Request: decision reason/notes and idempotency only; no stock delta, payable, price calculation or account sign. Preconditions/locks/effects follow Approval Contract §17.1. Success returns approved receipt, movement and permitted payable/review references. Errors include `SUBJECT_CHANGED`, invalid master/location/weight, duplicate source, and unresolved PCD-RAW-001 when a price-dependent payable is requested. Atomic stock/payable/audit or none.
+Request: decision reason/notes and idempotency only; no stock delta, payable, price calculation or account sign. Preconditions/locks/effects follow Approval Contract §17.1 and DEC-067 for any price-dependent payable. Success returns approved receipt, movement and permitted payable/review references. Errors include `SUBJECT_CHANGED`, invalid master/location/weight and duplicate source. Atomic stock/payable/audit or none.
 
 ## 20.2 Confirm Late Raw Price
 
@@ -312,7 +312,7 @@ POST /api/v1/inventory/raw-receipts/:receiptId/price-confirmations
 permission: inventory.receive.approve
 ```
 
-Request: server-stored confirmation reference or permitted price/basis input after PCD-RAW-001 resolution, reason and idempotency; never a calculated payable/sign. Requires approved receipt with no effective confirmation. Locks source/confirmation/supplier account; posts one append-only confirmation/payable/audit. Concurrent duplicate returns deterministic replay/conflict. Correction uses the generic approved correction path, not overwrite.
+Request: server-stored confirmation reference or permitted price-per-ton input under DEC-067, reason and idempotency; never a calculated payable/sign. Requires approved receipt with no effective confirmation. Locks source/confirmation/supplier account; calculates payable from net accepted kg; posts one append-only confirmation/payable/audit. Concurrent duplicate returns deterministic replay/conflict. Correction uses the generic approved correction path, not overwrite.
 
 ## 20.3 Approve Transfer
 
@@ -321,7 +321,7 @@ POST /api/v1/inventory/transfers/:transferId/approve
 permission: inventory.transfer.approve
 ```
 
-Request: decision reason/notes and idempotency; no target balances. Requires submitted current-hash transfer and available unblocked stock. Locks source/destination/classification rows and posts both sides/audit atomically. Any blocked/returned classification request returns `OWNER_DECISION_REQUIRED` until PCD-INV-001 is resolved.
+Request: decision reason/notes and idempotency; no target balances. Requires submitted current-hash transfer and accepted/sellable unblocked available stock under DEC-064. Locks source/destination/classification rows and posts both sides/audit atomically. Any blocked, needs-review, returned, discounted-return or risky classification request returns `OWNER_DECISION_REQUIRED` or the contracted disposition-required error until approved disposition/correction makes the stock transferable.
 
 ## 20.4 Resolve Failed Sales Approval
 
@@ -342,7 +342,7 @@ POST /api/v1/payments/:paymentId/settlements
 permission: payments.approve
 ```
 
-Payment-post request contains reason/notes and idempotency, not signed entry/balance. PCD-PAY-001 must be resolved for user-facing method validation. Settlement request contains target entry IDs and positive allocation amounts; server derives compatibility/sign/remaining capacity. Locks and effects follow Approval Contract §17.3. Errors include subject/state/idempotency/settlement conflicts. Posting/settlement/audit is atomic; concurrent allocations cannot over-settle.
+Payment-post request contains reason/notes and idempotency, not signed entry/balance. User-facing method validation uses DEC-066 keys only: `cash`, `bank_transfer`, `check`, `wallet_instapay`, and `other`. Settlement request contains target entry IDs and positive allocation amounts; server derives compatibility/sign/remaining capacity. Locks and effects follow Approval Contract §17.3. Errors include subject/state/idempotency/settlement conflicts. Posting/settlement/audit is atomic; concurrent allocations cannot over-settle.
 
 ## 20.6 Post Reviewed Direct Cost
 

@@ -107,7 +107,7 @@ Physical stock may post when purchase price is missing. No supplier payable is c
 
 MVP transfer is one-step; source decrease and destination increase commit together. `in_transit` remains future schema capacity only. Transfer cannot change item identity or silently unblock risky/returned stock.
 
-Ordinary MVP transfer supports unblocked available stock. Transfer of a quantity that is partially/wholly blocked or returned is blocked until PCD-INV-001 defines the classification-allocation and destination-preservation behavior; an agent may not subtract a generic quantity and guess which dimension moved.
+Ordinary MVP transfer supports only accepted/sellable unblocked available stock under DEC-064. A quantity that is partially/wholly blocked, needs review, returned, discounted-return or otherwise risky is not transferable through ordinary transfer. It must first receive approved disposition/correction that makes the target quantity explicitly sellable/unblocked or routes it through a later special workflow. An agent may not subtract a generic quantity and guess which classification dimension moved.
 
 ### 8.3 Inventory Adjustment
 
@@ -119,7 +119,7 @@ Adjustment uses a positive absolute quantity plus direction/type, reason, reques
 
 Draft sale does not reserve. Submission locks sale/balances, validates available stock and state, inserts reservations per line, increases reserved quantity, sets pending approval, creates approval request and audit.
 
-Reservation/submission for `needs_review`, blocked, or `sellable_with_discount` returned stock is blocked until PCD-SALE-001 defines whether quality/disposition approval precedes reservation or a protected review reservation is used. Ordinary accepted/`sellable_as_is` stock follows this section.
+Reservation/submission is allowed only for accepted/sellable stock under DEC-065. `needs_review`, blocked, discounted-return or other quality-risk stock must go through review/disposition before reservation. No protected risk reservation flow is implemented in MVP. Ordinary accepted/`sellable_as_is` stock follows this section.
 
 ### 9.2 Approval
 

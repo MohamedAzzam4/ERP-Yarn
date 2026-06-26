@@ -67,7 +67,7 @@ M manage/configure
 
 Every action is constrained by tenant, state and field scope. Update/approve/cancel/reverse never authorizes direct edits to posted/locked history.
 
-DEC-061 resolves role-conflict behavior for MVP. MVP users normally have one active operational role; the schema may allow multiple role assignments for future or exceptional Owner-managed cases. If multiple roles exist, effective permissions are the union of allowed actions except where a stricter denial or field ceiling applies. Worker-family financial denial under DEC-063 always wins, even if the same user is assigned another role or custom grant. Owner management of assignments cannot silently override the absolute worker prohibitions in this contract. PCD-MIG-001 remains separate and unresolved for whether dual historical approvals require two distinct user identities.
+DEC-061 resolves role-conflict behavior for MVP. MVP users normally have one active operational role; the schema may allow multiple role assignments for future or exceptional Owner-managed cases. If multiple roles exist, effective permissions are the union of allowed actions except where a stricter denial or field ceiling applies. Worker-family financial denial under DEC-063 always wins, even if the same user is assigned another role or custom grant. Owner management of assignments cannot silently override the absolute worker prohibitions in this contract. DEC-069 separately requires historical migration dual approvals to come from two distinct user identities.
 
 ## 7. Role/Action Matrix
 
@@ -304,7 +304,7 @@ Exports are internal reports restricted to Owner/Accountant. Apply the same row/
 
 - Owner/Accountant prepare/review migration by permission.
 - Commit requires dual approval.
-- Whether the two approvals must be performed by distinct user identities is blocked by PCD-MIG-001; do not infer that one multi-role user may satisfy both.
+- DEC-069 requires the two approvals to be performed by distinct user identities; one multi-role user cannot satisfy both approval records.
 - Quality receives only assigned quality mapping.
 - Accountant may run/view backups when granted.
 - Restore test requires explicit grant and non-production target.

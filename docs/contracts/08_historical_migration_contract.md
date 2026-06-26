@@ -210,7 +210,7 @@ Validation, reconciliation, review, and approvals bind to exact file, template, 
 
 Each batch requires a versioned per-domain cutover manifest containing domain, inclusive/exclusive cutoff timestamp/date, import mode (`opening_balance`, `transaction_history`, or an explicitly approved hybrid), source coverage, opening-balance basis, live-system start boundary, and reconciliation owner.
 
-PCD-MIG-003 must be owner-resolved before templates/staging for real historical data. The validation engine must reject overlapping opening balances plus transactions/payments/movements that would recreate the same stock or party effect. Party opening balances cannot be combined with imported source sales/payments unless the manifest proves the non-overlapping boundary. Inventory openings cannot be combined with earlier movements that already derive those openings.
+DEC-071 resolves the MVP cutover model as opening balances only. Full transaction-history import is deferred unless separately approved. The validation engine must reject overlapping opening balances plus transactions/payments/movements that would recreate the same stock or party effect. Party opening balances cannot be combined with imported source sales/payments unless the manifest proves the non-overlapping boundary. Inventory openings cannot be combined with earlier movements that already derive those openings.
 
 Incomplete production/WIP requires an explicit approved representation in the manifest/template: either opening WIP with source lineage and no duplicated issue, or imported production transactions that derive WIP. Coding agents must not invent a synthetic completed production order or payable to force reconciliation.
 
@@ -375,7 +375,7 @@ Before submission for approval:
 - source and normalized files are immutable/versioned;
 - required backup evidence exists for real migration data.
 
-Commit requires two separate approval records: one by an authorized Owner and one by an authorized Accountant. Each approval binds to the same staged-data hash, cutover-manifest hash, mapping/template versions, validation result, reconciliation result, and warning summary. A later material change invalidates both approvals. Whether both records must come from distinct user identities is blocked by PCD-MIG-001; one multi-role identity must not satisfy both until explicitly approved.
+Commit requires two separate approval records: one by an authorized Owner and one by an authorized Accountant. Each approval binds to the same staged-data hash, cutover-manifest hash, mapping/template versions, validation result, reconciliation result, and warning summary. A later material change invalidates both approvals. DEC-069 requires the two approvals to come from two distinct user identities; one multi-role identity cannot satisfy both.
 
 ### 8.10 Approved Historical Commit
 
@@ -418,7 +418,7 @@ Correction requires:
 1. correction request linked to batch and original record;
 2. reason and proposed domain correction;
 3. dependency/reconciliation impact analysis;
-4. Owner/Accountant review and the approval level resolved under PCD-MIG-002;
+4. Owner/Accountant review and renewed dual approval under DEC-070 where correction is post-commit;
 5. linked reversal, correction, or inventory/account adjustment through domain services;
 6. immutable audit and new reconciliation result where affected.
 
@@ -570,7 +570,7 @@ Creates a linked correction request and invokes the affected domain correction/r
 - Historical profitability carries imported/approximate/incomplete quality and missing flags as applicable.
 - Post-commit correction creates linked reversal/correction/adjustment, preserves original, updates reconciliation where needed, and audits.
 - Direct form/API/database update of committed historical business values is rejected/detected.
-- Historical correction remains blocked until the PCD-MIG-002 approval level is satisfied.
+- Historical correction remains blocked until renewed dual approval under DEC-070 is satisfied.
 
 ## 13. Common Failure Cases
 

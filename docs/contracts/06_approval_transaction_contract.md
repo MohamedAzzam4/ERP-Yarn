@@ -94,7 +94,7 @@ Insufficient stock, invalid reservation, blocked item, missing required data/pri
 - on-hand/reservation still valid;
 - gross/discount/net totals valid.
 - pending approval subject version/hash still matches every approval-relevant sale and line field;
-- the quality-risk reservation/submission sequence is resolved under PCD-SALE-001 before that stock class is enabled.
+- quality-risk stock follows DEC-065: it cannot be reserved/submitted until review/disposition makes it accepted/sellable.
 
 ### Rows to Lock
 
@@ -136,7 +136,7 @@ This is a dedicated idempotent transaction after the failed approval posting has
 - treatment is one approved value;
 - return location/status valid;
 - Owner/Accountant permission.
-- the final partial-return monetary residual policy is resolved under PCD-RET-001 before partial return credit posting is enabled.
+- final partial-return monetary residual follows DEC-068 before partial return credit posting is enabled.
 
 ### Rows to Lock
 
@@ -262,7 +262,7 @@ Original payment/entry is not deleted/edited. Over-reversal or already-reversed 
 - correction request with reason and proposed scope;
 - Owner/Accountant permission appropriate to domain;
 - dependency analysis complete.
-- for a committed historical original, PCD-MIG-002 approval level is resolved and satisfied before correction posting.
+- for a committed historical original, renewed dual approval under DEC-070 is satisfied before correction posting.
 
 ### Locks
 
@@ -338,13 +338,13 @@ Raw receipt approval requires submitted receipt, active tenant masters, positive
 
 Approval creates the raw item/batch identity, `raw_receipt` movement, on-hand balance, and—only when the contracted price/basis is confirmed—the negative supplier payable, then locks/approves/audits atomically. If price is absent, stock posts and a review item is created with no zero/estimated payable.
 
-Late price uses the append-only `raw_purchase_price_confirmations` transaction: verify PCD-RAW-001 is resolved, lock source receipt/confirmation/supplier account, calculate at high precision, post one payable, link confirmation and audit. Duplicate/concurrent confirmation creates one effective payable. Correction reverses the prior entry and creates a new confirmation; it never edits the approved receipt.
+Late price uses the append-only `raw_purchase_price_confirmations` transaction: apply DEC-067, lock source receipt/confirmation/supplier account, calculate from net accepted kg at high precision, post one payable, link confirmation and audit. Duplicate/concurrent confirmation creates one effective payable. Correction reverses the prior entry and creates a new confirmation; it never edits the approved receipt.
 
 ## 17.2 Transfer Approval
 
 Transfer approval requires submitted source/destination/item/classification quantities, Owner/Accountant permission, current subject hash and idempotency. Lock transfer, approval, source/destination balance and classification rows in deterministic order. Recheck available/protected quantities, then create source decrease and destination increase in one InventoryLedgerService transaction and audit.
 
-Ordinary transfer supports unblocked available stock. Transfer of partially blocked/returned stock is blocked until PCD-INV-001 defines classification allocation/preservation. No target-balance write, in-transit workflow, or partial side is permitted.
+Ordinary transfer supports only accepted/sellable unblocked available stock under DEC-064. Partially blocked, returned, discounted-return or risky classification stock is blocked from ordinary transfer until approved disposition/correction makes the quantity explicitly transferable. No target-balance write, in-transit workflow, or partial side is permitted.
 
 ## 17.3 Payment Posting and Settlement
 
