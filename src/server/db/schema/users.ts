@@ -12,14 +12,13 @@
  * WP-01-01 (Private Auth) under PCD-AUTH-001/002.
  *
  * Self-reference FKs: `created_by` and `updated_by` reference
- * `users(id)`. Drizzle's `references(() => users.id)` inside the `users`
- * table definition creates a TypeScript self-reference cycle that TS
- * cannot resolve under strict mode. Per the WP-00-03A correction pass,
- * these two FKs are added as explicit manual `ALTER TABLE` constraints
- * in the migration SQL file (see
- * `drizzle/output/0000_*.sql` → "Manual FK constraints" section at the
- * end). All other user-reference FKs (on tables that import `users`)
- * are modeled via Drizzle `references()` normally.
+ * `users(id)`. These columns are defined as plain `uuid` (without
+ * Drizzle `references()`) to avoid a TypeScript self-reference cycle
+ * under strict mode. The DB-level FK constraints are added as explicit
+ * manual `ALTER TABLE` statements in the migration SQL file (see
+ * `drizzle/output/0000_*.sql` → "Manual FK constraints" section).
+ * All other user-reference FKs (on tables that import `users`) are
+ * modeled via Drizzle `references()` normally.
  */
 import {
   text,

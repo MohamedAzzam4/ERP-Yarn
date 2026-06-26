@@ -445,6 +445,66 @@ describe("WP-00-03A user-reference FK constraints (migration SQL static check)",
   });
 });
 
+describe("WP-00-03A migration SQL — no duplicate constraint/trigger names (validation defect fix)", () => {
+  // These tests verify that every constraint, trigger, and function name
+  // appears EXACTLY ONCE in the migration SQL. The live DB validation
+  // discovered that the original migration had duplicate definitions
+  // (manual ALTER TABLE statements that duplicated Drizzle-generated FKs,
+  // and a duplicated audit trigger section). These tests prevent regression.
+  //
+  // Each test counts the number of ADD CONSTRAINT / CREATE TRIGGER /
+  // CREATE OR REPLACE FUNCTION statements for each named object and
+  // asserts the count is exactly 1.
+
+  it("users_created_by_users_id_fk appears exactly once", () => {
+    const sql = readLatestMigrationSQL();
+    const matches = sql.match(/ADD CONSTRAINT "users_created_by_users_id_fk"/g);
+    expect(matches?.length ?? 0).toBe(1);
+  });
+
+  it("users_updated_by_users_id_fk appears exactly once", () => {
+    const sql = readLatestMigrationSQL();
+    const matches = sql.match(/ADD CONSTRAINT "users_updated_by_users_id_fk"/g);
+    expect(matches?.length ?? 0).toBe(1);
+  });
+
+  it("prevent_audit_log_modification function defined exactly once", () => {
+    const sql = readLatestMigrationSQL();
+    const matches = sql.match(
+      /CREATE OR REPLACE FUNCTION "public"\."prevent_audit_log_modification"/g,
+    );
+    expect(matches?.length ?? 0).toBe(1);
+  });
+
+  it("audit_logs_no_update trigger defined exactly once", () => {
+    const sql = readLatestMigrationSQL();
+    const matches = sql.match(/CREATE TRIGGER "audit_logs_no_update"/g);
+    expect(matches?.length ?? 0).toBe(1);
+  });
+
+  it("audit_logs_no_delete trigger defined exactly once", () => {
+    const sql = readLatestMigrationSQL();
+    const matches = sql.match(/CREATE TRIGGER "audit_logs_no_delete"/g);
+    expect(matches?.length ?? 0).toBe(1);
+  });
+
+  it("no constraint name is defined more than once (generic check)", () => {
+    // Generic check: extract all ADD CONSTRAINT "name" occurrences and
+    // verify each name appears exactly once.
+    const sql = readLatestMigrationSQL();
+    const matches = sql.match(/ADD CONSTRAINT "([a-z_]+)"/g) ?? [];
+    const names = matches
+      .map((m) => m.match(/"([a-z_]+)"/)?.[1])
+      .filter((n): n is string => n !== undefined);
+    const counts = new Map<string, number>();
+    for (const name of names) {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    const duplicates = [...counts.entries()].filter(([, count]) => count > 1);
+    expect(duplicates).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tenant-owned row baseline.
 // ---------------------------------------------------------------------------
