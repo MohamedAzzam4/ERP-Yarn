@@ -87,3 +87,81 @@ export {
   tenantStatus,
   roleSystemFlag,
 } from "./enums";
+
+// ---------------------------------------------------------------------------
+// WP-00-03B: Master data + inventory identity + inventory ledger
+// ---------------------------------------------------------------------------
+
+// Master data
+export {
+  suppliers,
+  customers,
+  locations,
+  externalFactories,
+  fiberTypes,
+  productTypes,
+  qualityParameters,
+} from "./master-data";
+export type {
+  Supplier,
+  NewSupplier,
+  Customer,
+  NewCustomer,
+  Location,
+  NewLocation,
+  ExternalFactory,
+  NewExternalFactory,
+  FiberType,
+  NewFiberType,
+  ProductType,
+  NewProductType,
+  QualityParameter,
+  NewQualityParameter,
+} from "./master-data";
+
+// Inventory identity
+export {
+  inventoryItems,
+  rawMaterialBatches,
+  yarnLots,
+} from "./inventory-items";
+export type {
+  InventoryItem,
+  NewInventoryItem,
+  RawMaterialBatch,
+  NewRawMaterialBatch,
+  YarnLot,
+  NewYarnLot,
+} from "./inventory-items";
+
+// Inventory ledger
+export {
+  stockMovements,
+  inventoryBalances,
+  stockReservations,
+  inventoryAdjustments,
+} from "./inventory-ledger";
+export type {
+  StockMovement,
+  NewStockMovement,
+  InventoryBalance,
+  NewInventoryBalance,
+  StockReservation,
+  NewStockReservation,
+  InventoryAdjustment,
+  NewInventoryAdjustment,
+} from "./inventory-ledger";
+
+// Inventory enums
+export {
+  factoryType,
+  itemKind,
+  locationType,
+  qualityStatus,
+  movementType,
+  movementStatus,
+  reservationStatus,
+  returnedStockStatus,
+  adjustmentDirection,
+  masterDataStatus,
+} from "./inventory-enums";
