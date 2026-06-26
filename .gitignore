@@ -34,8 +34,13 @@ dist/
 *.tsbuildinfo
 next-env.d.ts.bak
 
-# Drizzle output (migrations generated in later packages)
-drizzle/output/
+# Drizzle migrations AND metadata ARE committed to the repository per
+# Contract 01 §Migration Contract ("migrations are committed to the repo;
+# migration history is immutable after application to a shared
+# environment"). Drizzle-Kit's meta/ directory contains the snapshot and
+# journal that future `drizzle-kit generate` runs diff against; without
+# them, the next generate cannot detect what already migrated and would
+# produce duplicate/incorrect migrations. Both SQL and meta are tracked.
 
 # Vitest temp / browser artifacts
 .vitest-temp/
