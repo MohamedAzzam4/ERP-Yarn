@@ -88,14 +88,14 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-00-03A — Platform, Tenant and Security Schema
 
 - **Goal:** Implement only tenant/user/role/permission/settings/terminology/sequence/approval/audit/idempotency/alert foundations.
-- **Inputs:** Technical setup, canonical hierarchy, and resolved PCD-AUTH-003, PCD-SEC-001 and PCD-SEC-002 where their structures are required.
+- **Inputs:** Technical setup, canonical hierarchy, and resolved owner decisions DEC-061, DEC-062 and DEC-063.
 - **Required reading:** Contracts 01, 03 §§5–8, 06–07, 11–14.
 - **Expected outputs:** Reviewed platform Drizzle schema/SQL migration and seeds.
 - **Implementation notes:** Approval subject hash/version and idempotency lease recovery are mandatory.
 - **Tests/Acceptance:** Clean DB, tenant keys, role/permission constraints, sequence concurrency, audit immutability, orphan recovery.
-- **Dependencies:** WP-00-02 and PCD-AUTH-003, PCD-SEC-001, PCD-SEC-002 for role/scope structures.
-- **What not to change/Common failures:** No domain tables; no guessed multi-role/row-scope policy.
-- **Completion report:** Migration/evidence and blocked decisions.
+- **Dependencies:** WP-00-02.
+- **What not to change/Common failures:** No domain tables; no policy beyond DEC-061/062/063; no tenant-wide worker shortcut.
+- **Completion report:** Migration/evidence, applied DEC-061/062/063 behavior and still-open decisions.
 
 ### WP-00-03B — Inventory Identity and Ledger Schema
 
@@ -791,7 +791,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 ### WP-08-01H — Settings and User-Management Screens
 
 - **Goal:** Implement Owner-only user/permission and allowed settings/terminology screens.
-- **Inputs/Dependencies:** WP-01-08, WP-01-02, PCD-AUTH-002, PCD-AUTH-003, PCD-SEC-001 and PCD-SEC-002.
+- **Inputs/Dependencies:** WP-01-08, WP-01-02, PCD-AUTH-002, and resolved decisions DEC-061, DEC-062 and DEC-063.
 - **Required reading:** Contracts 01–03, 10 §11.2, 11–14.
 - **Expected outputs:** Approved provisioning/assignment/settings/terminology UX.
 - **Tests/Acceptance:** Owner-only mutation, Accountant request/read limits, worker denial, audit, RTL/a11y/responsive.

@@ -32,8 +32,8 @@ These rules apply to every screen below unless a stricter screen rule is stated:
 - Worker choice controls use predefined options for routine fields, but must provide a safe "other / not listed" path when the required option is missing; that path captures temporary operational text/notes and routes the record for review instead of creating official master data.
 - Client forms do not submit calculated stock/account/cost/profitability effects or authoritative tenant/role/actor data.
 - Every management screen contract/package must declare phone support as exactly `full`, `summary_only`, `approval_only`, or `unsupported_requires_larger_screen`; “where practical” is not implementation discretion and is blocked by PCD-UX-003 until declared.
-- Worker row visibility/write scope follows PCD-SEC-001. Until resolved, a frontend must not imply tenant-wide worker access.
-- The worker financial-deny ceiling remains absolute until PCD-SEC-002 is resolved; role customization cannot fetch forbidden data.
+- Worker row visibility/write scope follows DEC-062: assigned user-specific location/factory/task scope with default-deny behavior. A frontend must not imply tenant-wide worker access.
+- The worker financial-deny ceiling follows DEC-063 and is absolute in MVP; role customization or multi-role assignment cannot fetch forbidden data.
 - Worker transport DTOs may carry only the simple contracted amount/responsibility/notes and must be separate from payer/allocation/subledger/profitability DTOs.
 
 ## 3. Mandatory Reference-Screen Gate

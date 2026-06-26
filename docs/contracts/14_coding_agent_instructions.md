@@ -97,7 +97,7 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Only Owner manages users/permissions; Accountant cannot self-grant.
 - Workers receive operational facts only. Do not expose price, cost, rate, payable, receivable, balance, settlement, payer, allocation, profitability, financial audit, migration finance, or backup secrets.
 - Worker request schemas reject forbidden fields instead of silently accepting them.
-- Until PCD-SEC-002 is owner-resolved, worker role codes retain an absolute financial deny ceiling; no implementation may broaden worker financial access through custom grants.
+- DEC-063 makes the worker financial-deny ceiling absolute in MVP; no implementation may broaden worker financial access through custom grants, multi-role assignment, exports, nested responses, logs, errors or UI-only hiding.
 
 ## 8. Frontend and Design Rules
 

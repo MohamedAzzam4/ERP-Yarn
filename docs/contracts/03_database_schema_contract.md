@@ -211,11 +211,13 @@ Fields: company name, default language `ar`, ISO currency code, required timezon
 
 ### 7.2 `users`, `roles`, `permissions`, `user_roles`, `role_permissions`
 
-`users` maps one Supabase Auth identity to an ERP tenant user and stores name, email, phone, status, language and last login. Require unique `(tenant_id, email)` and unique auth identity mapping. The join-table schema remains capable of multiple role assignments, but role-seed/guard behavior for a multi-role user is blocked by PCD-AUTH-003; coding agents must not choose a conflict-resolution policy.
+`users` maps one Supabase Auth identity to an ERP tenant user and stores name, email, phone, status, language and last login. Require unique `(tenant_id, email)` and unique auth identity mapping. The join-table schema remains capable of multiple role assignments under DEC-061, but MVP seeds/UI use one normal active operational role per user. Multi-role assignment is Owner-only, audited, exceptional, and evaluated by union of allowed actions except where a stricter denial/field ceiling applies. Worker-family financial denial always wins under DEC-063. PCD-MIG-001 remains separate and unresolved for dual historical approval identity.
 
 `roles` requires unique `(tenant_id, role_code)`. `permissions` stores stable key, module, action, optional field key, and description. Join tables use composite primary keys and tenant-consistency constraints. Only Owner manages users/permissions in MVP; every assignment change is audited.
 
-Worker row-scope assignment tables/policies are blocked by PCD-SEC-001. Until resolved, no worker may receive unrestricted tenant-wide write scope as a convenience. Worker financial deny behavior follows PCD-SEC-002 and Permission Matrix.
+Worker row-scope follows DEC-062. Workers default to no operational row access unless the user has active user-specific scope assignments for locations, external factories and/or task types. Owner maintains assignments in MVP; Accountant may view/request only. No worker may receive unrestricted tenant-wide write scope as a convenience.
+
+`worker_scope_assignments` or equivalent scope-foundation tables require tenant, user, scope type, target identifier/key, active state, optional effective window, assigned actor, reason and audit metadata. Domain-specific packages must add tenant-safe references or validation to the target entities when those tables exist. A scope grant never grants action permission by itself; role/permission checks and worker financial redaction still apply.
 
 ### 7.3 `tenant_settings`
 

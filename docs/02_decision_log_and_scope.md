@@ -74,6 +74,9 @@ Execution documents may narrow order/scope but cannot alter decisions in this lo
 | DEC-058 | Testing follows three mandatory layers: focused tests continuously during implementation, the complete package gate after every work package, and integrated phase tests before merge. | A later test layer never replaces an earlier one. Any required failure stops the affected implementation/package/phase; no next package or `main` merge is authorized until its controlling gate passes. |
 | DEC-059 | A GLM sandbox without an owner-controlled secret channel may use either credentialless artifact handoff or the owner-authorized temporary credential exception in DEC-060. | Credentialless Git bundle/patch handoff remains the safest fallback. It is no longer mandatory when the owner explicitly authorizes a short-lived, scoped credential in the active chat for a specific development/test operation. |
 | DEC-060 | Owner-authorized temporary chat credentials are permitted only for development/test automation when no secret-manager channel is available. | Allowed credentials must be short-lived, scope-limited, and used only for the explicitly authorized operation: GitHub phase-branch push/PR, Supabase development/test connectivity or package-authorized integration work, or Vercel preview/demo setup/deploy. They must never be written to tracked/untracked files, remotes, `.env`, screenshots, test evidence, logs, or completion reports; never used for pilot/production or real client data; and should be revoked/rotated by the owner after use. |
+| DEC-061 | MVP users normally have one active operational role, while the schema may remain capable of multiple role assignments for future or exceptional Owner-managed cases. | MVP seeds, UI and tests must not rely on multi-role users. If multiple roles exist, effective permissions are the union of allowed actions except where a stricter denial/field ceiling applies; Worker-family financial denial always wins. Multi-role assignment is Owner-only, audited, and does not resolve dual-approval identity questions such as PCD-MIG-001. |
+| DEC-062 | Worker row access is assigned scope, not tenant-wide access. | Workers default to no operational row access unless assigned user-specific scope grants for locations, external factories and/or task types. Owner maintains scope assignments in MVP; Accountant may view or request only. No Worker role may receive unrestricted tenant-wide write scope as a shortcut. |
+| DEC-063 | Worker financial-deny is absolute and non-overridable in MVP. | If any assigned role is a Worker-family role, cost, price, supplier/customer/factory balance, profitability, direct-cost, payment, settlement and other financial/accounting fields remain denied across UI, API, nested data, exports, logs and errors, even if another role or custom grant would otherwise allow them. |
 
 ## Integrated Design-System Decisions
 
@@ -256,7 +259,17 @@ The repository copy of v4 remains unchanged as source evidence. Coding agents mu
 
 Omission from this table does not make a contradictory v4 example authoritative over a later approved contract.
 
-## Pre-Coding Owner Decision Gates
+## Resolved Pre-Coding Owner Decision Gates
+
+These former blockers are now binding owner decisions. Coding agents must implement the resolved policy and must not re-open these questions inside a work package.
+
+| Former gate | Resolution | Consequence |
+| --- | --- | --- |
+| PCD-AUTH-003 | Resolved by DEC-061. MVP uses one normal active operational role per user; schema can support multiple roles; Worker-family deny rules win in conflicts. | `WP-00-03A` may implement RBAC schema/seeds/guards without inventing role-conflict policy. |
+| PCD-SEC-001 | Resolved by DEC-062. Worker row scope is user-specific assigned location/factory/task scope with default-deny behavior. | `WP-00-03A` may implement scope foundations; domain packages attach tenant-safe assignment constraints when their target entities exist. |
+| PCD-SEC-002 | Resolved by DEC-063. Worker financial-deny is absolute and non-overridable in MVP. | Permission seeds, API guards, UI redaction, exports, errors and tests must enforce the ceiling. |
+
+## Open Pre-Coding Owner Decision Gates
 
 These decisions are not guesses for coding agents. `WP-00-01` may inventory/report them; the named later package cannot start until its blockers are resolved and incorporated into the relevant contract.
 
@@ -264,9 +277,6 @@ These decisions are not guesses for coding agents. `WP-00-01` may inventory/repo
 | --- | --- | --- |
 | PCD-AUTH-001 | Private sign-in identifier/credential and password/account-recovery method. | WP-01-01 |
 | PCD-AUTH-002 | Initial Owner bootstrap, lost-Owner recovery authority, and emergency/break-glass process. | WP-01-01; required before real data |
-| PCD-AUTH-003 | Whether one user may hold multiple ERP roles and how conflicts are resolved. | RBAC schema/seed package |
-| PCD-SEC-001 | Worker row scope: assigned locations/factories/tasks and who maintains assignments. | RBAC/domain schema packages |
-| PCD-SEC-002 | Whether the worker financial-deny ceiling is non-overridable even by Owner-managed permissions. Recommended security position: non-overridable. | RBAC/permission seed package |
 | PCD-SEC-003 | Session timeout, MFA expectations, privileged reauthentication, and break-glass logging before real data. | Pilot/security gate |
 | PCD-APR-001 | Whether a requester may approve the same high-risk request, by transaction type, and any required segregation-of-duties exceptions. | Approval seed/transaction packages |
 | PCD-PAY-001 | User-facing payment methods supported in MVP. | Payment schema/package |

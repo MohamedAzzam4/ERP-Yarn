@@ -67,7 +67,7 @@ M manage/configure
 
 Every action is constrained by tenant, state and field scope. Update/approve/cancel/reverse never authorizes direct edits to posted/locked history.
 
-Until PCD-AUTH-003 and PCD-SEC-002 are owner-resolved, role conflict behavior is not implementation discretion: a worker role code always enforces the worker financial-deny ceiling even if the same user is assigned another role, and coding must stop before seeding multi-role combinations. Owner management of assignments cannot silently override the absolute worker prohibitions in this contract.
+DEC-061 resolves role-conflict behavior for MVP. MVP users normally have one active operational role; the schema may allow multiple role assignments for future or exceptional Owner-managed cases. If multiple roles exist, effective permissions are the union of allowed actions except where a stricter denial or field ceiling applies. Worker-family financial denial under DEC-063 always wins, even if the same user is assigned another role or custom grant. Owner management of assignments cannot silently override the absolute worker prohibitions in this contract. PCD-MIG-001 remains separate and unresolved for whether dual historical approvals require two distinct user identities.
 
 ## 7. Role/Action Matrix
 
@@ -284,7 +284,17 @@ Exact seeds must match API routes. No worker wildcard permission.
 
 ### 13.1 Worker Row Scope
 
-The exact assigned-location/factory/task scope model is **Unresolved / requires owner decision** under PCD-SEC-001. Before worker domain coding, the owner must define assignment entities, default deny behavior, temporary delegation, who maintains assignments, and whether read scope differs from write scope. Until then, workers must not receive unrestricted tenant-wide write access as a shortcut.
+DEC-062 resolves worker row scope for MVP:
+
+- Worker operational row access is default-deny.
+- Scope is user-specific, not tenant-wide and not role-wide.
+- Allowed scope dimensions are assigned locations, assigned external factories and assigned task types.
+- External-factory assignment includes the factory's linked inventory location where relevant; it does not grant financial access to factory balances or rates.
+- Scope controls row visibility and eligibility for operational actions, but the action still requires the role permission.
+- Read and write are not broadened separately in MVP: a worker can only read operational rows needed for assigned tasks and can only write actions explicitly permitted for the role within that assigned scope.
+- Owner maintains worker scope assignments in MVP; Accountant may view or request changes only.
+- Temporary delegation UI is deferred. Scope rows may include optional effective-from/effective-to metadata for setup-time control, but no ad hoc self-delegation or worker-to-worker delegation is allowed.
+- Workers must not receive unrestricted tenant-wide write access as a shortcut.
 
 ## 14. Export and Report Rules
 
