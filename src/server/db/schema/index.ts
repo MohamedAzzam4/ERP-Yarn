@@ -165,3 +165,50 @@ export {
   adjustmentDirection,
   masterDataStatus,
 } from "./inventory-enums";
+
+// ---------------------------------------------------------------------------
+// WP-00-03C: Production and WIP schema
+// ---------------------------------------------------------------------------
+
+// Production tables
+export {
+  productionOrders,
+  productionInputs,
+  productionOutputs,
+  productionWipBalances,
+} from "./production-orders";
+export type {
+  ProductionOrder,
+  NewProductionOrder,
+  ProductionInput,
+  NewProductionInput,
+  ProductionOutput,
+  NewProductionOutput,
+  ProductionWipBalance,
+  NewProductionWipBalance,
+} from "./production-orders";
+
+export {
+  productionReceipts,
+  productionReceiptInputAllocations,
+  productionWasteEntries,
+  productionWipReturns,
+} from "./production-receipts";
+export type {
+  ProductionReceipt,
+  NewProductionReceipt,
+  ProductionReceiptInputAllocation,
+  NewProductionReceiptInputAllocation,
+  ProductionWasteEntry,
+  NewProductionWasteEntry,
+  ProductionWipReturn,
+  NewProductionWipReturn,
+} from "./production-receipts";
+
+// Production enums
+export {
+  productionType,
+  productionStatus,
+  historicalCostBasisSource,
+  wipReturnStatus,
+} from "./production-enums";

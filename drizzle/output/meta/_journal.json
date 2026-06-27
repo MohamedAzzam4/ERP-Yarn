@@ -15,6 +15,13 @@
       "when": 1782514165466,
       "tag": "0001_slow_marvel_apes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782524551001,
+      "tag": "0002_nasty_stature",
+      "breakpoints": true
     }
   ]
 }

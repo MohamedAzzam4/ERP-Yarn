@@ -335,7 +335,7 @@ describe("WP-00-03B inventory ledger tables", () => {
 // ---------------------------------------------------------------------------
 
 describe("WP-00-03B migration SQL — manual FK constraints present", () => {
-  const sql = readLatestMigrationSQL();
+  const sql = readAllMigrationSQL();
 
   it("contains manual FK: locations.related_factory_id -> external_factories.id", () => {
     expect(sql).toMatch(/locations_related_factory_id_external_factories_id_fk/);
@@ -355,7 +355,7 @@ describe("WP-00-03B migration SQL — no duplicate constraint/index names", () =
   // Every ADD CONSTRAINT name and CREATE [UNIQUE] INDEX name must appear
   // exactly once in migration 0001.
 
-  const sql = readLatestMigrationSQL();
+  const sql = readAllMigrationSQL();
 
   it("manual FK constraint names appear exactly once", () => {
     const manualFkNames = [
@@ -400,7 +400,7 @@ describe("WP-00-03B migration SQL — no duplicate constraint/index names", () =
 });
 
 describe("WP-00-03B migration SQL — CHECK constraints present", () => {
-  const sql = readLatestMigrationSQL();
+  const sql = readAllMigrationSQL();
 
   it("raw_material_batches has gross >= net check", () => {
     expect(sql).toMatch(/raw_material_batches_gross_net_check/);

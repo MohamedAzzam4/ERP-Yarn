@@ -79,8 +79,20 @@ function readLatestMigrationSQL(): string {
   return readFileSync(join(migrationsDir, files[files.length - 1]!), "utf8");
 }
 
+function readAllMigrationSQL(): string {
+  const files = readdirSync(migrationsDir)
+    .filter((f) => /^\d{4}_.*\.sql$/.test(f))
+    .sort();
+  if (files.length === 0) {
+    throw new Error("No migration SQL file found in drizzle/output/");
+  }
+  return files
+    .map((f) => readFileSync(join(migrationsDir, f), "utf8"))
+    .join("\n");
+}
+
 function hasUniqueIndexContaining(_table: Table, substr: string): boolean {
-  const sql = readLatestMigrationSQL();
+  const sql = readAllMigrationSQL();
   // Match: CREATE UNIQUE INDEX "...<substr>..." ON ...
   const pattern = new RegExp(
     `CREATE UNIQUE INDEX "[^"]*${substr}[^"]*" ON`,
@@ -355,28 +367,28 @@ describe("WP-00-03A audit append-only DB-level protection (migration SQL static 
   //   "audit immutability"
 
   it("migration SQL contains the prevent_audit_log_modification function", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(
       /CREATE OR REPLACE FUNCTION "public"\."prevent_audit_log_modification"/,
     );
   });
 
   it("migration SQL contains the audit_logs_no_update BEFORE UPDATE trigger", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/CREATE TRIGGER "audit_logs_no_update"/);
     expect(sql).toMatch(/BEFORE UPDATE ON "public"\."audit_logs"/);
     expect(sql).toMatch(/EXECUTE FUNCTION "public"\."prevent_audit_log_modification"/);
   });
 
   it("migration SQL contains the audit_logs_no_delete BEFORE DELETE trigger", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/CREATE TRIGGER "audit_logs_no_delete"/);
     expect(sql).toMatch(/BEFORE DELETE ON "public"\."audit_logs"/);
     expect(sql).toMatch(/EXECUTE FUNCTION "public"\."prevent_audit_log_modification"/);
   });
 
   it("trigger function raises an exception on UPDATE/DELETE", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/RAISE EXCEPTION.*audit_logs is append-only/);
   });
 });
@@ -390,57 +402,57 @@ describe("WP-00-03A user-reference FK constraints (migration SQL static check)",
   //    updated_by UUID NULL REFERENCES users(id)"
 
   it("migration SQL contains FK from approval_requests.requested_by to users.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/approval_requests_requested_by_users_id_fk/);
     expect(sql).toMatch(/FOREIGN KEY \("requested_by"\) REFERENCES "public"\."users"\("id"\)/);
   });
 
   it("migration SQL contains FK from audit_logs.user_id to users.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/audit_logs_user_id_users_id_fk/);
   });
 
   it("migration SQL contains FK from worker_scope_assignments.user_id to users.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/worker_scope_assignments_user_id_users_id_fk/);
   });
 
   it("migration SQL contains FK from worker_scope_assignments.assigned_by to users.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/worker_scope_assignments_assigned_by_users_id_fk/);
   });
 
   it("migration SQL contains manual self-ref FK from users.created_by to users.id", () => {
     // Self-referential FK added manually because Drizzle's `references()`
     // inside the users table definition creates a TS self-reference cycle.
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/users_created_by_users_id_fk/);
     expect(sql).toMatch(/FOREIGN KEY \("created_by"\) REFERENCES "public"\."users"\("id"\)/);
   });
 
   it("migration SQL contains manual self-ref FK from users.updated_by to users.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/users_updated_by_users_id_fk/);
     expect(sql).toMatch(/FOREIGN KEY \("updated_by"\) REFERENCES "public"\."users"\("id"\)/);
   });
 
   it("migration SQL contains FK from user_roles.user_id to users.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/user_roles_user_id_users_id_fk/);
   });
 
   it("migration SQL contains FK from user_roles.role_id to roles.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/user_roles_role_id_roles_id_fk/);
   });
 
   it("migration SQL contains FK from role_permissions.role_id to roles.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/role_permissions_role_id_roles_id_fk/);
   });
 
   it("migration SQL contains FK from role_permissions.permission_id to permissions.id", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     expect(sql).toMatch(/role_permissions_permission_id_permissions_id_fk/);
   });
 });
@@ -457,19 +469,19 @@ describe("WP-00-03A migration SQL — no duplicate constraint/trigger names (val
   // asserts the count is exactly 1.
 
   it("users_created_by_users_id_fk appears exactly once", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     const matches = sql.match(/ADD CONSTRAINT "users_created_by_users_id_fk"/g);
     expect(matches?.length ?? 0).toBe(1);
   });
 
   it("users_updated_by_users_id_fk appears exactly once", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     const matches = sql.match(/ADD CONSTRAINT "users_updated_by_users_id_fk"/g);
     expect(matches?.length ?? 0).toBe(1);
   });
 
   it("prevent_audit_log_modification function defined exactly once", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     const matches = sql.match(
       /CREATE OR REPLACE FUNCTION "public"\."prevent_audit_log_modification"/g,
     );
@@ -477,13 +489,13 @@ describe("WP-00-03A migration SQL — no duplicate constraint/trigger names (val
   });
 
   it("audit_logs_no_update trigger defined exactly once", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     const matches = sql.match(/CREATE TRIGGER "audit_logs_no_update"/g);
     expect(matches?.length ?? 0).toBe(1);
   });
 
   it("audit_logs_no_delete trigger defined exactly once", () => {
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     const matches = sql.match(/CREATE TRIGGER "audit_logs_no_delete"/g);
     expect(matches?.length ?? 0).toBe(1);
   });
@@ -491,7 +503,7 @@ describe("WP-00-03A migration SQL — no duplicate constraint/trigger names (val
   it("no constraint name is defined more than once (generic check)", () => {
     // Generic check: extract all ADD CONSTRAINT "name" occurrences and
     // verify each name appears exactly once.
-    const sql = readLatestMigrationSQL();
+    const sql = readAllMigrationSQL();
     const matches = sql.match(/ADD CONSTRAINT "([a-z_]+)"/g) ?? [];
     const names = matches
       .map((m) => m.match(/"([a-z_]+)"/)?.[1])
