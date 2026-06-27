@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { tajawal, alexandria } from "@/lib/fonts";
 import "./globals.css";
 
 /**
@@ -9,8 +10,12 @@ import "./globals.css";
  *   - Arabic-first; mixed-direction values are isolated locally as LTR in
  *     value components (added in WP-00-05).
  *
- * WP-00-02 scope: structural shell only. No theme provider, no sidebar,
- * no business navigation. Fonts are loaded via next/font in WP-00-04.
+ * WP-00-04 scope: theme foundation. Fonts are loaded via next/font
+ * (Tajawal for body, Alexandria for headings). The font CSS variables
+ * (--font-tajawal, --font-alexandria) are applied on the <html> element
+ * and consumed by the @theme block in globals.css.
+ *
+ * WP-00-05 will add RTL layout shell, sidebar, and LTR isolation primitives.
  */
 
 export const metadata: Metadata = {
@@ -26,7 +31,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ar" dir="rtl">
+    <html
+      lang="ar"
+      dir="rtl"
+      className={`${tajawal.variable} ${alexandria.variable}`}
+    >
       <body>{children}</body>
     </html>
   );

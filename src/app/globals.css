@@ -3,20 +3,22 @@
 /*
  * Tailwind v4 CSS-first theme tokens for ERP-Yarn.
  *
- * WP-00-02 scope: structural placeholders only. Final Calm Enterprise token
- * values land in WP-00-04 (Theme and Design-System Foundation) after the
- * three reference screens are owner-approved. The token STRUCTURE here is
- * binding per Contract 02 §Semantic Design Tokens, but the color VALUES are
- * provisional placeholders that WP-00-04 will calibrate.
+ * WP-00-04: Theme and Design-System Foundation.
  *
  * Contract: docs/contracts/02_design_system_and_ux_contract.md
- *   - Light-theme only in MVP (DEC-039).
+ *   - Light-theme only in MVP (DEC-039). Dark mode deferred.
+ *   - Calm Enterprise visual direction.
  *   - Centralized semantic CSS variables mapped to Tailwind semantic utilities.
  *   - Components must not hardcode literal palette colors.
+ *   - Initial palette values remain PROVISIONAL until the three reference
+ *     screens are owner-approved.
+ *
+ * Font variables are set by next/font in src/lib/fonts.ts and applied
+ * via the root layout's className.
  */
 
 @theme {
-  /* Surface tokens — provisional placeholders. */
+  /* Surface tokens — PROVISIONAL Calm Enterprise palette. */
   --color-background: #f4f7fb;
   --color-surface: #ffffff;
   --color-surface-elevated: #ffffff;
@@ -26,15 +28,15 @@
   --color-border: #e2e8f0;
   --color-input: #e2e8f0;
   --color-ring: #2457c5;
+  --color-overlay: rgba(15, 23, 42, 0.4);
 
-  /* Brand tokens (provisional). */
+  /* Brand tokens (PROVISIONAL). */
   --color-primary: #2457c5;
   --color-primary-foreground: #ffffff;
   --color-accent: #2a9d8f;
   --color-accent-foreground: #ffffff;
-  --color-overlay: rgba(15, 23, 42, 0.4);
 
-  /* Status tokens (provisional). */
+  /* Status tokens (PROVISIONAL). */
   --color-success: #2a9d8f;
   --color-success-foreground: #ffffff;
   --color-warning: #c47a12;
@@ -44,7 +46,7 @@
   --color-info: #2457c5;
   --color-info-foreground: #ffffff;
 
-  /* Workflow status tokens (provisional). */
+  /* Workflow status tokens (PROVISIONAL). */
   --color-pending: #c47a12;
   --color-approved: #2a9d8f;
   --color-rejected: #c2414a;
@@ -52,23 +54,31 @@
   --color-negative-stock: #c2414a;
   --color-needs-review: #c47a12;
 
-  /* Chart palette (provisional). */
+  /* Chart palette (PROVISIONAL). */
   --color-chart-1: #2457c5;
   --color-chart-2: #2a9d8f;
   --color-chart-3: #c47a12;
   --color-chart-4: #52657a;
   --color-chart-5: #c2414a;
 
-  /* Sidebar (provisional). */
+  /* Sidebar (PROVISIONAL). */
   --color-sidebar: #ffffff;
   --color-sidebar-foreground: #1e293b;
   --color-sidebar-active: #2457c5;
 
-  /* Typography — Tajawal body, Alexandria headings.
-   * Fonts will be wired through next/font in WP-00-04. Here we declare
-   * the family stacks so semantic utilities resolve from the start. */
-  --font-sans: "Tajawal", "Noto Sans Arabic", system-ui, sans-serif;
-  --font-heading: "Alexandria", "Noto Sans Arabic", system-ui, sans-serif;
+  /*
+   * Typography — Font family variables.
+   * Set by next/font in src/lib/fonts.ts:
+   *   --font-tajawal (body, tables, forms, worker screens)
+   *   --font-alexandria (headings, sidebar, dashboard, buttons)
+   *
+   * Tailwind semantic font variables map to these:
+   *   --font-sans → Tajawal (body font)
+   *   --font-heading → Alexandria (heading font)
+   */
+  --font-sans: var(--font-tajawal), "Noto Sans Arabic", system-ui, sans-serif;
+  --font-heading: var(--font-alexandria), "Noto Sans Arabic", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", monospace;
 }
 
 /*
@@ -83,9 +93,120 @@ html {
 body {
   background-color: var(--color-background);
   color: var(--color-foreground);
+  font-feature-settings: "rlig" 1, "calt" 1;
 }
 
-/* Reduced-motion baseline (Contract 02 §Accessibility). */
+/*
+ * Type Hierarchy (Contract 02 §Typography — Type Hierarchy).
+ * Named styles for page title, section title, card title, body, compact
+ * table body, label, helper text, validation message, numeric KPI,
+ * code/identifier, and status badge.
+ *
+ * Headings use the Alexandria font (font-heading). Body uses Tajawal
+ * (font-sans, inherited from html).
+ */
+
+/* Page title — largest, used for top-level page headings. */
+.text-page-title {
+  font-family: var(--font-heading);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 2rem;
+  letter-spacing: -0.01em;
+}
+
+/* Section title — used for section headers within a page. */
+.text-section-title {
+  font-family: var(--font-heading);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.75rem;
+}
+
+/* Card title — used for card/dialog headers. */
+.text-card-title {
+  font-family: var(--font-heading);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.5rem;
+}
+
+/* Body — standard text. Inherits font-sans from html. */
+.text-body {
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.375rem;
+}
+
+/* Compact table body — slightly smaller for dense tables. */
+.text-table-compact {
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.25rem;
+}
+
+/* Label — form field labels. */
+.text-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+}
+
+/* Helper text — form helper/description text. */
+.text-helper {
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1rem;
+  color: var(--color-muted-foreground);
+}
+
+/* Validation message — form validation/error text. */
+.text-validation {
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+  color: var(--color-danger);
+}
+
+/* Numeric KPI — dashboard metric numbers. */
+.text-numeric-kpi {
+  font-family: var(--font-heading);
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 2.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Code/identifier — document codes, batch/lot codes, etc. (LTR isolated). */
+.text-code-identifier {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.125rem;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Status badge — compact status indicator text. */
+.text-status-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1rem;
+  letter-spacing: 0.02em;
+}
+
+/*
+ * Accessibility baseline (Contract 02 §Accessibility, DEC-044).
+ * WCAG 2.2 AA target: keyboard focus, contrast, reduced motion, 200% zoom.
+ */
+
+/* Visible focus ring for keyboard navigation. */
+*:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* Reduced-motion baseline. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -95,4 +216,15 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/*
+ * Minimum touch target guidance (WCAG 2.2 AA, DEC-044).
+ * Worker targets must be at least 44×44px. The Button component's
+ * md/lg/icon sizes meet this requirement. This CSS provides a utility
+ * class for custom elements that need the minimum target.
+ */
+.min-touch-target {
+  min-width: 44px;
+  min-height: 44px;
 }
