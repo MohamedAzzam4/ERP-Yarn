@@ -196,6 +196,21 @@ body {
 }
 
 /*
+ * RTL-safe layout utilities (WP-00-05).
+ * Contract: docs/contracts/02_design_system_and_ux_contract.md
+ *   §Local LTR Isolation + §Arabic-First Root Direction
+ *
+ * These utilities support RTL-aware layout without relying on
+ * physical left/right properties.
+ */
+
+/* Bidi isolation for inline LTR values within RTL text. */
+.bidi-ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/*
  * Accessibility baseline (Contract 02 §Accessibility, DEC-044).
  * WCAG 2.2 AA target: keyboard focus, contrast, reduced motion, 200% zoom.
  */
