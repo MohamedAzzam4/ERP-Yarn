@@ -1,21 +1,23 @@
 /**
- * Middleware — Supabase session refresh + route protection.
+ * Proxy (formerly Middleware) — Supabase session refresh + route protection.
  *
  * Contract: docs/contracts/01_technical_architecture_and_deployment_contract.md
  *   §Supabase Auth: "validate the authenticated user on the server for
  *   protected operations"
  *
- * Next.js 16.2.9 uses `middleware.ts` (not `proxy.ts`). The `proxy.ts`
- * naming was proposed for Next.js 16 but the stable 16.2.9 release
- * continues to use `middleware.ts` as the documented entry point.
+ * Next.js 16.2.9 stable release renamed the `middleware.ts` file convention
+ * to `proxy.ts` (the `middleware` name is officially deprecated and emits a
+ * build-time warning). The exported function must be named `proxy` to match.
+ * See node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md
+ * and https://nextjs.org/docs/messages/middleware-to-proxy.
  *
- * This middleware:
+ * This proxy:
  *   1. Refreshes the Supabase session on every request (sets updated cookies).
  *   2. Protects routes that require authentication (redirects to /login).
  *   3. Allows public routes: /login, /api/health, /api/bootstrap, /api/auth/*.
  *
- * The middleware does NOT do ERP user mapping or permission checks —
- * that happens in Server Components via getErpAuthContext(). The middleware
+ * The proxy does NOT do ERP user mapping or permission checks —
+ * that happens in Server Components via getErpAuthContext(). The proxy
  * only checks if a Supabase session exists (lightweight, Edge-compatible).
  */
 import { createServerClient } from "@supabase/ssr";
@@ -34,7 +36,7 @@ function isPublicRoute(pathname: string): boolean {
   );
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const response = NextResponse.next({
     request: { headers: request.headers },
   });

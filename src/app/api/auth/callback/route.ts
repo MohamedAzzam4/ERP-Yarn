@@ -39,7 +39,7 @@ export async function GET(request: Request) {
                 cookieStore.set(name, value, options),
               );
             } catch {
-              // Server Component — can be ignored with middleware.
+              // Server Component — can be ignored with proxy.
             }
           },
         },

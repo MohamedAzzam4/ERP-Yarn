@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 /**
  * Home page — requires authenticated ERP user.
  *
- * If the middleware allows the request through (session exists), this
+ * If the proxy allows the request through (session exists), this
  * Server Component resolves the ERP auth context. If the Supabase Auth
  * user is unmapped or inactive, a denial message is shown.
  *

@@ -275,28 +275,35 @@ describe("WP-01-01 Supabase client helpers", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Middleware
+// Proxy (formerly Middleware)
 // ---------------------------------------------------------------------------
 
-describe("WP-01-01 middleware", () => {
-  it("middleware.ts exists", () => {
-    expect(exists("src/middleware.ts")).toBe(true);
+describe("WP-01-01 proxy (formerly middleware)", () => {
+  it("proxy.ts exists", () => {
+    expect(exists("src/proxy.ts")).toBe(true);
   });
 
   it("has public routes including /login and /api/health", () => {
-    const src = readText("src/middleware.ts");
+    const src = readText("src/proxy.ts");
     expect(src).toMatch(/\/login/);
     expect(src).toMatch(/\/api\/health/);
   });
 
   it("redirects to /login when no session", () => {
-    const src = readText("src/middleware.ts");
+    const src = readText("src/proxy.ts");
     expect(src).toMatch(/redirect.*login|NextResponse\.redirect.*login/);
   });
 
   it("refreshes Supabase session", () => {
-    const src = readText("src/middleware.ts");
+    const src = readText("src/proxy.ts");
     expect(src).toMatch(/getSession/);
+  });
+
+  it("exports proxy function (not middleware)", () => {
+    const src = readText("src/proxy.ts");
+    expect(src).toMatch(/export\s+async\s+function\s+proxy\s*\(/);
+    // Ensure no deprecated middleware export remains
+    expect(src).not.toMatch(/export\s+async\s+function\s+middleware\s*\(/);
   });
 });
 
