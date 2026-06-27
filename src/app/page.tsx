@@ -1,40 +1,70 @@
-import { default as clsx } from "clsx";
+import { getErpAuthContext } from "@/server/auth/erp-context";
+import { signOut } from "@/app/login/actions";
+import { Button } from "@/components/ui/button";
+import { Container } from "@/components/ui/container";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
- * Foundation home page for ERP-Yarn.
+ * Home page — requires authenticated ERP user.
  *
- * WP-00-02 scope: shows that the contracted stack builds and renders an
- * Arabic-first RTL shell. No business navigation, no auth, no dashboard.
- * Real screens land in WP-00-05+ after the reference-screen approval gate.
+ * If the middleware allows the request through (session exists), this
+ * Server Component resolves the ERP auth context. If the Supabase Auth
+ * user is unmapped or inactive, a denial message is shown.
  *
- * Contract: docs/contracts/13_work_packages.md WP-00-02 ("App can start
- * without domain features and configuration is reproducible.")
+ * WP-01-01 scope: minimal auth-aware home. No business screens yet.
  */
-export default function HomePage() {
+
+export default async function HomePage() {
+  const authResult = await getErpAuthContext();
+
+  if (!authResult.authenticated) {
+    return (
+      <Container size="sm" className="flex min-h-screen items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle className="text-center">غير مصرح</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-body text-muted-foreground text-center">
+              {authResult.reason === "unmapped" &&
+                "المستخدم غير مرتبط بحساب ERP"}
+              {authResult.reason === "inactive" &&
+                "الحساب غير نشط. تواصل مع المسؤول"}
+              {authResult.reason === "no_session" && "انتهت الجلسة"}
+            </p>
+            <form action={signOut}>
+              <Button type="submit" variant="outline" className="w-full">
+                تسجيل الخروج
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </Container>
+    );
+  }
+
   return (
-    <main
-      className={clsx(
-        "min-h-screen",
-        "flex flex-col items-center justify-center gap-6 p-8",
-      )}
-    >
-      <h1
-        className="text-3xl font-bold"
-        style={{ fontFamily: "var(--font-heading)" }}
-      >
-        نظام إدارة تجارة وتشغيل الغزل لدى الغير
-      </h1>
-      <p className="text-base text-muted-foreground" dir="rtl">
-        WP-00-02 — Technical Stack and Environment Setup (foundation only).
-      </p>
-      <p className="text-sm text-muted-foreground" dir="rtl">
-        المرحلة 0 — الأساس التقني. لا توجد ميزات أعمال بعد.
-      </p>
-      <hr className="w-full max-w-md border-border" />
-      <p className="text-xs text-muted-foreground" dir="rtl">
-        Next.js 16.2.9 · React 19 · TypeScript 5.9 · Tailwind v4 · Drizzle ·
-        postgres.js · Supabase SSR
-      </p>
-    </main>
+    <Container size="md" className="flex min-h-screen items-center justify-center">
+      <Card className="w-full max-w-lg">
+        <CardHeader>
+          <CardTitle className="text-center">
+            نظام إدارة تجارة وتشغيل الغزل لدى الغير
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-body text-muted-foreground text-center">
+            مرحباً، {authResult.name}
+          </p>
+          <p className="text-sm text-muted-foreground text-center">
+            المرحلة 1 — WP-01-01: المصادقة الخاصة (أساس)
+          </p>
+          <form action={signOut}>
+            <Button type="submit" variant="outline" className="w-full">
+              تسجيل الخروج
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </Container>
   );
 }

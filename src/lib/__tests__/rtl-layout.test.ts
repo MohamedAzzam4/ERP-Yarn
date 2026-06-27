@@ -211,7 +211,7 @@ describe("WP-00-05 no accidental business screens", () => {
   it("app directory has only page.tsx, layout.tsx, globals.css", () => {
     const appDir = join(root, "src", "app");
     const entries = readdirSync(appDir).filter(
-      (e) => !e.startsWith(".") && e !== "api",
+      (e) => !e.startsWith(".") && e !== "api" && e !== "auth" && e !== "login",
     );
     expect(entries.sort()).toEqual(["globals.css", "layout.tsx", "page.tsx"]);
   });

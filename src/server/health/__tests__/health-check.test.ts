@@ -68,7 +68,7 @@ describe("WP-00-06 no business routes", () => {
   it("app/api has only /health", () => {
     const apiDir = join(root, "src", "app", "api");
     const entries = readdirSync(apiDir).filter(e => !e.startsWith("."));
-    expect(entries.sort()).toEqual(["health"]);
+    expect(entries.sort()).toEqual(["auth", "bootstrap", "health"]);
   });
 });
 

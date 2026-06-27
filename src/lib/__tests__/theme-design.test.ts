@@ -236,7 +236,7 @@ describe("WP-00-04 no accidental business screens", () => {
   it("app directory has only page.tsx, layout.tsx, globals.css (no business routes)", () => {
     const appDir = join(root, "src", "app");
     const entries = readdirSync(appDir).filter(
-      (e) => !e.startsWith(".") && e !== "api",
+      (e) => !e.startsWith(".") && e !== "api" && e !== "auth" && e !== "login",
     );
     // Should be: globals.css, layout.tsx, page.tsx
     expect(entries.sort()).toEqual(["globals.css", "layout.tsx", "page.tsx"]);
