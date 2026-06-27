@@ -54,3 +54,5 @@ next-env.d.ts.bak
 # OS
 .DS_Store
 Thumbs.db
+.vercel
+.env*
