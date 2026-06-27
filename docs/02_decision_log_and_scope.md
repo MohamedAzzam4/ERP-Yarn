@@ -86,6 +86,8 @@ Execution documents may narrow order/scope but cannot alter decisions in this lo
 | DEC-070 | Post-commit historical correction requires renewed dual approval. | Any correction to committed historical data requires Owner and Accountant approval against the corrected snapshot/report, plus audit/provenance. |
 | DEC-071 | MVP historical migration cutover starts with opening balances only. | Full transaction-history import is deferred unless separately approved. Opening balances must not be combined with overlapping imported transactions that double-count stock, party balances, payments or movements. |
 | DEC-072 | Historical reconciliation is exact by default. | Stock, party balances and monetary totals must reconcile exactly. Any difference requires explicit Owner and Accountant accepted-difference approval with reason; no silent tolerance is allowed. |
+| DEC-073 | MVP uses private email/password sign-in through Supabase Auth. Public signup is not allowed. | Users are created/invited only through an Owner/Admin-controlled flow. Supabase Auth identity is authentication only; ERP tenant membership, role, permission, user status, and field visibility remain controlled by ERP database/application logic. Unmapped or inactive Supabase users must be denied ERP access. |
+| DEC-074 | The first Owner is created through a controlled one-time bootstrap mechanism. | For dev/demo, the bootstrap may be a one-time script or route guarded by a server-only bootstrap secret that must never be exposed to the browser or committed. After the first Owner exists, bootstrap must idempotently refuse further Owner creation. Bootstrap must be audited where schema/application support exists. For pilot/production, the bootstrap method must be replaced by manual admin provisioning or a stricter audited setup process. Dev/demo bootstrap does not authorize public signup or self-service role selection. |
 
 ## Integrated Design-System Decisions
 
@@ -286,6 +288,8 @@ These former blockers are now binding owner decisions. Coding agents must implem
 | PCD-MIG-002 | Resolved by DEC-070. Post-commit historical correction requires renewed dual approval. | Historical correction packages may require dual approval against the corrected snapshot. |
 | PCD-MIG-003 | Resolved by DEC-071. MVP historical cutover starts with opening balances only; full transaction history is deferred. | Historical template/staging schema may focus on opening-balance cutover and reject overlapping history. |
 | PCD-MIG-004 | Resolved by DEC-072. Historical reconciliation is exact unless Owner and Accountant explicitly approve an accepted difference with reason. | Historical reconciliation packages may enforce exact totals and accepted-difference metadata. |
+| PCD-AUTH-001 | Resolved by DEC-073. MVP uses private email/password sign-in through Supabase Auth; no public signup; users created/invited only through Owner/Admin-controlled flow. | `WP-01-01` may implement email/password login, session mapping, and inactive/unmapped denial without guessing the auth method. |
+| PCD-AUTH-002 | Resolved by DEC-074. First Owner is created through a controlled one-time bootstrap mechanism; dev/demo uses a server-only bootstrap secret; pilot/production uses manual admin provisioning. | `WP-01-01` may implement the one-time Owner bootstrap route/script for dev/demo. |
 
 ## Open Pre-Coding Owner Decision Gates
 
@@ -293,8 +297,6 @@ These decisions are not guesses for coding agents. `WP-00-01` may inventory/repo
 
 | ID | Decision required | Blocking gate |
 | --- | --- | --- |
-| PCD-AUTH-001 | Private sign-in identifier/credential and password/account-recovery method. | WP-01-01 |
-| PCD-AUTH-002 | Initial Owner bootstrap, lost-Owner recovery authority, and emergency/break-glass process. | WP-01-01; required before real data |
 | PCD-SEC-003 | Session timeout, MFA expectations, privileged reauthentication, and break-glass logging before real data. | Pilot/security gate |
 | PCD-APR-001 | Whether a requester may approve the same high-risk request, by transaction type, and any required segregation-of-duties exceptions. | Approval seed/transaction packages |
 | PCD-UX-001 | Approved/provisional Arabic terminology fixture for the three reference screens. | Reference-screen packages |

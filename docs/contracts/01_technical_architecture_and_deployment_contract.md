@@ -149,11 +149,20 @@ Required rules:
 - do not provide open public signup for the MVP;
 - only Owner-controlled user provisioning and permission workflows may activate ERP users.
 
-The initial sign-in mechanism is not yet owner-approved:
+The initial sign-in mechanism is resolved by DEC-073:
 
-> Unresolved / requires owner decision
+- MVP uses private email/password sign-in through Supabase Auth.
+- Public signup is not allowed.
+- Users are created/invited only through an Owner/Admin-controlled flow.
+- Supabase Auth identity is authentication only; ERP tenant membership, role, permission, user status, and field visibility remain controlled by ERP database/application logic.
+- Unmapped or inactive Supabase users must be denied ERP access.
 
-The Auth work package must resolve email/password versus another supported private sign-in method before implementing login and recovery UX.
+The first Owner bootstrap mechanism is resolved by DEC-074:
+
+- For dev/demo, the bootstrap may be a one-time script or route guarded by a server-only bootstrap secret that must never be exposed to the browser or committed.
+- After the first Owner exists, bootstrap must idempotently refuse further Owner creation.
+- Bootstrap must be audited where schema/application support exists.
+- For pilot/production, the bootstrap method must be replaced by manual admin provisioning or a stricter audited setup process.
 
 ### Supabase Project Region
 

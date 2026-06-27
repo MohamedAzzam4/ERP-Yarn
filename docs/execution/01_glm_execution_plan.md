@@ -71,7 +71,7 @@ After a package: deliverables reviewed against contracts; package tests and phas
 - **Goal:** Private identity, backend authorization, audit/idempotency/numbering and approved visual baselines.
 - **Read:** Contracts 01–03, 06, 09–14.
 - **Order:** WP-01-01 → WP-01-02 → WP-01-03 and WP-01-04 → WP-01-05, WP-01-06 and WP-01-07 → WP-01-08.
-- **Dependencies:** WP-00-06, PCD-AUTH-001 and PCD-AUTH-002 for WP-01-01; WP-00-03A and the exact package chain below for the remaining Phase 1 work.
+- **Dependencies:** WP-00-06 for WP-01-01 (PCD-AUTH-001 resolved by DEC-073; PCD-AUTH-002 resolved by DEC-074); WP-00-03A and the exact package chain below for the remaining Phase 1 work.
 - **Allowed scope:** Auth, ERP mapping, guards/DTOs, audit/sequence/idempotency, shells and three references.
 - **Non-goals:** Real domain posting or broad frontend.
 - **Likely modules/files:** auth/session, middleware/server guards, permissions/DTOs, audit/idempotency/sequence services, shared shells/reference pages, tests.
@@ -89,7 +89,7 @@ After a package: deliverables reviewed against contracts; package tests and phas
 
 ### Phase 1 Package Execution Records
 
-- **WP-01-01 Private Auth** — Inputs PCD-AUTH-001 and PCD-AUTH-002; read 01,10§4,11–14; output server session/login/recovery/bootstrap boundary; test login/logout/recovery/inactive/tenant/enumeration; depends on WP-00-06, PCD-AUTH-001 and PCD-AUTH-002; do not public signup/role select; report decision and results.
+- **WP-01-01 Private Auth** — Inputs DEC-073 (email/password) and DEC-074 (Owner bootstrap); read 01,10§4,11–14; output server session/login/recovery/bootstrap boundary; test login/logout/recovery/inactive/tenant/enumeration; depends on WP-00-06; PCD-AUTH-001 resolved by DEC-073; PCD-AUTH-002 resolved by DEC-074; do not public signup/role select; report decision and results.
 - **WP-01-02 RBAC/Redaction Guard** — Inputs auth+seeds; read 03,09–14; output guards/DTO patterns; test every role/direct URL/nested/export/cross-tenant; depends on WP-00-03A and WP-01-01; no fetch-then-hide/wildcards; report matrix coverage.
 - **WP-01-03 Audit/Idempotency/Numbering** — Inputs schema/RBAC; read 03,06,09,11–14; output services; test concurrency/replay/conflict/audit rollback/immutability; depends on WP-01-02; no generic posting helper; report failure injection.
 - **WP-01-04 Worker/Management Shells** — Inputs RTL/RBAC; read 02,10,11–14; output task/shared shells; test role nav/direct URLs/RTL/360/tablet/zoom; depends on WP-00-05 and WP-01-02; no global search/broad pages; report screenshots/redaction.

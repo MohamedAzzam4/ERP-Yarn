@@ -194,7 +194,7 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Implementation notes:** Supabase identity is not ERP authorization; no public signup.
 - **Tests:** Login/logout/recovery, inactive/cross-tenant denial, protected redirects, enumeration safety.
 - **Acceptance:** Server maps authenticated identity to active ERP user/tenant.
-- **Dependencies:** WP-00-06, PCD-AUTH-001 and PCD-AUTH-002.
+- **Dependencies:** WP-00-06. PCD-AUTH-001 resolved by DEC-073; PCD-AUTH-002 resolved by DEC-074.
 - **What not to change:** No role selector/client role authority.
 - **Common failures:** Client metadata trusted, recovery grants ERP role.
 - **Completion report:** Decision reference and auth tests.
