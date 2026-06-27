@@ -254,3 +254,36 @@ export type {
   DirectCost, NewDirectCost,
   DirectCostAllocation, NewDirectCostAllocation,
 } from "./subledger";
+
+// ---------------------------------------------------------------------------
+// WP-00-03E: Historical Migration Schema
+// ---------------------------------------------------------------------------
+
+export {
+  importBatchStatus, validationSeverity, cutoverImportMode,
+  aliasMappingStatus, migrationApproverRole, correctionRequestStatus,
+  reviewItemDecision, reconciliationResultStatus,
+} from "./migration-enums";
+
+export {
+  importBatches, importFiles, importTemplateVersions,
+  importStagingRows, importStagingCells,
+  importValidationErrors, importReconciliationResults,
+  importHumanReviewItems, importAliasMappings,
+  importBatchApprovals, importCutoverManifests,
+  historicalCorrectionRequests,
+} from "./migration";
+export type {
+  ImportBatch, NewImportBatch,
+  ImportFile, NewImportFile,
+  ImportTemplateVersion, NewImportTemplateVersion,
+  ImportStagingRow, NewImportStagingRow,
+  ImportStagingCell, NewImportStagingCell,
+  ImportValidationError, NewImportValidationError,
+  ImportReconciliationResult, NewImportReconciliationResult,
+  ImportHumanReviewItem, NewImportHumanReviewItem,
+  ImportAliasMapping, NewImportAliasMapping,
+  ImportBatchApproval, NewImportBatchApproval,
+  ImportCutoverManifest, NewImportCutoverManifest,
+  HistoricalCorrectionRequest, NewHistoricalCorrectionRequest,
+} from "./migration";

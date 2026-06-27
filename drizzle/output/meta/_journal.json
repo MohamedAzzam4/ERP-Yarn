@@ -29,6 +29,13 @@
       "when": 1782529487771,
       "tag": "0003_first_rocket_raccoon",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782533104304,
+      "tag": "0004_far_white_tiger",
+      "breakpoints": true
     }
   ]
 }
