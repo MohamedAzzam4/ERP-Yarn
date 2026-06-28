@@ -289,6 +289,13 @@ describe("WP-01-01 proxy (formerly middleware)", () => {
     expect(src).toMatch(/\/api\/health/);
   });
 
+  it("includes /auth/reset-password in public routes (recovery flow)", () => {
+    // The recovery email link lands the user on /auth/reset-password without
+    // a prior session — the proxy must NOT redirect them to /login.
+    const src = readText("src/proxy.ts");
+    expect(src).toMatch(/\/auth\/reset-password/);
+  });
+
   it("redirects to /login when no session", () => {
     const src = readText("src/proxy.ts");
     expect(src).toMatch(/redirect.*login|NextResponse\.redirect.*login/);

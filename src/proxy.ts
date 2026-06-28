@@ -25,6 +25,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_ROUTES = [
   "/login",
+  "/auth/reset-password",
   "/api/health",
   "/api/bootstrap",
   "/api/auth",
