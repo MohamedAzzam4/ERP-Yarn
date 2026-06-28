@@ -48,6 +48,8 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Work on exactly one `phase/NN-name` branch created from the latest tested `main`.
 - Keep one work package per bounded commit or clearly identified commit series; do not mix packages in one commit.
 - Push only the authorized phase branch. Never push implementation directly to `main`.
+- Under DEC-075, request authorization to push the active phase branch after each meaningful local checkpoint, including incomplete-but-valuable or defect-fix checkpoints, to protect against GLM sandbox resets.
+- Clearly label any pushed phase-branch checkpoint as `ready_for_validation`, `incomplete_needs_fix`, `blocked`, or `ready_for_merge`. A pushed phase branch is not acceptance, completion, validation, merge approval, or `main` authorization.
 - Do not open the phase PR until its required packages and owner gates are complete.
 - Before requesting merge, synchronize with current `main` and rerun all phase-required checks and preview smoke/regression tests.
 - Any failed, skipped, unavailable, flaky without resolution, or undocumented required check blocks merge.

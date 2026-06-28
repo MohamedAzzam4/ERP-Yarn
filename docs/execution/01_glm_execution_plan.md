@@ -19,6 +19,7 @@ GLM must:
 - use disposable local Supabase or a separately authorized hosted development/test project for integration testing, never online-demo/pilot/production data.
 - follow the cumulative DEC-058 test cadence: focused tests during implementation, full tests after each WP, and integrated phase tests before merge; never defer all testing to the end.
 - use a normal secret channel when available; when unavailable, use DEC-060 owner-authorized temporary chat credentials for the exact development/test operation or DEC-059 verified Git bundle handoff. Do not start the next WP until the authorized remote push is verified or trusted import/retest/push verification completes.
+- follow DEC-075 checkpoint publication: after a meaningful local implementation, defect-fix, or incomplete-but-valuable recovery checkpoint, request authorization to push the active phase branch and label its status. This checkpoint protects work from sandbox reset but never authorizes `main` merge.
 
 Authority is Decision Log owner decisions → approved contracts → v4 where not superseded → remaining authorized context. This execution plan can narrow scope/order only.
 
@@ -30,7 +31,7 @@ The package registry in `docs/contracts/13_work_packages.md` is incorporated int
 
 Before a package: dependencies complete; contracts/clauses listed; repository state inspected; correct phase branch checked; scope/non-goals stated; fixtures/tests/rollback available; owner decision/reference-screen gate satisfied where relevant; local or authorized hosted-development Supabase access available when integration testing requires it.
 
-After a package: deliverables reviewed against contracts; package tests and phase smoke/regression evidence recorded; failures/risks/intentional omissions listed; rollback viable; only then may the package commit be pushed to the phase branch and the next dependency-ready package start. A phase PR can merge to `main` only after all phase checks and relevant Vercel Preview/Supabase development smoke tests pass and the owner authorizes the merge.
+After a package or meaningful checkpoint: deliverables are reviewed against contracts; package tests and available smoke/regression evidence are recorded; failures/risks/intentional omissions are listed; rollback/recovery is viable; then GLM should request authorization to push the active phase branch as a checkpoint under DEC-075. The next dependency-ready package may start only after the required remote phase-branch checkpoint is verified or the credentialless handoff is imported/retested/pushed. A phase-branch checkpoint can remain `incomplete_needs_fix` or `blocked`; it still protects recoverable work. A phase PR can merge to `main` only after all phase checks and relevant Vercel Preview/Supabase development smoke tests pass and the owner authorizes the merge.
 
 ## 3. Phase 0 — Foundation and Risk Controls
 
