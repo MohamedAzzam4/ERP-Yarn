@@ -215,10 +215,10 @@ describe("NO service-role bypass (Contract 11 §11)", () => {
     // authenticated users, both throw for denials) rather than identity,
     // since requireErpAuthForServiceRolePath is a separate function for
     // documentation intent.
-    const authed = { authenticated: true, userId: "u1", tenantId: "t1", email: "e", name: "n", authId: "a" };
+    const authed = { authenticated: true as const, userId: "u1", tenantId: "t1", email: "e", name: "n", authId: "a" };
     expect(requireErpAuthForServiceRolePath(authed)).toEqual(requireAuthenticatedErpContext(authed));
 
-    const denied = { authenticated: false, reason: "no_session" as const };
+    const denied = { authenticated: false as const, reason: "no_session" as const };
     expect(() => requireErpAuthForServiceRolePath(denied)).toThrow();
     expect(() => requireAuthenticatedErpContext(denied)).toThrow();
   });
