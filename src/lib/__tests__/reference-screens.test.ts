@@ -49,7 +49,11 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
     expect(WORKER_RECEIPT_FIXTURE.screenTitle).toBe("استلام خام جديد");
   });
 
-  it("fixture has 11 visible fields", () => {
+  it("fixture has 11 visible fields (matching docs/design §5 Visible fields table)", () => {
+    // The fixture doc §5 defines exactly 11 visible fields for the Worker
+    // raw-material receipt. The "Expected screen states" table (5 rows) is
+    // a separate table and should NOT be counted as fields.
+    // Previous report incorrectly said 12 — this test prevents regression.
     expect(WORKER_RECEIPT_FIXTURE.fields).toHaveLength(11);
   });
 
@@ -87,6 +91,11 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
   it("component has touch targets (min-h-[44px])", () => {
     const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
     expect(src).toMatch(/min-h-\[44px\]/);
+  });
+
+  it("component has focus-visible styles on interactive elements", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/focus-visible/);
   });
 
   it("component states it is a reference screen (no real posting)", () => {
@@ -157,6 +166,11 @@ describe("WP-01-06 Accountant review queue reference screen", () => {
   it("component uses table with role=table", () => {
     const src = readText("src/components/reference-screens/review-queue-reference.tsx");
     expect(src).toMatch(/role="table"/);
+  });
+
+  it("component has focus-visible styles on interactive elements", () => {
+    const src = readText("src/components/reference-screens/review-queue-reference.tsx");
+    expect(src).toMatch(/focus-visible/);
   });
 
   it("page uses ManagementShell wrapper", () => {

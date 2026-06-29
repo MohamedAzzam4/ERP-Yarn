@@ -99,7 +99,7 @@ export function ReviewQueueReference() {
                           size="sm"
                           disabled
                           aria-label="اعتماد (غير متاح - شاشة مرجعية)"
-                          className="min-h-[44px] opacity-50"
+                          className="min-h-[44px] opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           اعتماد
                         </Button>
@@ -109,7 +109,7 @@ export function ReviewQueueReference() {
                           size="sm"
                           disabled
                           aria-label="رفض (غير متاح - شاشة مرجعية)"
-                          className="min-h-[44px] opacity-50"
+                          className="min-h-[44px] opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           رفض
                         </Button>

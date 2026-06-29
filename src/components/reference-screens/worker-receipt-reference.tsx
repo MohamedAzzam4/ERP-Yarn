@@ -57,7 +57,7 @@ export function WorkerReceiptReference() {
               key={action}
               type="button"
               variant="outline"
-              className="min-h-[44px]"
+              className="min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               aria-label={action}
             >
               {action}
