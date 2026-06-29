@@ -24,7 +24,7 @@ export interface WorkerTaskItem {
 }
 
 export const WORKER_TASKS: ReadonlyArray<WorkerTaskItem> = [
-  { id: "raw-receipt", labelAr: "استلام خام", href: "/worker/raw-receipt", icon: "PackagePlus", roles: ["warehouse_employee"], permissionKey: "inventory.receive.create" },
+  { id: "raw-receipt", labelAr: "استلام خام", href: "/worker/raw-receipts/new", icon: "PackagePlus", roles: ["warehouse_employee"], permissionKey: "inventory.receive.create" },
   { id: "stock-transfer", labelAr: "نقل مخزون", href: "/worker/stock-transfer", icon: "ArrowLeftRight", roles: ["warehouse_employee"], permissionKey: "inventory.transfer.create" },
   { id: "return-receipt", labelAr: "استلام مرتجع", href: "/worker/return-receipt", icon: "Undo2", roles: ["warehouse_employee"], permissionKey: "returns.create" },
   { id: "production-entry", labelAr: "تسجيل إنتاج", href: "/worker/production-entry", icon: "Factory", roles: ["production_employee"], permissionKey: "production.issue_draft.create" },
@@ -55,7 +55,11 @@ export interface ManagementNavCategory {
 export const MANAGEMENT_NAV: ReadonlyArray<ManagementNavCategory> = [
   {
     id: "dashboard", labelAr: "لوحة المعلومات",
-    items: [{ id: "dashboard-home", labelAr: "الرئيسية", href: "/management", icon: "LayoutDashboard", roles: ["owner", "accountant"] }],
+    items: [
+      { id: "dashboard-home", labelAr: "الرئيسية", href: "/management", icon: "LayoutDashboard", roles: ["owner", "accountant"] },
+      { id: "dashboard-panel", labelAr: "لوحة التحكم", href: "/management/dashboard", icon: "BarChart3", roles: ["owner", "accountant"] },
+      { id: "reviews", labelAr: "مركز المراجعات", href: "/management/reviews", icon: "ClipboardCheck", roles: ["owner", "accountant"] },
+    ],
   },
   {
     id: "inventory", labelAr: "المخزون",
