@@ -48,9 +48,9 @@ They are the visual acceptance baseline for spacing, typography, density, semant
 
 Approval evidence records screen version, palette values, typography/density, accepted breakpoints, Arabic/RTL behavior, known visual limitations, decision date, and screenshots/equivalent evidence. Until approved, agents may build primitives and these screens only—not replicate their provisional patterns across modules.
 
-Each reference uses the canonical versioned synthetic fixture and prohibited-data fixture resolved under PCD-UX-004 and represented in the Testing Plan. Fixture-only action controls remain visibly disabled/read-only and labeled as non-operational until the real command package exists; a visual reference must not imply a successful workflow that backend contracts cannot perform.
+Each reference uses the canonical versioned synthetic fixture and prohibited-data fixture resolved by DEC-078 in `docs/design/01_reference_screen_terms_and_fixtures.md` and represented in the Testing Plan. Fixture-only action controls remain visibly disabled/read-only and labeled as non-operational until the real command package exists; a visual reference must not imply a successful workflow that backend contracts cannot perform.
 
-PCD-UX-001 must provide the approved/provisional Arabic terminology fixture. PCD-UX-002 must identify the canonical repository/evidence record and valid owner sign-off mechanism. PCD-UX-004 must provide the canonical synthetic and prohibited-data fixture versions. Without all three, the gate cannot pass even when screenshots look acceptable.
+Arabic terminology follows DEC-077: the owner-provided client workbook `متابعة انتاج وبيع خيوط الغزل (3).xlsx` and any later client Excel/screenshots first, then the provisional Arabic terminology fixture in `docs/design/01_reference_screen_terms_and_fixtures.md`. Approval evidence follows DEC-079 and must be recorded in `docs/design/reference_screen_approval.md`. The storage/sign-off mechanism is resolved, but no screen is approved until the owner decision evidence is recorded.
 
 ## 4. Authentication Screens
 

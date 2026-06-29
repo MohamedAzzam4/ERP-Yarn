@@ -114,11 +114,11 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Critical state cannot be color-only or toast-only.
 - Meet WCAG 2.2 AA target, keyboard/focus/labels/contrast/reduced-motion/200% zoom requirements.
 - Do not scale frontend beyond primitives/reference screens until Worker raw receipt, Accountant review queue and Owner dashboard are owner-approved.
-- Do not invent Arabic terminology or final token values.
+- Use the owner-provided client workbook `متابعة انتاج وبيع خيوط الغزل (3).xlsx` where available and the approved/provisional Arabic terminology fixture in `docs/design/01_reference_screen_terms_and_fixtures.md`; do not invent Arabic business terminology outside that fixture or owner-provided client Excel/screenshots. Do not invent final token values beyond the approved/reference-screen calibration path.
 
 ## 9. Auth, Deployment, Backup and Migration Limits
 
-- Keep private sign-in/recovery unresolved until owner decision; do not invent auth UX.
+- Private email/password sign-in and dev/demo Owner bootstrap are resolved by DEC-073 and DEC-074; do not introduce public signup, role self-selection or unapproved recovery behavior.
 - Supabase project uses Europe general region; if specific, prefer Central EU/Frankfurt; record assigned region and Egyptian latency.
 - Free/low-cost deployment is development/demo/controlled-pilot only, never production-ready by default.
 - Use the Supabase CLI disposable local stack for database/Auth/Storage integration tests when the sandbox supports it. Otherwise use only a separately authorized hosted development/test project with synthetic data.

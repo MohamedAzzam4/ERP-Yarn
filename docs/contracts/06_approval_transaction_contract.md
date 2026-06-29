@@ -52,7 +52,7 @@ Every high-risk approval:
 10. records approval decision and success audit in the same transaction;
 11. commits once and returns deterministic result.
 
-Requester-versus-approver behavior is blocked by PCD-APR-001. Until resolved, an agent must not implement self-approval as a convenience; affected approval packages remain blocked or use an explicitly approved safe-deny policy.
+Requester-versus-approver behavior follows DEC-080. A requester cannot approve their own high-risk request in MVP. Owner and Accountant may approve where the transaction type permits, but neither may approve their own request. Workers cannot approve financial, accounting, stock-impacting, migration or high-risk operational transactions. Historical migration remains stricter: Owner and Accountant approvals require two distinct users. Emergency self-approval is deferred and not allowed in MVP.
 
 If any required write/audit fails, all business writes roll back.
 

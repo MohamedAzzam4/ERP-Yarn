@@ -34,7 +34,7 @@ The layers are cumulative. Phase testing never substitutes for package testing, 
 
 ## 3. Required Fixtures
 
-Fixtures are versioned and tenant-scoped. Include a second tenant for isolation tests and five active users (Owner, Accountant, Warehouse, Production, Quality) plus inactive/unauthorized users. The exact three reference-screen fixture versions and their prohibited-data counterparts are blocked by PCD-UX-004; agents may not silently designate an ad hoc fixture as canonical or use real client data for visual approval.
+Fixtures are versioned and tenant-scoped. Include a second tenant for isolation tests and five active users (Owner, Accountant, Warehouse, Production, Quality) plus inactive/unauthorized users. The canonical three reference-screen fixture versions and their prohibited-data counterparts are defined by DEC-078 in `docs/design/01_reference_screen_terms_and_fixtures.md`. Agents may not silently designate an ad hoc fixture as canonical or use real client data for visual approval.
 
 ### 3.1 Inventory and Reservation
 
@@ -276,7 +276,7 @@ For every endpoint/query/export/dashboard/chart/error/nested relationship:
 
 ### 8.1 Reference Screens
 
-For Worker raw-material receipt, Accountant review queue, and Owner dashboard, use the PCD-UX-004 fixture versions and capture evidence at required breakpoints and states. Validate exact expected totals/states, prohibited-field absence, approved token values, typography/density, permission-safe data, cards/forms/tables/drawers/alerts, and owner approval metadata.
+For Worker raw-material receipt, Accountant review queue, and Owner dashboard, use `reference-fixtures-v1` from `docs/design/01_reference_screen_terms_and_fixtures.md` and capture evidence at required breakpoints and states. Validate exact expected totals/states, prohibited-field absence, approved token values, typography/density, permission-safe data, cards/forms/tables/drawers/alerts, and owner approval metadata from `docs/design/reference_screen_approval.md`.
 
 ### 8.2 Accessibility
 

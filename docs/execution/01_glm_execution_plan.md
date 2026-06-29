@@ -94,10 +94,10 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 - **WP-01-02 RBAC/Redaction Guard** — Inputs auth+seeds; read 03,09–14; output guards/DTO patterns; test every role/direct URL/nested/export/cross-tenant; depends on WP-00-03A and WP-01-01; no fetch-then-hide/wildcards; report matrix coverage.
 - **WP-01-03 Audit/Idempotency/Numbering** — Inputs schema/RBAC; read 03,06,09,11–14; output services; test concurrency/replay/conflict/audit rollback/immutability; depends on WP-01-02; no generic posting helper; report failure injection.
 - **WP-01-04 Worker/Management Shells** — Inputs RTL/RBAC; read 02,10,11–14; output task/shared shells; test role nav/direct URLs/RTL/360/tablet/zoom; depends on WP-00-05 and WP-01-02; no global search/broad pages; report screenshots/redaction.
-- **WP-01-05 Worker Receipt Reference** — Inputs shell/design, PCD-UX-001 and PCD-UX-004; read 02,10§7.1,11–14; output fixture/draft-safe reference; test finance redaction/RTL/a11y/responsive/states; depends on WP-01-04, PCD-UX-001 and PCD-UX-004; no approval/posting; report version.
-- **WP-01-06 Accountant Queue Reference** — Inputs management shell, PCD-UX-001 and PCD-UX-004; read 02,06,09–14; output categories/table/drawer/actions visual; test permissions/RTL/a11y/responsive/states; depends on WP-01-04, PCD-UX-001 and PCD-UX-004; no fake status CRUD; report version.
-- **WP-01-07 Owner Dashboard Reference** — Inputs shell, PCD-UX-001 and PCD-UX-004; read 02,10§6.1,11–14; output cards/alerts/accessible summary; test totals/permissions/partial failure/RTL; depends on WP-01-04, PCD-UX-001 and PCD-UX-004; no client financial aggregation; report version.
-- **WP-01-08 Visual Approval Gate** — Inputs three references; read 02/10/12–14; output owner decision/tokens/density/breakpoints/limitations; review QA evidence; depends on WP-01-05, WP-01-06, WP-01-07 and PCD-UX-002; no inferred approval; report gate result.
+- **WP-01-05 Worker Receipt Reference** — Inputs shell/design, DEC-077 terminology and DEC-078 fixtures; read 02,10§7.1,11–14 plus `docs/design/01_reference_screen_terms_and_fixtures.md`; output fixture/draft-safe reference; test finance redaction/RTL/a11y/responsive/states; depends on WP-01-04, DEC-077 and DEC-078; no approval/posting; report version.
+- **WP-01-06 Accountant Queue Reference** — Inputs management shell, DEC-077 terminology and DEC-078 fixtures; read 02,06,09–14 plus `docs/design/01_reference_screen_terms_and_fixtures.md`; output categories/table/drawer/actions visual; test permissions/RTL/a11y/responsive/states; depends on WP-01-04, DEC-077 and DEC-078; no fake status CRUD; report version.
+- **WP-01-07 Owner Dashboard Reference** — Inputs shell, DEC-077 terminology and DEC-078 fixtures; read 02,10§6.1,11–14 plus `docs/design/01_reference_screen_terms_and_fixtures.md`; output cards/alerts/accessible summary; test totals/permissions/partial failure/RTL; depends on WP-01-04, DEC-077 and DEC-078; no client financial aggregation; report version.
+- **WP-01-08 Visual Approval Gate** — Inputs three references and DEC-079 approval mechanism; read 02/10/12–14 plus `docs/design/reference_screen_approval.md`; output owner decision/tokens/density/breakpoints/limitations; review QA evidence; depends on WP-01-05, WP-01-06, WP-01-07 and DEC-079; no inferred approval; report gate result.
 
 ## 5. Phase 2 — Masters, Raw Materials, Supplier Payables, Minimal Backup
 
@@ -122,7 +122,7 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 - **WP-02-02 InventoryLedgerService Receipt Primitive** — read 03,04,06,09,11–14; output minimal receipt movement/balance transaction; test atomicity/concurrency/idempotency/orphan/audit rollback; depends on WP-01-03 and WP-02-01; no other movements/UI.
 - **WP-02-03 SubledgerService Payable Primitive** — read 03,06,07,09,11–14; output accounts/immutable supplier entry boundary; test sign/source/replay/no-zero/audit rollback; depends on WP-01-03 and WP-02-01; amount formula follows DEC-067.
 - **WP-02-04 Raw Draft/Screen Wiring** — read 03,04,10–14; output subject-versioned draft/submit; test validation/redaction/RTL; depends on WP-01-08 and WP-02-01; no posting.
-- **WP-02-05 Raw Approval/Late Price** — read 03,04,06,07,09,11–14; output atomic stock/payable-or-review and append-only confirmation; test known/missing/late/duplicate/concurrency/failure; depends on WP-02-02, WP-02-03, WP-02-04 and PCD-APR-001; priced paths follow DEC-067.
+- **WP-02-05 Raw Approval/Late Price** — read 03,04,06,07,09,11–14; output atomic stock/payable-or-review and append-only confirmation; test known/missing/late/duplicate/concurrency/failure; depends on WP-02-02, WP-02-03, WP-02-04 and DEC-080; priced paths follow DEC-067.
 - **WP-02-06 Backup/Restore Smoke** — read 01,03,08,09,11–14; output backup/separate restore evidence; depends on WP-02-05; no export/production restore.
 - **WP-02-07 Thin Traceability** — read 03,04,10–14; output read-only raw timeline; depends on WP-02-05 and WP-01-08; test links/tenant/redaction.
 
@@ -144,7 +144,7 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 ### Phase 3 Package Execution Records
 
 - **WP-03-01 Ledger Expansion/Reconciliation** — read 03,04,06,09,11–14; expand WP-02-02 to remaining movements/reconciliation; depends on WP-02-02 and WP-02-05; test atomicity/concurrency/idempotency; no direct/generic write.
-- **WP-03-02 Transfer/Reversal** — read 04,06,09–14; output one-step transfer/inverse and role-safe screens; test availability/classification/rollback/dependency; depends on WP-03-01, WP-01-08 and PCD-APR-001; classification transfer rules follow DEC-064; no in-transit target balance; report exact effects.
+- **WP-03-02 Transfer/Reversal** — read 04,06,09–14; output one-step transfer/inverse and role-safe screens; test availability/classification/rollback/dependency; depends on WP-03-01, WP-01-08 and DEC-080; classification transfer rules follow DEC-064; no in-transit target balance; report exact effects.
 - **WP-03-03 Reservations/Submission** — read 03,04§9,06,09,11–14; output reservation service/safe submit; test fixture/concurrency/release/replay; depends on WP-03-01; DEC-065 blocks quality-risk reservation/submission until review/disposition makes stock accepted/sellable; no on-hand reduction/expiry; report totals.
 - **WP-03-04 Alerts/Failure Resolution** — read 03,04,06,09,12–14; output critical alert/reason resolver; test technical unchanged, corruption reconcile, retain/release mapping; depends on WP-03-03; no global `approval_failed`; report reason matrix.
 
@@ -165,10 +165,10 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 
 ### Phase 4 Package Execution Records
 
-- **WP-04-01 Orders/Issue WIP** — read 03–06,09–14; output many-to-many draft/issue; test availability/WIP/concurrency/redaction; depends on WP-03-02, WP-00-03C, WP-01-08 and PCD-APR-001; no payable/header-only lineage; report quantity chain.
+- **WP-04-01 Orders/Issue WIP** — read 03–06,09–14; output many-to-many draft/issue; test availability/WIP/concurrency/redaction; depends on WP-03-02, WP-00-03C, WP-01-08 and DEC-080; no payable/header-only lineage; report quantity chain.
 - **WP-04-02 Receipt Draft/Allocation Validation** — read 03–06,09–14; output draft/preview/subject hash only; test full/partial/structural reuse/redaction and zero stock/WIP/account effects; depends on WP-04-01 and WP-01-08.
-- **WP-04-03 Atomic Receipt/Output/Waste/Payable** — read 05–07,09,12–14; output lot, stock, waste, WIP, snapshot, payable, state and audit in one transaction; test every effect/failure/concurrency/idempotency; depends on WP-04-02 and PCD-APR-001; no split posting.
-- **WP-04-04 WIP Return** — read 04–06,09–14; output request/approval/movement; test no-effect request, state/WIP/role/rollback; depends on WP-04-01, WP-01-08 and PCD-APR-001; no generic adjustment; report before/after.
+- **WP-04-03 Atomic Receipt/Output/Waste/Payable** — read 05–07,09,12–14; output lot, stock, waste, WIP, snapshot, payable, state and audit in one transaction; test every effect/failure/concurrency/idempotency; depends on WP-04-02 and DEC-080; no split posting.
+- **WP-04-04 WIP Return** — read 04–06,09–14; output request/approval/movement; test no-effect request, state/WIP/role/rollback; depends on WP-04-01, WP-01-08 and DEC-080; no generic adjustment; report before/after.
 
 ## 8. Phase 5 — Sales, Approvals, Payments and Direct Costs
 
@@ -189,9 +189,9 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 
 - **WP-05-01 Sales Draft/Discount/Submit** — read 03,04,07,09–14; output multi-line exact calculator/screen/reservation submit; test tie/largest residual/zero/role/reservation; depends on WP-03-03, WP-01-08 and WP-00-03D; quality-risk stock follows DEC-065; no client totals/single-line backend; report exact fields.
 - **WP-05-02 Profitability Snapshot V1 Foundation** — read 03,06,07,12–14; output transaction-aware immutable snapshot service; test exact net/missing flags/version/rollback; depends on WP-05-01 and WP-02-03.
-- **WP-05-03 Sales Approval/Failure** — read 04,06–07,09–14; output atomic issue/receivable/snapshot/audit and separate failure resolution with review UI; test subject mutation/all failures/concurrency/idempotency/orphan; depends on WP-05-02, WP-03-04, WP-01-08 and PCD-APR-001.
-- **WP-05-04 Payments/Settlement/Reversal** — read 06,07,09–14; output immutable posting/settlement/reversal and statement screens; test concurrent settlement/reversal; depends on WP-02-03, WP-04-03, WP-05-03, WP-01-08 and PCD-APR-001; payment methods follow DEC-066.
-- **WP-05-05 Direct Cost/Later Snapshot Versions** — read 06,07,09–14; output reviewed financial posting/allocation, queue UI and version updates through WP-05-02; depends on WP-05-04, WP-05-02, WP-01-08 and PCD-APR-001.
+- **WP-05-03 Sales Approval/Failure** — read 04,06–07,09–14; output atomic issue/receivable/snapshot/audit and separate failure resolution with review UI; test subject mutation/all failures/concurrency/idempotency/orphan; depends on WP-05-02, WP-03-04, WP-01-08 and DEC-080.
+- **WP-05-04 Payments/Settlement/Reversal** — read 06,07,09–14; output immutable posting/settlement/reversal and statement screens; test concurrent settlement/reversal; depends on WP-02-03, WP-04-03, WP-05-03, WP-01-08 and DEC-080; payment methods follow DEC-066.
+- **WP-05-05 Direct Cost/Later Snapshot Versions** — read 06,07,09–14; output reviewed financial posting/allocation, queue UI and version updates through WP-05-02; depends on WP-05-04, WP-05-02, WP-01-08 and DEC-080.
 
 ## 9. Phase 6 — Quality, Complaints, Returns
 
@@ -210,9 +210,9 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 
 ### Phase 6 Package Execution Records
 
-- **WP-06-01 Quality/Risk** — read 03,04,06,10–14; output tests/status/review; test states/risk/role; depends on WP-05-03 and WP-01-08; PCD-APR-001 additionally gates management disposition approval; no quality approval of finance/stock; report guard evidence.
+- **WP-06-01 Quality/Risk** — read 03,04,06,10–14; output tests/status/review; test states/risk/role; depends on WP-05-03 and WP-01-08; DEC-080 governs management disposition approval; no quality approval of finance/stock; report guard evidence.
 - **WP-06-02 Complaints** — read 03,10–14; output investigation/links; test references/roles/audit/no effect; depends on WP-06-01 and WP-01-08; no auto return; report trace.
-- **WP-06-03 Return Approval** — read 04,06,07,09–14; output facts/approval/stock/credit; test cap/classification/treatment/atomicity; depends on WP-06-01, WP-06-02, WP-01-08 and PCD-APR-001; return residual follows DEC-068; no worker treatment/double stock; report exact effects.
+- **WP-06-03 Return Approval** — read 04,06,07,09–14; output facts/approval/stock/credit; test cap/classification/treatment/atomicity; depends on WP-06-01, WP-06-02, WP-01-08 and DEC-080; return residual follows DEC-068; no worker treatment/double stock; report exact effects.
 - **WP-06-04 Replacement** — read 03,06,07,09–14; output linked two-event flow/difference/refund action; test equal/higher/lower/caps/reservation/no auto refund; depends on WP-06-03, WP-05-03, WP-05-04 and WP-01-08; no manual difference; report cases.
 
 ## 10. Phase 7 — Historical Migration
@@ -235,8 +235,8 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 - **WP-07-01 Templates/Files/Staging** — read 01,03–14; output private/versioned/provenance/cutover staging and management screens; test privacy/metadata/duplicates/no-double-count/isolation; depends on WP-00-03E, WP-02-05, WP-02-06, WP-03-04, WP-04-04, WP-05-05, WP-06-04 and WP-01-08; historical approvals/cutover/reconciliation follow DEC-069/071/072.
 - **WP-07-02 Validation/Aliases** — read 03,08,11–14; output rules/findings/review; test required/date/unit/currency/duplicate/relations/confidence; depends on WP-07-01 and WP-01-08; no fuzzy auto merge/severity downgrade; report coverage.
 - **WP-07-03 Reconciliation/Review** — read 04,05,07,08,10–14; output versioned totals/cutover/differences; test openings+transactions, WIP, document collision, mismatch/negative/version invalidation; depends on WP-07-02 and WP-01-08.
-- **WP-07-04 Dual Approval/Commit** — read 06,08,09,11–14; output current approvals/cutover lock/atomic domain commit; test distinct-identity policy, live-post race, measured batch ceiling, backup, stale approval, concurrency/idempotency/failure; depends on WP-07-03, WP-02-06 and PCD-APR-001; distinct identity follows DEC-069.
-- **WP-07-05 Historical Correction** — read 04–09,11–14; output linked correction/reconciliation; depends on WP-07-04 and PCD-APR-001; renewed dual approval follows DEC-070; any correction UI additionally depends on WP-01-08; no reopen/patch.
+- **WP-07-04 Dual Approval/Commit** — read 06,08,09,11–14; output current approvals/cutover lock/atomic domain commit; test distinct-identity policy, live-post race, measured batch ceiling, backup, stale approval, concurrency/idempotency/failure; depends on WP-07-03, WP-02-06 and DEC-080; distinct identity follows DEC-069.
+- **WP-07-05 Historical Correction** — read 04–09,11–14; output linked correction/reconciliation; depends on WP-07-04 and DEC-080; renewed dual approval follows DEC-070; any correction UI additionally depends on WP-01-08; no reopen/patch.
 
 ## 11. Phase 8 — Gated Frontend Expansion, Reports and Traceability
 
@@ -290,7 +290,6 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 ## 13. Unresolved Decisions That Must Remain Visible
 
 ```text
-Private sign-in and password/account-recovery method
 Production Vercel/Supabase tier and budget
 Production backup retention, RPO, and RTO
 Production monitoring/alert provider

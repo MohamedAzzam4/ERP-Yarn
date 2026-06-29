@@ -41,6 +41,8 @@ Contracts may clarify implementation detail but may not alter business rules, ex
 
 **Coding agents must read it for:** Any UI component, layout, navigation, form, table, dashboard, chart, responsive behavior, typography, theme, RTL/LTR treatment, accessibility work, or frontend visual test.
 
+**Related reference-gate files:** `docs/design/01_reference_screen_terms_and_fixtures.md` defines the provisional Arabic terminology and canonical synthetic/prohibited fixtures for the three reference screens. `docs/design/reference_screen_approval.md` defines the versioned owner sign-off record.
+
 ### `03_database_schema_contract.md`
 
 **Purpose:** Freeze entities, columns, types, required/nullability rules, keys, tenant constraints, indexes, enums/statuses, lifecycle metadata, immutability, soft-delete boundaries, and cross-table references.

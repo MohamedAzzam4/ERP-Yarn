@@ -58,7 +58,7 @@ The quality of the interface comes primarily from hierarchy, typography, spacing
 Avoid:
 
 - excessive gradients;
-- glassmorphism;
+- glassmorphism as the primary visual language;
 - overly soft or inflated cards;
 - heavy dark-mode-first visuals;
 - decorative charts;
@@ -66,6 +66,29 @@ Avoid:
 - animated backgrounds;
 - unnecessary motion;
 - crowded enterprise screens that expose every possible field at once.
+
+### Restrained Glass Accent Rule
+
+Calm Enterprise remains the binding visual baseline. Restrained glass accents are allowed only as secondary management-surface accents, such as a top header, dashboard summary band, quick-search dropdown or notification panel.
+
+Glass accents are prohibited for:
+
+- Worker Task Mode;
+- dense forms;
+- tables and data grids;
+- financial/accounting numbers;
+- approval actions;
+- warning, danger, error or permission-denied states;
+- any surface where blur/transparency weakens readability, contrast, accessibility or operational clarity.
+
+Any glass accent must:
+
+- use semantic tokens, not literal colors;
+- keep light-mode text contrast at WCAG 2.2 AA;
+- provide a solid/fallback surface if blur is unsupported or reduced;
+- avoid excessive blur, glow, saturation or shadow;
+- respect `prefers-reduced-motion`;
+- remain subordinate to hierarchy, typography, spacing and accurate content.
 
 ## MVP Theme Scope
 
