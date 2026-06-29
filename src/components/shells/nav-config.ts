@@ -141,6 +141,45 @@ export function getDefaultShellRoute(role: RoleCode): string {
   return "/login";
 }
 
+/**
+ * Deterministic default shell route for a user with one or more roles.
+ *
+ * When a user has multiple roles (exceptional Owner-managed case per
+ * DEC-061), the shell landing page MUST NOT depend on the order of the
+ * roles array returned by the database. This function applies a fixed
+ * priority:
+ *
+ *   1. If the user has ANY management role (owner or accountant) → /management
+ *   2. Else if the user has ANY worker role → /worker
+ *   3. Else (no valid role) → /login?error=no_role
+ *
+ * Rationale: management roles have broader visibility. A user with both
+ * Owner + Worker roles should land on the management shell (where the
+ * Worker financial-deny ceiling is still enforced at the permission/field
+ * level by WP-01-02). Landing on the worker shell would hide management
+ * navigation they are entitled to.
+ *
+ * This function is pure and deterministic — the same roles set always
+ * produces the same route regardless of array order.
+ *
+ * @param roles - The user's assigned role codes (from user_roles + roles).
+ * @returns The deterministic shell route.
+ */
+export function getDefaultShellRouteForRoles(
+  roles: ReadonlyArray<RoleCode>,
+): string {
+  // Priority 1: management roles (owner, accountant)
+  if (roles.some((r) => isManagementShellRole(r))) {
+    return "/management";
+  }
+  // Priority 2: worker roles (warehouse, production, quality)
+  if (roles.some((r) => isWorkerShellRole(r))) {
+    return "/worker";
+  }
+  // No valid role
+  return "/login?error=no_role";
+}
+
 // --- Route helpers ---
 
 export function isWorkerRoute(pathname: string): boolean {

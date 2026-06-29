@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
-import { getDefaultShellRoute } from "@/components/shells/nav-config";
-import type { RoleCode } from "@/server/security/role-codes";
+import { getDefaultShellRouteForRoles } from "@/components/shells/nav-config";
 
 /**
  * Home page — role-aware redirect to the appropriate shell.
@@ -19,12 +18,9 @@ import type { RoleCode } from "@/server/security/role-codes";
  * context comes from the ERP database, never from email inference or
  * request body (DEC-073).
  *
- * If the user has multiple roles (exceptional Owner-managed case per
- * DEC-061), the FIRST role determines the shell. This is safe because:
- *   - Worker financial-deny ceiling (DEC-063) is enforced at the
- *     permission/field level, not at the shell-routing level.
- *   - A user with both Owner + Worker roles will see the management shell
- *     but financial field redaction still applies (WP-01-02 redaction).
+ * Deterministic routing: uses getDefaultShellRouteForRoles() which applies
+ * a fixed priority (management > worker > no role) so the result does NOT
+ * depend on the order of the roles array returned by the database.
  */
 
 export default async function HomePage() {
@@ -34,14 +30,8 @@ export default async function HomePage() {
     redirect("/login");
   }
 
-  // If the user has NO role assignments, they cannot access any shell.
-  // Redirect to a "no assigned role" page (or back to login with a message).
-  if (authResult.roles.length === 0) {
-    redirect("/login?error=no_role");
-  }
-
-  // Use the first role for shell routing (DEC-061: MVP normally one role).
-  const primaryRole = authResult.roles[0] as RoleCode;
-  const shellRoute = getDefaultShellRoute(primaryRole);
+  // Deterministic shell routing based on role priority (not array order).
+  // Management roles take precedence over worker roles.
+  const shellRoute = getDefaultShellRouteForRoles(authResult.roles);
   redirect(shellRoute);
 }

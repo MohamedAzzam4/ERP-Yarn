@@ -14,6 +14,7 @@ import {
   isWorkerShellRole,
   isManagementShellRole,
   getDefaultShellRoute,
+  getDefaultShellRouteForRoles,
   isWorkerRoute,
   isManagementRoute,
 } from "../nav-config";
@@ -223,6 +224,88 @@ describe("getDefaultShellRoute", () => {
   it("management roles → /management", () => {
     expect(getDefaultShellRoute("owner")).toBe("/management");
     expect(getDefaultShellRoute("accountant")).toBe("/management");
+  });
+});
+
+describe("getDefaultShellRouteForRoles — deterministic multi-role routing", () => {
+  // Single role — same as getDefaultShellRoute
+  it("single worker role → /worker", () => {
+    expect(getDefaultShellRouteForRoles(["warehouse_employee"])).toBe("/worker");
+    expect(getDefaultShellRouteForRoles(["production_employee"])).toBe("/worker");
+    expect(getDefaultShellRouteForRoles(["quality_employee"])).toBe("/worker");
+  });
+
+  it("single management role → /management", () => {
+    expect(getDefaultShellRouteForRoles(["owner"])).toBe("/management");
+    expect(getDefaultShellRouteForRoles(["accountant"])).toBe("/management");
+  });
+
+  it("empty roles → /login?error=no_role", () => {
+    expect(getDefaultShellRouteForRoles([])).toBe("/login?error=no_role");
+  });
+
+  // Multi-role — deterministic priority (management > worker)
+  it("owner + warehouse_employee → /management (management priority)", () => {
+    expect(getDefaultShellRouteForRoles(["owner", "warehouse_employee"])).toBe("/management");
+  });
+
+  it("warehouse_employee + owner → /management (order does NOT matter)", () => {
+    expect(getDefaultShellRouteForRoles(["warehouse_employee", "owner"])).toBe("/management");
+  });
+
+  it("accountant + production_employee → /management (order does NOT matter)", () => {
+    expect(getDefaultShellRouteForRoles(["accountant", "production_employee"])).toBe("/management");
+    expect(getDefaultShellRouteForRoles(["production_employee", "accountant"])).toBe("/management");
+  });
+
+  it("owner + all 3 worker roles → /management (management wins over any worker)", () => {
+    expect(getDefaultShellRouteForRoles(["owner", "warehouse_employee", "production_employee", "quality_employee"])).toBe("/management");
+  });
+
+  it("multiple worker roles only → /worker", () => {
+    expect(getDefaultShellRouteForRoles(["warehouse_employee", "production_employee"])).toBe("/worker");
+    expect(getDefaultShellRouteForRoles(["production_employee", "warehouse_employee"])).toBe("/worker");
+  });
+
+  it("all 3 worker roles → /worker", () => {
+    expect(getDefaultShellRouteForRoles(["warehouse_employee", "production_employee", "quality_employee"])).toBe("/worker");
+  });
+
+  // Determinism: same roles in different orders produce same route
+  it("DETERMINISM: [owner, warehouse] and [warehouse, owner] produce same route", () => {
+    const order1 = getDefaultShellRouteForRoles(["owner", "warehouse_employee"]);
+    const order2 = getDefaultShellRouteForRoles(["warehouse_employee", "owner"]);
+    expect(order1).toBe(order2);
+    expect(order1).toBe("/management");
+  });
+
+  it("DETERMINISM: [accountant, quality] and [quality, accountant] produce same route", () => {
+    const order1 = getDefaultShellRouteForRoles(["accountant", "quality_employee"]);
+    const order2 = getDefaultShellRouteForRoles(["quality_employee", "accountant"]);
+    expect(order1).toBe(order2);
+    expect(order1).toBe("/management");
+  });
+
+  it("DETERMINISM: [warehouse, production] and [production, warehouse] produce same route", () => {
+    const order1 = getDefaultShellRouteForRoles(["warehouse_employee", "production_employee"]);
+    const order2 = getDefaultShellRouteForRoles(["production_employee", "warehouse_employee"]);
+    expect(order1).toBe(order2);
+    expect(order1).toBe("/worker");
+  });
+
+  it("DETERMINISM: all permutations of [owner, warehouse, production] produce /management", () => {
+    const roles = ["owner", "warehouse_employee", "production_employee"] as const;
+    const permutations = [
+      [roles[0], roles[1], roles[2]],
+      [roles[0], roles[2], roles[1]],
+      [roles[1], roles[0], roles[2]],
+      [roles[1], roles[2], roles[0]],
+      [roles[2], roles[0], roles[1]],
+      [roles[2], roles[1], roles[0]],
+    ];
+    for (const perm of permutations) {
+      expect(getDefaultShellRouteForRoles(perm)).toBe("/management");
+    }
   });
 });
 

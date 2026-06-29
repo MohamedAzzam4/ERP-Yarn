@@ -94,9 +94,12 @@ describe("WP-01-04 correction: DB-based role resolution", () => {
     expect(src).toMatch(/await getErpAuthContextWithRoles\(\)/);
   });
 
-  it("src/app/page.tsx uses authResult.roles for shell routing", () => {
+  it("src/app/page.tsx uses getDefaultShellRouteForRoles (deterministic, NOT roles[0])", () => {
     const src = readText("src/app/page.tsx");
+    expect(src).toMatch(/getDefaultShellRouteForRoles/);
     expect(src).toMatch(/authResult\.roles/);
+    // Must NOT use roles[0] (nondeterministic array order)
+    expect(src).not.toMatch(/roles\[0\]/);
   });
 
   it("worker/page.tsx imports getErpAuthContextWithRoles", () => {
@@ -142,9 +145,15 @@ describe("WP-01-04 correction: denial behavior", () => {
     expect(src).toMatch(/redirect\("\/login"\)/);
   });
 
-  it("page.tsx redirects to /login?error=no_role if user has no roles", () => {
+  it("page.tsx handles no-role users via getDefaultShellRouteForRoles (returns /login?error=no_role)", () => {
     const src = readText("src/app/page.tsx");
-    expect(src).toMatch(/redirect\("\/login\?error=no_role"\)/);
+    // page.tsx delegates no-role handling to getDefaultShellRouteForRoles,
+    // which returns "/login?error=no_role" for empty roles. The redirect
+    // happens via redirect(shellRoute) where shellRoute is the return value.
+    expect(src).toMatch(/getDefaultShellRouteForRoles/);
+    expect(src).toMatch(/redirect\(shellRoute\)/);
+    // Verify the function itself returns /login?error=no_role for empty roles
+    // (tested in nav-config.test.ts)
   });
 
   it("worker/page.tsx redirects to /login if not authenticated", () => {
