@@ -208,12 +208,14 @@ describe("WP-00-05 Container component", () => {
 // ---------------------------------------------------------------------------
 
 describe("WP-00-05 no accidental business screens", () => {
-  it("app directory has only page.tsx, layout.tsx, globals.css", () => {
+  it("app directory has only expected entries (no business routes)", () => {
     const appDir = join(root, "src", "app");
     const entries = readdirSync(appDir).filter(
       (e) => !e.startsWith(".") && e !== "api" && e !== "auth" && e !== "login",
     );
-    expect(entries.sort()).toEqual(["globals.css", "layout.tsx", "page.tsx"]);
+    // WP-01-04 adds (worker) and (management) route groups for shell routing.
+    // These are shell/layout routes, NOT business posting routes.
+    expect(entries.sort()).toEqual(["(management)", "(worker)", "globals.css", "layout.tsx", "page.tsx"]);
   });
 });
 

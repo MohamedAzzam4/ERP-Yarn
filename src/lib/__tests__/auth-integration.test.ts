@@ -382,20 +382,28 @@ describe("WP-01-01 reset password page", () => {
 // Home page updated for auth
 // ---------------------------------------------------------------------------
 
-describe("WP-01-01 home page auth-aware", () => {
+describe("WP-01-01 home page auth-aware (updated for WP-01-04 role-aware redirect)", () => {
   it("imports getErpAuthContext", () => {
     const src = readText("src/app/page.tsx");
     expect(src).toMatch(/getErpAuthContext/);
   });
 
-  it("shows denial message for unauthenticated", () => {
+  it("redirects to /login for unauthenticated (WP-01-04 changed from denial message to redirect)", () => {
     const src = readText("src/app/page.tsx");
-    expect(src).toMatch(/unmapped|inactive|no_session/);
+    expect(src).toMatch(/redirect\("\/login"\)/);
   });
 
-  it("has signOut action", () => {
+  it("redirects to role-appropriate shell (WP-01-04)", () => {
     const src = readText("src/app/page.tsx");
-    expect(src).toMatch(/signOut/);
+    expect(src).toMatch(/getDefaultShellRoute/);
+  });
+
+  it("signOut is handled by shell pages (worker/management), not home page", () => {
+    // WP-01-04 moved signOut to the shell components. The home page just redirects.
+    const workerPage = readText("src/app/(worker)/worker/page.tsx");
+    const mgmtPage = readText("src/app/(management)/management/page.tsx");
+    expect(workerPage).toMatch(/signOut/);
+    expect(mgmtPage).toMatch(/signOut/);
   });
 });
 

@@ -1,70 +1,41 @@
+import { redirect } from "next/navigation";
 import { getErpAuthContext } from "@/server/auth/erp-context";
-import { signOut } from "@/app/login/actions";
-import { Button } from "@/components/ui/button";
-import { Container } from "@/components/ui/container";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getDefaultShellRoute } from "@/components/shells/nav-config";
+import type { RoleCode } from "@/server/security/role-codes";
 
 /**
- * Home page — requires authenticated ERP user.
+ * Home page — role-aware redirect to the appropriate shell.
  *
- * If the proxy allows the request through (session exists), this
- * Server Component resolves the ERP auth context. If the Supabase Auth
- * user is unmapped or inactive, a denial message is shown.
+ * If authenticated, redirects to /worker (for worker roles) or /management
+ * (for management roles). If not authenticated, the proxy will have already
+ * redirected to /login.
  *
- * WP-01-01 scope: minimal auth-aware home. No business screens yet.
+ * WP-01-04 scope: role-aware routing. The actual shell content is in
+ * /worker/page.tsx and /management/page.tsx.
  */
 
 export default async function HomePage() {
   const authResult = await getErpAuthContext();
 
   if (!authResult.authenticated) {
-    return (
-      <Container size="sm" className="flex min-h-screen items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle className="text-center">غير مصرح</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-body text-muted-foreground text-center">
-              {authResult.reason === "unmapped" &&
-                "المستخدم غير مرتبط بحساب ERP"}
-              {authResult.reason === "inactive" &&
-                "الحساب غير نشط. تواصل مع المسؤول"}
-              {authResult.reason === "no_session" && "انتهت الجلسة"}
-            </p>
-            <form action={signOut}>
-              <Button type="submit" variant="outline" className="w-full">
-                تسجيل الخروج
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-      </Container>
-    );
+    redirect("/login");
   }
 
-  return (
-    <Container size="md" className="flex min-h-screen items-center justify-center">
-      <Card className="w-full max-w-lg">
-        <CardHeader>
-          <CardTitle className="text-center">
-            نظام إدارة تجارة وتشغيل الغزل لدى الغير
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-body text-muted-foreground text-center">
-            مرحباً، {authResult.name}
-          </p>
-          <p className="text-sm text-muted-foreground text-center">
-            المرحلة 1 — WP-01-01: المصادقة الخاصة (أساس)
-          </p>
-          <form action={signOut}>
-            <Button type="submit" variant="outline" className="w-full">
-              تسجيل الخروج
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-    </Container>
-  );
+  const role = inferRoleFromContext(authResult);
+  const shellRoute = getDefaultShellRoute(role);
+  redirect(shellRoute);
+}
+
+/**
+ * TEMPORARY role inference for WP-01-04.
+ * Same as worker/management pages — see worker/page.tsx for the unresolved note.
+ */
+function inferRoleFromContext(ctx: { email: string; name: string }): RoleCode {
+  const email = ctx.email.toLowerCase();
+  if (email.includes("warehouse")) return "warehouse_employee";
+  if (email.includes("production")) return "production_employee";
+  if (email.includes("quality")) return "quality_employee";
+  if (email.includes("owner") || email.includes("admin")) return "owner";
+  if (email.includes("accountant")) return "accountant";
+  return "warehouse_employee";
 }

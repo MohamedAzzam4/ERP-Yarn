@@ -1,0 +1,288 @@
+/**
+ * WP-01-04 tests — navigation configuration.
+ *
+ * Contract: docs/contracts/02_design_system_and_ux_contract.md §Navigation
+ * Contract: docs/contracts/10_frontend_screen_contracts.md §5.1, §5.2
+ * Contract: docs/contracts/11_permission_matrix.md §5, §7
+ */
+import { describe, it, expect } from "vitest";
+import {
+  WORKER_TASKS,
+  MANAGEMENT_NAV,
+  getWorkerTasksForRole,
+  getManagementNavForRole,
+  isWorkerShellRole,
+  isManagementShellRole,
+  getDefaultShellRoute,
+  isWorkerRoute,
+  isManagementRoute,
+} from "../nav-config";
+
+describe("WORKER_TASKS", () => {
+  it("contains exactly the 5 contracted worker tasks", () => {
+    expect(WORKER_TASKS).toHaveLength(5);
+    const labels = WORKER_TASKS.map((t) => t.labelAr);
+    expect(labels).toContain("استلام خام");
+    expect(labels).toContain("نقل مخزون");
+    expect(labels).toContain("استلام مرتجع");
+    expect(labels).toContain("تسجيل إنتاج");
+    expect(labels).toContain("تسجيل جودة");
+  });
+
+  it("has NO financial terminology in labels", () => {
+    const financialTerms = [
+      "سعر", "تكلفة", "دفع", "رصيد", "ربح", "حساب", "مديونية", "دائن",
+      "price", "cost", "payment", "balance", "profit",
+    ];
+    for (const task of WORKER_TASKS) {
+      for (const term of financialTerms) {
+        expect(
+          task.labelAr.toLowerCase(),
+          `worker task '${task.labelAr}' contains financial term '${term}'`,
+        ).not.toContain(term.toLowerCase());
+      }
+    }
+  });
+
+  it("each task has a valid route, icon, and role assignment", () => {
+    for (const task of WORKER_TASKS) {
+      expect(task.href).toMatch(/^\/worker\//);
+      expect(task.icon).toBeTruthy();
+      expect(task.roles.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("getWorkerTasksForRole — role filtering", () => {
+  it("warehouse sees raw-receipt, stock-transfer, return-receipt", () => {
+    const tasks = getWorkerTasksForRole("warehouse_employee");
+    const ids = tasks.map((t) => t.id);
+    expect(ids).toContain("raw-receipt");
+    expect(ids).toContain("stock-transfer");
+    expect(ids).toContain("return-receipt");
+    expect(ids).not.toContain("production-entry");
+    expect(ids).not.toContain("quality-entry");
+  });
+
+  it("production sees production-entry only", () => {
+    const tasks = getWorkerTasksForRole("production_employee");
+    expect(tasks.map((t) => t.id)).toEqual(["production-entry"]);
+  });
+
+  it("quality sees quality-entry only", () => {
+    const tasks = getWorkerTasksForRole("quality_employee");
+    expect(tasks.map((t) => t.id)).toEqual(["quality-entry"]);
+  });
+
+  it("owner sees NO worker tasks (owner is not a worker)", () => {
+    const tasks = getWorkerTasksForRole("owner");
+    expect(tasks).toHaveLength(0);
+  });
+
+  it("accountant sees NO worker tasks", () => {
+    const tasks = getWorkerTasksForRole("accountant");
+    expect(tasks).toHaveLength(0);
+  });
+
+  it("hidden tasks are ABSENT from the result (not just hidden)", () => {
+    const warehouseTasks = getWorkerTasksForRole("warehouse_employee");
+    const allIds = warehouseTasks.map((t) => t.id);
+    expect(allIds).not.toContain("production-entry");
+    expect(allIds).not.toContain("quality-entry");
+  });
+});
+
+describe("MANAGEMENT_NAV", () => {
+  it("has 8 categories", () => {
+    expect(MANAGEMENT_NAV).toHaveLength(8);
+    const catIds = MANAGEMENT_NAV.map((c) => c.id);
+    expect(catIds).toEqual([
+      "dashboard", "inventory", "production", "sales",
+      "quality", "accounts", "reports", "administration",
+    ]);
+  });
+
+  it("administration category contains users, permissions, settings, migration, backup", () => {
+    const adminCat = MANAGEMENT_NAV.find((c) => c.id === "administration")!;
+    const itemIds = adminCat.items.map((i) => i.id);
+    expect(itemIds).toContain("users");
+    expect(itemIds).toContain("permissions");
+    expect(itemIds).toContain("settings");
+    expect(itemIds).toContain("migration");
+    expect(itemIds).toContain("backup");
+  });
+});
+
+describe("getManagementNavForRole — role filtering (DEC-032)", () => {
+  it("owner sees ALL categories", () => {
+    const cats = getManagementNavForRole("owner");
+    expect(cats).toHaveLength(8);
+    const adminCat = cats.find((c) => c.id === "administration")!;
+    expect(adminCat.items.map((i) => i.id)).toContain("users");
+    expect(adminCat.items.map((i) => i.id)).toContain("permissions");
+    expect(adminCat.items.map((i) => i.id)).toContain("settings");
+  });
+
+  it("accountant does NOT see users/permissions/settings (DEC-032)", () => {
+    const cats = getManagementNavForRole("accountant");
+    const adminCat = cats.find((c) => c.id === "administration");
+    if (adminCat) {
+      const itemIds = adminCat.items.map((i) => i.id);
+      expect(itemIds).not.toContain("users");
+      expect(itemIds).not.toContain("permissions");
+      expect(itemIds).not.toContain("settings");
+      // Accountant CAN see migration (Contract 11 §7)
+      expect(itemIds).toContain("migration");
+    }
+  });
+
+  it("accountant does NOT see profitability (Owner-only per Contract 11)", () => {
+    const cats = getManagementNavForRole("accountant");
+    const reportsCat = cats.find((c) => c.id === "reports");
+    if (reportsCat) {
+      const itemIds = reportsCat.items.map((i) => i.id);
+      expect(itemIds).not.toContain("profitability");
+      // Accountant CAN see traceability and audit
+      expect(itemIds).toContain("traceability");
+      expect(itemIds).toContain("audit");
+    }
+  });
+
+  it("owner sees profitability", () => {
+    const cats = getManagementNavForRole("owner");
+    const reportsCat = cats.find((c) => c.id === "reports")!;
+    expect(reportsCat.items.map((i) => i.id)).toContain("profitability");
+  });
+
+  it("owner sees backup (Owner-only)", () => {
+    const cats = getManagementNavForRole("owner");
+    const adminCat = cats.find((c) => c.id === "administration")!;
+    expect(adminCat.items.map((i) => i.id)).toContain("backup");
+  });
+
+  it("accountant does NOT see backup (Owner-only)", () => {
+    const cats = getManagementNavForRole("accountant");
+    const adminCat = cats.find((c) => c.id === "administration");
+    if (adminCat) {
+      expect(adminCat.items.map((i) => i.id)).not.toContain("backup");
+    }
+  });
+
+  it("worker roles see NO management categories", () => {
+    expect(getManagementNavForRole("warehouse_employee")).toHaveLength(0);
+    expect(getManagementNavForRole("production_employee")).toHaveLength(0);
+    expect(getManagementNavForRole("quality_employee")).toHaveLength(0);
+  });
+
+  it("hidden items are ABSENT (not just hidden via CSS)", () => {
+    const acctCats = getManagementNavForRole("accountant");
+    // Verify users/permissions/settings are completely absent from the result
+    for (const cat of acctCats) {
+      for (const item of cat.items) {
+        expect(item.id).not.toBe("users");
+        expect(item.id).not.toBe("permissions");
+        expect(item.id).not.toBe("settings");
+        expect(item.id).not.toBe("backup");
+        expect(item.id).not.toBe("profitability");
+      }
+    }
+  });
+});
+
+describe("isWorkerShellRole / isManagementShellRole", () => {
+  it("worker roles → worker shell", () => {
+    expect(isWorkerShellRole("warehouse_employee")).toBe(true);
+    expect(isWorkerShellRole("production_employee")).toBe(true);
+    expect(isWorkerShellRole("quality_employee")).toBe(true);
+  });
+
+  it("management roles → management shell", () => {
+    expect(isManagementShellRole("owner")).toBe(true);
+    expect(isManagementShellRole("accountant")).toBe(true);
+  });
+
+  it("worker roles are NOT management", () => {
+    expect(isManagementShellRole("warehouse_employee")).toBe(false);
+    expect(isManagementShellRole("production_employee")).toBe(false);
+    expect(isManagementShellRole("quality_employee")).toBe(false);
+  });
+
+  it("management roles are NOT worker", () => {
+    expect(isWorkerShellRole("owner")).toBe(false);
+    expect(isWorkerShellRole("accountant")).toBe(false);
+  });
+});
+
+describe("getDefaultShellRoute", () => {
+  it("worker roles → /worker", () => {
+    expect(getDefaultShellRoute("warehouse_employee")).toBe("/worker");
+    expect(getDefaultShellRoute("production_employee")).toBe("/worker");
+    expect(getDefaultShellRoute("quality_employee")).toBe("/worker");
+  });
+
+  it("management roles → /management", () => {
+    expect(getDefaultShellRoute("owner")).toBe("/management");
+    expect(getDefaultShellRoute("accountant")).toBe("/management");
+  });
+});
+
+describe("isWorkerRoute / isManagementRoute", () => {
+  it("isWorkerRoute matches /worker and /worker/*", () => {
+    expect(isWorkerRoute("/worker")).toBe(true);
+    expect(isWorkerRoute("/worker/raw-receipt")).toBe(true);
+    expect(isWorkerRoute("/worker/stock-transfer")).toBe(true);
+    expect(isWorkerRoute("/management")).toBe(false);
+    expect(isWorkerRoute("/login")).toBe(false);
+  });
+
+  it("isManagementRoute matches /management and /management/*", () => {
+    expect(isManagementRoute("/management")).toBe(true);
+    expect(isManagementRoute("/management/inventory/receipts")).toBe(true);
+    expect(isManagementRoute("/management/admin/users")).toBe(true);
+    expect(isManagementRoute("/worker")).toBe(false);
+    expect(isManagementRoute("/login")).toBe(false);
+  });
+});
+
+describe("No financial terminology in worker nav (Contract 02 §Worker Task Mode)", () => {
+  it("worker task labels contain no financial/accounting terms", () => {
+    const forbidden = [
+      "سعر", // price
+      "تكلفة", // cost
+      "دفع", // payment
+      "رصيد", // balance
+      "ربح", // profit
+      "حساب", // account
+      "مديونية", // payable
+      "دائن", // receivable
+      "تسوية مالية", // financial settlement
+    ];
+    for (const task of WORKER_TASKS) {
+      for (const term of forbidden) {
+        expect(
+          task.labelAr,
+          `worker task '${task.labelAr}' contains forbidden term '${term}'`,
+        ).not.toContain(term);
+      }
+    }
+  });
+});
+
+describe("Management nav routes are valid (no fake/typo routes)", () => {
+  it("all management items have hrefs starting with /management", () => {
+    for (const cat of MANAGEMENT_NAV) {
+      for (const item of cat.items) {
+        expect(
+          item.href,
+          `item '${item.id}' has invalid href '${item.href}'`,
+        ).toMatch(/^\/management/);
+      }
+    }
+  });
+
+  it("no duplicate hrefs", () => {
+    const hrefs = MANAGEMENT_NAV.flatMap((c) => c.items.map((i) => i.href));
+    const unique = new Set(hrefs);
+    expect(unique.size).toBe(hrefs.length);
+  });
+});
