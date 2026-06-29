@@ -1,18 +1,8 @@
 /**
  * Sidebar — collapsible management navigation.
  *
- * Contract: docs/contracts/02_design_system_and_ux_contract.md
- *   §Management Navigation (lines 389-407)
- *   - Consistent sidebar using approved Arabic terminology
- *   - Two separate collapse behaviors:
- *     1. Whole-sidebar collapse/expand via always-visible toggle
- *     2. Independent expand/collapse for grouped navigation categories
- *   - Permission-hidden destinations must not render or be discoverable
- *
+ * Contract: docs/contracts/02_design_system_and_ux_contract.md §Management Navigation
  * Contract: docs/contracts/10_frontend_screen_contracts.md §5.2
- *   - Permission-filtered grouped RTL sidebar
- *   - Always-visible sidebar collapse toggle
- *   - Independently collapsible sidebar categories
  */
 "use client";
 
@@ -21,6 +11,32 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import type { ManagementNavCategory } from "./nav-config";
+
+// --- Inline SVG icons ---
+
+function ChevronRightIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
+function ChevronLeftIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
 
 export interface SidebarProps {
   categories: ReadonlyArray<ManagementNavCategory>;
@@ -41,7 +57,6 @@ export function Sidebar({
 }: SidebarProps) {
   return (
     <>
-      {/* Mobile overlay */}
       {mobileOpen && (
         <div
           className="fixed inset-0 z-30 bg-overlay lg:hidden"
@@ -52,14 +67,14 @@ export function Sidebar({
 
       <aside
         className={cn(
-          "fixed inset-y-0 right-0 z-40 flex flex-col border-l border-border bg-surface transition-transform",
+          "fixed inset-y-0 right-0 z-40 flex flex-col border-l border-border bg-surface transition-all duration-200",
           collapsed ? "w-16" : "w-64",
           mobileOpen ? "translate-x-0" : "translate-x-full lg:translate-x-0",
         )}
         aria-label="التنقل الجانبي"
       >
-        {/* Always-visible whole-sidebar collapse toggle */}
-        <div className="flex items-center justify-center border-b border-border p-3">
+        {/* Collapse toggle */}
+        <div className="flex items-center justify-center border-b border-border py-2">
           <Button
             type="button"
             variant="ghost"
@@ -67,13 +82,13 @@ export function Sidebar({
             onClick={onToggleCollapse}
             aria-label={collapsed ? "توسيع القائمة" : "طي القائمة"}
             aria-expanded={!collapsed}
-            className="min-h-[44px] min-w-[44px]"
+            className="min-h-[44px] min-w-[44px] p-2 text-muted-foreground hover:text-foreground"
           >
-            {collapsed ? "◀" : "▶"}
+            {collapsed ? <ChevronLeftIcon /> : <ChevronRightIcon />}
           </Button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-2" aria-label="التنقل الرئيسي">
+        <nav className="flex-1 overflow-y-auto px-2 py-3" aria-label="التنقل الرئيسي">
           <ul className="space-y-1">
             {categories.map((category) => (
               <li key={category.id}>
@@ -91,8 +106,6 @@ export function Sidebar({
   );
 }
 
-// --- Sidebar category with independent collapse ---
-
 interface SidebarCategoryProps {
   category: ManagementNavCategory;
   collapsed: boolean;
@@ -103,12 +116,9 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
   const [expanded, setExpanded] = React.useState(true);
 
   if (collapsed) {
-    // When the whole sidebar is collapsed, show only the first letter of
-    // the category as a placeholder. Clicking does nothing (the user must
-    // expand the sidebar first to see items).
     return (
       <div
-        className="flex min-h-[44px] items-center justify-center rounded p-2 text-sm font-medium text-muted-foreground"
+        className="flex min-h-[44px] items-center justify-center rounded-lg py-2 text-xs font-medium text-muted-foreground"
         title={category.labelAr}
         aria-label={category.labelAr}
       >
@@ -123,13 +133,15 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex min-h-[44px] w-full items-center justify-between rounded px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-h-[40px] w-full items-center justify-between rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <span>{category.labelAr}</span>
-        <span aria-hidden="true">{expanded ? "▼" : "◀"}</span>
+        <span className={cn("transition-transform", expanded ? "rotate-0" : "-rotate-90")}>
+          <ChevronDownIcon />
+        </span>
       </button>
       {expanded && (
-        <ul className="space-y-1 py-1">
+        <ul className="space-y-0.5 py-1">
           {category.items.map((item) => {
             const isActive = currentPath === item.href;
             return (
@@ -138,9 +150,9 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
                   href={item.href}
                   aria-current={isActive ? "page" : undefined}
                   className={cn(
-                    "flex min-h-[44px] items-center rounded px-3 py-2 text-sm",
+                    "flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm transition-colors",
                     isActive
-                      ? "bg-primary text-primary-foreground"
+                      ? "bg-primary/10 font-medium text-primary"
                       : "text-foreground hover:bg-muted",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   )}

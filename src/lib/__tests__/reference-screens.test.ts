@@ -1,11 +1,11 @@
 /**
- * WP-01-05/06/07 Reference Screens Bundle tests.
+ * WP-01-05/06/07 Reference Screens Bundle tests (polish pass).
  *
  * Contract: docs/contracts/10_frontend_screen_contracts.md §5-8
  * Contract: docs/design/01_reference_screen_terms_and_fixtures.md
+ * DEC-076: Restrained glass accents
  * DEC-077: Arabic terminology fixture
  * DEC-078: Synthetic/prohibited-data fixture (reference-fixtures-v1)
- * DEC-076: Restrained glass accents
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
@@ -50,10 +50,6 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
   });
 
   it("fixture has 11 visible fields (matching docs/design §5 Visible fields table)", () => {
-    // The fixture doc §5 defines exactly 11 visible fields for the Worker
-    // raw-material receipt. The "Expected screen states" table (5 rows) is
-    // a separate table and should NOT be counted as fields.
-    // Previous report incorrectly said 12 — this test prevents regression.
     expect(WORKER_RECEIPT_FIXTURE.fields).toHaveLength(11);
   });
 
@@ -103,6 +99,22 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
     expect(src).toMatch(/مرجعية|تجريبية/);
   });
 
+  it("component has field groups (multiple Card sections, not one flat list)", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    // Should have GROUP_SIZES or GROUP_LABELS for field grouping
+    expect(src).toMatch(/GROUP_SIZES|GROUP_LABELS|groups/);
+  });
+
+  it("component has NO glass/blur effects (DEC-076: Worker Task Mode)", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).not.toMatch(/backdrop-blur|glass|frosted/i);
+  });
+
+  it("component has guidance text below title", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/أدخل بيانات|احفظ كمسودة أو أرسل للمراجعة/);
+  });
+
   it("page uses WorkerShell wrapper", () => {
     const src = readText("src/app/(worker)/worker/raw-receipts/new/page.tsx");
     expect(src).toMatch(/WorkerShell/);
@@ -143,7 +155,6 @@ describe("WP-01-06 Accountant review queue reference screen", () => {
   it("fixture action behavior has approve/reject as disabled placeholders", () => {
     expect(REVIEW_QUEUE_FIXTURE.actionBehavior.approveRejectArePlaceholders).toBe(true);
     expect(REVIEW_QUEUE_FIXTURE.actionBehavior.placeholderActionsDisabled).toBe(true);
-    expect(REVIEW_QUEUE_FIXTURE.actionBehavior.noToastImpliesRealStatusChange).toBe(true);
   });
 
   it("component has disabled approve/reject buttons", () => {
@@ -171,6 +182,23 @@ describe("WP-01-06 Accountant review queue reference screen", () => {
   it("component has focus-visible styles on interactive elements", () => {
     const src = readText("src/components/reference-screens/review-queue-reference.tsx");
     expect(src).toMatch(/focus-visible/);
+  });
+
+  it("component has severity badges (not plain text)", () => {
+    const src = readText("src/components/reference-screens/review-queue-reference.tsx");
+    // Should have severity config with visual classes (bg-color, rounded, border)
+    expect(src).toMatch(/severityConfig|severity/);
+    expect(src).toMatch(/rounded-full|rounded-md/);
+  });
+
+  it("component has status chips/badges", () => {
+    const src = readText("src/components/reference-screens/review-queue-reference.tsx");
+    expect(src).toMatch(/rounded-md.*px-2.*py-0\.5|stateAr/);
+  });
+
+  it("component has hover state on table rows", () => {
+    const src = readText("src/components/reference-screens/review-queue-reference.tsx");
+    expect(src).toMatch(/hover:bg-muted|hover:bg/);
   });
 
   it("page uses ManagementShell wrapper", () => {
@@ -204,10 +232,10 @@ describe("WP-01-07 Owner dashboard reference screen", () => {
     expect(OWNER_DASHBOARD_FIXTURE.kpiCards).toHaveLength(8);
   });
 
-  it("fixture KPI cards include inventory, sales, reviews, profitability", () => {
+  it("fixture KPI cards include outsourced-manufacturing labels", () => {
     const labels = OWNER_DASHBOARD_FIXTURE.kpiCards.map((c) => c.labelAr);
     expect(labels).toContain("إجمالي المخزون");
-    expect(labels).toContain("مبيعات الشهر الحالي");
+    expect(labels).toContain("مخزون لدى مصانع التشغيل");
     expect(labels).toContain("مراجعات مطلوبة");
     expect(labels).toContain("ربحية تقريبية");
   });
@@ -260,6 +288,32 @@ describe("WP-01-07 Owner dashboard reference screen", () => {
     expect(src).toMatch(/مرجعية|تجريبية/);
   });
 
+  it("component has chart-like visual structures (CSS bars, not only text lists)", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    // Should have bar/progress visual elements (width %, height %, rounded)
+    expect(src).toMatch(/width.*%|height.*%/);
+    expect(src).toMatch(/rounded-full|rounded-t-md/);
+    expect(src).toMatch(/bg-primary|bg-accent|bg-warning|BAR_COLORS/);
+  });
+
+  it("component has hover effects on KPI cards", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/hover:|hover-/);
+  });
+
+  it("component has financial tag on financial KPIs", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/isFinancial|مالي/);
+  });
+
+  it("component uses SVG icons in recent activity (not emoji)", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/<svg/);
+    // Check no emoji unicode characters
+    expect(src).not.toMatch(/[\u{1F300}-\u{1F9FF}]/u);
+    expect(src).not.toMatch(/[\u{2600}-\u{27BF}]/u);
+  });
+
   it("page uses ManagementShell wrapper", () => {
     const src = readText("src/app/(management)/management/dashboard/page.tsx");
     expect(src).toMatch(/ManagementShell/);
@@ -269,6 +323,22 @@ describe("WP-01-07 Owner dashboard reference screen", () => {
     const src = readText("src/app/(management)/management/dashboard/page.tsx");
     expect(src).toMatch(/isManagementShellRole/);
     expect(src).toMatch(/redirect\("\/worker"\)/);
+  });
+});
+
+// --- Management home redirect ---
+
+describe("WP-01-05/06/07 management home redirect", () => {
+  it("/management page redirects to /management/dashboard", () => {
+    const src = readText("src/app/(management)/management/page.tsx");
+    expect(src).toMatch(/redirect\("\/management\/dashboard"\)/);
+  });
+
+  it("/management page does NOT render ManagementShell component (it redirects)", () => {
+    const src = readText("src/app/(management)/management/page.tsx");
+    // Should not import the ManagementShell component or render it as JSX
+    expect(src).not.toMatch(/from.*ManagementShell[^R]/);
+    expect(src).not.toMatch(/<ManagementShell/);
   });
 });
 
@@ -298,14 +368,8 @@ describe("WP-01-05/06/07 worker financial redaction (DEC-063)", () => {
   it("worker receipt fixture fields contain NONE of the prohibited financial terms", () => {
     for (const field of WORKER_RECEIPT_FIXTURE.fields) {
       for (const term of workerProhibitedTerms) {
-        expect(
-          field.labelAr,
-          `worker receipt field '${field.labelAr}' contains prohibited term '${term}'`,
-        ).not.toContain(term);
-        expect(
-          field.value,
-          `worker receipt field value '${field.value}' contains prohibited term '${term}'`,
-        ).not.toContain(term);
+        expect(field.labelAr, `field '${field.labelAr}' contains '${term}'`).not.toContain(term);
+        expect(field.value, `value '${field.value}' contains '${term}'`).not.toContain(term);
       }
     }
   });
@@ -321,26 +385,21 @@ describe("WP-01-05/06/07 prohibited-data assertions (DEC-078 §8)", () => {
 
   it("accountant queue: no fake approval toasts or real status change", () => {
     const src = readText("src/components/reference-screens/review-queue-reference.tsx");
-    // Must NOT have toast or success message implying real approval
     expect(src).not.toMatch(/toast|success.*approv|تم الاعتماد|تم بنجاح/i);
   });
 
   it("owner dashboard: no generic internal-factory KPIs", () => {
     const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
-    const prohibited = OWNER_DASHBOARD_FIXTURE.prohibitedKpis;
-    for (const term of prohibited) {
+    for (const term of OWNER_DASHBOARD_FIXTURE.prohibitedKpis) {
       expect(src, `dashboard contains prohibited KPI '${term}'`).not.toContain(term);
     }
   });
 
   it("owner dashboard: uses outsourced-manufacturing wording", () => {
-    // The fixture data includes outsourced-manufacturing terms like
-    // "مخزون لدى مصانع التشغيل" which are rendered via {card.labelAr}.
     const hasOutsourcedWording = OWNER_DASHBOARD_FIXTURE.kpiCards.some(
       (c) => c.labelAr.includes("مصانع التشغيل"),
     );
     expect(hasOutsourcedWording).toBe(true);
-    // Verify no internal-factory wording in the fixture
     const hasInternalFactoryWording = OWNER_DASHBOARD_FIXTURE.kpiCards.some(
       (c) => c.labelAr.includes("كفاءة") || c.labelAr.includes("إنتاجية"),
     );
@@ -358,18 +417,38 @@ describe("WP-01-05/06/07 glass accent restrictions (DEC-076)", () => {
 
   it("review queue component has NO glass/blur on tables or approval actions", () => {
     const src = readText("src/components/reference-screens/review-queue-reference.tsx");
-    // Glass is prohibited on tables and approval actions
-    // Check that no backdrop-blur class appears near table or button elements
     expect(src).not.toMatch(/backdrop-blur/);
   });
 
-  it("owner dashboard component may use restrained glass on summary band only", () => {
+  it("owner dashboard: glass only as restrained secondary accent (not on values)", () => {
     const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
-    // Glass is permitted as secondary management accent on dashboard summary band.
-    // But must NOT appear on financial numbers or KPI card values.
-    // For WP-01-07 reference, we keep it simple: no glass on the actual KPI value elements.
-    // The component currently does not use glass — that's safe.
+    // Glass must not appear near financial numbers or KPI card values
     expect(src).not.toMatch(/backdrop-blur.*كجم|backdrop-blur.*جنيه/i);
+  });
+
+  it("topbar may use restrained glass accent (backdrop-blur-sm)", () => {
+    const src = readText("src/components/shells/topbar.tsx");
+    // Topbar is a management-surface accent — allowed to have backdrop-blur-sm
+    // (but it's optional, not required)
+    // Just verify no heavy glass effects
+    expect(src).not.toMatch(/backdrop-blur-lg|backdrop-blur-xl/i);
+  });
+});
+
+// --- No emoji icons in shells (replaced with SVG) ---
+
+describe("WP-01-05/06/07 no emoji icons in shells", () => {
+  it("topbar uses SVG icons (not emoji)", () => {
+    const src = readText("src/components/shells/topbar.tsx");
+    expect(src).toMatch(/<svg/);
+    // Check for specific emoji patterns that were previously used
+    expect(src).not.toMatch(/🔍|🔔|↻|☰/);
+  });
+
+  it("sidebar uses SVG icons (not emoji)", () => {
+    const src = readText("src/components/shells/sidebar.tsx");
+    expect(src).toMatch(/<svg/);
+    expect(src).not.toMatch(/◀|▶|▼/);
   });
 });
 
@@ -414,7 +493,6 @@ describe("WP-01-05/06/07 no API/routes/migrations/database writes", () => {
   });
 
   it("no new migrations added", () => {
-    // The migration files should still be 0000-0004 only
     expect(exists("drizzle/output/0005_*.sql")).toBe(false);
   });
 

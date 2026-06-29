@@ -398,12 +398,16 @@ describe("WP-01-01 home page auth-aware (updated for WP-01-04 role-aware redirec
     expect(src).toMatch(/getDefaultShellRoute/);
   });
 
-  it("signOut is handled by shell pages (worker/management), not home page", () => {
-    // WP-01-04 moved signOut to the shell components. The home page just redirects.
+  it("signOut is handled by shell pages (worker/management dashboard/reviews), not home page", () => {
+    // WP-01-04/05-07: signOut is in the shell components.
+    // /management now redirects to /management/dashboard, so signOut is in
+    // the dashboard and reviews pages, not the management home page.
     const workerPage = readText("src/app/(worker)/worker/page.tsx");
-    const mgmtPage = readText("src/app/(management)/management/page.tsx");
+    const dashboardPage = readText("src/app/(management)/management/dashboard/page.tsx");
+    const reviewsPage = readText("src/app/(management)/management/reviews/page.tsx");
     expect(workerPage).toMatch(/signOut/);
-    expect(mgmtPage).toMatch(/signOut/);
+    expect(dashboardPage).toMatch(/signOut/);
+    expect(reviewsPage).toMatch(/signOut/);
   });
 });
 

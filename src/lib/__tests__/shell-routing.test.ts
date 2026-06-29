@@ -108,8 +108,12 @@ describe("WP-01-04 management shell structure", () => {
     expect(mgmtPage).toMatch(/redirect\("\/worker"\)/);
   });
 
-  it("management page uses getManagementNavForRole", () => {
-    expect(mgmtPage).toMatch(/getManagementNavForRole/);
+  it("management home page redirects to dashboard (WP-01-05/06/07 polish)", () => {
+    // /management now redirects to /management/dashboard instead of rendering
+    // a ManagementShell directly. The dashboard page uses getManagementNavForRole.
+    expect(mgmtPage).toMatch(/redirect\("\/management\/dashboard"\)/);
+    const dashboardPage = readText("src/app/(management)/management/dashboard/page.tsx");
+    expect(dashboardPage).toMatch(/getManagementNavForRole/);
   });
 });
 

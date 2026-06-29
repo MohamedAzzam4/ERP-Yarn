@@ -6,13 +6,6 @@
  *
  * Fixture: reference-fixtures-v1
  * Route: /worker/raw-receipts/new
- *
- * Rules:
- * - Task-first worker screen (NOT mini management)
- * - Large touch targets (44×44px minimum)
- * - No financial/accounting terms or data
- * - No real posting — fixture/demo actions only
- * - Arabic-first RTL with LTR isolation for codes/quantities
  */
 import { Container } from "@/components/ui/container";
 import { Button } from "@/components/ui/button";
@@ -20,51 +13,75 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { WORKER_RECEIPT_FIXTURE } from "@/lib/fixtures/reference-fixtures";
 
+// Split fields into logical groups for better scanning
+const GROUP_SIZES = [5, 4, 2]; // first 5 = receipt info, next 4 = quantity/weight, last 2 = location/notes
+const GROUP_LABELS = ["بيانات الاستلام", "الكميات والأوزان", "التخزين والملاحظات"];
+
 export function WorkerReceiptReference() {
   const fixture = WORKER_RECEIPT_FIXTURE;
+  const groups: { label: string; fields: typeof fixture.fields }[] = [];
+  let offset = 0;
+  for (let i = 0; i < GROUP_SIZES.length; i++) {
+    groups.push({
+      label: GROUP_LABELS[i]!,
+      fields: fixture.fields.slice(offset, offset + GROUP_SIZES[i]!),
+    });
+    offset += GROUP_SIZES[i]!;
+  }
 
   return (
     <Container size="sm" className="py-6">
-      <h1 className="text-heading-3 text-foreground mb-6">{fixture.screenTitle}</h1>
+      {/* Title + guidance */}
+      <div className="mb-6">
+        <h1 className="text-heading-2 text-foreground mb-1">{fixture.screenTitle}</h1>
+        <p className="text-sm text-muted-foreground">
+          أدخل بيانات استلام الخام ثم احفظ كمسودة أو أرسل للمراجعة
+        </p>
+      </div>
 
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-heading-4">بيانات الاستلام</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="space-y-4">
-            {fixture.fields.map((field) => (
-              <div key={field.labelAr} className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                <dt className="text-sm font-medium text-muted-foreground">{field.labelAr}</dt>
-                <dd className="text-body text-foreground">
-                  {field.ltr ? (
-                    <LtrValue>{field.value}</LtrValue>
-                  ) : (
-                    field.value
-                  )}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </CardContent>
-      </Card>
+      {/* Field groups */}
+      <div className="space-y-4">
+        {groups.map((group) => (
+          <Card key={group.label}>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-heading-4 text-muted-foreground">{group.label}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <dl className="space-y-3">
+                {group.fields.map((field) => (
+                  <div key={field.labelAr} className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between">
+                    <dt className="text-sm text-muted-foreground">{field.labelAr}</dt>
+                    <dd className="text-body font-medium text-foreground">
+                      {field.ltr ? (
+                        <LtrValue>{field.value}</LtrValue>
+                      ) : (
+                        field.value
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
-      <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">الإجراءات المتاحة:</p>
+      {/* Actions */}
+      <div className="mt-6 space-y-3">
         <div className="flex flex-col gap-3 sm:flex-row">
-          {fixture.allowedActions.map((action) => (
+          {fixture.allowedActions.map((action, idx) => (
             <Button
               key={action}
               type="button"
-              variant="outline"
-              className="min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              variant={idx === 1 ? "primary" : "outline"}
+              className="min-h-[44px] flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               aria-label={action}
             >
               {action}
             </Button>
           ))}
         </div>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-center text-muted-foreground">
           هذه شاشة مرجعية ببيانات تجريبية — لا يتم تسجيل أو ترحيل أي بيانات
         </p>
       </div>
