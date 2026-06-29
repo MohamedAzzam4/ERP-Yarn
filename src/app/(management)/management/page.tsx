@@ -6,11 +6,17 @@
  *   - Owner and Accountant share the shell
  *   - Accountant does NOT see Owner-only user/security controls (DEC-032)
  *
- * This page resolves the ERP auth context, checks the role is a management
- * role, and renders the ManagementShell with role-filtered navigation.
+ * This page resolves the ERP auth context WITH roles (from the database),
+ * checks the user has a management role (owner or accountant), and renders
+ * the ManagementShell with role-filtered navigation.
+ *
+ * Role resolution: roles are fetched from the ERP database (user_roles +
+ * roles tables) via getErpAuthContextWithRoles(). The Supabase Auth
+ * identity is used ONLY for authentication — role context comes from
+ * the ERP database, never from email inference (DEC-073).
  */
 import { redirect } from "next/navigation";
-import { getErpAuthContext } from "@/server/auth/erp-context";
+import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import {
   getManagementNavForRole,
   isManagementShellRole,
@@ -20,20 +26,28 @@ import { signOut } from "@/app/login/actions";
 import type { RoleCode } from "@/server/security/role-codes";
 
 export default async function ManagementHomePage() {
-  const authResult = await getErpAuthContext();
+  const authResult = await getErpAuthContextWithRoles();
 
   if (!authResult.authenticated) {
     redirect("/login");
   }
 
-  const role: RoleCode = inferRoleFromContext(authResult);
+  // If the user has NO role assignments, deny access.
+  if (authResult.roles.length === 0) {
+    redirect("/login?error=no_role");
+  }
 
-  if (!isManagementShellRole(role)) {
+  // Check if the user has ANY management role (owner or accountant).
+  const managementRole = authResult.roles.find((r) =>
+    isManagementShellRole(r),
+  ) as RoleCode | undefined;
+
+  if (!managementRole) {
     // Non-management trying to access /management → redirect to worker
     redirect("/worker");
   }
 
-  const navCategories = getManagementNavForRole(role);
+  const navCategories = getManagementNavForRole(managementRole);
 
   return (
     <ManagementShell
@@ -55,24 +69,9 @@ export default async function ManagementHomePage() {
           المرحلة 1 — WP-01-04: واجهة الإدارة (أساس)
         </p>
         <p className="text-sm text-muted-foreground">
-          الدور: {role === "owner" ? "المالك" : "المحاسب"}
+          الدور: {managementRole === "owner" ? "المالك" : "المحاسب"}
         </p>
       </div>
     </ManagementShell>
   );
-}
-
-/**
- * TEMPORARY role inference for WP-01-04.
- * Same as worker page — see that file for the unresolved note.
- */
-function inferRoleFromContext(ctx: { email: string; name: string }): RoleCode {
-  const email = ctx.email.toLowerCase();
-  if (email.includes("owner") || email.includes("admin")) return "owner";
-  if (email.includes("accountant")) return "accountant";
-  if (email.includes("warehouse")) return "warehouse_employee";
-  if (email.includes("production")) return "production_employee";
-  if (email.includes("quality")) return "quality_employee";
-  // Default: accountant (management shell is safer default for testing)
-  return "accountant";
 }
