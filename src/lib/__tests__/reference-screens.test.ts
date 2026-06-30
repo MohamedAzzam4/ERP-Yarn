@@ -338,15 +338,56 @@ describe("WP-01-07 Owner dashboard reference screen", () => {
     expect(src).toMatch(/مرجعية|تجريبية/);
   });
 
-  it("component has chart-like visual structures (CSS bars + SVG trend line, not only text lists)", () => {
+  it("component has chart-like visual structures (CSS bars + SVG trend line + donut, not only text lists)", () => {
     const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
-    // Should have bar/progress visual elements
     expect(src).toMatch(/width.*%|height.*%/);
     expect(src).toMatch(/rounded-full|rounded-lg/);
     expect(src).toMatch(/bg-primary|bg-accent|bg-warning|BAR_COLORS/);
-    // Should have SVG trend line (not just text/progress bars)
     expect(src).toMatch(/<svg/);
     expect(src).toMatch(/MiniTrendLine/);
+  });
+
+  it("component has SVG donut/pie composition widget (توزيع المخزون)", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/DonutChart/);
+    expect(src).toMatch(/توزيع المخزون/);
+    expect(src).toMatch(/strokeDasharray/); // SVG donut arc
+    expect(src).toMatch(/inventoryComposition/);
+  });
+
+  it("component has attention ranking widget (أهم البنود التي تحتاج انتباه)", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/أهم البنود التي تحتاج انتباه/);
+    expect(src).toMatch(/attentionItems/);
+    expect(src).toMatch(/SEVERITY_STYLES/);
+  });
+
+  it("component has external factory balances widget (أرصدة مصانع التشغيل)", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/أرصدة مصانع التشغيل/);
+    expect(src).toMatch(/factoryBalances/);
+  });
+
+  it("component has visible glass accents on insight widgets (backdrop-blur on management surface)", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/backdrop-blur-md|backdrop-blur-sm/);
+    expect(src).toMatch(/bg-surface\/80|bg-surface\/95/);
+  });
+
+  it("fixture has inventoryComposition data (3 segments)", () => {
+    expect(OWNER_DASHBOARD_FIXTURE.inventoryComposition).toHaveLength(3);
+    expect(OWNER_DASHBOARD_FIXTURE.inventoryComposition[0]!.labelAr).toBe("خام");
+    expect(OWNER_DASHBOARD_FIXTURE.inventoryComposition[1]!.labelAr).toBe("لدى مصانع التشغيل");
+  });
+
+  it("fixture has attentionItems data (4 items)", () => {
+    expect(OWNER_DASHBOARD_FIXTURE.attentionItems).toHaveLength(4);
+    expect(OWNER_DASHBOARD_FIXTURE.attentionItems[0]!.labelAr).toBe("استلام خام بدون سعر");
+  });
+
+  it("fixture has factoryBalances data (3 factories)", () => {
+    expect(OWNER_DASHBOARD_FIXTURE.factoryBalances).toHaveLength(3);
+    expect(OWNER_DASHBOARD_FIXTURE.factoryBalances[0]!.factoryNameAr).toBe("مصر ايران");
   });
 
   it("component has gradient/glass accent on dashboard header (DEC-076: management surface)", () => {

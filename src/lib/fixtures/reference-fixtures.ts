@@ -194,6 +194,9 @@ export interface OwnerDashboardFixture {
     summaryAr: string;
   }>;
   prohibitedKpis: ReadonlyArray<string>;
+  inventoryComposition: ReadonlyArray<{ labelAr: string; valueKg: string; color: string }>;
+  attentionItems: ReadonlyArray<{ labelAr: string; count: number; severity: "high" | "medium" | "low" }>;
+  factoryBalances: ReadonlyArray<{ factoryNameAr: string; stockKg: string; payableEgp: string }>;
 }
 
 export const OWNER_DASHBOARD_FIXTURE: OwnerDashboardFixture = {
@@ -246,5 +249,21 @@ export const OWNER_DASHBOARD_FIXTURE: OwnerDashboardFixture = {
     "إنتاجية العامل",
     "تشغيل الماكينات",
     "عدد الأوامر النشطة",
+  ],
+  inventoryComposition: [
+    { labelAr: "خام", valueKg: "10,200.000", color: "var(--color-primary)" },
+    { labelAr: "لدى مصانع التشغيل", valueKg: "6,200.000", color: "var(--color-accent)" },
+    { labelAr: "خيط جاهز", valueKg: "2,050.000", color: "var(--color-success)" },
+  ],
+  attentionItems: [
+    { labelAr: "استلام خام بدون سعر", count: 3, severity: "high" },
+    { labelAr: "مراجعة تكلفة تشغيل", count: 2, severity: "high" },
+    { labelAr: "مراجعة تحويل مخزون", count: 1, severity: "medium" },
+    { labelAr: "شكوى مفتوحة", count: 2, severity: "medium" },
+  ],
+  factoryBalances: [
+    { factoryNameAr: "مصر ايران", stockKg: "3,800.000", payableEgp: "45,000.00" },
+    { factoryNameAr: "زوى عبدالحميد", stockKg: "1,600.000", payableEgp: "28,000.00" },
+    { factoryNameAr: "زوى ابوقمر", stockKg: "800.000", payableEgp: "19,000.00" },
   ],
 };
