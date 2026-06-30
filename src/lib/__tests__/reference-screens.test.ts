@@ -395,9 +395,13 @@ describe("WP-01-07 Owner dashboard reference screen", () => {
     expect(src).toMatch(/gradient|backdrop-blur/);
   });
 
-  it("component has KPI card accent strip", () => {
+  it("component has KPI card semantic accent (RTL vertical line, no thick top strip)", () => {
     const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
-    expect(src).toMatch(/accent|top-0.*h-1|h-0\.5/);
+    // Must have the kpiAccentFor helper + data-kpi-accent hook
+    expect(src).toMatch(/kpiAccentFor/);
+    expect(src).toMatch(/data-kpi-accent/);
+    // Must have an RTL vertical accent line (right-0, w-1, top/bottom inset)
+    expect(src).toMatch(/right-0.*top-6.*bottom-6.*w-1|right-0.*w-1.*rounded-full/);
   });
 
   it("component has hover shadow on KPI cards", () => {
@@ -772,8 +776,15 @@ describe("DEC-075 blue/navy brand identity on management surfaces", () => {
     expect(dash).toMatch(/bg-primary/);
   });
 
-  it("owner dashboard KPI cards have branded blue top accent strip (stronger than 1px)", () => {
-    expect(dash).toMatch(/h-1\.5.*from-primary|h-1.*from-primary/);
+  it("owner dashboard KPI cards use premium RTL semantic accent (no thick top strip)", () => {
+    // Must NOT have the old thick top strip (h-1.5 or h-1 full-width gradient)
+    expect(dash).not.toMatch(/inset-x-0 top-0 h-1\.5 bg-gradient/);
+    expect(dash).not.toMatch(/inset-x-0 top-0 h-1 bg-gradient/);
+    // Must have the new RTL vertical accent line (right-0, w-1, inset vertically)
+    expect(dash).toMatch(/right-0.*w-1.*rounded-full/);
+    // Must have semantic accent mapping (multiple categories)
+    expect(dash).toMatch(/kpiAccentFor/);
+    expect(dash).toMatch(/bg-danger|bg-warning|bg-success|bg-accent|bg-primary/);
   });
 
   it("owner dashboard KPI financial tag uses primary-tinted styling", () => {
@@ -860,12 +871,17 @@ describe("DEC-075 sidebar collapse button redesign", () => {
   });
 
   it("collapse button has visible hover and focus states", () => {
-    expect(sidebar).toMatch(/hover:bg-primary\/5|hover:border-primary\/40/);
+    expect(sidebar).toMatch(/hover:bg-primary\/5|hover:bg-primary\/10|hover:border-primary\/40/);
     expect(sidebar).toMatch(/focus-visible:outline-none.*focus-visible:ring-2|focus-visible:ring-2.*focus-visible:outline-none/);
   });
 
-  it("collapse button is visually integrated (not a floating arrow) — sits in header rail with border + shadow", () => {
-    expect(sidebar).toMatch(/border border-border bg-surface.*shadow-sm|shadow-sm.*border border-border/);
+  it("collapse button is flush/integrated with header (no floating border+shadow)", () => {
+    // Button should be transparent by default (not a floating bordered box)
+    expect(sidebar).toMatch(/bg-transparent/);
+    // Should NOT have the old floating-button styling (border + bg-surface + shadow-sm together)
+    expect(sidebar).not.toMatch(/border border-border bg-surface.*shadow-sm/);
+    // Hover reveals a subtle primary tint (product-control feel)
+    expect(sidebar).toMatch(/hover:bg-primary\/10/);
   });
 
   it("collapse button uses panel-collapse/panel-expand SVG icons (not single chevron arrow)", () => {
@@ -992,5 +1008,134 @@ describe("DEC-075 no API/DB/mutation added (regression)", () => {
     const topbar = readText("src/components/shells/topbar.tsx");
     expect(sidebar).not.toMatch(/from.*@\/server\/db|from.*@\/server\/services|from.*@\/server\/api/);
     expect(topbar).not.toMatch(/from.*@\/server\/db|from.*@\/server\/services|from.*@\/server\/api/);
+  });
+});
+
+// ===========================================================================
+// KPI card premium refinement (DEC-075 visual refinement pass 2).
+// Owner feedback: thick blue top strip looks cheap/mechanical.
+// Resolution: replace with RTL vertical semantic accent line + subtle corner
+// glow; keep numbers on plain bg-surface (no glass behind values).
+// ===========================================================================
+
+describe("DEC-075 KPI card premium refinement (no thick top strip)", () => {
+  const dash = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+
+  it("KPI cards do NOT use a thick full-width top border/strip", () => {
+    // The old mechanical top strip: absolute inset-x-0 top-0 h-1.5 bg-gradient
+    expect(dash).not.toMatch(/inset-x-0 top-0 h-1\.5/);
+    expect(dash).not.toMatch(/inset-x-0 top-0 h-1 bg-gradient/);
+    // Also no thick top-0 strip of any height spanning full width
+    expect(dash).not.toMatch(/absolute inset-x-0 top-0 h-[1-9]/);
+  });
+
+  it("KPI cards use an RTL vertical side accent line (right-0, 3-4px wide)", () => {
+    // The accent line: absolute right-0, w-1 (4px), inset vertically, rounded
+    expect(dash).toMatch(/right-0.*w-1.*rounded-full/);
+    // Must be inset vertically (top-6 bottom-6 or similar), not full-height
+    expect(dash).toMatch(/top-6 bottom-6|top-\d bottom-\d/);
+  });
+
+  it("KPI accent uses semantic colors per category (not all-blue)", () => {
+    // The kpiAccentFor helper must map different KPIs to different colors
+    expect(dash).toMatch(/kpiAccentFor/);
+    // Must include at least 3 distinct semantic colors
+    expect(dash).toMatch(/bg-danger/);
+    expect(dash).toMatch(/bg-warning/);
+    expect(dash).toMatch(/bg-success/);
+    expect(dash).toMatch(/bg-accent/);
+    expect(dash).toMatch(/bg-primary/);
+  });
+
+  it("KPI cards expose data-kpi-card + data-kpi-accent hooks for testability", () => {
+    expect(dash).toMatch(/data-kpi-card/);
+    expect(dash).toMatch(/data-kpi-accent=/);
+  });
+
+  it("KPI numbers remain on plain bg-surface (no glass/blur behind values)", () => {
+    // The KPI value paragraph uses text-foreground on bg-surface Card.
+    // Glass (backdrop-blur) must NOT appear on KPI cards — only on insight widgets.
+    // Extract the KPI card section and verify no backdrop-blur there.
+    const kpiSection = dash.slice(dash.indexOf("KPI Cards"), dash.indexOf("Insight Widgets"));
+    expect(kpiSection).not.toMatch(/backdrop-blur|glass/i);
+    // KPI value uses text-foreground (readable) and font-bold
+    expect(kpiSection).toMatch(/text-2xl font-bold text-foreground/);
+  });
+
+  it("KPI cards have subtle corner glow (soft gradient, not behind number)", () => {
+    // The glow is a pointer-events-none absolute element with a soft /8 tint
+    expect(dash).toMatch(/pointer-events-none absolute.*bg-gradient-to-br/);
+    expect(dash).toMatch(/from-(primary|accent|success|warning|danger)\/8/);
+  });
+
+  it("KPI hover uses subtle border/shadow (no layout-shifting scale)", () => {
+    const kpiSection = dash.slice(dash.indexOf("KPI Cards"), dash.indexOf("Insight Widgets"));
+    expect(kpiSection).toMatch(/hover:border-primary\/40|hover:shadow/);
+    // No scale transforms on hover
+    expect(kpiSection).not.toMatch(/scale-/i);
+  });
+
+  it("KPI financial tag chip preserved (مالي)", () => {
+    const kpiSection = dash.slice(dash.indexOf("KPI Cards"), dash.indexOf("Insight Widgets"));
+    expect(kpiSection).toMatch(/isFinancial/);
+    expect(kpiSection).toMatch(/مالي/);
+  });
+
+  it("KPI cards keep accessible role=link + tabIndex for navigation", () => {
+    const kpiSection = dash.slice(dash.indexOf("KPI Cards"), dash.indexOf("Insight Widgets"));
+    expect(kpiSection).toMatch(/role="link"/);
+    expect(kpiSection).toMatch(/tabIndex=\{0\}/);
+  });
+
+  it("dashboard header glass/gradient preserved (not removed by KPI refactor)", () => {
+    // The dashboard title banner still has backdrop-blur-md + gradient
+    expect(dash).toMatch(/backdrop-blur-md/);
+    expect(dash).toMatch(/from-primary\/12|from-primary\/10/);
+  });
+
+  it("chart hover/focus interactions preserved (not affected by KPI refactor)", () => {
+    expect(dash).toMatch(/DonutChart/);
+    expect(dash).toMatch(/AttentionRanking/);
+    expect(dash).toMatch(/FactoryBalances/);
+    expect(dash).toMatch(/data-chart=/);
+    expect(dash).toMatch(/onMouseEnter/);
+    expect(dash).toMatch(/onFocus/);
+  });
+
+  it("worker screen unchanged (no glass, no heavy brand, no financial terms)", () => {
+    const worker = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(worker).not.toMatch(/backdrop-blur|glass/i);
+    expect(worker).not.toMatch(/from-primary\/|bg-gradient-to/);
+    expect(worker).not.toMatch(/border-primary|text-primary|bg-primary/);
+    // Financial redaction
+    const prohibited = ["سعر", "تكلفة", "مستحقات", "مدفوعات", "ربحية", "قيمة", "مبلغ"];
+    for (const term of prohibited) {
+      expect(worker, `worker contains '${term}'`).not.toContain(term);
+    }
+    // Still has 11 form controls
+    expect(worker).toMatch(/type="text"/);
+    expect(worker).toMatch(/type="number"/);
+    expect(worker).toMatch(/<select/);
+    expect(worker).toMatch(/<textarea/);
+  });
+
+  it("sidebar collapse button remains accessible (aria-label + 44px + integrated)", () => {
+    const sidebar = readText("src/components/shells/sidebar.tsx");
+    expect(sidebar).toMatch(/aria-label=\{collapsed \? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"\}/);
+    expect(sidebar).toMatch(/min-h-\[44px\].*min-w-\[44px\]|min-w-\[44px\].*min-h-\[44px\]/);
+    expect(sidebar).toMatch(/data-sidebar-collapse-toggle/);
+    // Integrated (flush/transparent, not floating with border+shadow)
+    expect(sidebar).toMatch(/bg-transparent/);
+    expect(sidebar).not.toMatch(/border border-border bg-surface.*shadow-sm/);
+  });
+
+  it("no business scope expanded (no API/DB/migration/business logic)", () => {
+    expect(dash).not.toMatch(/from.*@\/server\/api|from.*@\/server\/services|from.*@\/server\/db/);
+    expect(dash).not.toMatch(/fetch\(|axios|useMutation/);
+    // No new API routes
+    expect(exists("src/app/api/v1/route.ts")).toBe(false);
+    expect(exists("src/app/api/dashboard/route.ts")).toBe(false);
+    // No new migrations
+    expect(exists("drizzle/output/0005_*.sql")).toBe(false);
   });
 });

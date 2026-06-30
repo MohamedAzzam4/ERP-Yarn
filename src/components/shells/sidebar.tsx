@@ -125,9 +125,11 @@ export function Sidebar({
         aria-label="التنقل الجانبي"
       >
         {/* Branded header rail with integrated collapse toggle.
-            The toggle is part of the header (not floating), has a 44x44
-            touch target, visible hover/focus ring, and aria-label. */}
-        <div className="relative flex items-center justify-center border-b border-border bg-gradient-to-l from-primary/8 to-transparent py-2.5">
+            The toggle is flush with the header (no floating border/shadow) —
+            it reads as a native product control: transparent by default, a
+            subtle primary tint appears on hover, and the focus ring on focus.
+            44x44 touch target, Arabic aria-label, correct RTL chevron. */}
+        <div className="relative flex items-center justify-center border-b border-border bg-gradient-to-l from-primary/8 to-transparent py-2">
           {/* Brand accent line on the leading edge of the sidebar header */}
           <span
             className="pointer-events-none absolute inset-y-0 right-0 w-1 bg-primary/40"
@@ -142,7 +144,7 @@ export function Sidebar({
             aria-expanded={!collapsed}
             title={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
             data-sidebar-collapse-toggle
-            className="min-h-[44px] min-w-[44px] rounded-lg border border-border bg-surface p-2 text-primary shadow-sm transition-colors duration-200 hover:bg-primary/5 hover:text-primary hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            className="min-h-[44px] min-w-[44px] rounded-lg bg-transparent p-2 text-primary/70 transition-colors duration-200 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           >
             {collapsed ? <PanelCollapseIcon /> : <PanelExpandIcon />}
           </Button>

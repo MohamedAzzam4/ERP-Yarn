@@ -43,6 +43,37 @@ function parseNumeric(value: string): number {
   return m ? parseFloat(m[0].replace(/,/g, "")) : 0;
 }
 
+// ---------------------------------------------------------------------------
+// KPI semantic accent — a premium, RTL-friendly vertical accent line on the
+// right (leading) edge of each KPI card. Color is chosen by KPI category so
+// the card reads at a glance without a heavy branded top strip.
+//   inventory      → primary  (blue)
+//   outsourced     → accent   (teal)
+//   sales/profit   → success  (green)
+//   reviews/payable→ warning  (amber)
+//   warnings/complaints → danger (red)
+// ---------------------------------------------------------------------------
+type KpiAccent = { line: string; glow: string; name: string };
+
+function kpiAccentFor(labelAr: string): KpiAccent {
+  if (labelAr.includes("شكوى") || labelAr.includes("تحذير")) {
+    return { line: "bg-danger", glow: "from-danger/8", name: "danger" };
+  }
+  if (labelAr.includes("مراجعات")) {
+    return { line: "bg-warning", glow: "from-warning/8", name: "warning" };
+  }
+  if (labelAr.includes("مستحقات")) {
+    return { line: "bg-warning", glow: "from-warning/8", name: "warning" };
+  }
+  if (labelAr.includes("مبيعات") || labelAr.includes("ربحية")) {
+    return { line: "bg-success", glow: "from-success/8", name: "success" };
+  }
+  if (labelAr.includes("مصانع التشغيل")) {
+    return { line: "bg-accent", glow: "from-accent/8", name: "accent" };
+  }
+  return { line: "bg-primary", glow: "from-primary/8", name: "primary" };
+}
+
 // ===========================================================================
 // DonutChart — Power BI-style focus on hovered/focused segment.
 // Each segment and its legend row are interactive (hover + keyboard focus).
@@ -563,41 +594,56 @@ export function OwnerDashboardReference() {
         <p className="text-sm text-muted-foreground">نظرة عامة سريعة على أداء النظام</p>
       </div>
 
-      {/* KPI Cards — branded with blue accent strip + stronger top gradient */}
+      {/* KPI Cards — premium semantic accent (RTL vertical line, no top strip) */}
       <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2 lg:grid-cols-4">
-        {f.kpiCards.map((card) => (
-          <Card
-            key={card.labelAr}
-            className="group relative overflow-hidden border-border bg-surface transition-all duration-200 hover:border-primary/40 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            role="link"
-            aria-label={`${card.labelAr}: ${card.value}`}
-            tabIndex={0}
-          >
-            {/* Branded blue top accent — replaces subtle 1px strip */}
-            <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-l from-primary via-primary/70 to-transparent" />
-            <CardContent className="p-4 pt-5">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1">{card.labelAr}</p>
-                  <p className="text-2xl font-bold text-foreground">
-                    <LtrValue>{card.value}</LtrValue>
-                  </p>
+        {f.kpiCards.map((card) => {
+          const accent = kpiAccentFor(card.labelAr);
+          return (
+            <Card
+              key={card.labelAr}
+              data-kpi-card
+              data-kpi-accent={accent.name}
+              className="group relative overflow-hidden border-border bg-surface transition-all duration-200 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              role="link"
+              aria-label={`${card.labelAr}: ${card.value}`}
+              tabIndex={0}
+            >
+              {/* Subtle corner glow (top-right, semantic tint) — stays soft so
+                  the KPI number on plain bg-surface remains fully readable. */}
+              <div
+                className={`pointer-events-none absolute left-0 top-0 h-20 w-24 rounded-bl-[3rem] bg-gradient-to-br ${accent.glow} to-transparent`}
+                aria-hidden="true"
+              />
+              {/* RTL vertical accent line — 4px wide, inset vertically, semantic
+                  color per KPI category. Replaces the heavy top strip. */}
+              <div
+                className={`pointer-events-none absolute right-0 top-6 bottom-6 w-1 rounded-full ${accent.line}`}
+                aria-hidden="true"
+              />
+              <CardContent className="relative p-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">{card.labelAr}</p>
+                    <p className="text-2xl font-bold text-foreground">
+                      <LtrValue>{card.value}</LtrValue>
+                    </p>
+                  </div>
+                  {card.isFinancial && (
+                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                      مالي
+                    </span>
+                  )}
                 </div>
-                {card.isFinancial && (
-                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                    مالي
-                  </span>
+                {card.labelAr === "ربحية تقريبية" && (
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-warning" />
+                    <p className="text-xs text-warning">تقريبي — قد تحتاج مراجعة التكلفة</p>
+                  </div>
                 )}
-              </div>
-              {card.labelAr === "ربحية تقريبية" && (
-                <div className="mt-2 flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-warning" />
-                  <p className="text-xs text-warning">تقريبي — قد تحتاج مراجعة التكلفة</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
       {/* Insight Widgets Row — blue-tinted glass section (DEC-076: management surface) */}
