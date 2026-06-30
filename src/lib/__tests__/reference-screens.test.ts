@@ -74,9 +74,10 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
     }
   });
 
-  it("component uses LtrValue for LTR-isolated fields", () => {
+  it("component uses dir=ltr for code/date/quantity inputs (LTR isolation)", () => {
     const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
-    expect(src).toMatch(/LtrValue/);
+    // Form inputs for codes, dates, quantities must have dir="ltr"
+    expect(src).toMatch(/dir="ltr"/);
   });
 
   it("component uses Container (RTL-safe layout)", () => {
@@ -84,7 +85,7 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
     expect(src).toMatch(/Container/);
   });
 
-  it("component has touch targets (min-h-[44px])", () => {
+  it("component has touch targets (min-h-[44px]) on form inputs", () => {
     const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
     expect(src).toMatch(/min-h-\[44px\]/);
   });
@@ -99,10 +100,11 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
     expect(src).toMatch(/مرجعية|تجريبية/);
   });
 
-  it("component has field groups (multiple Card sections, not one flat list)", () => {
+  it("component has field groups (3 Card sections: بيانات الاستلام / الكميات / التخزين)", () => {
     const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
-    // Should have GROUP_SIZES or GROUP_LABELS for field grouping
-    expect(src).toMatch(/GROUP_SIZES|GROUP_LABELS|groups/);
+    expect(src).toMatch(/بيانات الاستلام/);
+    expect(src).toMatch(/الكميات والأوزان/);
+    expect(src).toMatch(/التخزين والملاحظات/);
   });
 
   it("component has NO glass/blur effects (DEC-076: Worker Task Mode)", () => {
@@ -113,6 +115,54 @@ describe("WP-01-05 Worker raw-receipt reference screen", () => {
   it("component has guidance text below title", () => {
     const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
     expect(src).toMatch(/أدخل بيانات|احفظ كمسودة أو أرسل للمراجعة/);
+  });
+
+  // --- Data-entry form controls (not read-only) ---
+
+  it("component has form input controls (type=text) for code/lot/season fields", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/type="text"/);
+  });
+
+  it("component has form input controls (type=number) for bale count and weight", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/type="number"/);
+  });
+
+  it("component has select controls for raw type, grade, supplier, storage location", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/<select/);
+  });
+
+  it("component has textarea control for notes", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/<textarea/);
+  });
+
+  it("component has 11 form fields with labels (not read-only value rows)", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    // Should have <label> elements for each field (not <dt>/<dd> read-only)
+    const labelCount = (src.match(/<label/g) || []).length;
+    expect(labelCount).toBeGreaterThanOrEqual(11);
+    // Should NOT have <dl> or <dd> (read-only details layout)
+    expect(src).not.toMatch(/<dl|<dd/);
+  });
+
+  it("component pre-fills fixture values via defaultValue (not as static text)", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/defaultValue/);
+  });
+
+  it("component action buttons are type=button (no form submit/API mutation)", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).toMatch(/type="button"/);
+    // Should NOT have type="submit"
+    expect(src).not.toMatch(/type="submit"/);
+  });
+
+  it("component does NOT import or call any API/service modules", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).not.toMatch(/from.*@\/server\/api|from.*@\/server\/services|fetch\(|axios/i);
   });
 
   it("page uses WorkerShell wrapper", () => {
@@ -466,9 +516,9 @@ describe("WP-01-05/06/07 RTL and LTR isolation", () => {
     expect(layout).not.toMatch(/dir="auto"/);
   });
 
-  it("worker receipt uses LtrValue for codes/quantities", () => {
+  it("worker receipt uses dir=ltr for code/quantity inputs (LTR isolation)", () => {
     const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
-    expect(src).toMatch(/LtrValue/);
+    expect(src).toMatch(/dir="ltr"/);
   });
 
   it("review queue uses LtrValue for document numbers/dates", () => {
