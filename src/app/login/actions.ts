@@ -25,22 +25,33 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
  *
  * On success: redirects to the return path (default "/").
  * On failure: redirects to /login with a generic error (enumeration-safe).
+ *
+ * The redirect target is sanitized server-side (defense in depth) to prevent
+ * open-redirect attacks. Only internal paths starting with "/" (but not "//"
+ * or full URLs) are allowed.
  */
+function sanitizeRedirectServer(value: string | null | undefined): string {
+  if (!value) return "/";
+  if (!value.startsWith("/")) return "/";
+  if (value.startsWith("//") || value.startsWith("/\\")) return "/";
+  if (value.slice(1).includes("://")) return "/";
+  return value;
+}
+
 export async function signIn(formData: FormData) {
   const email = formData.get("email") as string;
   const password = formData.get("password") as string;
-  const redirectTo = (formData.get("redirect") as string) || "/";
+  const redirectTo = sanitizeRedirectServer(formData.get("redirect") as string);
 
   if (!email || !password) {
-    redirect("/login?error=incomplete");
+    redirect(`/login?error=incomplete&redirect=${encodeURIComponent(redirectTo)}`);
   }
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
-    // Generic error — do not reveal whether the email exists.
-    redirect("/login?error=invalid");
+    redirect(`/login?error=invalid&redirect=${encodeURIComponent(redirectTo)}`);
   }
 
   revalidatePath("/", "layout");
