@@ -3,6 +3,16 @@
  *
  * Contract: docs/contracts/02_design_system_and_ux_contract.md §Management Navigation
  * Contract: docs/contracts/10_frontend_screen_contracts.md §5.2
+ *
+ * DEC-075 polish:
+ *   - Polished collapse toggle button (no longer a floating arrow).
+ *     It sits inside the sidebar header rail, branded with primary color,
+ *     has a clear 44x44 touch target, visible hover/focus state, and
+ *     correct RTL chevron direction for collapsed/expanded states.
+ *   - Active sidebar item is now strongly branded (blue left border,
+ *     primary-tinted background, primary text) instead of a faint tint.
+ *   - Sidebar header gets a subtle blue gradient strip so it reads as a
+ *     branded surface rather than a plain white panel.
  */
 "use client";
 
@@ -14,25 +24,66 @@ import type { ManagementNavCategory } from "./nav-config";
 
 // --- Inline SVG icons ---
 
-function ChevronRightIcon() {
+/**
+ * PanelCollapseIcon — a polished "collapse sidebar" icon (two chevrons
+ * pointing toward the sidebar edge). In RTL the sidebar is on the right,
+ * so "collapse" points right (>>) and "expand" points left (<<).
+ */
+function PanelCollapseIcon() {
+  // In RTL, sidebar is on the right. Collapsed state (expand action)
+  // shows chevrons pointing LEFT (toward screen center = open up space).
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="9 18 15 12 9 6" />
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="11 17 6 12 11 7" />
+      <polyline points="18 17 13 12 18 7" />
     </svg>
   );
 }
 
-function ChevronLeftIcon() {
+function PanelExpandIcon() {
+  // Expanded state (collapse action) shows chevrons pointing RIGHT
+  // (toward the right edge where the sidebar lives in RTL).
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="15 18 9 12 15 6" />
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="13 17 18 12 13 7" />
+      <polyline points="6 17 11 12 6 7" />
     </svg>
   );
 }
 
 function ChevronDownIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <polyline points="6 9 12 15 18 9" />
     </svg>
   );
@@ -73,18 +124,27 @@ export function Sidebar({
         )}
         aria-label="التنقل الجانبي"
       >
-        {/* Collapse toggle */}
-        <div className="flex items-center justify-center border-b border-border py-2">
+        {/* Branded header rail with integrated collapse toggle.
+            The toggle is part of the header (not floating), has a 44x44
+            touch target, visible hover/focus ring, and aria-label. */}
+        <div className="relative flex items-center justify-center border-b border-border bg-gradient-to-l from-primary/8 to-transparent py-2.5">
+          {/* Brand accent line on the leading edge of the sidebar header */}
+          <span
+            className="pointer-events-none absolute inset-y-0 right-0 w-1 bg-primary/40"
+            aria-hidden="true"
+          />
           <Button
             type="button"
             variant="ghost"
             size="sm"
             onClick={onToggleCollapse}
-            aria-label={collapsed ? "توسيع القائمة" : "طي القائمة"}
+            aria-label={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
             aria-expanded={!collapsed}
-            className="min-h-[44px] min-w-[44px] p-2 text-muted-foreground hover:text-foreground"
+            title={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
+            data-sidebar-collapse-toggle
+            className="min-h-[44px] min-w-[44px] rounded-lg border border-border bg-surface p-2 text-primary shadow-sm transition-colors duration-200 hover:bg-primary/5 hover:text-primary hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
           >
-            {collapsed ? <ChevronLeftIcon /> : <ChevronRightIcon />}
+            {collapsed ? <PanelCollapseIcon /> : <PanelExpandIcon />}
           </Button>
         </div>
 
@@ -145,20 +205,29 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
           {category.items.map((item) => {
             const isActive = currentPath === item.href;
             return (
-              <li key={item.id}>
+              <li key={item.id} className="relative">
                 <Link
                   href={item.href}
                   aria-current={isActive ? "page" : undefined}
                   className={cn(
-                    "flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm transition-colors",
+                    "flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm transition-colors duration-200",
                     isActive
-                      ? "bg-primary/10 font-medium text-primary"
+                      ? "bg-primary/10 font-bold text-primary ring-1 ring-inset ring-primary/20"
                       : "text-foreground hover:bg-muted",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   )}
                 >
-                  {item.labelAr}
+                  <span className="relative">{item.labelAr}</span>
                 </Link>
+                {/* Branded active indicator: a right-edge accent bar (RTL:
+                    sidebar is on the right, so the accent sits on the
+                    right/leading edge of the active item). */}
+                {isActive && (
+                  <span
+                    className="pointer-events-none absolute right-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-primary"
+                    aria-hidden="true"
+                  />
+                )}
               </li>
             );
           })}

@@ -25,8 +25,11 @@ export function ReviewQueueReference() {
 
   return (
     <Container size="lg" className="py-6">
-      <div className="mb-6 rounded-xl border border-border bg-gradient-to-l from-primary/5 to-transparent p-4 backdrop-blur-sm">
-        <h1 className="text-heading-2 text-foreground mb-1">{fixture.screenTitle}</h1>
+      <div className="mb-6 rounded-xl border border-primary/20 bg-gradient-to-l from-primary/10 via-primary/4 to-transparent p-4 backdrop-blur-sm shadow-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="inline-block h-7 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+          <h1 className="text-heading-2 text-foreground">{fixture.screenTitle}</h1>
+        </div>
         <p className="text-sm text-muted-foreground">مراجعات مطلوبة تتطلب اتخاذ إجراء</p>
       </div>
 
@@ -35,11 +38,11 @@ export function ReviewQueueReference() {
         {fixture.summaryCounts.map((item, idx) => (
           <Card
             key={item.categoryAr}
-            className={`relative overflow-hidden transition-all duration-200 hover:shadow-md ${idx === 0 ? "border-primary/20 bg-primary/5" : ""}`}
+            className={`relative overflow-hidden transition-all duration-200 hover:shadow-md hover:border-primary/30 ${idx === 0 ? "border-primary/30 bg-primary/5" : ""}`}
           >
-            {idx === 0 && <div className="absolute inset-x-0 top-0 h-0.5 bg-primary/30" />}
+            {idx === 0 && <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-l from-primary to-primary/40" />}
             <CardContent className="p-3">
-              <p className="text-2xl font-bold text-foreground" dir="ltr">{item.count}</p>
+              <p className={`text-2xl font-bold ${idx === 0 ? "text-primary" : "text-foreground"}`} dir="ltr">{item.count}</p>
               <p className="text-xs text-muted-foreground mt-0.5 leading-tight">{item.categoryAr}</p>
             </CardContent>
           </Card>
@@ -55,7 +58,7 @@ export function ReviewQueueReference() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm" role="table">
               <thead>
-                <tr className="border-b border-border bg-muted/30">
+                <tr className="border-b border-border bg-primary/5">
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">المستند</th>
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">النوع</th>
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">مُرسِل</th>

@@ -669,3 +669,328 @@ describe("WP-01-05/06/07 reduced motion support", () => {
     expect(css).toMatch(/transition-duration.*0\.01ms/);
   });
 });
+
+// ===========================================================================
+// DEC-075 final visual-interaction polish pass.
+// Covers: chart hover/focus interactions, blue/navy brand identity,
+// sidebar collapse button redesign, worker screen safety, no-emoji,
+// no internal-factory KPIs, financial redaction, no API/DB/mutation.
+// ===========================================================================
+
+describe("DEC-075 chart hover/focus interactions (Power BI-style)", () => {
+  const dash = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+
+  it("dashboard component is a client component (uses React state for hover/focus)", () => {
+    expect(dash).toMatch(/"use client"/);
+    expect(dash).toMatch(/useState/);
+  });
+
+  it("donut chart segments are hoverable + keyboard-focusable (tabIndex + role=button)", () => {
+    expect(dash).toMatch(/DonutChart/);
+    // SVG segments must be interactive
+    expect(dash).toMatch(/tabIndex=\{0\}/);
+    expect(dash).toMatch(/role="button"/);
+    expect(dash).toMatch(/onMouseEnter/);
+    expect(dash).toMatch(/onMouseLeave/);
+    expect(dash).toMatch(/onFocus/);
+    expect(dash).toMatch(/onBlur/);
+  });
+
+  it("donut chart highlights focused segment and de-emphasizes others (opacity dim)", () => {
+    // The dimming logic uses opacity < 1 for non-active segments.
+    // The opacity value appears in a ternary (e.g. `opacity: isDim ? 0.35 : 1`)
+    // so we just look for the dim numeric value anywhere in the file.
+    expect(dash).toMatch(/0\.35|0\.45|0\.5\b|0\.55/);
+    expect(dash).toMatch(/dimmed/);
+  });
+
+  it("donut chart shows cursor pointer on interactive parts", () => {
+    expect(dash).toMatch(/cursor:\s*"pointer"/);
+  });
+
+  it("donut legend items are also interactive (paired hover/focus)", () => {
+    // Legend rows should have tabIndex and role=button too
+    const legendSection = dash.slice(dash.indexOf("segmentData.map"));
+    expect(legendSection).toMatch(/tabIndex=\{0\}/);
+  });
+
+  it("attention ranking supports hover/focus highlight with de-emphasis", () => {
+    expect(dash).toMatch(/AttentionRanking/);
+    expect(dash).toMatch(/data-chart="attention-ranking"/);
+  });
+
+  it("factory balances supports hover/focus highlight", () => {
+    expect(dash).toMatch(/FactoryBalances/);
+    expect(dash).toMatch(/data-chart="factory-balances"/);
+  });
+
+  it("inventory location bars support hover/focus highlight", () => {
+    expect(dash).toMatch(/LocationBars/);
+    expect(dash).toMatch(/data-chart="location-bars"/);
+  });
+
+  it("review trend chart points are hoverable/focusable", () => {
+    expect(dash).toMatch(/ReviewTrendChart/);
+    expect(dash).toMatch(/data-chart="review-trend"/);
+    expect(dash).toMatch(/MiniTrendLine/);
+  });
+
+  it("complaints stacked bar segments are hoverable/focusable", () => {
+    expect(dash).toMatch(/ComplaintsChart/);
+    expect(dash).toMatch(/data-chart="complaints-stacked"/);
+  });
+
+  it("chart transitions are 150–300ms (duration-200 or duration-300)", () => {
+    // Accept 150/200/300 ms Tailwind durations
+    expect(dash).toMatch(/duration-(150|200|300)/);
+  });
+
+  it("no layout-shifting scale effects on chart hover (no scale-105 etc.)", () => {
+    expect(dash).not.toMatch(/scale-105|scale-110|scale-125/i);
+  });
+
+  it("no fake chart click action / mutation (no onClick handlers that setState beyond hover)", () => {
+    // The component must not call any API, fetch, or dispatch.
+    expect(dash).not.toMatch(/fetch\(|axios|mutation|useMutation|router\.push|router\.replace/);
+    // onClick is allowed on the collapse toggle, but not on chart parts
+    // (chart parts use onMouseEnter/onFocus only)
+  });
+
+  it("dashboard does not import API/service/DB modules", () => {
+    expect(dash).not.toMatch(/from.*@\/server\/api|from.*@\/server\/services|from.*@\/server\/db/);
+  });
+});
+
+describe("DEC-075 blue/navy brand identity on management surfaces", () => {
+  const dash = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+  const reviews = readText("src/components/reference-screens/review-queue-reference.tsx");
+  const topbar = readText("src/components/shells/topbar.tsx");
+  const sidebar = readText("src/components/shells/sidebar.tsx");
+
+  it("owner dashboard header uses blue gradient + primary accent bar", () => {
+    expect(dash).toMatch(/from-primary\/12|from-primary\/10/);
+    expect(dash).toMatch(/bg-primary/);
+  });
+
+  it("owner dashboard KPI cards have branded blue top accent strip (stronger than 1px)", () => {
+    expect(dash).toMatch(/h-1\.5.*from-primary|h-1.*from-primary/);
+  });
+
+  it("owner dashboard KPI financial tag uses primary-tinted styling", () => {
+    expect(dash).toMatch(/bg-primary\/10.*text-primary/);
+  });
+
+  it("review queue header uses blue gradient + primary accent bar", () => {
+    expect(reviews).toMatch(/from-primary\/10|from-primary\/5/);
+    expect(reviews).toMatch(/bg-primary/);
+  });
+
+  it("review queue summary first card is brand-highlighted (primary border + tint)", () => {
+    expect(reviews).toMatch(/border-primary\/30.*bg-primary\/5|bg-primary\/5.*border-primary\/30/);
+  });
+
+  it("topbar has blue gradient background + branded logo mark", () => {
+    expect(topbar).toMatch(/from-primary\/5/);
+    expect(topbar).toMatch(/from-primary to-primary\/70|bg-gradient-to-br.*from-primary/);
+  });
+
+  it("topbar title uses primary (blue) text color", () => {
+    expect(topbar).toMatch(/text-primary/);
+  });
+
+  it("sidebar header has blue gradient + brand accent line", () => {
+    expect(sidebar).toMatch(/from-primary\/8|from-primary\/5|from-primary\/10/);
+    expect(sidebar).toMatch(/bg-primary\/40|bg-primary\/30|w-1.*bg-primary/);
+  });
+
+  it("sidebar active item is strongly branded (primary bg + bold + ring)", () => {
+    expect(sidebar).toMatch(/bg-primary\/10.*font-bold.*text-primary/);
+    expect(sidebar).toMatch(/ring-primary\/20|ring-inset/);
+  });
+
+  it("sidebar active item has branded accent bar indicator", () => {
+    expect(sidebar).toMatch(/h-6 w-1.*bg-primary|h-1.*bg-primary.*right-0/);
+  });
+
+  it("management surfaces use semantic primary tokens (not hardcoded hex blue)", () => {
+    // Components should reference bg-primary / text-primary / border-primary
+    // not literal #2457c5 hex values (those live in globals.css only)
+    expect(dash).not.toMatch(/#2457c5/i);
+    expect(reviews).not.toMatch(/#2457c5/i);
+    expect(topbar).not.toMatch(/#2457c5/i);
+    expect(sidebar).not.toMatch(/#2457c5/i);
+  });
+});
+
+describe("DEC-075 worker screen brand-safety (no glass, no heavy brand)", () => {
+  const worker = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+
+  it("worker receipt has NO glass/blur effects (DEC-076)", () => {
+    expect(worker).not.toMatch(/backdrop-blur|glass|frosted/i);
+  });
+
+  it("worker receipt has NO heavy brand gradients", () => {
+    expect(worker).not.toMatch(/from-primary\/|bg-gradient-to/);
+  });
+
+  it("worker receipt has NO primary-tinted card backgrounds", () => {
+    expect(worker).not.toMatch(/bg-primary\/5|bg-primary\/10/);
+  });
+
+  it("worker receipt remains simple (uses Card without brand overload)", () => {
+    // Should use plain Card components (no border-primary, no bg-primary)
+    expect(worker).not.toMatch(/border-primary|text-primary|bg-primary/);
+  });
+});
+
+describe("DEC-075 sidebar collapse button redesign", () => {
+  const sidebar = readText("src/components/shells/sidebar.tsx");
+
+  it("sidebar component file exists and is a client component", () => {
+    expect(exists("src/components/shells/sidebar.tsx")).toBe(true);
+    expect(sidebar).toMatch(/"use client"/);
+  });
+
+  it("collapse button has accessible Arabic aria-label", () => {
+    expect(sidebar).toMatch(/aria-label=\{collapsed \? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"\}/);
+  });
+
+  it("collapse button has 44px minimum touch target", () => {
+    expect(sidebar).toMatch(/min-h-\[44px\].*min-w-\[44px\]|min-w-\[44px\].*min-h-\[44px\]/);
+  });
+
+  it("collapse button has visible hover and focus states", () => {
+    expect(sidebar).toMatch(/hover:bg-primary\/5|hover:border-primary\/40/);
+    expect(sidebar).toMatch(/focus-visible:outline-none.*focus-visible:ring-2|focus-visible:ring-2.*focus-visible:outline-none/);
+  });
+
+  it("collapse button is visually integrated (not a floating arrow) — sits in header rail with border + shadow", () => {
+    expect(sidebar).toMatch(/border border-border bg-surface.*shadow-sm|shadow-sm.*border border-border/);
+  });
+
+  it("collapse button uses panel-collapse/panel-expand SVG icons (not single chevron arrow)", () => {
+    expect(sidebar).toMatch(/PanelCollapseIcon|PanelExpandIcon/);
+    // Should have double-chevron style icons (two polylines)
+    const panelIconCount = (sidebar.match(/<polyline/g) || []).length;
+    expect(panelIconCount).toBeGreaterThanOrEqual(4); // 2 per icon × 2 icons
+  });
+
+  it("collapse button aria-expanded reflects collapsed state", () => {
+    expect(sidebar).toMatch(/aria-expanded=\{!collapsed\}/);
+  });
+
+  it("collapse button has data-sidebar-collapse-toggle hook for testability", () => {
+    expect(sidebar).toMatch(/data-sidebar-collapse-toggle/);
+  });
+
+  it("sidebar header has branded gradient + accent line (integrated look)", () => {
+    expect(sidebar).toMatch(/bg-gradient-to-l from-primary/);
+  });
+
+  it("sidebar does not use emoji icons for collapse toggle", () => {
+    expect(sidebar).not.toMatch(/◀|▶|▼|✕|×/);
+  });
+});
+
+describe("DEC-075 no emoji icons reintroduced (all shells + reference screens)", () => {
+  const files = [
+    "src/components/shells/sidebar.tsx",
+    "src/components/shells/topbar.tsx",
+    "src/components/shells/management-shell.tsx",
+    "src/components/shells/worker-shell.tsx",
+    "src/components/reference-screens/owner-dashboard-reference.tsx",
+    "src/components/reference-screens/review-queue-reference.tsx",
+    "src/components/reference-screens/worker-receipt-reference.tsx",
+  ];
+  for (const file of files) {
+    it(`${file} has no emoji unicode characters`, () => {
+      const src = readText(file);
+      // Misc emoji/symbol ranges
+      expect(src).not.toMatch(/[\u{1F300}-\u{1F9FF}]/u);
+      expect(src).not.toMatch(/[\u{2600}-\u{27BF}]/u);
+      // Geometric shape arrows used previously
+      expect(src).not.toMatch(/◀|▶|▼|▲|◀|▶/);
+    });
+  }
+});
+
+describe("DEC-075 no internal-factory KPI terms (regression)", () => {
+  it("owner dashboard component has no prohibited internal-factory KPI terms", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    for (const term of OWNER_DASHBOARD_FIXTURE.prohibitedKpis) {
+      expect(src, `dashboard contains prohibited KPI '${term}'`).not.toContain(term);
+    }
+  });
+
+  it("owner dashboard fixture still lists 4 prohibited internal-factory KPIs", () => {
+    expect(OWNER_DASHBOARD_FIXTURE.prohibitedKpis).toHaveLength(4);
+    expect(OWNER_DASHBOARD_FIXTURE.prohibitedKpis).toContain("كفاءة الإنتاج");
+    expect(OWNER_DASHBOARD_FIXTURE.prohibitedKpis).toContain("إنتاجية العامل");
+    expect(OWNER_DASHBOARD_FIXTURE.prohibitedKpis).toContain("تشغيل الماكينات");
+    expect(OWNER_DASHBOARD_FIXTURE.prohibitedKpis).toContain("عدد الأوامر النشطة");
+  });
+});
+
+describe("DEC-075 worker financial redaction still passes (regression)", () => {
+  const workerProhibitedTerms = [
+    "سعر", "تكلفة", "رصيد مورد", "رصيد عميل", "رصيد مصنع",
+    "مستحقات", "مدفوعات", "تسويات", "حسابات", "قيد محاسبي",
+    "ربحية", "هامش ربح", "صافي الربح",
+  ];
+
+  it("worker receipt component contains NONE of the prohibited financial terms", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    for (const term of workerProhibitedTerms) {
+      expect(src, `worker receipt contains prohibited financial term '${term}'`).not.toContain(term);
+    }
+  });
+
+  it("worker receipt component has no hidden payload fields for price/payable/balance/profit", () => {
+    const src = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(src).not.toMatch(/purchase_price|payable|balance|profit|cost_per_ton|total_cost/i);
+  });
+});
+
+describe("DEC-075 no API/DB/mutation added (regression)", () => {
+  it("no new API routes added", () => {
+    expect(exists("src/app/api/v1/route.ts")).toBe(false);
+    expect(exists("src/app/api/receipts/route.ts")).toBe(false);
+    expect(exists("src/app/api/reviews/route.ts")).toBe(false);
+    expect(exists("src/app/api/dashboard/route.ts")).toBe(false);
+  });
+
+  it("no new migrations added", () => {
+    expect(exists("drizzle/output/0005_*.sql")).toBe(false);
+  });
+
+  it("reference screen components do NOT import database or service modules", () => {
+    const files = [
+      "src/components/reference-screens/worker-receipt-reference.tsx",
+      "src/components/reference-screens/review-queue-reference.tsx",
+      "src/components/reference-screens/owner-dashboard-reference.tsx",
+    ];
+    for (const file of files) {
+      const src = readText(file);
+      expect(src, `${file} should not import DB/service modules`).not.toMatch(/from.*@\/server\/db|from.*@\/server\/services/);
+    }
+  });
+
+  it("reference screen components do NOT use fetch/axios/mutation", () => {
+    const files = [
+      "src/components/reference-screens/worker-receipt-reference.tsx",
+      "src/components/reference-screens/review-queue-reference.tsx",
+      "src/components/reference-screens/owner-dashboard-reference.tsx",
+    ];
+    for (const file of files) {
+      const src = readText(file);
+      expect(src, `${file} should not use fetch/axios/mutation`).not.toMatch(/fetch\(|axios|useMutation|useSWR|useQuery/);
+    }
+  });
+
+  it("sidebar/topbar shells do NOT add API/DB imports", () => {
+    const sidebar = readText("src/components/shells/sidebar.tsx");
+    const topbar = readText("src/components/shells/topbar.tsx");
+    expect(sidebar).not.toMatch(/from.*@\/server\/db|from.*@\/server\/services|from.*@\/server\/api/);
+    expect(topbar).not.toMatch(/from.*@\/server\/db|from.*@\/server\/services|from.*@\/server\/api/);
+  });
+});

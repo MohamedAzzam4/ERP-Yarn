@@ -66,7 +66,7 @@ export interface TopbarProps {
 export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar }: TopbarProps) {
   return (
     <header
-      className="sticky top-0 z-20 border-b border-border bg-surface/95 backdrop-blur-sm"
+      className="sticky top-0 z-20 border-b border-border bg-gradient-to-l from-primary/5 via-surface/95 to-surface/95 backdrop-blur-sm"
       role="banner"
     >
       <div className="flex items-center justify-between gap-4 px-4 py-3">
@@ -83,8 +83,15 @@ export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar }: To
               <MenuIcon />
             </Button>
           )}
+          {/* Branded logo mark — small blue gradient square with "E" glyph */}
+          <div
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/70 font-heading text-base font-bold text-primary-foreground shadow-sm"
+            aria-hidden="true"
+          >
+            E
+          </div>
           <div className="flex flex-col">
-            <h1 className="text-heading-4 text-foreground leading-tight">
+            <h1 className="text-heading-4 font-bold text-primary leading-tight">
               {tenantLabel ?? "ERP-Yarn"}
             </h1>
             <p className="text-xs text-muted-foreground">{userName}</p>
