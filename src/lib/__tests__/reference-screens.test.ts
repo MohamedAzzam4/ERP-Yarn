@@ -400,8 +400,8 @@ describe("WP-01-07 Owner dashboard reference screen", () => {
     // Must have the kpiAccentFor helper + data-kpi-accent hook
     expect(src).toMatch(/kpiAccentFor/);
     expect(src).toMatch(/data-kpi-accent/);
-    // Must have an RTL vertical accent line (right-0, w-1, top/bottom inset)
-    expect(src).toMatch(/right-0.*top-6.*bottom-6.*w-1|right-0.*w-1.*rounded-full/);
+    // Must have an RTL vertical accent line (right-0, 3px wide, top/bottom inset)
+    expect(src).toMatch(/right-0.*w-\[3px\].*rounded-full|right-0.*top-5 bottom-5/);
   });
 
   it("component has hover shadow on KPI cards", () => {
@@ -780,8 +780,8 @@ describe("DEC-075 blue/navy brand identity on management surfaces", () => {
     // Must NOT have the old thick top strip (h-1.5 or h-1 full-width gradient)
     expect(dash).not.toMatch(/inset-x-0 top-0 h-1\.5 bg-gradient/);
     expect(dash).not.toMatch(/inset-x-0 top-0 h-1 bg-gradient/);
-    // Must have the new RTL vertical accent line (right-0, w-1, inset vertically)
-    expect(dash).toMatch(/right-0.*w-1.*rounded-full/);
+    // Must have the new RTL vertical accent line (right-0, 3px wide, inset vertically)
+    expect(dash).toMatch(/right-0.*w-\[3px\].*rounded-full/);
     // Must have semantic accent mapping (multiple categories)
     expect(dash).toMatch(/kpiAccentFor/);
     expect(dash).toMatch(/bg-danger|bg-warning|bg-success|bg-accent|bg-primary/);
@@ -901,6 +901,15 @@ describe("DEC-075 sidebar collapse button redesign", () => {
 
   it("sidebar header has branded gradient + accent line (integrated look)", () => {
     expect(sidebar).toMatch(/bg-gradient-to-l from-primary/);
+  });
+
+  it("sidebar header pairs brand title with collapse toggle (no empty band)", () => {
+    // When expanded, the header shows a brand mark + title + toggle together
+    // (not a large empty strip with just the toggle centered).
+    expect(sidebar).toMatch(/القائمة/);
+    expect(sidebar).toMatch(/from-primary to-primary\/70/);
+    // Header is a compact h-14 row, not a tall py-2 band
+    expect(sidebar).toMatch(/h-14/);
   });
 
   it("sidebar does not use emoji icons for collapse toggle", () => {
@@ -1029,11 +1038,11 @@ describe("DEC-075 KPI card premium refinement (no thick top strip)", () => {
     expect(dash).not.toMatch(/absolute inset-x-0 top-0 h-[1-9]/);
   });
 
-  it("KPI cards use an RTL vertical side accent line (right-0, 3-4px wide)", () => {
-    // The accent line: absolute right-0, w-1 (4px), inset vertically, rounded
-    expect(dash).toMatch(/right-0.*w-1.*rounded-full/);
-    // Must be inset vertically (top-6 bottom-6 or similar), not full-height
-    expect(dash).toMatch(/top-6 bottom-6|top-\d bottom-\d/);
+  it("KPI cards use an RTL vertical side accent line (right-0, 3px wide, subtle)", () => {
+    // The accent line: absolute right-0, w-[3px], inset vertically, rounded
+    expect(dash).toMatch(/right-0.*w-\[3px\].*rounded-full/);
+    // Must be inset vertically (top-5 bottom-5), not full-height
+    expect(dash).toMatch(/top-5 bottom-5/);
   });
 
   it("KPI accent uses semantic colors per category (not all-blue)", () => {
@@ -1062,10 +1071,15 @@ describe("DEC-075 KPI card premium refinement (no thick top strip)", () => {
     expect(kpiSection).toMatch(/text-2xl font-bold text-foreground/);
   });
 
-  it("KPI cards have subtle corner glow (soft gradient, not behind number)", () => {
-    // The glow is a pointer-events-none absolute element with a soft /8 tint
-    expect(dash).toMatch(/pointer-events-none absolute.*bg-gradient-to-br/);
-    expect(dash).toMatch(/from-(primary|accent|success|warning|danger)\/8/);
+  it("KPI cards do NOT have large decorative corner glow/blob shapes", () => {
+    // The old corner glow used a large rounded-blob gradient inside the card.
+    // It looked accidental/cheap, so it has been removed entirely.
+    const kpiSection = dash.slice(dash.indexOf("KPI Cards"), dash.indexOf("Insight Widgets"));
+    // No large decorative blob: rounded-bl-[...] with a gradient fill
+    expect(kpiSection).not.toMatch(/rounded-bl-\[\d+rem\]/);
+    expect(kpiSection).not.toMatch(/pointer-events-none absolute.*bg-gradient-to-br.*to-transparent/);
+    // No from-*/8 glow tint inside KPI cards
+    expect(kpiSection).not.toMatch(/from-(primary|accent|success|warning|danger)\/8/);
   });
 
   it("KPI hover uses subtle border/shadow (no layout-shifting scale)", () => {
@@ -1075,10 +1089,13 @@ describe("DEC-075 KPI card premium refinement (no thick top strip)", () => {
     expect(kpiSection).not.toMatch(/scale-/i);
   });
 
-  it("KPI financial tag chip preserved (مالي)", () => {
+  it("KPI cards have small tinted semantic status chip", () => {
     const kpiSection = dash.slice(dash.indexOf("KPI Cards"), dash.indexOf("Insight Widgets"));
-    expect(kpiSection).toMatch(/isFinancial/);
-    expect(kpiSection).toMatch(/مالي/);
+    // The chip uses accent.chip classes (bg-*/10 + text-*) with chipText labels
+    expect(kpiSection).toMatch(/accent\.chip/);
+    expect(kpiSection).toMatch(/accent\.chipText/);
+    // Should have Arabic chip labels (مخزون/تشغيل/مالي/مراجعة/تنبيه/مستحق)
+    expect(kpiSection).toMatch(/مخزون|تشغيل|مراجعة|تنبيه|مستحق/);
   });
 
   it("KPI cards keep accessible role=link + tabIndex for navigation", () => {

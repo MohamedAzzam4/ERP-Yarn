@@ -44,34 +44,36 @@ function parseNumeric(value: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// KPI semantic accent — a premium, RTL-friendly vertical accent line on the
+// KPI semantic accent — a subtle, intentional RTL vertical accent line on the
 // right (leading) edge of each KPI card. Color is chosen by KPI category so
-// the card reads at a glance without a heavy branded top strip.
+// the card reads at a glance without any heavy branded strip or decorative
+// background shape. The card surface stays clean white (bg-surface) so the
+// KPI number remains fully readable.
 //   inventory      → primary  (blue)
 //   outsourced     → accent   (teal)
 //   sales/profit   → success  (green)
 //   reviews/payable→ warning  (amber)
 //   warnings/complaints → danger (red)
 // ---------------------------------------------------------------------------
-type KpiAccent = { line: string; glow: string; name: string };
+type KpiAccent = { line: string; chip: string; chipText: string; name: string };
 
 function kpiAccentFor(labelAr: string): KpiAccent {
   if (labelAr.includes("شكوى") || labelAr.includes("تحذير")) {
-    return { line: "bg-danger", glow: "from-danger/8", name: "danger" };
+    return { line: "bg-danger", chip: "bg-danger/10 text-danger", chipText: "تنبيه", name: "danger" };
   }
   if (labelAr.includes("مراجعات")) {
-    return { line: "bg-warning", glow: "from-warning/8", name: "warning" };
+    return { line: "bg-warning", chip: "bg-warning/10 text-warning", chipText: "مراجعة", name: "warning" };
   }
   if (labelAr.includes("مستحقات")) {
-    return { line: "bg-warning", glow: "from-warning/8", name: "warning" };
+    return { line: "bg-warning", chip: "bg-warning/10 text-warning", chipText: "مستحق", name: "warning" };
   }
   if (labelAr.includes("مبيعات") || labelAr.includes("ربحية")) {
-    return { line: "bg-success", glow: "from-success/8", name: "success" };
+    return { line: "bg-success", chip: "bg-success/10 text-success", chipText: "مالي", name: "success" };
   }
   if (labelAr.includes("مصانع التشغيل")) {
-    return { line: "bg-accent", glow: "from-accent/8", name: "accent" };
+    return { line: "bg-accent", chip: "bg-accent/10 text-accent", chipText: "تشغيل", name: "accent" };
   }
-  return { line: "bg-primary", glow: "from-primary/8", name: "primary" };
+  return { line: "bg-primary", chip: "bg-primary/10 text-primary", chipText: "مخزون", name: "primary" };
 }
 
 // ===========================================================================
@@ -594,7 +596,7 @@ export function OwnerDashboardReference() {
         <p className="text-sm text-muted-foreground">نظرة عامة سريعة على أداء النظام</p>
       </div>
 
-      {/* KPI Cards — premium semantic accent (RTL vertical line, no top strip) */}
+      {/* KPI Cards — clean enterprise surface with subtle RTL accent + chip */}
       <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2 lg:grid-cols-4">
         {f.kpiCards.map((card) => {
           const accent = kpiAccentFor(card.labelAr);
@@ -608,31 +610,24 @@ export function OwnerDashboardReference() {
               aria-label={`${card.labelAr}: ${card.value}`}
               tabIndex={0}
             >
-              {/* Subtle corner glow (top-right, semantic tint) — stays soft so
-                  the KPI number on plain bg-surface remains fully readable. */}
+              {/* Subtle RTL vertical accent line — 3px wide, inset vertically,
+                  semantic color per KPI category. Intentional, not decorative. */}
               <div
-                className={`pointer-events-none absolute left-0 top-0 h-20 w-24 rounded-bl-[3rem] bg-gradient-to-br ${accent.glow} to-transparent`}
-                aria-hidden="true"
-              />
-              {/* RTL vertical accent line — 4px wide, inset vertically, semantic
-                  color per KPI category. Replaces the heavy top strip. */}
-              <div
-                className={`pointer-events-none absolute right-0 top-6 bottom-6 w-1 rounded-full ${accent.line}`}
+                className={`pointer-events-none absolute right-0 top-5 bottom-5 w-[3px] rounded-full ${accent.line}`}
                 aria-hidden="true"
               />
               <CardContent className="relative p-4">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground mb-1">{card.labelAr}</p>
-                    <p className="text-2xl font-bold text-foreground">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-muted-foreground mb-1.5 truncate">{card.labelAr}</p>
+                    <p className="text-2xl font-bold text-foreground tabular-nums">
                       <LtrValue>{card.value}</LtrValue>
                     </p>
                   </div>
-                  {card.isFinancial && (
-                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                      مالي
-                    </span>
-                  )}
+                  {/* Small tinted status chip — semantic category at a glance */}
+                  <span className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${accent.chip}`}>
+                    {accent.chipText}
+                  </span>
                 </div>
                 {card.labelAr === "ربحية تقريبية" && (
                   <div className="mt-2 flex items-center gap-1.5">

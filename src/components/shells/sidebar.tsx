@@ -124,30 +124,56 @@ export function Sidebar({
         )}
         aria-label="التنقل الجانبي"
       >
-        {/* Branded header rail with integrated collapse toggle.
-            The toggle is flush with the header (no floating border/shadow) —
-            it reads as a native product control: transparent by default, a
-            subtle primary tint appears on hover, and the focus ring on focus.
-            44x44 touch target, Arabic aria-label, correct RTL chevron. */}
-        <div className="relative flex items-center justify-center border-b border-border bg-gradient-to-l from-primary/8 to-transparent py-2">
+        {/* Branded sidebar header — a single compact row that pairs the brand
+            title with the collapse toggle, so there is no empty/awkward band.
+            When expanded: shows brand mark + title + toggle. When collapsed:
+            shows just the toggle (centered) so the rail stays tight. */}
+        <div className="relative flex h-14 items-center gap-2 border-b border-border bg-gradient-to-l from-primary/8 to-transparent px-2">
           {/* Brand accent line on the leading edge of the sidebar header */}
           <span
             className="pointer-events-none absolute inset-y-0 right-0 w-1 bg-primary/40"
             aria-hidden="true"
           />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onToggleCollapse}
-            aria-label={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
-            aria-expanded={!collapsed}
-            title={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
-            data-sidebar-collapse-toggle
-            className="min-h-[44px] min-w-[44px] rounded-lg bg-transparent p-2 text-primary/70 transition-colors duration-200 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
-          >
-            {collapsed ? <PanelCollapseIcon /> : <PanelExpandIcon />}
-          </Button>
+          {collapsed ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onToggleCollapse}
+              aria-label={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
+              aria-expanded={!collapsed}
+              title={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
+              data-sidebar-collapse-toggle
+              className="mx-auto min-h-[44px] min-w-[44px] rounded-lg bg-transparent p-2 text-primary/70 transition-colors duration-200 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+            >
+              <PanelCollapseIcon />
+            </Button>
+          ) : (
+            <>
+              <div className="flex min-w-0 flex-1 items-center gap-2 pr-1">
+                <div
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary/70 font-heading text-xs font-bold text-primary-foreground"
+                  aria-hidden="true"
+                >
+                  E
+                </div>
+                <span className="truncate text-sm font-bold text-primary font-heading">القائمة</span>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onToggleCollapse}
+                aria-label={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
+                aria-expanded={!collapsed}
+                title={collapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"}
+                data-sidebar-collapse-toggle
+                className="min-h-[44px] min-w-[44px] shrink-0 rounded-lg bg-transparent p-2 text-primary/70 transition-colors duration-200 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
+              >
+                <PanelExpandIcon />
+              </Button>
+            </>
+          )}
         </div>
 
         <nav className="flex-1 overflow-y-auto px-2 py-3" aria-label="التنقل الرئيسي">
