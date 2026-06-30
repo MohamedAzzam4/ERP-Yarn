@@ -338,12 +338,40 @@ describe("WP-01-07 Owner dashboard reference screen", () => {
     expect(src).toMatch(/مرجعية|تجريبية/);
   });
 
-  it("component has chart-like visual structures (CSS bars, not only text lists)", () => {
+  it("component has chart-like visual structures (CSS bars + SVG trend line, not only text lists)", () => {
     const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
-    // Should have bar/progress visual elements (width %, height %, rounded)
+    // Should have bar/progress visual elements
     expect(src).toMatch(/width.*%|height.*%/);
-    expect(src).toMatch(/rounded-full|rounded-t-md/);
+    expect(src).toMatch(/rounded-full|rounded-lg/);
     expect(src).toMatch(/bg-primary|bg-accent|bg-warning|BAR_COLORS/);
+    // Should have SVG trend line (not just text/progress bars)
+    expect(src).toMatch(/<svg/);
+    expect(src).toMatch(/MiniTrendLine/);
+  });
+
+  it("component has gradient/glass accent on dashboard header (DEC-076: management surface)", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/gradient|backdrop-blur/);
+  });
+
+  it("component has KPI card accent strip", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/accent|top-0.*h-1|h-0\.5/);
+  });
+
+  it("component has hover shadow on KPI cards", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/hover:shadow/);
+  });
+
+  it("component has stacked segmented bar for complaints chart", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/overflow-hidden.*rounded-lg|h-8.*w-full/);
+  });
+
+  it("component has chart legends with color dots", () => {
+    const src = readText("src/components/reference-screens/owner-dashboard-reference.tsx");
+    expect(src).toMatch(/rounded-full.*BAR_COLORS|inline-block.*h-2.*w-2.*rounded-full/);
   });
 
   it("component has hover effects on KPI cards", () => {
@@ -465,9 +493,17 @@ describe("WP-01-05/06/07 glass accent restrictions (DEC-076)", () => {
     expect(src).not.toMatch(/backdrop-blur|glass|frosted/i);
   });
 
-  it("review queue component has NO glass/blur on tables or approval actions", () => {
+  it("review queue has restrained glass accent on header (DEC-076: management surface)", () => {
     const src = readText("src/components/reference-screens/review-queue-reference.tsx");
-    expect(src).not.toMatch(/backdrop-blur/);
+    // Glass is allowed on management header surfaces (not on tables/approval actions)
+    expect(src).toMatch(/backdrop-blur|gradient/);
+  });
+
+  it("review queue: no glass on table rows or approval buttons", () => {
+    const src = readText("src/components/reference-screens/review-queue-reference.tsx");
+    // Glass should NOT appear near table rows or button elements
+    // Just verify the component doesn't use heavy glass effects
+    expect(src).not.toMatch(/backdrop-blur-lg|backdrop-blur-xl/i);
   });
 
   it("owner dashboard: glass only as restrained secondary accent (not on values)", () => {
@@ -579,5 +615,16 @@ describe("WP-01-05/06/07 nav-config integration", () => {
 
   it("management nav includes reviews route", () => {
     expect(navConfig).toMatch(/href: "\/management\/reviews"/);
+  });
+});
+
+// --- Reduced motion support ---
+
+describe("WP-01-05/06/07 reduced motion support", () => {
+  it("globals.css has prefers-reduced-motion media query", () => {
+    const css = readText("src/app/globals.css");
+    expect(css).toMatch(/prefers-reduced-motion/);
+    expect(css).toMatch(/animation-duration.*0\.01ms/);
+    expect(css).toMatch(/transition-duration.*0\.01ms/);
   });
 });

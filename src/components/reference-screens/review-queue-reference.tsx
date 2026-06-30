@@ -3,6 +3,7 @@
  *
  * Contract: docs/contracts/10_frontend_screen_contracts.md §8.1
  * Contract: docs/design/01_reference_screen_terms_and_fixtures.md §6
+ * DEC-076: Restrained glass accents on management surfaces.
  *
  * Fixture: reference-fixtures-v1
  * Route: /management/reviews
@@ -13,10 +14,10 @@ import { Button } from "@/components/ui/button";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { REVIEW_QUEUE_FIXTURE } from "@/lib/fixtures/reference-fixtures";
 
-const severityConfig: Record<string, { label: string; classes: string; dot: string }> = {
-  low: { label: "منخفض", classes: "bg-info/10 text-info border-info/20", dot: "bg-info" },
-  medium: { label: "متوسط", classes: "bg-warning/10 text-warning border-warning/20", dot: "bg-warning" },
-  high: { label: "عالي", classes: "bg-danger/10 text-danger border-danger/20", dot: "bg-danger" },
+const severityConfig: Record<string, { label: string; classes: string; dot: string; border: string }> = {
+  low: { label: "منخفض", classes: "bg-info/10 text-info", dot: "bg-info", border: "border-info/20" },
+  medium: { label: "متوسط", classes: "bg-warning/10 text-warning", dot: "bg-warning", border: "border-warning/20" },
+  high: { label: "عالي", classes: "bg-danger/10 text-danger", dot: "bg-danger", border: "border-danger/20" },
 };
 
 export function ReviewQueueReference() {
@@ -24,7 +25,7 @@ export function ReviewQueueReference() {
 
   return (
     <Container size="lg" className="py-6">
-      <div className="mb-6">
+      <div className="mb-6 rounded-xl border border-border bg-gradient-to-l from-primary/5 to-transparent p-4 backdrop-blur-sm">
         <h1 className="text-heading-2 text-foreground mb-1">{fixture.screenTitle}</h1>
         <p className="text-sm text-muted-foreground">مراجعات مطلوبة تتطلب اتخاذ إجراء</p>
       </div>
@@ -34,8 +35,9 @@ export function ReviewQueueReference() {
         {fixture.summaryCounts.map((item, idx) => (
           <Card
             key={item.categoryAr}
-            className={idx === 0 ? "border-primary/20 bg-primary/5" : ""}
+            className={`relative overflow-hidden transition-all duration-200 hover:shadow-md ${idx === 0 ? "border-primary/20 bg-primary/5" : ""}`}
           >
+            {idx === 0 && <div className="absolute inset-x-0 top-0 h-0.5 bg-primary/30" />}
             <CardContent className="p-3">
               <p className="text-2xl font-bold text-foreground" dir="ltr">{item.count}</p>
               <p className="text-xs text-muted-foreground mt-0.5 leading-tight">{item.categoryAr}</p>
@@ -67,7 +69,7 @@ export function ReviewQueueReference() {
                 {fixture.queueRows.map((row) => {
                   const sev = severityConfig[row.severity]!;
                   return (
-                    <tr key={row.document} className="border-b border-border transition-colors hover:bg-muted/20">
+                    <tr key={row.document} className="border-b border-border transition-colors duration-150 hover:bg-primary/5">
                       <td className="p-3">
                         <LtrValue className="font-medium text-foreground">{row.document}</LtrValue>
                       </td>
@@ -77,13 +79,13 @@ export function ReviewQueueReference() {
                         <LtrValue className="text-muted-foreground">{row.date}</LtrValue>
                       </td>
                       <td className="p-3">
-                        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${sev.classes}`}>
+                        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${sev.classes} ${sev.border}`}>
                           <span className={`h-1.5 w-1.5 rounded-full ${sev.dot}`} />
                           {sev.label}
                         </span>
                       </td>
                       <td className="p-3">
-                        <span className="inline-block rounded-md bg-muted px-2 py-0.5 text-xs text-foreground">
+                        <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                           {row.stateAr}
                         </span>
                       </td>
@@ -95,7 +97,7 @@ export function ReviewQueueReference() {
                             size="sm"
                             disabled
                             aria-label="اعتماد (غير متاح - شاشة مرجعية)"
-                            className="min-h-[44px] opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            className="min-h-[44px] border-success/30 text-success/50 opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
                             اعتماد
                           </Button>
@@ -105,7 +107,7 @@ export function ReviewQueueReference() {
                             size="sm"
                             disabled
                             aria-label="رفض (غير متاح - شاشة مرجعية)"
-                            className="min-h-[44px] opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            className="min-h-[44px] border-danger/30 text-danger/50 opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
                             رفض
                           </Button>

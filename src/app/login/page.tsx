@@ -1,5 +1,6 @@
 import { signIn, requestPasswordReset } from "./actions";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/ui/submit-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Container } from "@/components/ui/container";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -80,7 +81,7 @@ export default async function LoginPage({
               <label htmlFor="password" className="text-label">كلمة المرور</label>
               <input id="password" name="password" type="password" required dir="ltr" className="w-full rounded-md border border-input bg-surface px-3 py-2 text-body text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="••••••••" />
             </div>
-            <Button type="submit" className="w-full min-h-[44px]" size="lg">دخول</Button>
+            <SubmitButton className="w-full" loadingText="جاري تسجيل الدخول...">دخول</SubmitButton>
           </form>
           <details className="mt-2">
             <summary className="cursor-pointer text-sm text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded">نسيت كلمة المرور؟</summary>

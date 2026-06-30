@@ -118,6 +118,58 @@ describe("WP-01-05/06/07 login error feedback", () => {
   });
 });
 
+// --- Login pending/loading state ---
+
+describe("WP-01-05/06/07 login pending/loading state", () => {
+  const loginPage = readText("src/app/login/page.tsx");
+
+  it("login page imports SubmitButton component", () => {
+    expect(loginPage).toMatch(/SubmitButton/);
+  });
+
+  it("SubmitButton component exists", () => {
+    expect(readText("src/components/ui/submit-button.tsx")).toMatch(/useFormStatus/);
+  });
+
+  it("SubmitButton uses useFormStatus from react-dom", () => {
+    const sb = readText("src/components/ui/submit-button.tsx");
+    expect(sb).toMatch(/useFormStatus/);
+    expect(sb).toMatch(/react-dom/);
+  });
+
+  it("SubmitButton has pending/loading text in Arabic", () => {
+    const sb = readText("src/components/ui/submit-button.tsx");
+    expect(sb).toMatch(/جاري تسجيل الدخول/);
+  });
+
+  it("SubmitButton disables button when pending", () => {
+    const sb = readText("src/components/ui/submit-button.tsx");
+    expect(sb).toMatch(/disabled.*pending|pending.*disabled/);
+  });
+
+  it("SubmitButton has spinner (animate-spin)", () => {
+    const sb = readText("src/components/ui/submit-button.tsx");
+    expect(sb).toMatch(/animate-spin/);
+  });
+
+  it("SubmitButton has aria-busy attribute", () => {
+    const sb = readText("src/components/ui/submit-button.tsx");
+    expect(sb).toMatch(/aria-busy/);
+  });
+
+  it("login form still uses server action (signIn)", () => {
+    expect(loginPage).toMatch(/action=\{signIn\}/);
+  });
+
+  it("redirect sanitization still present", () => {
+    expect(loginPage).toMatch(/sanitizeRedirect/);
+  });
+
+  it("error messages still present", () => {
+    expect(loginPage).toMatch(/ERROR_MESSAGES/);
+  });
+});
+
 describe("WP-01-05/06/07 login enumeration safety", () => {
   const loginPage = readText("src/app/login/page.tsx");
   const actions = readText("src/app/login/actions.ts");
