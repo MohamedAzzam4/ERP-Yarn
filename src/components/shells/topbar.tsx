@@ -61,12 +61,27 @@ export interface TopbarProps {
   tenantLabel?: string;
   onSignOut?: () => void;
   onToggleSidebar?: () => void;
+  /** Whether the management sidebar is collapsed. When true, the topbar
+   * reserves less right-margin (64px) so its content does not collide
+   * with the collapsed sidebar rail. */
+  sidebarCollapsed?: boolean;
 }
 
-export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar }: TopbarProps) {
+export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar, sidebarCollapsed }: TopbarProps) {
   return (
     <header
-      className="sticky top-0 z-20 border-b border-border bg-gradient-to-l from-primary/5 via-surface/95 to-surface/95 backdrop-blur-sm"
+      className={cn(
+        "sticky top-0 z-20 border-b border-border bg-gradient-to-l from-primary/5 via-surface/95 to-surface/95 backdrop-blur-sm",
+        // Reserve right space for the fixed sidebar (RTL: sidebar is on the
+        // right). Collapsed = 64px (w-16), expanded = 256px (w-64). This
+        // prevents the ERP-Yarn title / user subtitle from sliding under
+        // the sidebar on any viewport.
+        sidebarCollapsed === undefined
+          ? ""
+          : sidebarCollapsed
+            ? "lg:pr-16"
+            : "lg:pr-64",
+      )}
       role="banner"
     >
       <div className="flex items-center justify-between gap-4 px-4 py-3">

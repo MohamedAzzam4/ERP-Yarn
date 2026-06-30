@@ -89,6 +89,7 @@ export function ManagementShell({
         tenantLabel={tenantLabel}
         onSignOut={onSignOut}
         onToggleSidebar={() => setMobileSidebarOpen((v) => !v)}
+        sidebarCollapsed={sidebarCollapsed}
       />
 
       <div className="flex">

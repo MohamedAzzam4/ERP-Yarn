@@ -204,14 +204,48 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
   const [expanded, setExpanded] = React.useState(true);
 
   if (collapsed) {
+    // Collapsed mode: render nav items as compact dot marks with accessible
+    // labels. No visible text labels (no stray single Arabic letters).
+    // Each item is a tappable dot; the active item gets a filled primary dot,
+    // inactive items get a muted outline dot. aria-label + title preserve
+    // accessibility for screen readers and hover tooltips.
     return (
-      <div
-        className="flex min-h-[44px] items-center justify-center rounded-lg py-2 text-xs font-medium text-muted-foreground"
-        title={category.labelAr}
-        aria-label={category.labelAr}
-      >
-        {category.labelAr.charAt(0)}
-      </div>
+      <ul className="space-y-1 py-1" aria-label={category.labelAr}>
+        {category.items.map((item) => {
+          const isActive = currentPath === item.href;
+          return (
+            <li key={item.id} className="relative">
+              <Link
+                href={item.href}
+                aria-label={item.labelAr}
+                title={item.labelAr}
+                aria-current={isActive ? "page" : undefined}
+                className={cn(
+                  "flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  isActive
+                    ? "bg-primary/10"
+                    : "hover:bg-muted",
+                )}
+              >
+                <span
+                  className={cn(
+                    "block h-2 w-2 rounded-full transition-colors duration-200",
+                    isActive ? "bg-primary" : "bg-muted-foreground/40",
+                  )}
+                  aria-hidden="true"
+                />
+              </Link>
+              {/* Branded active indicator: right-edge accent bar (RTL). */}
+              {isActive && (
+                <span
+                  className="pointer-events-none absolute right-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-primary"
+                  aria-hidden="true"
+                />
+              )}
+            </li>
+          );
+        })}
+      </ul>
     );
   }
 

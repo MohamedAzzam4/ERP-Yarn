@@ -1156,3 +1156,143 @@ describe("DEC-075 KPI card premium refinement (no thick top strip)", () => {
     expect(exists("drizzle/output/0005_*.sql")).toBe(false);
   });
 });
+
+// ===========================================================================
+// Collapsed sidebar layout bug correction.
+// Bug: when the management sidebar is collapsed, the topbar title/subtitle
+// (ERP-Yarn / مالك النظام) collided with the sidebar rail, and collapsed
+// nav labels appeared as stray single Arabic letters down the rail.
+// Fix: topbar reserves right space for the sidebar; collapsed sidebar renders
+// clean dot marks (no text labels, no charAt), with aria-label/title.
+// ===========================================================================
+
+describe("DEC-075 collapsed sidebar layout bug correction", () => {
+  const sidebar = readText("src/components/shells/sidebar.tsx");
+  const topbar = readText("src/components/shells/topbar.tsx");
+  const managementShell = readText("src/components/shells/management-shell.tsx");
+
+  // --- Collapsed: no visible text labels in the rail ---
+
+  it("collapsed sidebar does NOT render category.labelAr.charAt(0) (stray single letters)", () => {
+    expect(sidebar).not.toMatch(/charAt\(0\)/);
+  });
+
+  it("collapsed sidebar renders clean dot marks instead of text labels", () => {
+    // Collapsed branch renders <span> dots (h-2 w-2 rounded-full), not text
+    expect(sidebar).toMatch(/h-2 w-2 rounded-full/);
+    expect(sidebar).toMatch(/bg-primary.*bg-muted-foreground\/40|bg-muted-foreground\/40.*bg-primary/);
+  });
+
+  it("collapsed nav items have aria-label + title (accessibility preserved)", () => {
+    expect(sidebar).toMatch(/aria-label=\{item\.labelAr\}/);
+    expect(sidebar).toMatch(/title=\{item\.labelAr\}/);
+  });
+
+  it("collapsed sidebar does not render visible category header text", () => {
+    // The collapsed branch should NOT render category.labelAr as visible text.
+    // It may appear in aria-label on the <ul> (for screen readers) but NOT as
+    // visible <span> text. Verify the collapsed branch uses aria-label on ul,
+    // not a visible text span.
+    expect(sidebar).toMatch(/aria-label=\{category\.labelAr\}/);
+  });
+
+  // --- Expanded: labels render normally ---
+
+  it("expanded sidebar renders category labelAr as visible text", () => {
+    // The expanded branch has a <span>{category.labelAr}</span> inside the button
+    expect(sidebar).toMatch(/<span>\{category\.labelAr\}<\/span>/);
+  });
+
+  it("expanded sidebar renders item labelAr as visible text", () => {
+    // The expanded branch has <span className="relative">{item.labelAr}</span>
+    expect(sidebar).toMatch(/\{item\.labelAr\}/);
+  });
+
+  // --- Stable widths ---
+
+  it("collapsed sidebar has stable width w-16 (64px)", () => {
+    expect(sidebar).toMatch(/collapsed \? "w-16"/);
+  });
+
+  it("expanded sidebar has stable width w-64 (256px)", () => {
+    expect(sidebar).toMatch(/: "w-64"/);
+  });
+
+  // --- Topbar reserves space for sidebar ---
+
+  it("topbar accepts sidebarCollapsed prop", () => {
+    expect(topbar).toMatch(/sidebarCollapsed\?: boolean/);
+    expect(topbar).toMatch(/sidebarCollapsed/);
+  });
+
+  it("topbar reserves 64px right space when sidebar collapsed (lg:pr-16)", () => {
+    expect(topbar).toMatch(/lg:pr-16/);
+  });
+
+  it("topbar reserves 256px right space when sidebar expanded (lg:pr-64)", () => {
+    expect(topbar).toMatch(/lg:pr-64/);
+  });
+
+  it("management-shell passes sidebarCollapsed to Topbar", () => {
+    expect(managementShell).toMatch(/sidebarCollapsed=\{sidebarCollapsed\}/);
+  });
+
+  // --- Main content layout ---
+
+  it("main content reserves collapsed sidebar width (lg:mr-16)", () => {
+    expect(managementShell).toMatch(/lg:mr-16/);
+  });
+
+  it("main content reserves expanded sidebar width (lg:mr-64)", () => {
+    expect(managementShell).toMatch(/lg:mr-64/);
+  });
+
+  // --- Collapse toggle preserved ---
+
+  it("collapse toggle remains 44px with Arabic aria-label", () => {
+    expect(sidebar).toMatch(/min-h-\[44px\].*min-w-\[44px\]|min-w-\[44px\].*min-h-\[44px\]/);
+    expect(sidebar).toMatch(/aria-label=\{collapsed \? "توسيع القائمة الجانبية" : "طي القائمة الجانبية"\}/);
+  });
+
+  // --- No emoji ---
+
+  it("sidebar does not use emoji icons", () => {
+    expect(sidebar).not.toMatch(/[\u{1F300}-\u{1F9FF}]/u);
+    expect(sidebar).not.toMatch(/◀|▶|▼|▲|✕|×/);
+  });
+
+  it("topbar does not use emoji icons", () => {
+    expect(topbar).not.toMatch(/[\u{1F300}-\u{1F9FF}]/u);
+    expect(topbar).not.toMatch(/◀|▶|▼|▲|✕|×/);
+  });
+
+  // --- Worker screen unchanged ---
+
+  it("worker shell does NOT use management Topbar (unaffected by topbar changes)", () => {
+    const workerShell = readText("src/components/shells/worker-shell.tsx");
+    expect(workerShell).not.toMatch(/from.*Topbar|<Topbar/);
+  });
+
+  it("worker receipt component unchanged (no glass, no financial terms, 11 controls)", () => {
+    const worker = readText("src/components/reference-screens/worker-receipt-reference.tsx");
+    expect(worker).not.toMatch(/backdrop-blur|glass/i);
+    expect(worker).not.toMatch(/border-primary|text-primary|bg-primary/);
+    const prohibited = ["سعر", "تكلفة", "مستحقات", "مدفوعات", "ربحية", "قيمة", "مبلغ"];
+    for (const term of prohibited) {
+      expect(worker, `worker contains '${term}'`).not.toContain(term);
+    }
+    expect(worker).toMatch(/type="text"/);
+    expect(worker).toMatch(/type="number"/);
+    expect(worker).toMatch(/<select/);
+    expect(worker).toMatch(/<textarea/);
+  });
+
+  // --- No business scope expanded ---
+
+  it("no API/DB/migration added in this layout fix", () => {
+    expect(sidebar).not.toMatch(/from.*@\/server\/api|from.*@\/server\/services|from.*@\/server\/db/);
+    expect(topbar).not.toMatch(/from.*@\/server\/api|from.*@\/server\/services|from.*@\/server\/db/);
+    expect(exists("src/app/api/v1/route.ts")).toBe(false);
+    expect(exists("drizzle/output/0005_*.sql")).toBe(false);
+  });
+});
