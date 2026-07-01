@@ -90,6 +90,14 @@ export default async function LoginPage({
               <Button type="submit" variant="outline" className="w-full min-h-[44px]">إرسال رابط الاستعادة</Button>
             </form>
           </details>
+          <div className="border-t border-border pt-3 text-center">
+            <a
+              href="/demo"
+              className="inline-flex items-center gap-1 text-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+            >
+              عرض تفاعلي لأصحاب المصلحة (بيانات تجريبية) ←
+            </a>
+          </div>
         </CardContent>
       </Card>
     </Container>

@@ -29,6 +29,9 @@ const PUBLIC_ROUTES = [
   "/api/health",
   "/api/bootstrap",
   "/api/auth",
+  // Demo track — stakeholder visual demo only.
+  // Synthetic/static fixtures, no Supabase writes, no real transaction logic.
+  "/demo",
 ];
 
 function isPublicRoute(pathname: string): boolean {
@@ -41,6 +44,17 @@ export async function proxy(request: NextRequest) {
   const response = NextResponse.next({
     request: { headers: request.headers },
   });
+
+  // Demo track short-circuit: /demo routes are public AND have zero Supabase
+  // interaction (synthetic fixtures only). Skipping the Supabase session
+  // refresh for them keeps the demo runnable in environments without Supabase
+  // env vars (e.g. local visual inspection, Vercel Preview without secrets).
+  // This does NOT weaken auth on any real route — /demo has no auth to begin
+  // with, and all other public routes (login, api/health, etc.) still get
+  // their session refresh below.
+  if (request.nextUrl.pathname === "/demo" || request.nextUrl.pathname.startsWith("/demo/")) {
+    return response;
+  }
 
   // Allow public routes without auth check.
   if (isPublicRoute(request.nextUrl.pathname)) {

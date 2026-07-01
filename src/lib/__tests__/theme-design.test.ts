@@ -240,7 +240,9 @@ describe("WP-00-04 no accidental business screens", () => {
     );
     // WP-01-04 adds (worker) and (management) route groups for shell routing.
     // These are shell/layout routes, NOT business posting routes.
-    expect(entries.sort()).toEqual(["(management)", "(worker)", "globals.css", "layout.tsx", "page.tsx"]);
+    // demo/stakeholder-visual-demo branch adds (demo) route group —
+    // synthetic fixtures only, no real business mutations.
+    expect(entries.sort()).toEqual(["(demo)", "(management)", "(worker)", "globals.css", "layout.tsx", "page.tsx"]);
   });
 });
 
