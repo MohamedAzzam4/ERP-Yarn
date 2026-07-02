@@ -142,6 +142,21 @@ describe("WP-02-01 MasterDataService — customers", () => {
     const c = await od.service.createCustomer(od.user, od.effective, { customerCode: "CUS-W", nameAr: "عميل", normalizedName: "عميل" });
     await expect(wd.service.inactivateCustomer(wd.user, wd.effective, c.id)).rejects.toThrow(PermissionDeniedError);
   });
+
+  it("Owner can inactivate a customer", async () => {
+    const { service, user, effective, audit } = makeOwnerDeps();
+    const c = await service.createCustomer(user, effective, { customerCode: "CUS-INACT", nameAr: "عميل تعطيل", normalizedName: "عميل تعطيل" });
+    const inact = await service.inactivateCustomer(user, effective, c.id);
+    expect(inact.status).toBe("inactive");
+    expect(audit.getRows()[1]!.actionType).toBe("customer.inactivate");
+    const active = await service.listActiveCustomers(user, effective);
+    expect(active).toHaveLength(0);
+  });
+
+  it("Inactivating non-existent customer throws NotFound", async () => {
+    const { service, user, effective } = makeOwnerDeps();
+    await expect(service.inactivateCustomer(user, effective, "nonexistent")).rejects.toThrow(MasterDataNotFoundError);
+  });
 });
 
 describe("WP-02-01 MasterDataService — locations", () => {
@@ -166,6 +181,15 @@ describe("WP-02-01 MasterDataService — locations", () => {
     await od.service.createLocation(od.user, od.effective, { locationCode: "WH-SHARED", nameAr: "موقع", locationType: "internal_warehouse" });
     const fl = await fd.service.createLocation(fu, fe, { locationCode: "WH-SHARED", nameAr: "موقع أجنبي", locationType: "internal_warehouse" });
     expect(fl.tenantId).toBe(FOREIGN_TENANT_ID);
+  });
+
+  it("Inactivation sets status to inactive", async () => {
+    const { service, user, effective } = makeOwnerDeps();
+    const l = await service.createLocation(user, effective, { locationCode: "WH-INACT", nameAr: "موقع تعطيل", locationType: "internal_warehouse" });
+    const inact = await service.inactivateLocation(user, effective, l.id);
+    expect(inact.status).toBe("inactive");
+    const active = await service.listActiveLocations(user, effective);
+    expect(active).toHaveLength(0);
   });
 });
 
@@ -216,6 +240,16 @@ describe("WP-02-01 MasterDataService — external factories + factory-location l
     await service.inactivateExternalFactory(user, effective, f.id);
     const inact = await service.inactivateLocation(user, effective, l.id);
     expect(inact.status).toBe("inactive");
+  });
+
+  it("Factory inactivation sets status to inactive", async () => {
+    const { service, user, effective } = makeOwnerDeps();
+    const l = await service.createLocation(user, effective, { locationCode: "FAC-LOC-IA", nameAr: "موقع تعطيل مصنع", locationType: "external_twisting_factory" });
+    const f = await service.createExternalFactory(user, effective, { factoryCode: "FAC-IA", nameAr: "مصنع تعطيل", factoryType: "twisting", linkedLocationId: l.id });
+    const inact = await service.inactivateExternalFactory(user, effective, f.id);
+    expect(inact.status).toBe("inactive");
+    const active = await service.listActiveExternalFactories(user, effective);
+    expect(active).toHaveLength(0);
   });
 
   it("Factory with non-existent linked location rejected", async () => {
