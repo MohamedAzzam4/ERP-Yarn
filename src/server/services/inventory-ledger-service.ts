@@ -367,17 +367,45 @@ export class InventoryLedgerService {
       },
     );
 
-    // Step 4-5: lock balance row (deterministic order), create if missing
+    // Step 4-5: lock balance row (deterministic order), create if missing.
+    // Contract 04 §14 steps 3-4: "safely creates missing balance rows when
+    // authorized; locks affected balance rows in deterministic item/location
+    // order."
+    //
+    // Concurrency handling for missing balance rows:
+    //   1. findBalanceForUpdate (SELECT ... FOR UPDATE) — returns null if
+    //      no row exists.
+    //   2. insertBalance with onConflictDoNothing — if a concurrent
+    //      transaction already created the row, this returns null (or throws
+    //      BalanceConcurrentInsertError in the DB-backed implementation).
+    //   3. Retry findBalanceForUpdate — picks up the row created by the
+    //      winner and locks it with FOR UPDATE.
+    //
+    // This prevents the "missing balance row" race without advisory locks.
     let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
     if (!balance) {
       // Create a new balance row with zero on-hand
-      balance = await this.deps.ledger.insertBalance({
-        tenantId,
-        itemId: input.itemId,
-        locationId: input.toLocationId,
-        onHandQtyKg: "0.000",
-        lastMovementId: "00000000-0000-0000-0000-000000000000", // placeholder; updated after movement insert
-      });
+      try {
+        balance = await this.deps.ledger.insertBalance({
+          tenantId,
+          itemId: input.itemId,
+          locationId: input.toLocationId,
+          onHandQtyKg: "0.000",
+          lastMovementId: "00000000-0000-0000-0000-000000000000", // placeholder; updated after movement insert
+        });
+      } catch {
+        // Concurrent insert won — retry findBalanceForUpdate to pick up
+        // the existing row and lock it with FOR UPDATE.
+        balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
+        if (!balance) {
+          // Extremely unlikely: row disappeared between insert conflict
+          // and retry. Treat as a retryable technical failure.
+          throw new InventoryLedgerError(
+            "INTERNAL_TRANSACTION_FAILED",
+            "Balance row not found after concurrent-insert retry.",
+          );
+        }
+      }
     }
 
     // Tenant match check on the balance row

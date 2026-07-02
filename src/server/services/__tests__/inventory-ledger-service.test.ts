@@ -33,6 +33,7 @@ import {
   OperationInProgressLedgerError,
   ValidationFailedLedgerError,
   type PostRawReceiptInput,
+  type InventoryLedgerTransactionHandle,
 } from "../inventory-ledger-service";
 import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-repository";
 import { InProcessAuditStore } from "../audit-service";
@@ -683,5 +684,172 @@ describe("WP-02-02 correction — transaction boundary coordination (Point 5)", 
     expect(txStore.getCommittedAuditCount()).toBe(0); // audit rolled back
     expect(txStore.getCommittedBalance(user.tenantId, TEST_ITEM_ID, TEST_LOCATION_ID)).toBeNull(); // balance rolled back
     // docSeq: the sequence allocation was rolled back (lastNumber not incremented)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FINAL LOCKING PASS: Lock-key ordering + concurrent-insert retry (Point 1-4).
+// ---------------------------------------------------------------------------
+
+import { balanceLockKey, sortBalanceLockKeys, BalanceConcurrentInsertError } from "../inventory-ledger-db-repository";
+
+describe("WP-02-02 locking — deterministic lock key ordering", () => {
+  it("balanceLockKey produces a composite (tenantId|itemId|locationId) string", () => {
+    const key = balanceLockKey("tenant-1", "item-a", "loc-x");
+    expect(key).toBe("tenant-1|item-a|loc-x");
+  });
+
+  it("sortBalanceLockKeys sorts lexicographically (deterministic order)", () => {
+    const keys = [
+      balanceLockKey("t1", "item-b", "loc-y"),
+      balanceLockKey("t1", "item-a", "loc-z"),
+      balanceLockKey("t1", "item-a", "loc-x"),
+    ];
+    const sorted = sortBalanceLockKeys(keys);
+    expect(sorted[0]).toBe("t1|item-a|loc-x");
+    expect(sorted[1]).toBe("t1|item-a|loc-z");
+    expect(sorted[2]).toBe("t1|item-b|loc-y");
+  });
+
+  it("deterministic order prevents deadlocks when locking multiple balance rows", () => {
+    // Simulate two concurrent transfers that lock the same two balance rows
+    // in opposite orders. With deterministic sorting, both transactions
+    // lock in the same order → no deadlock.
+    const tx1Keys = sortBalanceLockKeys([
+      balanceLockKey("t1", "item-a", "loc-x"), // source
+      balanceLockKey("t1", "item-b", "loc-y"), // destination
+    ]);
+    const tx2Keys = sortBalanceLockKeys([
+      balanceLockKey("t1", "item-b", "loc-y"), // destination (reversed order)
+      balanceLockKey("t1", "item-a", "loc-x"), // source
+    ]);
+    // Both transactions lock in the same deterministic order
+    expect(tx1Keys).toEqual(tx2Keys);
+  });
+});
+
+describe("WP-02-02 locking — findBalanceForUpdate called before insert/update", () => {
+  it("service calls findBalanceForUpdate BEFORE insertMovement and updateBalance", async () => {
+    // Track the order of handle calls
+    const callOrder: string[] = [];
+    const txStore = new TransactionalTestStore();
+
+    // Wrap the ledger handle to track call order
+    const originalLedger = txStore.ledger;
+    const trackedLedger: InventoryLedgerTransactionHandle = {
+      insertMovement: async (row) => {
+        callOrder.push("insertMovement");
+        return originalLedger.insertMovement(row);
+      },
+      findMovementByIdempotencyKey: async (tenantId, idempotencyKey) => {
+        callOrder.push("findMovementByIdempotencyKey");
+        return originalLedger.findMovementByIdempotencyKey(tenantId, idempotencyKey);
+      },
+      findMovementBySource: async (tenantId, sourceDocumentType, sourceDocumentId) => {
+        callOrder.push("findMovementBySource");
+        return originalLedger.findMovementBySource(tenantId, sourceDocumentType, sourceDocumentId);
+      },
+      findMovementById: async (tenantId, id) => {
+        callOrder.push("findMovementById");
+        return originalLedger.findMovementById(tenantId, id);
+      },
+      findBalanceForUpdate: async (tenantId, itemId, locationId) => {
+        callOrder.push("findBalanceForUpdate");
+        return originalLedger.findBalanceForUpdate(tenantId, itemId, locationId);
+      },
+      insertBalance: async (row) => {
+        callOrder.push("insertBalance");
+        return originalLedger.insertBalance(row);
+      },
+      updateBalance: async (tenantId, itemId, locationId, patch) => {
+        callOrder.push("updateBalance");
+        return originalLedger.updateBalance(tenantId, itemId, locationId, patch);
+      },
+      listMovementsForBalance: async (tenantId, itemId, locationId) => {
+        callOrder.push("listMovementsForBalance");
+        return originalLedger.listMovementsForBalance(tenantId, itemId, locationId);
+      },
+    };
+
+    const service = new InventoryLedgerService({
+      ledger: trackedLedger,
+      audit: txStore.audit,
+      idempotency: txStore.idempotency,
+      documentSequence: txStore.docSeq,
+    });
+
+    const user = TEST_USERS.owner;
+    const effective = getTestEffectivePermissions(user.userId);
+
+    await withTransaction(txStore, () =>
+      service.postRawReceipt(user, effective, makeRawReceiptInput()),
+    );
+
+    // PROOF: findBalanceForUpdate is called BEFORE insertMovement and updateBalance
+    const findBalIdx = callOrder.indexOf("findBalanceForUpdate");
+    const insertMovIdx = callOrder.indexOf("insertMovement");
+    const updateBalIdx = callOrder.indexOf("updateBalance");
+
+    expect(findBalIdx).toBeGreaterThanOrEqual(0);
+    expect(insertMovIdx).toBeGreaterThan(findBalIdx);
+    expect(updateBalIdx).toBeGreaterThan(insertMovIdx);
+  });
+});
+
+describe("WP-02-02 locking — concurrent-insert retry path", () => {
+  it("if insertBalance throws, service retries findBalanceForUpdate and continues", async () => {
+    const txStore = new TransactionalTestStore();
+    let insertBalanceCallCount = 0;
+
+    // Wrap insertBalance to throw on first call, then succeed on retry
+    const originalLedger = txStore.ledger;
+    const retriedLedger = {
+      ...originalLedger,
+      insertBalance: async (row: any) => {
+        insertBalanceCallCount++;
+        if (insertBalanceCallCount === 1) {
+          // Simulate concurrent insert race: throw BalanceConcurrentInsertError
+          throw new BalanceConcurrentInsertError(row.tenantId, row.itemId, row.locationId);
+        }
+        return originalLedger.insertBalance(row);
+      },
+      // Make findBalanceForUpdate return a row on the retry (simulating
+      // that the winning transaction created the row)
+      findBalanceForUpdate: async (tenantId: string, itemId: string, locationId: string) => {
+        const result = await originalLedger.findBalanceForUpdate(tenantId, itemId, locationId);
+        if (result) return result;
+        // On second call (after insertBalance threw), simulate that the
+        // winning transaction created the row
+        if (insertBalanceCallCount > 0) {
+          return originalLedger.insertBalance({
+            tenantId, itemId, locationId,
+            onHandQtyKg: "0.000",
+            lastMovementId: "00000000-0000-0000-0000-000000000000",
+          });
+        }
+        return null;
+      },
+    };
+
+    const service = new InventoryLedgerService({
+      ledger: retriedLedger,
+      audit: txStore.audit,
+      idempotency: txStore.idempotency,
+      documentSequence: txStore.docSeq,
+    });
+
+    const user = TEST_USERS.owner;
+    const effective = getTestEffectivePermissions(user.userId);
+
+    const result = await withTransaction(txStore, () =>
+      service.postRawReceipt(user, effective, makeRawReceiptInput()),
+    );
+
+    // PROOF: insertBalance was called once (threw), then the service
+    // retried findBalanceForUpdate which returned the row, and continued
+    // with the normal flow.
+    expect(insertBalanceCallCount).toBe(1);
+    expect(result.action).toBe("posted");
+    expect(result.onHandQtyKg).toBe("1000.000");
   });
 });
