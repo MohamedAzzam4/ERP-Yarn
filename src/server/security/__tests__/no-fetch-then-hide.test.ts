@@ -293,8 +293,12 @@ describe("NO inferred approval (Contract 11 §13)", () => {
     // If a role has <module>.approve, it should NOT have a generic
     // <module>.update permission. (The matrix doesn't define .update
     // keys — updates go through draft/correct flows.)
-    // This is a forward-looking assertion: no .update keys exist.
+    // Exception: master_data.update is a direct CRUD update on master
+    // records (not a transaction draft/correct flow). Master data has
+    // no approval lifecycle — Owner/Accountant edit directly per
+    // Contract 11 §7 matrix (V/C/U). WP-02-01 added master_data.update.
     for (const key of PERMISSION_KEY_SET) {
+      if (key === "master_data.update") continue;
       expect(key.endsWith(".update")).toBe(false);
     }
   });

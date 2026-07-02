@@ -94,12 +94,12 @@ describe("getWorkerTasksForRole — role filtering", () => {
 });
 
 describe("MANAGEMENT_NAV", () => {
-  it("has 8 categories", () => {
-    expect(MANAGEMENT_NAV).toHaveLength(8);
+  it("has 9 categories (8 base + WP-02-01 master-data)", () => {
+    expect(MANAGEMENT_NAV).toHaveLength(9);
     const catIds = MANAGEMENT_NAV.map((c) => c.id);
     expect(catIds).toEqual([
       "dashboard", "inventory", "production", "sales",
-      "quality", "accounts", "reports", "administration",
+      "quality", "accounts", "master-data", "reports", "administration",
     ]);
   });
 
@@ -117,7 +117,7 @@ describe("MANAGEMENT_NAV", () => {
 describe("getManagementNavForRole — role filtering (DEC-032)", () => {
   it("owner sees ALL categories", () => {
     const cats = getManagementNavForRole("owner");
-    expect(cats).toHaveLength(8);
+    expect(cats).toHaveLength(9);
     const adminCat = cats.find((c) => c.id === "administration")!;
     expect(adminCat.items.map((i) => i.id)).toContain("users");
     expect(adminCat.items.map((i) => i.id)).toContain("permissions");

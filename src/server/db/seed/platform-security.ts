@@ -143,6 +143,11 @@ function buildPermissionSeeds(): PermissionSeed[] {
     { key: "permissions.manage", module: "permissions", action: "manage", description: "Manage permissions" },
     { key: "settings.view_restricted", module: "settings", action: "view_restricted", description: "View restricted settings" },
     { key: "settings.manage", module: "settings", action: "manage", description: "Manage settings" },
+    { key: "master_data.view", module: "master_data", action: "view", description: "View master data (suppliers/customers/locations/factories)" },
+    { key: "master_data.view_names", module: "master_data", action: "view_names", description: "View master data names only (worker task-scoped)" },
+    { key: "master_data.create", module: "master_data", action: "create", description: "Create master data records" },
+    { key: "master_data.update", module: "master_data", action: "update", description: "Update master data records" },
+    { key: "master_data.inactivate", module: "master_data", action: "inactivate", description: "Inactivate master data records (no hard delete)" },
     { key: "inventory.view_quantity", module: "inventory", action: "view_quantity", description: "View inventory quantities" },
     { key: "inventory.receive.create", module: "inventory", action: "receive_create", description: "Create raw receipt draft" },
     { key: "inventory.receive.approve", module: "inventory", action: "receive_approve", description: "Approve raw receipt" },
@@ -236,6 +241,11 @@ const ROLE_PERMISSION_MATRIX: Record<RoleCode, ReadonlySet<string>> = {
   accountant: new Set([
     "users.view_limited",
     "settings.view_restricted",
+    // Master data: Contract 11 §7 grants Accountant V/C/U on master data.
+    "master_data.view",
+    "master_data.create",
+    "master_data.update",
+    "master_data.inactivate",
     "inventory.view_quantity",
     "inventory.receive.create",
     "inventory.receive.approve",
@@ -291,6 +301,8 @@ const ROLE_PERMISSION_MATRIX: Record<RoleCode, ReadonlySet<string>> = {
 
   warehouse_employee: new Set([
     // Operational only — no financial keys per DEC-063.
+    // Workers may view master data names only (task-scoped, no financial fields).
+    "master_data.view_names",
     "inventory.view_quantity",
     "inventory.receive.create",
     "inventory.transfer.create",
@@ -303,6 +315,8 @@ const ROLE_PERMISSION_MATRIX: Record<RoleCode, ReadonlySet<string>> = {
 
   production_employee: new Set([
     // Operational only — no financial keys per DEC-063.
+    // Workers may view master data names only (task-scoped, no financial fields).
+    "master_data.view_names",
     "inventory.view_quantity",
     "production.create",
     "production.issue_draft.create",
@@ -313,6 +327,8 @@ const ROLE_PERMISSION_MATRIX: Record<RoleCode, ReadonlySet<string>> = {
 
   quality_employee: new Set([
     // Operational only — no financial keys per DEC-063.
+    // Workers may view master data names only (task-scoped, no financial fields).
+    "master_data.view_names",
     "inventory.view_quantity",
     "quality_tests.create",
     "complaints.investigate",

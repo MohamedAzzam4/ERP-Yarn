@@ -97,9 +97,18 @@ describe("SEED_ROLES (Contract 03 §6 / Contract 11 §5)", () => {
 });
 
 describe("SEED_PERMISSIONS (Contract 11 §12)", () => {
-  it("contains all 57 required permission keys from Contract 11 §12", () => {
-    // Exact count from Contract 11 §12 enumeration.
-    expect(SEED_PERMISSIONS.length).toBe(57);
+  it("contains all required permission keys from Contract 11 §12 plus WP-02-01 master_data keys", () => {
+    // 57 base keys from Contract 11 §12 + 5 WP-02-01 master_data keys.
+    expect(SEED_PERMISSIONS.length).toBe(62);
+  });
+
+  it("contains the WP-02-01 master_data permission keys", () => {
+    const keys = new Set(SEED_PERMISSIONS.map((p) => p.permissionKey));
+    expect(keys.has("master_data.view")).toBe(true);
+    expect(keys.has("master_data.view_names")).toBe(true);
+    expect(keys.has("master_data.create")).toBe(true);
+    expect(keys.has("master_data.update")).toBe(true);
+    expect(keys.has("master_data.inactivate")).toBe(true);
   });
 
   it("contains specific required keys (spot check)", () => {
@@ -188,6 +197,79 @@ describe("SEED_ROLE_PERMISSIONS (DEC-063 defense-in-depth)", () => {
       (rp) => rp.roleId === ownerRoleId,
     ).map((rp) => rp.permissionId);
     expect(ownerGrantIds.length).toBe(SEED_PERMISSIONS.length);
+  });
+
+  it("Owner receives all master_data permission keys (WP-02-01)", () => {
+    const ownerRoleId = SEED_ROLES.find((r) => r.roleCode === "owner")!.id;
+    const ownerPermissionIds = new Set(
+      SEED_ROLE_PERMISSIONS.filter((rp) => rp.roleId === ownerRoleId).map(
+        (rp) => rp.permissionId,
+      ),
+    );
+    const permissionByKey = new Map(
+      SEED_PERMISSIONS.map((p) => [p.permissionKey, p.id]),
+    );
+    for (const key of [
+      "master_data.view",
+      "master_data.view_names",
+      "master_data.create",
+      "master_data.update",
+      "master_data.inactivate",
+    ]) {
+      const pid = permissionByKey.get(key);
+      expect(pid, `permission key '${key}' should exist in SEED_PERMISSIONS`).toBeDefined();
+      expect(
+        ownerPermissionIds.has(pid!),
+        `Owner should be granted '${key}'`,
+      ).toBe(true);
+    }
+  });
+
+  it("Accountant receives master_data V/C/U keys but not view_names (WP-02-01)", () => {
+    const accountantRoleId = SEED_ROLES.find((r) => r.roleCode === "accountant")!.id;
+    const accountantPermissionIds = new Set(
+      SEED_ROLE_PERMISSIONS.filter((rp) => rp.roleId === accountantRoleId).map(
+        (rp) => rp.permissionId,
+      ),
+    );
+    const permissionByKey = new Map(
+      SEED_PERMISSIONS.map((p) => [p.permissionKey, p.id]),
+    );
+    expect(accountantPermissionIds.has(permissionByKey.get("master_data.view")!)).toBe(true);
+    expect(accountantPermissionIds.has(permissionByKey.get("master_data.create")!)).toBe(true);
+    expect(accountantPermissionIds.has(permissionByKey.get("master_data.update")!)).toBe(true);
+    expect(accountantPermissionIds.has(permissionByKey.get("master_data.inactivate")!)).toBe(true);
+    expect(accountantPermissionIds.has(permissionByKey.get("master_data.view_names")!)).toBe(false);
+  });
+
+  it("Worker roles receive master_data.view_names only (WP-02-01, DEC-063)", () => {
+    const permissionByKey = new Map(
+      SEED_PERMISSIONS.map((p) => [p.permissionKey, p.id]),
+    );
+    const viewNamesId = permissionByKey.get("master_data.view_names")!;
+    const createId = permissionByKey.get("master_data.create")!;
+    const inactivateId = permissionByKey.get("master_data.inactivate")!;
+
+    for (const roleCode of ["warehouse_employee", "production_employee", "quality_employee"] as const) {
+      const roleId = SEED_ROLES.find((r) => r.roleCode === roleCode)!.id;
+      const workerPermissionIds = new Set(
+        SEED_ROLE_PERMISSIONS.filter((rp) => rp.roleId === roleId).map(
+          (rp) => rp.permissionId,
+        ),
+      );
+      expect(
+        workerPermissionIds.has(viewNamesId),
+        `${roleCode} should get master_data.view_names`,
+      ).toBe(true);
+      expect(
+        workerPermissionIds.has(createId),
+        `${roleCode} must NOT get master_data.create`,
+      ).toBe(false);
+      expect(
+        workerPermissionIds.has(inactivateId),
+        `${roleCode} must NOT get master_data.inactivate`,
+      ).toBe(false);
+    }
   });
 
   it("warehouse_employee does NOT receive any financial permission key (DEC-063)", () => {

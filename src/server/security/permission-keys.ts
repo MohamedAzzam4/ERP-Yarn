@@ -56,6 +56,7 @@ export const PERMISSION_MODULES = [
   "users",
   "permissions",
   "settings",
+  "master_data",
   "inventory",
   "sales",
   "production",
@@ -95,6 +96,16 @@ export const PERMISSION_KEYS = [
   "permissions.manage",
   "settings.view_restricted",
   "settings.manage",
+
+  // Master data (WP-02-01) — suppliers, customers, locations, factories,
+  // fiber/product types, quality parameters. Contract 11 §7 grants
+  // Owner/Accountant V/C/U on master data; Workers get view_names only
+  // (task-scoped, no financial fields). Inactivation is a U-class update.
+  "master_data.view",
+  "master_data.view_names",
+  "master_data.create",
+  "master_data.update",
+  "master_data.inactivate",
 
   // Inventory
   "inventory.view_quantity",
@@ -313,6 +324,9 @@ export function actionCodeForKey(key: PermissionKey): PermissionActionCode | nul
 
   // Create / draft
   if (suffix === "create" || suffix === "request_correction") return "C";
+
+  // Inactivate / update — U-class updates (WP-02-01 master_data.update/inactivate)
+  if (suffix === "inactivate" || suffix === "update") return "U";
 
   // Submit
   if (suffix === "submit") return "S";

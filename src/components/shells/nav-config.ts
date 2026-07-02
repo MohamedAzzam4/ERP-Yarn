@@ -99,6 +99,18 @@ export const MANAGEMENT_NAV: ReadonlyArray<ManagementNavCategory> = [
     ],
   },
   {
+    id: "master-data", labelAr: "البيانات الأساسية",
+    items: [
+      { id: "suppliers", labelAr: "الموردون", href: "/management/master-data/suppliers", icon: "Truck", roles: ["owner", "accountant"] },
+      { id: "customers", labelAr: "العملاء", href: "/management/master-data/customers", icon: "UserCircle", roles: ["owner", "accountant"] },
+      { id: "locations", labelAr: "المواقع", href: "/management/master-data/locations", icon: "MapPin", roles: ["owner", "accountant"] },
+      { id: "factories", labelAr: "مصانع التشغيل", href: "/management/master-data/factories", icon: "Factory", roles: ["owner", "accountant"] },
+      { id: "fiber-types", labelAr: "أنواع الخيوط", href: "/management/master-data/fiber-types", icon: "Layers", roles: ["owner", "accountant"] },
+      { id: "product-types", labelAr: "أنواع المنتجات", href: "/management/master-data/product-types", icon: "Package", roles: ["owner", "accountant"] },
+      { id: "quality-parameters", labelAr: "معايير الجودة", href: "/management/master-data/quality-parameters", icon: "ShieldCheck", roles: ["owner", "accountant"] },
+    ],
+  },
+  {
     id: "reports", labelAr: "التقارير",
     items: [
       { id: "traceability", labelAr: "التتبع", href: "/management/reports/traceability", icon: "GitBranch", roles: ["owner", "accountant"] },

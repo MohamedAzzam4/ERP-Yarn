@@ -24,6 +24,26 @@ describe("PERMISSION_KEYS", () => {
     expect(PERMISSION_KEYS.length).toBeGreaterThanOrEqual(50);
   });
 
+  it("includes the WP-02-01 master_data permission keys", () => {
+    expect(PERMISSION_KEYS).toContain("master_data.view");
+    expect(PERMISSION_KEYS).toContain("master_data.view_names");
+    expect(PERMISSION_KEYS).toContain("master_data.create");
+    expect(PERMISSION_KEYS).toContain("master_data.update");
+    expect(PERMISSION_KEYS).toContain("master_data.inactivate");
+  });
+
+  it("includes master_data in PERMISSION_MODULES", () => {
+    expect(PERMISSION_MODULES).toContain("master_data");
+  });
+
+  it("actionCodeForKey maps master_data keys correctly", () => {
+    expect(actionCodeForKey("master_data.view")).toBe("V");
+    expect(actionCodeForKey("master_data.view_names")).toBe("V");
+    expect(actionCodeForKey("master_data.create")).toBe("C");
+    expect(actionCodeForKey("master_data.update")).toBe("U");
+    expect(actionCodeForKey("master_data.inactivate")).toBe("U");
+  });
+
   it("includes the exact keys from Contract 11 §12", () => {
     const expectedKeys = [
       "users.view_limited",
