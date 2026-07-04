@@ -31,11 +31,18 @@ export interface DemoUser {
 }
 
 export const DEMO_USERS: ReadonlyArray<DemoUser> = [
-  { role: "owner", displayNameAr: "مالك النظام", landingRoute: "/demo/owner/dashboard" },
-  { role: "accountant", displayNameAr: "محاسب المراجعة", landingRoute: "/demo/owner/reviews" },
-  { role: "warehouse_employee", displayNameAr: "عامل مخزن 1", landingRoute: "/demo/worker/raw-receipt" },
-  { role: "production_employee", displayNameAr: "عامل إنتاج 1", landingRoute: "/demo/owner/production" },
-  { role: "quality_employee", displayNameAr: "مسؤول جودة 1", landingRoute: "/demo/owner/reviews" },
+  // Stakeholder terminology (revised 2026-07-05):
+  //   - مالك النظام            → رئيس مجلس الإدارة / العضو المنتدب التنفيذي
+  //   - محاسب المراجعة         → المدير المالي
+  //   - عامل مخزن              → مسؤول تسجيل البيانات أو المدخلات
+  //   - عامل إنتاج             → مسؤول متابعة تشغيل الخيوط
+  //   - مسؤول الجودة           → مدير المراجعة (مراجعة نتائج الخيوط والشعيرات،
+  //                              ليست جودة ISO العامة)
+  { role: "owner", displayNameAr: "رئيس مجلس الإدارة / العضو المنتدب التنفيذي", landingRoute: "/demo/owner/dashboard" },
+  { role: "accountant", displayNameAr: "المدير المالي", landingRoute: "/demo/owner/reviews" },
+  { role: "warehouse_employee", displayNameAr: "مسؤول تسجيل البيانات أو المدخلات", landingRoute: "/demo/worker/raw-receipt" },
+  { role: "production_employee", displayNameAr: "مسؤول متابعة تشغيل الخيوط", landingRoute: "/demo/owner/production" },
+  { role: "quality_employee", displayNameAr: "مدير المراجعة", landingRoute: "/demo/owner/reviews" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -278,8 +285,10 @@ export interface DemoSearchEntry {
 
 export const DEMO_SEARCH_ENTRIES: ReadonlyArray<DemoSearchEntry> = [
   { labelAr: "لوحة التحكم", href: "/demo/owner/dashboard", groupAr: "لوحة المعلومات", keywords: ["dashboard", "owner", "لوحة", "تحكم"] },
-  { labelAr: "مركز المراجعات", href: "/demo/owner/reviews", groupAr: "لوحة المعلومات", keywords: ["reviews", "مراجعات", "اعتماد"] },
-  { labelAr: "نظرة عامة على المخزون", href: "/demo/owner/inventory", groupAr: "المخزون", keywords: ["inventory", "مخزون", "رصيد"] },
+  { labelAr: "مركز الاعتماد والمتابعة", href: "/demo/owner/reviews", groupAr: "لوحة المعلومات", keywords: ["reviews", "مراجعات", "اعتماد", "متابعة"] },
+  { labelAr: "نظرة عامة على المخزون", href: "/demo/owner/inventory", groupAr: "المخزون", keywords: ["inventory", "مخزون", "رصيد", "خيوط"] },
+  { labelAr: "أرصدة الخيوط بالمخازن", href: "/demo/owner/inventory", groupAr: "المخزون", keywords: ["yarn", "خيوط", "أرصدة", "شعيرات"] },
+  { labelAr: "إدخال الخيوط", href: "/demo/owner/yarn-entry", groupAr: "المخزون", keywords: ["yarn", "entry", "إدخال", "خيوط", "تسجيل"] },
   { labelAr: "الإنتاج لدى مصانع التشغيل", href: "/demo/owner/production", groupAr: "الإنتاج", keywords: ["production", "إنتاج", "مصنع", "تشغيل"] },
   { labelAr: "نظرة عامة على المبيعات", href: "/demo/owner/sales", groupAr: "المبيعات", keywords: ["sales", "مبيعات", "أمر بيع"] },
   { labelAr: "الموردون والعملاء والمصانع", href: "/demo/owner/parties", groupAr: "الإدارة", keywords: ["parties", "suppliers", "customers", "موردين", "عملاء", "مصانع"] },
@@ -292,10 +301,13 @@ export const DEMO_SEARCH_ENTRIES: ReadonlyArray<DemoSearchEntry> = [
 // demo-specific emphasis)
 // ---------------------------------------------------------------------------
 
+// Inventory composition — ثلاث طبقات واضحة: خامات / شعيرات / خيوط
+// (revised 2026-07-05 to make yarn visible at the dashboard top-level)
 export const DEMO_DASHBOARD_INVENTORY_COMPOSITION = [
-  { labelAr: "خام", valueKg: "10,200.000", color: "var(--color-primary)" },
+  { labelAr: "خامات", valueKg: "10,200.000", color: "var(--color-primary)" },
+  { labelAr: "شعيرات", valueKg: "4,800.000", color: "var(--color-warning)" },
+  { labelAr: "خيوط", valueKg: "3,250.000", color: "var(--color-success)" },
   { labelAr: "لدى مصانع التشغيل", valueKg: "6,200.000", color: "var(--color-accent)" },
-  { labelAr: "خيط جاهز", valueKg: "2,050.000", color: "var(--color-success)" },
 ] as const;
 
 export const DEMO_DASHBOARD_ATTENTION_ITEMS = [
@@ -318,7 +330,10 @@ export const DEMO_DASHBOARD_INVENTORY_BY_LOCATION = [
   { label: "زوى ابوقمر", value: "800.000 كجم" },
 ];
 
-export const DEMO_DASHBOARD_REVIEW_TREND = [
+// Renamed 2026-07-05: was "اتجاه المراجعات" — confusing because "مراجعة"
+// now maps to yarn/fiber result review. This trend tracks approval + follow-up
+// requests across the demo, not just quality reviews.
+export const DEMO_DASHBOARD_APPROVAL_TREND = [
   { label: "16/06", value: "4" },
   { label: "17/06", value: "6" },
   { label: "18/06", value: "5" },
@@ -326,8 +341,310 @@ export const DEMO_DASHBOARD_REVIEW_TREND = [
   { label: "20/06", value: "8" },
 ];
 
+// Back-compat alias — old exports kept so any older import path still compiles
+// during the transition. New code should use DEMO_DASHBOARD_APPROVAL_TREND.
+export const DEMO_DASHBOARD_REVIEW_TREND = DEMO_DASHBOARD_APPROVAL_TREND;
+
 export const DEMO_DASHBOARD_COMPLAINTS = [
   { label: "مفتوحة", value: "2" },
   { label: "قيد التحقيق", value: "1" },
   { label: "مغلقة", value: "5" },
+];
+
+// ===========================================================================
+// Yarn stock — أرصدة الخيوط بالمخازن
+//
+// Inspired by the stakeholder Excel "ارصدة الخيوط بالمخازن محمد.xlsx"
+// (sheet: "ارصدة الخيوط بالمخازن"). All data below is SYNTHETIC — no real
+// client rows. Synthetic company names ("قمح دلتا", "نسر النيل", "غزل الشرق",
+// "خيوط الواحة") are used to avoid implicating any real supplier/customer.
+//
+// Columns mirrored from the stakeholder Excel:
+//   تاريخ التخزين / شركة / رقم الأمر / نمرة / م. برم الفرد / م. برم الزوى /
+//   مكان التخزين / كونز / إجمالي منتج / رصيد حالي / عدد شيكارة / نمرة /
+//   م برم / RKM / Elongn / U% / Tin / Tick / Neps / Hairs
+//
+// Numeric values use Western numerals and are LTR-isolated at render time
+// via <LtrValue>. Dates use DD/MM/YYYY.
+// ===========================================================================
+
+export interface DemoYarnStockRow {
+  storageDate: string;        // تاريخ التخزين  (DD/MM/YYYY)
+  companyAr: string;          // شركة
+  orderNumber: string;        // رقم الأمر
+  yarnCount: string;          // نمرة (e.g. "2/24", "1/24")
+  twistSingle: string;        // م. برم الفرد
+  twistDouble: string;        // م. برم الزوى
+  storageLocationAr: string;  // مكان التخزين
+  cones: string;              // كونز
+  totalProducedKg: string;    // إجمالي المنتج
+  currentBalanceKg: string;   // الرصيد الحالي
+  balesCount: string;         // عدد شيكارة
+  // Technical review results (مراجعة فنية للخيط)
+  numberTwist: string;        // نمرة / م برم
+  rkm: string;                // RKM
+  elongation: string;         // Elongn
+  uPercent: string;           // U%
+  thin: string;               // Tin
+  thick: string;              // Tick
+  neps: string;               // Neps
+  hairiness: string;          // Hairs
+  needsTechnicalReview: boolean; // بنود تحتاج مراجعة فنية
+}
+
+export const DEMO_YARN_STOCK: ReadonlyArray<DemoYarnStockRow> = [
+  {
+    storageDate: "12/05/2026",
+    companyAr: "قمح دلتا",
+    orderNumber: "10370",
+    yarnCount: "2/24",
+    twistSingle: "18.5",
+    twistDouble: "9.2",
+    storageLocationAr: "مخازن",
+    cones: "120",
+    totalProducedKg: "5,400.000",
+    currentBalanceKg: "1,820.000",
+    balesCount: "36",
+    numberTwist: "2/24",
+    rkm: "16.8",
+    elongation: "6.4",
+    uPercent: "9.8",
+    thin: "12",
+    thick: "28",
+    neps: "44",
+    hairiness: "5.6",
+    needsTechnicalReview: false,
+  },
+  {
+    storageDate: "14/05/2026",
+    companyAr: "قمح دلتا",
+    orderNumber: "10371",
+    yarnCount: "1/24",
+    twistSingle: "16.2",
+    twistDouble: "8.1",
+    storageLocationAr: "مخازن",
+    cones: "95",
+    totalProducedKg: "4,150.000",
+    currentBalanceKg: "640.000",
+    balesCount: "22",
+    numberTwist: "1/24",
+    rkm: "15.4",
+    elongation: "5.9",
+    uPercent: "10.2",
+    thin: "18",
+    thick: "34",
+    neps: "52",
+    hairiness: "6.1",
+    needsTechnicalReview: true,
+  },
+  {
+    storageDate: "20/05/2026",
+    companyAr: "نسر النيل",
+    orderNumber: "10378",
+    yarnCount: "2/24",
+    twistSingle: "19.1",
+    twistDouble: "9.6",
+    storageLocationAr: "مخازن",
+    cones: "140",
+    totalProducedKg: "6,200.000",
+    currentBalanceKg: "2,150.000",
+    balesCount: "44",
+    numberTwist: "2/24",
+    rkm: "17.2",
+    elongation: "6.7",
+    uPercent: "9.5",
+    thin: "10",
+    thick: "22",
+    neps: "38",
+    hairiness: "5.2",
+    needsTechnicalReview: false,
+  },
+  {
+    storageDate: "01/06/2026",
+    companyAr: "غزل الشرق",
+    orderNumber: "10493",
+    yarnCount: "1/24",
+    twistSingle: "15.8",
+    twistDouble: "7.9",
+    storageLocationAr: "مخازن",
+    cones: "88",
+    totalProducedKg: "3,820.000",
+    currentBalanceKg: "780.000",
+    balesCount: "26",
+    numberTwist: "1/24",
+    rkm: "14.6",
+    elongation: "5.4",
+    uPercent: "11.0",
+    thin: "22",
+    thick: "41",
+    neps: "60",
+    hairiness: "6.8",
+    needsTechnicalReview: true,
+  },
+  {
+    storageDate: "08/06/2026",
+    companyAr: "خيوط الواحة",
+    orderNumber: "10512",
+    yarnCount: "2/30",
+    twistSingle: "21.4",
+    twistDouble: "10.7",
+    storageLocationAr: "مخازن",
+    cones: "110",
+    totalProducedKg: "4,860.000",
+    currentBalanceKg: "1,420.000",
+    balesCount: "32",
+    numberTwist: "2/30",
+    rkm: "18.1",
+    elongation: "7.0",
+    uPercent: "9.2",
+    thin: "8",
+    thick: "18",
+    neps: "30",
+    hairiness: "4.9",
+    needsTechnicalReview: false,
+  },
+  {
+    storageDate: "15/06/2026",
+    companyAr: "نسر النيل",
+    orderNumber: "10534",
+    yarnCount: "2/24",
+    twistSingle: "18.9",
+    twistDouble: "9.4",
+    storageLocationAr: "مخازن",
+    cones: "75",
+    totalProducedKg: "3,300.000",
+    currentBalanceKg: "980.000",
+    balesCount: "20",
+    numberTwist: "2/24",
+    rkm: "16.5",
+    elongation: "6.2",
+    uPercent: "10.0",
+    thin: "15",
+    thick: "31",
+    neps: "47",
+    hairiness: "5.8",
+    needsTechnicalReview: true,
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Yarn distribution by company — for the donut/bar chart on dashboard +
+// inventory overview.
+// ---------------------------------------------------------------------------
+
+export interface DemoYarnCompanyBalance {
+  companyAr: string;
+  currentBalanceKg: string;
+  totalProducedKg: string;
+  balesCount: string;
+}
+
+export const DEMO_YARN_BY_COMPANY: ReadonlyArray<DemoYarnCompanyBalance> = [
+  { companyAr: "قمح دلتا", currentBalanceKg: "2,460.000", totalProducedKg: "9,550.000", balesCount: "58" },
+  { companyAr: "نسر النيل", currentBalanceKg: "3,130.000", totalProducedKg: "9,500.000", balesCount: "64" },
+  { companyAr: "غزل الشرق", currentBalanceKg: "780.000", totalProducedKg: "3,820.000", balesCount: "26" },
+  { companyAr: "خيوط الواحة", currentBalanceKg: "1,420.000", totalProducedKg: "4,860.000", balesCount: "32" },
+];
+
+// ---------------------------------------------------------------------------
+// Yarn distribution by yarn count (النمرة) — for the donut on dashboard.
+// ---------------------------------------------------------------------------
+
+export interface DemoYarnByCount {
+  yarnCount: string;
+  currentBalanceKg: string;
+}
+
+export const DEMO_YARN_BY_COUNT: ReadonlyArray<DemoYarnByCount> = [
+  { yarnCount: "2/24", currentBalanceKg: "3,970.000" },
+  { yarnCount: "1/24", currentBalanceKg: "1,420.000" },
+  { yarnCount: "2/30", currentBalanceKg: "1,420.000" },
+];
+
+// ---------------------------------------------------------------------------
+// Yarn dashboard KPIs (used by owner dashboard + inventory overview top strip)
+// ---------------------------------------------------------------------------
+
+export const DEMO_YARN_KPIS = {
+  totalCurrentBalanceKg: "6,810.000",
+  totalProducedKg: "27,730.000",
+  totalBales: "180",
+  companiesCount: "4",
+  itemsNeedingTechnicalReview: "3",
+} as const;
+
+// ---------------------------------------------------------------------------
+// Yarn entry form — fixture for the /demo/owner/yarn-entry page.
+//
+// Used to pre-populate the static demo form (no submit). Field order matches
+// the stakeholder Excel column order so the form reads naturally to the
+// stakeholder.
+// ---------------------------------------------------------------------------
+
+export interface DemoYarnEntryField {
+  labelAr: string;
+  value: string;
+  ltr: boolean;
+}
+
+export const DEMO_YARN_ENTRY_DEFAULTS: ReadonlyArray<DemoYarnEntryField> = [
+  { labelAr: "تاريخ التخزين", value: "20/06/2026", ltr: true },
+  { labelAr: "الشركة", value: "قمح دلتا", ltr: false },
+  { labelAr: "رقم الأمر", value: "10547", ltr: true },
+  { labelAr: "نمرة الخيط", value: "2/24", ltr: true },
+  { labelAr: "م. برم الفرد", value: "18.5", ltr: true },
+  { labelAr: "م. برم الزوى", value: "9.2", ltr: true },
+  { labelAr: "مكان التخزين", value: "مخازن", ltr: false },
+  { labelAr: "كونز", value: "120", ltr: true },
+  { labelAr: "إجمالي المنتج", value: "5,400.000", ltr: true },
+  { labelAr: "الرصيد الحالي", value: "1,820.000", ltr: true },
+  { labelAr: "عدد الشكاير", value: "36", ltr: true },
+  { labelAr: "م برم", value: "2/24", ltr: true },
+  { labelAr: "RKM", value: "16.8", ltr: true },
+  { labelAr: "Elongn", value: "6.4", ltr: true },
+  { labelAr: "U%", value: "9.8", ltr: true },
+  { labelAr: "Tin", value: "12", ltr: true },
+  { labelAr: "Tick", value: "28", ltr: true },
+  { labelAr: "Neps", value: "44", ltr: true },
+  { labelAr: "Hairs", value: "5.6", ltr: true },
+];
+
+export const DEMO_YARN_ENTRY_SECTIONS: ReadonlyArray<{
+  titleAr: string;
+  fieldLabelsAr: ReadonlyArray<string>;
+}> = [
+  {
+    titleAr: "بيانات الأمر والتخزين",
+    fieldLabelsAr: [
+      "تاريخ التخزين",
+      "الشركة",
+      "رقم الأمر",
+      "نمرة الخيط",
+      "م. برم الفرد",
+      "م. برم الزوى",
+      "مكان التخزين",
+    ],
+  },
+  {
+    titleAr: "الكميات والأرصدة",
+    fieldLabelsAr: [
+      "كونز",
+      "إجمالي المنتج",
+      "الرصيد الحالي",
+      "عدد الشكاير",
+    ],
+  },
+  {
+    titleAr: "نتائج المراجعة الفنية للخيط",
+    fieldLabelsAr: [
+      "م برم",
+      "RKM",
+      "Elongn",
+      "U%",
+      "Tin",
+      "Tick",
+      "Neps",
+      "Hairs",
+    ],
+  },
 ];

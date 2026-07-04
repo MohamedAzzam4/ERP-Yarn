@@ -27,7 +27,9 @@ export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
     labelAr: "لوحة المعلومات",
     items: [
       { id: "demo-dashboard", labelAr: "لوحة التحكم", href: "/demo/owner/dashboard" },
-      { id: "demo-reviews", labelAr: "مركز المراجعات", href: "/demo/owner/reviews" },
+      // Renamed 2026-07-05: was "مركز المراجعات" → "مركز الاعتماد والمتابعة"
+      // (مراجعة now maps specifically to yarn/fiber result review)
+      { id: "demo-reviews", labelAr: "مركز الاعتماد والمتابعة", href: "/demo/owner/reviews" },
     ],
   },
   {
@@ -35,6 +37,8 @@ export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
     labelAr: "العمليات",
     items: [
       { id: "demo-inventory", labelAr: "نظرة عامة على المخزون", href: "/demo/owner/inventory" },
+      // New 2026-07-05: yarn entry page added under inventory category per stakeholder request
+      { id: "demo-yarn-entry", labelAr: "إدخال الخيوط", href: "/demo/owner/yarn-entry" },
       { id: "demo-production", labelAr: "الإنتاج لدى مصانع التشغيل", href: "/demo/owner/production" },
       { id: "demo-sales", labelAr: "نظرة عامة على المبيعات", href: "/demo/owner/sales" },
     ],

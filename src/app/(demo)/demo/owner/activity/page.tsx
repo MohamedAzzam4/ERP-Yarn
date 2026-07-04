@@ -113,7 +113,7 @@ export default function DemoActivityPage() {
 
   return (
     <DemoShell
-      userName="مالك النظام"
+      userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "التقارير" }, { label: "النشاطات والإشعارات" }]}
     >
       <DemoPageHeader

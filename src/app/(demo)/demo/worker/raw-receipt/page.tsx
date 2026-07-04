@@ -83,7 +83,7 @@ export default function DemoWorkerRawReceiptPage() {
               </a>
               <div>
                 <h1 className="text-heading-3 text-foreground">المهام</h1>
-                <p className="text-sm text-muted-foreground">عامل مخزن 1 · عرض تفاعلي</p>
+                <p className="text-sm text-muted-foreground">مسؤول تسجيل البيانات أو المدخلات · عرض تفاعلي</p>
               </div>
             </div>
             <a

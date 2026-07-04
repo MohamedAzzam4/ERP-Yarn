@@ -3,15 +3,17 @@
  *
  * Route: /demo/owner/inventory
  *
- * Shows:
- *   - Total stock KPI cards
- *   - Stock by location (interactive bar chart)
- *   - Raw/WIP/Finished split (donut)
- *   - Movement timeline (last movements, hoverable rows)
- *   - Low/negative stock alerts panel
+ * Revised 2026-07-05:
+ *   - Inventory composition now clearly shows 3 layers: خامات / شعيرات / خيوط
+ *     (in addition to under-processing at factories)
+ *   - Added "أرصدة الخيوط بالمخازن" section with full yarn stock table inspired
+ *     by the stakeholder Excel (تاريخ التخزين، شركة، رقم الأمر، نمرة، ...،
+ *     نتائج المراجعة الفنية RKM/Elongn/U%/Tin/Tick/Neps/Hairs)
+ *   - Added yarn distribution by company bar chart
+ *   - Updated userName: "مالك النظام" → "رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
  *
- * All data is synthetic (DEMO_LOCATIONS, DEMO_INVENTORY_MOVEMENTS).
- * No Supabase. No real transaction logic.
+ * All data is synthetic (DEMO_LOCATIONS, DEMO_INVENTORY_MOVEMENTS,
+ * DEMO_YARN_STOCK, DEMO_YARN_BY_COMPANY). No Supabase. No real transaction logic.
  */
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
@@ -26,6 +28,9 @@ import {
 import {
   DEMO_LOCATIONS,
   DEMO_INVENTORY_MOVEMENTS,
+  DEMO_YARN_STOCK,
+  DEMO_YARN_BY_COMPANY,
+  DEMO_YARN_KPIS,
 } from "@/lib/fixtures/demo-fixtures";
 
 function parseNumeric(value: string): number {
@@ -47,26 +52,35 @@ export default function DemoInventoryOverviewPage() {
 
   const locationBars = DEMO_LOCATIONS.map((l) => ({ label: l.nameAr, value: l.totalStockKg + " كجم" }));
 
+  // Three-layer inventory composition: خامات / شعيرات / خيوط + لدى مصانع التشغيل
+  // (revised 2026-07-05 — was خام/تحت التشغيل/خيط جاهز, now explicitly includes
+  // شعيرات as a distinct layer per stakeholder request)
   const compositionSegments = [
-    { value: totalRawKg, color: "var(--color-primary)", label: "خام" },
-    { value: totalWipKg, color: "var(--color-warning)", label: "تحت التشغيل" },
-    { value: totalFinishedKg, color: "var(--color-success)", label: "خيط جاهز" },
+    { value: totalRawKg, color: "var(--color-primary)", label: "خامات" },
+    { value: 4800, color: "var(--color-warning)", label: "شعيرات" },
+    { value: parseNumeric(DEMO_YARN_KPIS.totalCurrentBalanceKg), color: "var(--color-success)", label: "خيوط" },
+    { value: totalWipKg, color: "var(--color-accent)", label: "لدى مصانع التشغيل" },
   ];
+
+  const yarnByCompanyBars = DEMO_YARN_BY_COMPANY.map((c) => ({
+    label: c.companyAr,
+    value: c.currentBalanceKg + " كجم",
+  }));
 
   const lowStock = DEMO_LOCATIONS.filter((l) => l.status === "low_stock");
   const negativeStock = DEMO_LOCATIONS.filter((l) => l.status === "negative_stock");
 
   return (
     <DemoShell
-      userName="مالك النظام"
+      userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "العمليات" }, { label: "نظرة عامة على المخزون" }]}
     >
       <DemoPageHeader
         titleAr="نظرة عامة على المخزون"
-        subtitleAr="إجمالي المخزون، التوزيع حسب الموقع، التقسيم بين خام/تحت التشغيل/جاهز، وآخر الحركات"
+        subtitleAr="إجمالي المخزون (خامات / شعيرات / خيوط)، أرصدة الخيوط بالمخازن، التوزيع حسب الموقع، وآخر الحركات"
       />
 
-      {/* Total stock KPI cards */}
+      {/* Total stock KPI cards — 4 layers */}
       <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="relative overflow-hidden border-border bg-surface">
           <div className="pointer-events-none absolute right-0 top-5 bottom-5 w-[3px] rounded-full bg-primary" aria-hidden="true" />
@@ -81,31 +95,31 @@ export default function DemoInventoryOverviewPage() {
         <Card className="relative overflow-hidden border-border bg-surface">
           <div className="pointer-events-none absolute right-0 top-5 bottom-5 w-[3px] rounded-full bg-primary" aria-hidden="true" />
           <CardContent className="relative p-4">
-            <p className="text-xs font-medium text-muted-foreground mb-1.5">خام</p>
+            <p className="text-xs font-medium text-muted-foreground mb-1.5">الخامات</p>
             <p className="text-2xl font-bold text-foreground tabular-nums">
               <LtrValue>{totalRawKg.toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} كجم</LtrValue>
             </p>
-            <span className="mt-2 inline-block rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">خام</span>
+            <span className="mt-2 inline-block rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">خامات</span>
           </CardContent>
         </Card>
         <Card className="relative overflow-hidden border-border bg-surface">
           <div className="pointer-events-none absolute right-0 top-5 bottom-5 w-[3px] rounded-full bg-warning" aria-hidden="true" />
           <CardContent className="relative p-4">
-            <p className="text-xs font-medium text-muted-foreground mb-1.5">تحت التشغيل</p>
+            <p className="text-xs font-medium text-muted-foreground mb-1.5">الشعيرات</p>
             <p className="text-2xl font-bold text-foreground tabular-nums">
-              <LtrValue>{totalWipKg.toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} كجم</LtrValue>
+              <LtrValue>4,800.000 كجم</LtrValue>
             </p>
-            <span className="mt-2 inline-block rounded-md bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">WIP</span>
+            <span className="mt-2 inline-block rounded-md bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">شعيرات</span>
           </CardContent>
         </Card>
         <Card className="relative overflow-hidden border-border bg-surface">
           <div className="pointer-events-none absolute right-0 top-5 bottom-5 w-[3px] rounded-full bg-success" aria-hidden="true" />
           <CardContent className="relative p-4">
-            <p className="text-xs font-medium text-muted-foreground mb-1.5">خيط جاهز</p>
+            <p className="text-xs font-medium text-muted-foreground mb-1.5">الخيوط (الرصيد الحالي)</p>
             <p className="text-2xl font-bold text-foreground tabular-nums">
-              <LtrValue>{totalFinishedKg.toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} كجم</LtrValue>
+              <LtrValue>{DEMO_YARN_KPIS.totalCurrentBalanceKg} كجم</LtrValue>
             </p>
-            <span className="mt-2 inline-block rounded-md bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">جاهز</span>
+            <span className="mt-2 inline-block rounded-md bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">خيوط</span>
           </CardContent>
         </Card>
       </div>
@@ -157,7 +171,7 @@ export default function DemoInventoryOverviewPage() {
         </Card>
       )}
 
-      {/* Charts: location + composition */}
+      {/* Charts: location + composition + yarn by company */}
       <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader className="pb-3">
@@ -177,6 +191,113 @@ export default function DemoInventoryOverviewPage() {
         </Card>
       </div>
 
+      {/* أرصدة الخيوط بالمخازن — main yarn stock section (NEW 2026-07-05) */}
+      <Card className="mb-6 border-primary/20">
+        <CardHeader className="pb-3 border-b border-border bg-gradient-to-l from-primary/8 to-transparent">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-heading-4 text-foreground flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full bg-success" aria-hidden="true" />
+              أرصدة الخيوط بالمخازن
+            </CardTitle>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-md bg-success/10 px-2 py-0.5 font-medium text-success">
+                الرصيد الحالي: <LtrValue>{DEMO_YARN_KPIS.totalCurrentBalanceKg} كجم</LtrValue>
+              </span>
+              <span className="rounded-md bg-muted px-2 py-0.5 font-medium text-foreground">
+                إجمالي المنتج: <LtrValue>{DEMO_YARN_KPIS.totalProducedKg} كجم</LtrValue>
+              </span>
+              <span className="rounded-md bg-muted px-2 py-0.5 font-medium text-foreground">
+                الشكاير: <LtrValue>{DEMO_YARN_KPIS.totalBales}</LtrValue>
+              </span>
+              <span className="rounded-md bg-warning/10 px-2 py-0.5 font-medium text-warning">
+                تحتاج مراجعة فنية: <LtrValue>{DEMO_YARN_KPIS.itemsNeedingTechnicalReview}</LtrValue>
+              </span>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" role="table">
+              <thead>
+                <tr className="border-b border-border bg-primary/5">
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">تاريخ التخزين</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">الشركة</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">رقم الأمر</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">نمرة</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">م. برم الفرد</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">م. برم الزوى</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">مكان التخزين</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">كونز</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">إجمالي المنتج (كجم)</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">الرصيد الحالي (كجم)</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">عدد شيكارة</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">RKM</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Elongn</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">U%</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tin</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tick</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Neps</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">Hairs</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">الحالة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {DEMO_YARN_STOCK.map((row, idx) => (
+                  <tr key={idx} className="border-b border-border transition-colors duration-150 hover:bg-primary/5">
+                    <td className="p-3"><LtrValue className="text-muted-foreground">{row.storageDate}</LtrValue></td>
+                    <td className="p-3 text-foreground">{row.companyAr}</td>
+                    <td className="p-3"><LtrValue className="font-medium text-foreground">{row.orderNumber}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.yarnCount}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.twistSingle}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.twistDouble}</LtrValue></td>
+                    <td className="p-3 text-muted-foreground">{row.storageLocationAr}</td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.cones}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.totalProducedKg}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="font-bold text-foreground">{row.currentBalanceKg}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.balesCount}</LtrValue></td>
+                    <td className="p-3"><LtrValue className={cn(row.needsTechnicalReview ? "text-warning" : "text-foreground")}>{row.rkm}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.elongation}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.uPercent}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.thin}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.thick}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.neps}</LtrValue></td>
+                    <td className="p-3"><LtrValue className="text-foreground">{row.hairiness}</LtrValue></td>
+                    <td className="p-3">
+                      {row.needsTechnicalReview ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-full border border-warning/20 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning">
+                          <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true" />
+                          تحتاج مراجعة فنية
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 rounded-full border border-success/20 bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
+                          <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
+                          سليمة
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="px-4 py-3 text-xs text-muted-foreground border-t border-border">
+            بيانات تجريبية مستوحاة من جدول «أرصدة الخيوط بالمخازن» — لا تمثل بيانات عميل فعلية.
+            القيم المسجلة في RKM و Elongn و U% و Tin و Tick و Neps و Hairs هي نتائج
+            مراجعة فنية للخيط وتؤثر على سعر البيع.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Yarn distribution by company */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-heading-4 text-foreground">توزيع الخيوط حسب الشركة</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <DemoLocationBars data={yarnByCompanyBars} />
+        </CardContent>
+      </Card>
+
       {/* Detailed location table */}
       <Card className="mb-6">
         <CardHeader className="pb-3">
@@ -190,7 +311,7 @@ export default function DemoInventoryOverviewPage() {
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">الكود</th>
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">الموقع</th>
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">النوع</th>
-                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">خام (كجم)</th>
+                  <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">خامات (كجم)</th>
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">تحت التشغيل (كجم)</th>
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">جاهز (كجم)</th>
                   <th className="p-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">الإجمالي (كجم)</th>

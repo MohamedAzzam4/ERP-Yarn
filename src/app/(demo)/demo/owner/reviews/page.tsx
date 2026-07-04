@@ -62,12 +62,12 @@ export default function DemoReviewCenterPage() {
 
   return (
     <DemoShell
-      userName="مالك النظام"
-      breadcrumbs={[{ label: "لوحة المعلومات" }, { label: "مركز المراجعات" }]}
+      userName="المدير المالي"
+      breadcrumbs={[{ label: "لوحة المعلومات" }, { label: "مركز الاعتماد والمتابعة" }]}
     >
       <DemoPageHeader
-        titleAr="مركز المراجعات"
-        subtitleAr="مراجعات مطلوبة تتطلب اتخاذ إجراء — استخدم البحث والفلتر لتضييق النتائج"
+        titleAr="مركز الاعتماد والمتابعة"
+        subtitleAr="طلبات الاعتماد والمتابعة المعلقة تتطلب اتخاذ إجراء — استخدم البحث والفلتر لتضييق النتائج"
       />
 
       {/* Summary count cards */}
@@ -95,7 +95,7 @@ export default function DemoReviewCenterPage() {
       <Card>
         <CardHeader className="pb-3 border-b border-border">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <CardTitle className="text-heading-4">قائمة المراجعات</CardTitle>
+            <CardTitle className="text-heading-4">قائمة طلبات الاعتماد والمتابعة</CardTitle>
             <div className="flex flex-wrap items-center gap-2">
               {/* Severity filter chips */}
               <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1" role="group" aria-label="فلتر الأولوية">
@@ -122,7 +122,7 @@ export default function DemoReviewCenterPage() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="بحث بمستند / نوع / مُرسِل..."
-                  aria-label="بحث في قائمة المراجعات"
+                  aria-label="بحث في قائمة طلبات الاعتماد والمتابعة"
                   className="w-64 min-h-[40px] rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </div>

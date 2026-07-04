@@ -24,27 +24,37 @@ interface ScreenCard {
 }
 
 const SCREENS: ScreenCard[] = [
-  { href: "/demo/owner/dashboard", labelAr: "لوحة التحكم", descAr: "KPIs، توزيع المخزون، اتجاه المراجعات، أرصدة مصانع التشغيل، آخر النشاطات.", groupAr: "مالك النظام" },
-  { href: "/demo/owner/reviews", labelAr: "مركز المراجعات", descAr: "بطاقات ملخصات، جدول المراجعات المعلقة، فلاتر وبحث، أزرار اعتماد/رفض معطلة.", groupAr: "مالك النظام" },
-  { href: "/demo/owner/inventory", labelAr: "نظرة عامة على المخزون", descAr: "إجمالي المخزون، توزيع حسب الموقع، خام/تحت التشغيل/جاهز، تنبيهات السالب والمنخفض.", groupAr: "مالك النظام" },
-  { href: "/demo/owner/production", labelAr: "الإنتاج لدى مصانع التشغيل", descAr: "أوامر الإنتاج، المخزون تحت التشغيل لدى المصانع، المدخلات والمخرجات، أرصدة المصانع.", groupAr: "مالك النظام" },
-  { href: "/demo/owner/sales", labelAr: "نظرة عامة على المبيعات", descAr: "أوامر البيع، حالة الحجز، أرصدة العملاء، مخططات مبسطة.", groupAr: "مالك النظام" },
-  { href: "/demo/owner/parties", labelAr: "الموردون والعملاء والمصانع", descAr: "قوائم البيانات الأساسية، الأرصدة، ملخصات العلاقات، الحالة النشطة/غير النشطة.", groupAr: "مالك النظام" },
-  { href: "/demo/owner/activity", labelAr: "النشاطات والإشعارات", descAr: "شرائط نشاط قابلة للطي، لوحة إشعارات، زر تحديث يدوي.", groupAr: "مالك النظام" },
-  { href: "/demo/worker/raw-receipt", labelAr: "استلام خام جديد (عامل)", descAr: "نموذج لمسي كبير، 11 حقلاً مرئياً، أزرار مسودة/مراجعة، تغذية راجعة للتحميل.", groupAr: "العامل" },
+  // Renamed 2026-07-05: "اتجاه المراجعات" → "اتجاه طلبات الاعتماد والمتابعة"
+  // (مراجعة now maps specifically to yarn/fiber result review)
+  { href: "/demo/owner/dashboard", labelAr: "لوحة التحكم", descAr: "KPIs، توزيع المخزون (خامات/شعيرات/خيوط)، اتجاه طلبات الاعتماد والمتابعة، أرصدة مصانع التشغيل، آخر النشاطات.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/reviews", labelAr: "مركز الاعتماد والمتابعة", descAr: "بطاقات ملخصات، جدول الطلبات المعلقة، فلاتر وبحث، أزرار اعتماد/رفض معطلة.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/inventory", labelAr: "نظرة عامة على المخزون", descAr: "إجمالي المخزون (خامات/شعيرات/خيوط)، أرصدة الخيوط بالمخازن، توزيع حسب الموقع، تنبيهات السالب والمنخفض.", groupAr: "القيادة والإدارة" },
+  // New 2026-07-05: yarn entry page
+  { href: "/demo/owner/yarn-entry", labelAr: "إدخال الخيوط", descAr: "نموذج إدخال بيانات وأرصدة ونتائج مراجعة فنية للخيوط، مستوحى من جدول أرصدة الخيوط بالمخازن.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/production", labelAr: "الإنتاج لدى مصانع التشغيل", descAr: "أوامر الإنتاج، المخزون تحت التشغيل لدى المصانع، المدخلات والمخرجات، أرصدة المصانع.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/sales", labelAr: "نظرة عامة على المبيعات", descAr: "أوامر البيع، حالة الحجز، أرصدة العملاء، مخططات مبسطة.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/parties", labelAr: "الموردون والعملاء والمصانع", descAr: "قوائم البيانات الأساسية، الأرصدة، ملخصات العلاقات، الحالة النشطة/غير النشطة.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/activity", labelAr: "النشاطات والإشعارات", descAr: "شرائط نشاط قابلة للطي، لوحة إشعارات، زر تحديث يدوي.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/worker/raw-receipt", labelAr: "استلام خام جديد (مسؤول تسجيل البيانات)", descAr: "نموذج لمسي كبير، 11 حقلاً مرئياً، أزرار مسودة/مراجعة، تغذية راجعة للتحميل.", groupAr: "مسؤولو تسجيل البيانات والإدخال" },
 ];
 
+// Stakeholder terminology (revised 2026-07-05):
+//   - مالك النظام            → رئيس مجلس الإدارة / العضو المنتدب التنفيذي
+//   - محاسب المراجعة         → المدير المالي
+//   - عامل مخزن              → مسؤول تسجيل البيانات أو المدخلات
+//   - عامل إنتاج             → مسؤول متابعة تشغيل الخيوط
+//   - مسؤول الجودة           → مدير المراجعة (مراجعة نتائج الخيوط والشعيرات)
 const ROLE_LABELS: Record<string, string> = {
-  owner: "مالك النظام",
-  accountant: "محاسب المراجعة",
-  warehouse_employee: "عامل مخزن",
-  production_employee: "عامل إنتاج",
-  quality_employee: "مسؤول جودة",
+  owner: "رئيس مجلس الإدارة / العضو المنتدب التنفيذي",
+  accountant: "المدير المالي",
+  warehouse_employee: "مسؤول تسجيل البيانات أو المدخلات",
+  production_employee: "مسؤول متابعة تشغيل الخيوط",
+  quality_employee: "مدير المراجعة",
 };
 
 export default function DemoHomePage() {
-  const ownerScreens = SCREENS.filter((s) => s.groupAr === "مالك النظام");
-  const workerScreens = SCREENS.filter((s) => s.groupAr === "العامل");
+  const ownerScreens = SCREENS.filter((s) => s.groupAr === "القيادة والإدارة");
+  const workerScreens = SCREENS.filter((s) => s.groupAr === "مسؤولو تسجيل البيانات والإدخال");
 
   return (
     <DemoShell
@@ -66,7 +76,7 @@ export default function DemoHomePage() {
 
       {/* Role switcher (presentation aid only — NOT authentication) */}
       <section className="mb-6">
-        <h2 className="text-section-title text-foreground mb-3">دخول سريع حسب الدور</h2>
+        <h2 className="text-section-title text-foreground mb-3">الدخول السريع حسب الدور</h2>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
           {DEMO_USERS.map((u) => (
             <Link
@@ -90,7 +100,7 @@ export default function DemoHomePage() {
 
       {/* Owner screens */}
       <section className="mb-6">
-        <h2 className="text-section-title text-foreground mb-3">شاشات المالك والمحاسب</h2>
+        <h2 className="text-section-title text-foreground mb-3">شاشات القيادة والإدارة</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {ownerScreens.map((s) => (
             <Link
@@ -115,7 +125,7 @@ export default function DemoHomePage() {
 
       {/* Worker screens */}
       <section className="mb-6">
-        <h2 className="text-section-title text-foreground mb-3">شاشات العامل</h2>
+        <h2 className="text-section-title text-foreground mb-3">شاشات مسؤولي تسجيل البيانات والإدخال</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {workerScreens.map((s) => (
             <Link

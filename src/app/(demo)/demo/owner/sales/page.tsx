@@ -68,7 +68,7 @@ export default function DemoSalesPage() {
 
   return (
     <DemoShell
-      userName="مالك النظام"
+      userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "العمليات" }, { label: "نظرة عامة على المبيعات" }]}
     >
       <DemoPageHeader
