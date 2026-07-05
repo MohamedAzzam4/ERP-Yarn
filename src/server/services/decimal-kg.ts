@@ -91,6 +91,23 @@ export function isPositiveKg(value: string): boolean {
 }
 
 /**
+ * Check if a string is a valid NUMERIC(18,3) kg value before passing it
+ * to BigInt-based arithmetic (which would throw SyntaxError on non-numeric
+ * input).
+ *
+ * Accepts optional leading sign, integer part, optional fractional part
+ * (up to 3 digits). Examples:
+ *   "1000" ✅, "1000.000" ✅, "1000.5" ✅, "0.001" ✅
+ *   "abc" ❌, "" ❌, "1.2.3" ❌, "1e3" ❌
+ */
+export function isValidDecimalKg(value: string | null | undefined): boolean {
+  if (!value || value.trim() === "") return false;
+  const trimmed = value.trim();
+  // Optional sign, digits, optional decimal point with up to 3 digits.
+  return /^-?\d+(\.\d{1,3})?$/.test(trimmed);
+}
+
+/**
  * Check if a kg value is zero (== 0).
  */
 export function isZeroKg(value: string): boolean {

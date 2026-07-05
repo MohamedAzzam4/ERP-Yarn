@@ -149,6 +149,14 @@ export const rawMaterialBatches = pgTable(
       scale: 2,
     }),
     receivedDate: date("received_date").notNull(),
+    // WP-02-04: Draft-stage operational fields recorded by the worker.
+    // These are nullable because the worker may save a partial draft.
+    // storage_location_id is the intended to_location for the future stock
+    // movement (posted at WP-02-05 approval time). It is NOT a stock
+    // assignment — no inventory_balances row is created until approval.
+    storageLocationId: uuid("storage_location_id"),
+    purchaseOrderRef: text("purchase_order_ref"),
+    notes: text("notes"),
     // Approved business document baseline
     status: text("status").notNull().default("draft"),
     approvalStatus: approvalStatus("approval_status").notNull().default("draft"),
@@ -175,6 +183,10 @@ export const rawMaterialBatches = pgTable(
     index("raw_material_batches_tenant_status_idx").on(
       t.tenantId,
       t.approvalStatus,
+    ),
+    index("raw_material_batches_tenant_storage_location_idx").on(
+      t.tenantId,
+      t.storageLocationId,
     ),
     // Weights: NUMERIC(18,3), net required, gross >= net when both exist.
     check("raw_material_batches_net_weight_check", sql`net_weight_kg >= 0`),

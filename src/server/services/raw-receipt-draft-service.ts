@@ -28,6 +28,7 @@ import {
 } from "@/server/security/guards";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import { appendAuditLog, type AuditTransactionHandle } from "./audit-service";
+import { isPositiveKg, normalizeKg, isValidDecimalKg } from "./decimal-kg";
 import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ export interface RawReceiptDraft {
   batchNo: string;
   supplierId: string | null;
   supplierReference: string | null;
+  fiberTypeId: string | null;
   fiberTypeAr: string | null;
   rawGradeAr: string | null;
   originCountry: string | null;
@@ -120,6 +122,7 @@ export interface NewDraftInput {
   batchNo: string;
   supplierId: string | null;
   supplierReference: string | null;
+  fiberTypeId: string | null;
   fiberTypeAr: string | null;
   rawGradeAr: string | null;
   originCountry: string | null;
@@ -138,6 +141,7 @@ export interface NewDraftInput {
 export interface UpdateDraftInput {
   supplierId?: string | null;
   supplierReference?: string | null;
+  fiberTypeId?: string | null;
   fiberTypeAr?: string | null;
   rawGradeAr?: string | null;
   originCountry?: string | null;
@@ -157,6 +161,7 @@ export interface CreateDraftInput {
   batchNo: string;
   supplierId?: string | null;
   supplierReference?: string | null;
+  fiberTypeId?: string | null;
   fiberTypeAr?: string | null;
   rawGradeAr?: string | null;
   originCountry?: string | null;
@@ -193,6 +198,10 @@ export interface SubmitDraftResult {
  * Any material change to these fields invalidates a pending approval.
  */
 export function computeSubjectHash(draft: RawReceiptDraft): string {
+  // Contract 03 §7.6: subject hash covers all approval-relevant operational
+  // facts. Excludes UI-only values (notes, storageLocationName, supplierReference).
+  // Includes purchaseOrderRef because it is a material reference identifier
+  // that binds the receipt to a procurement document.
   const fields = [
     draft.batchNo,
     draft.supplierId ?? "",
@@ -204,6 +213,7 @@ export function computeSubjectHash(draft: RawReceiptDraft): string {
     draft.fiberTypeAr ?? "",
     draft.rawGradeAr ?? "",
     draft.season ?? "",
+    draft.purchaseOrderRef ?? "",
   ];
   const json = JSON.stringify(fields);
   return createHash("sha256").update(json).digest("hex");
@@ -237,15 +247,30 @@ export class RawReceiptDraftService {
     requirePermission(effective, "inventory.receive.create");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
-    // Validate operational facts
+    // Validate operational facts (NUMERIC(18,3)-compatible via decimal-kg).
     if (!input.batchNo || input.batchNo.trim() === "") {
       throw new ValidationFailedDraftError("Batch number is required.");
     }
-    if (!input.netWeightKg || parseFloat(input.netWeightKg) <= 0) {
-      throw new ValidationFailedDraftError("Net weight must be positive.");
+    if (!input.netWeightKg || !isValidDecimalKg(input.netWeightKg)) {
+      throw new ValidationFailedDraftError(
+        `Net weight must be a valid NUMERIC(18,3) value, got '${input.netWeightKg}'.`,
+      );
     }
-    if (!input.receivedDate) {
+    if (!isPositiveKg(input.netWeightKg)) {
+      throw new ValidationFailedDraftError(
+        `Net weight must be positive (NUMERIC(18,3)), got '${input.netWeightKg}'.`,
+      );
+    }
+    if (!input.receivedDate || input.receivedDate.trim() === "") {
       throw new ValidationFailedDraftError("Received date is required.");
+    }
+    // Optional gross weight, if provided, must be a valid decimal >= 0.
+    if (input.grossWeightKg != null && input.grossWeightKg.trim() !== "") {
+      if (!isValidDecimalKg(input.grossWeightKg)) {
+        throw new ValidationFailedDraftError(
+          `Gross weight must be a valid NUMERIC(18,3) value, got '${input.grossWeightKg}'.`,
+        );
+      }
     }
 
     // Check for duplicate batch number within tenant
@@ -259,13 +284,16 @@ export class RawReceiptDraftService {
       batchNo: input.batchNo,
       supplierId: input.supplierId ?? null,
       supplierReference: input.supplierReference ?? null,
+      fiberTypeId: input.fiberTypeId ?? null,
       fiberTypeAr: input.fiberTypeAr ?? null,
       rawGradeAr: input.rawGradeAr ?? null,
       originCountry: input.originCountry ?? null,
       season: input.season ?? null,
       balesCount: input.balesCount ?? null,
-      grossWeightKg: input.grossWeightKg ?? null,
-      netWeightKg: input.netWeightKg,
+      grossWeightKg: input.grossWeightKg && input.grossWeightKg.trim() !== ""
+        ? normalizeKg(input.grossWeightKg)
+        : null,
+      netWeightKg: normalizeKg(input.netWeightKg),
       receivedDate: input.receivedDate,
       storageLocationId: input.storageLocationId ?? null,
       storageLocationName: input.storageLocationName ?? null,
@@ -316,10 +344,31 @@ export class RawReceiptDraftService {
       throw new DraftAlreadySubmittedError(draftId);
     }
 
-    const updated = await this.deps.repository.updateDraft(user.tenantId, draftId, {
-      ...input,
-      updatedBy: user.userId,
-    });
+    // Validate + normalize kg fields if provided (NUMERIC(18,3)-compatible).
+    const normalizedPatch: UpdateDraftInput = { ...input, updatedBy: user.userId };
+    if (input.netWeightKg != null) {
+      if (!isValidDecimalKg(input.netWeightKg)) {
+        throw new ValidationFailedDraftError(
+          `Net weight must be a valid NUMERIC(18,3) value, got '${input.netWeightKg}'.`,
+        );
+      }
+      if (!isPositiveKg(input.netWeightKg)) {
+        throw new ValidationFailedDraftError(
+          `Net weight must be positive (NUMERIC(18,3)), got '${input.netWeightKg}'.`,
+        );
+      }
+      normalizedPatch.netWeightKg = normalizeKg(input.netWeightKg);
+    }
+    if (input.grossWeightKg != null && input.grossWeightKg.trim() !== "") {
+      if (!isValidDecimalKg(input.grossWeightKg)) {
+        throw new ValidationFailedDraftError(
+          `Gross weight must be a valid NUMERIC(18,3) value, got '${input.grossWeightKg}'.`,
+        );
+      }
+      normalizedPatch.grossWeightKg = normalizeKg(input.grossWeightKg);
+    }
+
+    const updated = await this.deps.repository.updateDraft(user.tenantId, draftId, normalizedPatch);
 
     if (!updated) {
       throw new DraftNotFoundError(draftId);

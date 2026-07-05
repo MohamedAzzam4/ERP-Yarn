@@ -26,6 +26,7 @@ export class InMemoryRawReceiptDraftRepository implements RawReceiptDraftReposit
       batchNo: row.batchNo,
       supplierId: row.supplierId,
       supplierReference: row.supplierReference,
+      fiberTypeId: row.fiberTypeId,
       fiberTypeAr: row.fiberTypeAr,
       rawGradeAr: row.rawGradeAr,
       originCountry: row.originCountry,
