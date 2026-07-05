@@ -60,6 +60,10 @@ export interface RawReceiptDraft {
   approvalStatus: string;
   subjectVersion: number;
   subjectHash: string | null;
+  /** The inventory_items.id (canonical stock identity). WP-02-05 uses this
+   * to post stock via InventoryLedgerService.postRawReceipt. May be undefined
+   * for in-memory test drafts (tests mock the ledger call). */
+  itemId?: string;
   createdBy: string | null;
   createdAt: Date | null;
   updatedBy: string | null;

@@ -234,6 +234,7 @@ export class RawReceiptDraftDbRepository implements RawReceiptDraftRepository {
       approvalStatus: batch.approvalStatus as string,
       subjectVersion: subjectVersionOverride ?? 1,
       subjectHash: subjectHashOverride ?? null,
+      itemId: batch.itemId, // canonical stock identity for WP-02-05 posting
       createdBy: batch.createdBy ?? null,
       createdAt: batch.createdAt ?? null,
       updatedBy: batch.updatedBy ?? null,
