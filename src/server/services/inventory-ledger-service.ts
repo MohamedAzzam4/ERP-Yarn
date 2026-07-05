@@ -185,7 +185,7 @@ export interface NewBalanceInput {
   itemId: string;
   locationId: string;
   onHandQtyKg: string;
-  lastMovementId: string;
+  lastMovementId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,14 +384,16 @@ export class InventoryLedgerService {
     // This prevents the "missing balance row" race without advisory locks.
     let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
     if (!balance) {
-      // Create a new balance row with zero on-hand
+      // Create a new balance row with zero on-hand.
+      // lastMovementId is null because the movement hasn't been inserted yet.
+      // It will be updated after the movement insert (step 8).
       try {
         balance = await this.deps.ledger.insertBalance({
           tenantId,
           itemId: input.itemId,
           locationId: input.toLocationId,
           onHandQtyKg: "0.000",
-          lastMovementId: "00000000-0000-0000-0000-000000000000", // placeholder; updated after movement insert
+          lastMovementId: null,
         });
       } catch {
         // Concurrent insert won — retry findBalanceForUpdate to pick up
