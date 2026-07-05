@@ -102,10 +102,16 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
     payableEntryId: string | null,
     payableDeferred: boolean,
   ): Promise<RawReceiptApprovalRequest | null> {
-    // Note: movementId, payableEntryId, payableDeferred are stored in the
-    // submittedChildVersionSummary JSONB column (or a dedicated column if
-    // we add one). For WP-02-05, we store them in the JSONB summary to
-    // avoid a schema migration. The decisionNotes goes in the dedicated column.
+    // Conditional update: only succeed if current state is still 'active'.
+    // This prevents concurrent double-approval: if two transactions both
+    // pass the service-level state check, only the first markDecided
+    // succeeds (transitions active→decided). The second returns null
+    // (state is no longer 'active'), and the service throws
+    // ApprovalAlreadyDecidedError.
+    //
+    // This is the critical concurrency guard for the approval flow.
+    // Combined with the outer db.transaction(), it ensures exactly one
+    // approval can decide a given approval_request.
     const [result] = await this.db
       .update(approvalRequests)
       .set({
@@ -121,7 +127,40 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
         updatedAt: new Date(),
         updatedBy: decidedBy,
       })
-      .where(and(eq(approvalRequests.tenantId, tenantId), eq(approvalRequests.id, id)))
+      .where(and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.id, id),
+        eq(approvalRequests.state, "active"), // CRITICAL: conditional on active state
+      ))
+      .returning();
+
+    return result ? this.mapToApproval(result) : null;
+  }
+
+  async updatePayableInfo(
+    tenantId: string,
+    id: string,
+    payableEntryId: string,
+  ): Promise<RawReceiptApprovalRequest | null> {
+    // Conditional on state='decided' — only updates an already-decided approval.
+    // Updates the JSONB summary to set payableEntryId + payableDeferred=false.
+    // This is the late-price confirmation path: the approval was already
+    // decided (stock posted, payable deferred), and now we're recording the
+    // posted payable entry ID.
+    const [result] = await this.db
+      .update(approvalRequests)
+      .set({
+        submittedChildVersionSummary: {
+          payableEntryId,
+          payableDeferred: false,
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.id, id),
+        eq(approvalRequests.state, "decided"),
+      ))
       .returning();
 
     return result ? this.mapToApproval(result) : null;

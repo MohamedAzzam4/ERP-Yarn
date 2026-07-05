@@ -178,6 +178,18 @@ export interface RawReceiptApprovalRepository {
     payableEntryId: string | null,
     payableDeferred: boolean,
   ): Promise<RawReceiptApprovalRequest | null>;
+  /**
+   * Update the payable info on an already-decided approval (late-price path).
+   * Called by confirmLatePrice after posting the deferred payable.
+   * Does NOT change state (already 'decided') — only updates the
+   * submittedChildVersionSummary JSONB with payableEntryId + payableDeferred=false.
+   * Conditional on state='decided' to prevent updating a non-decided approval.
+   */
+  updatePayableInfo(
+    tenantId: string,
+    id: string,
+    payableEntryId: string,
+  ): Promise<RawReceiptApprovalRequest | null>;
 }
 
 export interface NewApprovalRequestInput {
@@ -678,10 +690,12 @@ export class RawReceiptApprovalService {
       );
 
       if (!decided) {
-        throw new RawReceiptApprovalError(
-          "INTERNAL_TRANSACTION_FAILED",
-          "Approval request not found during markDecided.",
-        );
+        // markDecided returns null when the conditional WHERE state='active'
+        // didn't match — meaning another concurrent transaction already
+        // decided this approval. The DB transaction will roll back (stock
+        // movement + balance + account entry all rolled back). Throw
+        // ApprovalAlreadyDecidedError so the caller gets a clear conflict.
+        throw new ApprovalAlreadyDecidedError(approval.id, "decided (concurrent)");
       }
 
       return { stockResult, payableResult, payableEntryId };
@@ -933,14 +947,13 @@ export class RawReceiptApprovalService {
       const payableResult = await subledger.postSupplierPayable(user, effective, payableInput);
 
       // Update the approval row to record the payable entry (same transaction).
-      await approvalRepo.markDecided(
+      // Uses updatePayableInfo (not markDecided) because the approval is already
+      // in 'decided' state from the earlier approval. This only updates the
+      // payableEntryId + payableDeferred=false in the JSONB summary.
+      await approvalRepo.updatePayableInfo(
         user.tenantId,
         approval.id,
-        approval.decidedBy ?? user.userId,
-        approval.decisionNotes,
-        approval.movementId,
         payableResult.entryId,
-        false, // no longer deferred
       );
 
       return payableResult;

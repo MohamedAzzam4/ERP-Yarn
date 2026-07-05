@@ -89,6 +89,9 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
     const key = `${tenantId}:${id}`;
     const existing = this.approvals.get(key);
     if (!existing) return null;
+    // Conditional: only succeed if current state is 'active'.
+    // Matches the DB-backed repository's conditional WHERE state = 'active'.
+    if (existing.state !== "active") return null;
     const updated: RawReceiptApprovalRequest = {
       ...existing,
       state: "decided",
@@ -100,6 +103,26 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
       payableDeferred,
       updatedAt: NOW(),
       updatedBy: decidedBy,
+    };
+    this.approvals.set(key, updated);
+    return updated;
+  }
+
+  async updatePayableInfo(
+    tenantId: string,
+    id: string,
+    payableEntryId: string,
+  ): Promise<RawReceiptApprovalRequest | null> {
+    const key = `${tenantId}:${id}`;
+    const existing = this.approvals.get(key);
+    if (!existing) return null;
+    // Conditional: only succeed if current state is 'decided'.
+    if (existing.state !== "decided") return null;
+    const updated: RawReceiptApprovalRequest = {
+      ...existing,
+      payableEntryId,
+      payableDeferred: false,
+      updatedAt: NOW(),
     };
     this.approvals.set(key, updated);
     return updated;

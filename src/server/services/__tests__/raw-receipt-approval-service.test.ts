@@ -862,7 +862,7 @@ describe("WP-02-05 RawReceiptApprovalService — atomicity/rollback (V11)", () =
     expect(txWorkExecuted).toBe(true);
   });
 
-  it("rolls back late-price confirmation when approval markDecided fails", async () => {
+  it("rolls back late-price confirmation when approval updatePayableInfo fails", async () => {
     const base = makeApprovalDeps();
     const requester = TEST_USERS.warehouse;
     const draft = await createSubmittedDraft(base.draftService, requester);
@@ -881,15 +881,15 @@ describe("WP-02-05 RawReceiptApprovalService — atomicity/rollback (V11)", () =
 
     const entryCallsBefore = base.subledgerHandle.insertEntryCalls.length;
 
-    // Mock approval repo that fails on markDecided (after payable posts).
-    // We wrap the real repo and only override markDecided.
+    // Mock approval repo that fails on updatePayableInfo (after payable posts).
     const realRepo = base.approvalRepository;
     const failingApprovalRepo: RawReceiptApprovalRepository = {
       insertApprovalRequest: (row: any) => realRepo.insertApprovalRequest(row),
       findActiveApprovalByEntity: (t: string, et: string, eid: string, rt: string) => realRepo.findActiveApprovalByEntity(t, et, eid, rt),
       findApprovalById: (t: string, id: string) => realRepo.findApprovalById(t, id),
       listPendingApprovals: (t: string, et: string) => realRepo.listPendingApprovals(t, et),
-      markDecided: vi.fn().mockRejectedValue(new Error("SIMULATED_MARK_DECIDED_FAILURE")),
+      markDecided: (t: string, id: string, db: string, dn: string | null, mid: string | null, peid: string | null, pd: boolean) => realRepo.markDecided(t, id, db, dn, mid, peid, pd),
+      updatePayableInfo: vi.fn().mockRejectedValue(new Error("SIMULATED_UPDATE_PAYABLE_INFO_FAILURE")),
     };
 
     const mockTxRunner = async <T,>(work: (tx: unknown) => Promise<T>): Promise<T> => {
@@ -918,14 +918,14 @@ describe("WP-02-05 RawReceiptApprovalService — atomicity/rollback (V11)", () =
       },
     });
 
-    // Attempt late-price confirmation — markDecided will throw → rollback.
+    // Attempt late-price confirmation — updatePayableInfo will throw → rollback.
     await expect(
       serviceWithTxFailure.confirmLatePrice(accountant, accountantEffective, {
         approvalRequestId: approval.id,
         pricePerTon: "90.00",
         idempotencyKey: "v11-late-price-rollback",
       }),
-    ).rejects.toThrow("SIMULATED_MARK_DECIDED_FAILURE");
+    ).rejects.toThrow("SIMULATED_UPDATE_PAYABLE_INFO_FAILURE");
 
     // Verify NO account entry persisted (rolled back).
     expect(base.subledgerHandle.insertEntryCalls.length).toBe(entryCallsBefore);
