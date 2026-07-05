@@ -96,6 +96,27 @@ export class ValidationFailedSubledgerError extends SubledgerError {
 }
 
 // ---------------------------------------------------------------------------
+// Source lock key helper (Contract 07 §9: deterministic source uniqueness).
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a deterministic lock key for a source document.
+ *
+ * Used by the advisory lock to prevent concurrent postings for the same
+ * source. The key is a composite string that can be hashed into two int32
+ * values for pg_advisory_xact_lock(bigint).
+ *
+ * Format: `${tenantId}|${sourceDocumentType}|${sourceDocumentId}`
+ */
+export function sourceLockKey(
+  tenantId: string,
+  sourceDocumentType: string,
+  sourceDocumentId: string,
+): string {
+  return `${tenantId}|${sourceDocumentType}|${sourceDocumentId}`;
+}
+
+// ---------------------------------------------------------------------------
 // Transaction handle — abstract persistence interface.
 // ---------------------------------------------------------------------------
 
@@ -114,6 +135,21 @@ export interface SubledgerTransactionHandle {
   findEntryById(tenantId: string, id: string): Promise<AccountEntry | null>;
   /** List all entries for an account (for derived balance). */
   listEntriesForAccount(tenantId: string, accountId: string): Promise<AccountEntry[]>;
+  /**
+   * Acquire a transaction-scoped advisory lock on a source document.
+   *
+   * Contract 07 §9: "duplicate source/idempotency cannot create a second
+   * effective entry."
+   *
+   * This lock prevents two concurrent transactions from posting entries for
+   * the same source document. The lock MUST be acquired BEFORE
+   * findEntryBySource and insertEntry. It is transaction-scoped
+   * (pg_advisory_xact_lock in PostgreSQL) — automatically released on
+   * commit or rollback.
+   *
+   * In-memory test stores implement this as a no-op (single-threaded).
+   */
+  lockSourceEntry(tenantId: string, sourceDocumentType: string, sourceDocumentId: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +344,18 @@ export class SubledgerService {
 
     // claim.action === "execute"
 
-    // Step 4: Duplicate source guard (service-layer, no DB unique constraint)
+    // Step 4: Acquire transaction-scoped advisory lock on source document.
+    // This prevents two concurrent transactions from posting entries for the
+    // same source. The lock is held until the transaction commits or rolls
+    // back (pg_advisory_xact_lock in PostgreSQL). MUST be acquired BEFORE
+    // findEntryBySource to prevent the find-then-insert race.
+    await this.deps.subledger.lockSourceEntry(
+      tenantId,
+      input.sourceDocumentType,
+      input.sourceDocumentId,
+    );
+
+    // Step 4b: Duplicate source guard (now safe under the advisory lock)
     const existingBySource = await this.deps.subledger.findEntryBySource(
       tenantId,
       input.sourceDocumentType,

@@ -146,6 +146,9 @@ export class TransactionalSubledgerTestStore {
     listEntriesForAccount: async (tenantId, accountId) => {
       return [...this.activeEntries.values()].filter(e => e.tenantId === tenantId && e.accountId === accountId);
     },
+    lockSourceEntry: async (_tenantId, _sourceDocumentType, _sourceDocumentId) => {
+      // No-op in single-threaded test store
+    },
   };
 
   audit: AuditTransactionHandle = {

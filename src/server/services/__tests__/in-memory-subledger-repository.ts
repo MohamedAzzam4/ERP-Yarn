@@ -101,6 +101,14 @@ export class InMemorySubledgerRepository implements SubledgerTransactionHandle {
     );
   }
 
+  /** No-op in single-threaded in-memory store. Tracks calls for tests. */
+  async lockSourceEntry(_tenantId: string, _sourceDocumentType: string, _sourceDocumentId: string): Promise<void> {
+    this.lockCalls.push(`${_tenantId}|${_sourceDocumentType}|${_sourceDocumentId}`);
+  }
+
+  /** Test helper: list of lockSourceEntry call keys (in order). */
+  lockCalls: string[] = [];
+
   // Side map for idempotency key → entry ID (test-only)
   private idempotencyKeyMap = new Map<string, string>();
 

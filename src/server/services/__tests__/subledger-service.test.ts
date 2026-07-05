@@ -32,6 +32,7 @@ import {
   IdempotencyConflictSubledgerError,
   ValidationFailedSubledgerError,
   type PostSupplierPayableInput,
+  type SubledgerTransactionHandle,
 } from "../subledger-service";
 import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
 import { TransactionalSubledgerTestStore, withSubledgerTransaction } from "./transactional-subledger-test-store";
@@ -593,5 +594,107 @@ describe("WP-02-03 correction — additional rollback proofs", () => {
     expect(insertCallCount).toBe(1); // first call threw
     expect(result.action).toBe("posted");
     expect(result.amountSigned).toBe("-80.00");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FINAL SOURCE-CONCURRENCY PASS: Advisory lock tests.
+// ---------------------------------------------------------------------------
+
+import { sourceLockKey } from "../subledger-service";
+
+describe("WP-02-03 source concurrency — advisory lock", () => {
+  it("sourceLockKey produces a deterministic composite key", () => {
+    const key1 = sourceLockKey("tenant-1", "raw_material_batch", "doc-001");
+    const key2 = sourceLockKey("tenant-1", "raw_material_batch", "doc-001");
+    expect(key1).toBe("tenant-1|raw_material_batch|doc-001");
+    expect(key1).toBe(key2); // deterministic
+  });
+
+  it("sourceLockKey differs for different sources", () => {
+    const k1 = sourceLockKey("t1", "raw_material_batch", "doc-001");
+    const k2 = sourceLockKey("t1", "raw_material_batch", "doc-002");
+    expect(k1).not.toBe(k2);
+  });
+
+  it("sourceLockKey differs for different tenants", () => {
+    const k1 = sourceLockKey("t1", "raw_material_batch", "doc-001");
+    const k2 = sourceLockKey("t2", "raw_material_batch", "doc-001");
+    expect(k1).not.toBe(k2);
+  });
+
+  it("service calls lockSourceEntry BEFORE findEntryBySource", async () => {
+    const { subledger, service, user, effective } = makeOwnerDeps();
+    const callOrder: string[] = [];
+
+    // Wrap to track call order
+    const original = subledger;
+    const tracked: SubledgerTransactionHandle = {
+      lockSourceEntry: async (tenantId, sourceDocumentType, sourceDocumentId) => {
+        callOrder.push("lockSourceEntry");
+        return original.lockSourceEntry(tenantId, sourceDocumentType, sourceDocumentId);
+      },
+      findEntryBySource: async (tenantId, sourceDocumentType, sourceDocumentId) => {
+        callOrder.push("findEntryBySource");
+        return original.findEntryBySource(tenantId, sourceDocumentType, sourceDocumentId);
+      },
+      insertEntry: async (row) => {
+        callOrder.push("insertEntry");
+        return original.insertEntry(row);
+      },
+      findAccount: original.findAccount.bind(original),
+      insertAccount: original.insertAccount.bind(original),
+      findEntryByIdempotencyKey: original.findEntryByIdempotencyKey.bind(original),
+      findEntryById: original.findEntryById.bind(original),
+      listEntriesForAccount: original.listEntriesForAccount.bind(original),
+    };
+
+    const trackedService = new SubledgerService({
+      subledger: tracked,
+      audit: new InProcessAuditStore(),
+      idempotency: new InProcessIdempotencyStore(),
+      documentSequence: new InProcessDocumentSequenceStore() as any,
+    });
+
+    await trackedService.postSupplierPayable(user, effective, makePayableInput());
+
+    // PROOF: lock is acquired BEFORE findEntryBySource
+    const lockIdx = callOrder.indexOf("lockSourceEntry");
+    const findIdx = callOrder.indexOf("findEntryBySource");
+    const insertIdx = callOrder.indexOf("insertEntry");
+
+    expect(lockIdx).toBeGreaterThanOrEqual(0);
+    expect(findIdx).toBeGreaterThan(lockIdx);
+    expect(insertIdx).toBeGreaterThan(findIdx);
+  });
+
+  it("in-memory repo tracks lockSourceEntry calls", async () => {
+    const { subledger, service, user, effective } = makeOwnerDeps();
+    await service.postSupplierPayable(user, effective, makePayableInput());
+
+    // PROOF: lockSourceEntry was called exactly once
+    expect(subledger.lockCalls).toHaveLength(1);
+    expect(subledger.lockCalls[0]).toContain("raw_material_batch");
+    expect(subledger.lockCalls[0]).toContain(TEST_SOURCE_DOC_ID_1);
+  });
+
+  it("duplicate source with different idempotency key is rejected (under lock)", async () => {
+    const { service, user, effective } = makeOwnerDeps();
+    await service.postSupplierPayable(user, effective, makePayableInput({ idempotencyKey: "k1" }));
+
+    await expect(
+      service.postSupplierPayable(user, effective, makePayableInput({ idempotencyKey: "k2" })),
+    ).rejects.toThrow(DuplicateSourceEntryError);
+  });
+
+  it("account get-or-create still works after adding lockSourceEntry", async () => {
+    const { service, user, effective } = makeOwnerDeps();
+    const r1 = await service.postSupplierPayable(user, effective, makePayableInput({ idempotencyKey: "k1", sourceDocumentId: "s1" }));
+    const r2 = await service.postSupplierPayable(user, effective, makePayableInput({ idempotencyKey: "k2", sourceDocumentId: "s2", netAcceptedKg: "500.000", pricePerTon: "100.00" }));
+
+    // Same account reused (get-or-create works)
+    expect(r1.accountId).toBe(r2.accountId);
+    // Balance accumulates
+    expect(r2.derivedBalance).toBe("-130.00");
   });
 });

@@ -16,16 +16,17 @@
  *   account_entries has a non-unique index on (tenant_id, source_document_type,
  *   source_document_id). Source uniqueness is enforced at the service layer
  *   via findEntryBySource BEFORE insertEntry. The service-layer check runs
- *   inside the transaction (after account FOR UPDATE lock), so under READ
- *   COMMITTED isolation the check is safe: any prior committed entry is
- *   visible. Defense-in-depth: the unique (tenant_id, entry_no) constraint
- *   prevents duplicate entry numbers; the idempotency unique constraint
- *   prevents duplicate idempotency keys.
+ *   inside the transaction under a transaction-scoped advisory lock
+ *   (pg_advisory_xact_lock) on the source document, preventing concurrent
+ *   postings for the same source. Defense-in-depth: the unique
+ *   (tenant_id, entry_no) constraint prevents duplicate entry numbers;
+ *   the idempotency unique constraint prevents duplicate idempotency keys.
  */
 import "server-only";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { accounts, accountEntries } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
+import { sourceLockKey } from "./subledger-service";
 import type {
   SubledgerTransactionHandle,
   NewAccountInput,
@@ -140,6 +141,27 @@ export class SubledgerDbRepository implements SubledgerTransactionHandle {
       .select()
       .from(accountEntries)
       .where(and(eq(accountEntries.tenantId, tenantId), eq(accountEntries.accountId, accountId)));
+  }
+
+  /**
+   * Acquire a transaction-scoped advisory lock on a source document.
+   *
+   * Uses pg_advisory_xact_lock(hash), which is automatically released when
+   * the transaction commits or rolls back. The hash is derived from the
+   * deterministic sourceLockKey string.
+   *
+   * This prevents two concurrent transactions from both passing the
+   * findEntryBySource check and inserting duplicate entries for the same
+   * source document.
+   *
+   * The caller MUST be inside a db.transaction() for the lock to be
+   * transaction-scoped.
+   */
+  async lockSourceEntry(tenantId: string, sourceDocumentType: string, sourceDocumentId: string): Promise<void> {
+    const key = sourceLockKey(tenantId, sourceDocumentType, sourceDocumentId);
+    // Hash the string key into a bigint for pg_advisory_xact_lock.
+    // Use PostgreSQL's hashtext function for a stable hash.
+    await this.db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`);
   }
 }
 
