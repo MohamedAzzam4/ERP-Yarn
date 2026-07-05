@@ -431,6 +431,14 @@ export class SubledgerService {
    *
    * Contract 07 §7: "One tenant-scoped account per owner/currency."
    * Unique (tenant_id, owner_type, owner_id, currency).
+   *
+   * Concurrency handling (mirrors InventoryLedgerService balance pattern):
+   *   1. findAccount → returns null if no row exists.
+   *   2. insertAccount with ON CONFLICT DO NOTHING — if a concurrent
+   *      transaction already created the account, this throws
+   *      AccountConcurrentInsertError (in DB-backed repo) or returns
+   *      null (in in-memory repo).
+   *   3. Retry findAccount to pick up the row created by the winner.
    */
   private async getOrCreateAccount(
     user: ErpUserContext,
@@ -444,12 +452,25 @@ export class SubledgerService {
       return existing;
     }
 
-    return this.deps.subledger.insertAccount({
-      tenantId: user.tenantId,
-      ownerType,
-      ownerId,
-      currency,
-      createdBy: user.userId,
-    });
+    try {
+      return await this.deps.subledger.insertAccount({
+        tenantId: user.tenantId,
+        ownerType,
+        ownerId,
+        currency,
+        createdBy: user.userId,
+      });
+    } catch {
+      // Concurrent insert won — retry findAccount to pick up the existing row.
+      const retried = await this.deps.subledger.findAccount(user.tenantId, ownerType, ownerId, currency);
+      if (!retried) {
+        throw new SubledgerError(
+          "INTERNAL_TRANSACTION_FAILED",
+          "Account not found after concurrent-insert retry.",
+        );
+      }
+      requireTenantMatch(user, retried.tenantId);
+      return retried;
+    }
   }
 }
