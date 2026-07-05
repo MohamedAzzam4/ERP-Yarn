@@ -245,6 +245,41 @@ export interface ConfirmLatePriceResult {
 // Service deps — composes draft repo + inventory + subledger + audit + idempotency.
 // ---------------------------------------------------------------------------
 
+/**
+ * A transaction runner that wraps work in a single DB transaction.
+ *
+ * When provided, `approveRawReceipt` and `confirmLatePrice` wrap ALL DB writes
+ * (stock movements, inventory balances, account entries, approval_requests,
+ * raw_material_batches status) in this transaction. If any write fails, the
+ * entire transaction rolls back — no partial effects.
+ *
+ * The `work` callback receives a transaction-scoped `tx` object that has the
+ * same type as the base `db`. The factory functions
+ * (`createTxScopedInventoryLedger`, `createTxScopedSubledger`,
+ * `createTxScopedApprovalRepo`, `createTxScopedDraftRepo`) use this `tx` to
+ * construct transaction-scoped repositories + services.
+ *
+ * When NOT provided (unit tests with in-memory repos), the services run
+ * without a DB transaction boundary — all repos are in-memory and no partial
+ * DB state can persist.
+ */
+export type TransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+/**
+ * Factory functions for creating transaction-scoped services/repos.
+ * These are called inside the transaction runner with the `tx` object.
+ */
+export interface TransactionScopedFactories {
+  /** Create an InventoryLedgerService that uses the transaction-scoped `tx`. */
+  createInventoryLedger: (tx: unknown) => InventoryLedgerService;
+  /** Create a SubledgerService that uses the transaction-scoped `tx`. */
+  createSubledger: (tx: unknown) => SubledgerService;
+  /** Create a RawReceiptApprovalRepository that uses the transaction-scoped `tx`. */
+  createApprovalRepository: (tx: unknown) => RawReceiptApprovalRepository;
+  /** Create a RawReceiptDraftRepository that uses the transaction-scoped `tx`. */
+  createDraftRepository: (tx: unknown) => RawReceiptDraftRepository;
+}
+
 export interface RawReceiptApprovalServiceDeps {
   approvalRepository: RawReceiptApprovalRepository;
   draftRepository: RawReceiptDraftRepository;
@@ -252,6 +287,17 @@ export interface RawReceiptApprovalServiceDeps {
   subledger: SubledgerService;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
+  /**
+   * Optional transaction runner. When provided, all DB writes in
+   * approveRawReceipt/confirmLatePrice are wrapped in a single DB transaction.
+   * When absent (unit tests), services run without a DB transaction boundary.
+   */
+  transactionRunner?: TransactionRunner;
+  /**
+   * Factory functions for creating transaction-scoped services/repos.
+   * Required when `transactionRunner` is provided.
+   */
+  txFactories?: TransactionScopedFactories;
 }
 
 // ---------------------------------------------------------------------------
@@ -543,18 +589,10 @@ export class RawReceiptApprovalService {
     // Determine if price is available for payable posting.
     const hasPrice = input.pricePerTon != null && input.pricePerTon.trim() !== "" && isPositiveMoney(input.pricePerTon);
     const hasSupplier = !!draft.supplierId;
-    // Payable can only be posted if BOTH price AND supplier are available.
-    // If either is missing, payable is deferred (late-price path or
-    // late-supplier-assignment path).
     const canPostPayable = hasPrice && hasSupplier;
     const payableDeferred = !canPostPayable;
 
-    // claim.action === "execute" — proceed with the posting.
-
-    // Step 9: post stock via InventoryLedgerService.postRawReceipt.
-    // draft.itemId is the inventory_items.id (canonical stock identity).
-    // draft.storageLocationId is the to_location.
-    // draft.netWeightKg is the quantity.
+    // Validate storage location before entering the transaction.
     if (!draft.storageLocationId) {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 422,
@@ -566,7 +604,7 @@ export class RawReceiptApprovalService {
       );
     }
 
-    const itemId = draft.itemId ?? draft.id; // fallback for in-memory tests
+    const itemId = draft.itemId ?? draft.id;
     const postStockInput: PostRawReceiptInput = {
       itemId,
       toLocationId: draft.storageLocationId,
@@ -578,49 +616,108 @@ export class RawReceiptApprovalService {
       notes: draft.notes ?? undefined,
     };
 
-    const stockResult: PostRawReceiptResult = await this.deps.inventoryLedger.postRawReceipt(
-      user,
-      effective,
-      postStockInput,
-    );
+    // =====================================================================
+    // ATOMIC POSTING TRANSACTION (Contract 06 §6, §17.1; DEC-015; WP-02-05)
+    // =====================================================================
+    // All DB writes (stock movement, inventory balance, account entry,
+    // approval_requests markDecided) MUST commit or roll back together.
+    // If transactionRunner is provided, we wrap all DB writes in a single
+    // db.transaction(). If any write fails, the entire transaction rolls
+    // back — no partial stock post, no partial payable, no decided approval.
+    //
+    // If transactionRunner is NOT provided (unit tests with in-memory repos),
+    // we run without a DB transaction boundary — in-memory repos don't
+    // persist partial state across processes.
+    // =====================================================================
 
-    // Step 9b: if price AND supplier available, post payable via SubledgerService.
-    let payableResult: PostSupplierPayableResult | null = null;
-    let payableEntryId: string | null = null;
-    if (canPostPayable && draft.supplierId) {
-      const payableInput: PostSupplierPayableInput = {
-        supplierId: draft.supplierId,
-        netAcceptedKg: draft.netWeightKg,
-        pricePerTon: input.pricePerTon!,
-        entryDate: draft.receivedDate,
-        sourceDocumentType: SOURCE_DOC_TYPE_RAW_MATERIAL_BATCH,
-        sourceDocumentId: draft.id,
-        idempotencyKey: `${input.idempotencyKey}:payable`,
-        notes: input.decisionNotes ?? undefined,
-      };
-      payableResult = await this.deps.subledger.postSupplierPayable(user, effective, payableInput);
-      payableEntryId = payableResult.entryId;
-    }
+    const executePosting = async (
+      txScoped: {
+        inventoryLedger: InventoryLedgerService;
+        subledger: SubledgerService;
+        approvalRepository: RawReceiptApprovalRepository;
+      } | null,
+    ): Promise<{ stockResult: PostRawReceiptResult; payableResult: PostSupplierPayableResult | null; payableEntryId: string | null }> => {
+      const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
+      const subledger = txScoped?.subledger ?? this.deps.subledger;
+      const approvalRepo = txScoped?.approvalRepository ?? this.deps.approvalRepository;
 
-    // Step 10: mark approval decided + audit.
-    const decided = await this.deps.approvalRepository.markDecided(
-      user.tenantId,
-      approval.id,
-      user.userId,
-      input.decisionNotes ?? null,
-      stockResult.movementId,
-      payableEntryId,
-      payableDeferred,
-    );
-
-    if (!decided) {
-      // Approval row vanished — should not happen.
-      throw new RawReceiptApprovalError(
-        "INTERNAL_TRANSACTION_FAILED",
-        "Approval request not found during markDecided.",
+      // Step 9: post stock via InventoryLedgerService.postRawReceipt.
+      const stockResult: PostRawReceiptResult = await invLedger.postRawReceipt(
+        user,
+        effective,
+        postStockInput,
       );
+
+      // Step 9b: if price AND supplier available, post payable via SubledgerService.
+      let payableResult: PostSupplierPayableResult | null = null;
+      let payableEntryId: string | null = null;
+      if (canPostPayable && draft.supplierId) {
+        const payableInput: PostSupplierPayableInput = {
+          supplierId: draft.supplierId,
+          netAcceptedKg: draft.netWeightKg,
+          pricePerTon: input.pricePerTon!,
+          entryDate: draft.receivedDate,
+          sourceDocumentType: SOURCE_DOC_TYPE_RAW_MATERIAL_BATCH,
+          sourceDocumentId: draft.id,
+          idempotencyKey: `${input.idempotencyKey}:payable`,
+          notes: input.decisionNotes ?? undefined,
+        };
+        payableResult = await subledger.postSupplierPayable(user, effective, payableInput);
+        payableEntryId = payableResult.entryId;
+      }
+
+      // Step 10: mark approval decided (still inside the transaction).
+      const decided = await approvalRepo.markDecided(
+        user.tenantId,
+        approval.id,
+        user.userId,
+        input.decisionNotes ?? null,
+        stockResult.movementId,
+        payableEntryId,
+        payableDeferred,
+      );
+
+      if (!decided) {
+        throw new RawReceiptApprovalError(
+          "INTERNAL_TRANSACTION_FAILED",
+          "Approval request not found during markDecided.",
+        );
+      }
+
+      return { stockResult, payableResult, payableEntryId };
+    };
+
+    let postingResult: { stockResult: PostRawReceiptResult; payableResult: PostSupplierPayableResult | null; payableEntryId: string | null };
+
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        // Wrap all DB writes in a single outer transaction.
+        postingResult = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txInvLedger = this.deps.txFactories!.createInventoryLedger(tx);
+          const txSubledger = this.deps.txFactories!.createSubledger(tx);
+          const txApprovalRepo = this.deps.txFactories!.createApprovalRepository(tx);
+          return executePosting({ inventoryLedger: txInvLedger, subledger: txSubledger, approvalRepository: txApprovalRepo });
+        });
+      } else {
+        // No transaction runner (unit tests with in-memory repos).
+        postingResult = await executePosting(null);
+      }
+    } catch (txError) {
+      // The DB transaction rolled back. Mark idempotency as failed and re-throw.
+      // No partial DB state persists — stock_movement, inventory_balance,
+      // account_entry, approval_requests are all rolled back.
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 500,
+        responseBody: { message: "Posting transaction failed and rolled back." },
+        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+      }, now);
+      throw txError;
     }
 
+    const { stockResult, payableResult, payableEntryId } = postingResult;
+
+    // Audit (in-process — does not participate in DB transaction, but records
+    // the outcome for observability).
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
       entityType: "approval_request",
       entityId: approval.id,
@@ -638,7 +735,7 @@ export class RawReceiptApprovalService {
       idempotencyKey: input.idempotencyKey,
     });
 
-    // Step 11: mark idempotency succeeded.
+    // Step 11: mark idempotency succeeded (DB transaction already committed).
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200,
       responseBody: {
@@ -816,18 +913,58 @@ export class RawReceiptApprovalService {
       notes: input.notes ?? undefined,
     };
 
-    const payableResult = await this.deps.subledger.postSupplierPayable(user, effective, payableInput);
+    // =====================================================================
+    // ATOMIC LATE-PRICE TRANSACTION (Contract 06 §17.1; DEC-015; WP-02-05)
+    // =====================================================================
+    // The account_entry posting + approval_requests update MUST commit or
+    // roll back together. If the subledger post fails, no account_entry is
+    // created and the approval row is not updated.
+    // =====================================================================
 
-    // Update the approval row to record the payable entry.
-    await this.deps.approvalRepository.markDecided(
-      user.tenantId,
-      approval.id,
-      approval.decidedBy ?? user.userId,
-      approval.decisionNotes,
-      approval.movementId,
-      payableResult.entryId,
-      false, // no longer deferred
-    );
+    const executeLatePricePosting = async (
+      txScoped: {
+        subledger: SubledgerService;
+        approvalRepository: RawReceiptApprovalRepository;
+      } | null,
+    ): Promise<PostSupplierPayableResult> => {
+      const subledger = txScoped?.subledger ?? this.deps.subledger;
+      const approvalRepo = txScoped?.approvalRepository ?? this.deps.approvalRepository;
+
+      const payableResult = await subledger.postSupplierPayable(user, effective, payableInput);
+
+      // Update the approval row to record the payable entry (same transaction).
+      await approvalRepo.markDecided(
+        user.tenantId,
+        approval.id,
+        approval.decidedBy ?? user.userId,
+        approval.decisionNotes,
+        approval.movementId,
+        payableResult.entryId,
+        false, // no longer deferred
+      );
+
+      return payableResult;
+    };
+
+    let payableResult: PostSupplierPayableResult;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        payableResult = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txSubledger = this.deps.txFactories!.createSubledger(tx);
+          const txApprovalRepo = this.deps.txFactories!.createApprovalRepository(tx);
+          return executeLatePricePosting({ subledger: txSubledger, approvalRepository: txApprovalRepo });
+        });
+      } else {
+        payableResult = await executeLatePricePosting(null);
+      }
+    } catch (txError) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 500,
+        responseBody: { message: "Late-price transaction failed and rolled back." },
+        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+      }, now);
+      throw txError;
+    }
 
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
       entityType: "approval_request",

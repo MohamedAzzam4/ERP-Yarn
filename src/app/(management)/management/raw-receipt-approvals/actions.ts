@@ -40,11 +40,13 @@ function getService() {
   if (!db) {
     throw new Error("Database not available. Raw receipt approval requires a live DB connection.");
   }
-  const approvalRepository = new RawReceiptApprovalDbRepository(db);
-  const draftRepository = new RawReceiptDraftDbRepository(db);
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+
+  // Base (non-transaction) repos for reads (findApprovalById, findDraftById, etc.)
+  const approvalRepository = new RawReceiptApprovalDbRepository(db);
+  const draftRepository = new RawReceiptDraftDbRepository(db);
   const inventoryLedger = new InventoryLedgerService({
     ledger: new InventoryLedgerDbRepository(db),
     audit,
@@ -57,6 +59,36 @@ function getService() {
     idempotency,
     documentSequence,
   });
+
+  // Transaction runner: wraps all DB writes in a single db.transaction().
+  // The `tx` object is passed to the factory functions to create
+  // transaction-scoped repos + services.
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (db as any).transaction(async (tx: any) => {
+      return await work(tx);
+    });
+  };
+
+  // Factories for creating transaction-scoped services/repos.
+  // These construct NEW repo instances that use `tx` instead of `db`,
+  // ensuring all writes go through the same transaction.
+  const txFactories = {
+    createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit,
+      idempotency,
+      documentSequence,
+    }),
+    createSubledger: (tx: unknown) => new SubledgerService({
+      subledger: new SubledgerDbRepository(tx as any),
+      audit,
+      idempotency,
+      documentSequence,
+    }),
+    createApprovalRepository: (tx: unknown) => new RawReceiptApprovalDbRepository(tx as any),
+    createDraftRepository: (tx: unknown) => new RawReceiptDraftDbRepository(tx as any),
+  };
+
   return new RawReceiptApprovalService({
     approvalRepository,
     draftRepository,
@@ -64,6 +96,8 @@ function getService() {
     subledger,
     audit,
     idempotency,
+    transactionRunner,
+    txFactories,
   });
 }
 

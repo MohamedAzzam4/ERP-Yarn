@@ -45,6 +45,7 @@ import {
   type DocumentSequenceTransactionHandle,
 } from "./document-sequence-service";
 import { addKg, compareKg, isPositiveKg, normalizeKg } from "./decimal-kg";
+import { BalanceConcurrentInsertError } from "./inventory-ledger-db-repository";
 import type {
   StockMovement,
   InventoryBalance,
@@ -395,17 +396,26 @@ export class InventoryLedgerService {
           onHandQtyKg: "0.000",
           lastMovementId: null,
         });
-      } catch {
-        // Concurrent insert won — retry findBalanceForUpdate to pick up
-        // the existing row and lock it with FOR UPDATE.
-        balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
-        if (!balance) {
-          // Extremely unlikely: row disappeared between insert conflict
-          // and retry. Treat as a retryable technical failure.
-          throw new InventoryLedgerError(
-            "INTERNAL_TRANSACTION_FAILED",
-            "Balance row not found after concurrent-insert retry.",
-          );
+      } catch (e) {
+        // Catch ONLY the expected concurrent-insert condition.
+        // Other errors (FK violations, constraint failures, connection errors)
+        // must propagate — they indicate real bugs, not concurrent inserts.
+        if (e instanceof BalanceConcurrentInsertError) {
+          // Concurrent insert won — retry findBalanceForUpdate to pick up
+          // the existing row and lock it with FOR UPDATE.
+          balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
+          if (!balance) {
+            // Extremely unlikely: row disappeared between insert conflict
+            // and retry. Treat as a retryable technical failure.
+            throw new InventoryLedgerError(
+              "INTERNAL_TRANSACTION_FAILED",
+              "Balance row not found after concurrent-insert retry.",
+            );
+          }
+        } else {
+          // Unexpected error — re-throw so it's not hidden as a
+          // "Balance row not found" message.
+          throw e;
         }
       }
     }

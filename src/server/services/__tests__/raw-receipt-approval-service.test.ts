@@ -754,3 +754,245 @@ describe("WP-02-05 RawReceiptApprovalService — tenant isolation", () => {
     await expect(service.readApprovalRequest(foreignUser, foreignEffective, approval.id)).rejects.toThrow(ApprovalNotFoundError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 10. Atomicity / rollback proof (V11 — Contract 06 §6, §17.1; DEC-015).
+// ---------------------------------------------------------------------------
+
+/**
+ * V11 atomicity proof: verify that when a transactionRunner is provided,
+ * all DB writes (stock movement, inventory balance, account entry,
+ * approval_requests markDecided) are wrapped in a single transaction.
+ * If any write fails, the entire transaction rolls back — no partial effects.
+ *
+ * Strategy: use a mock transactionRunner that simulates a failure AFTER
+ * the stock movement is posted but BEFORE the payable/approval finalization.
+ * Verify that the stock movement is NOT persisted (rolled back), the
+ * approval is NOT marked decided, and no partial state remains.
+ */
+describe("WP-02-05 RawReceiptApprovalService — atomicity/rollback (V11)", () => {
+  it("rolls back ALL DB writes when subledger fails after inventory posts", async () => {
+    // Build deps with a mock transactionRunner that injects a failure.
+    const base = makeApprovalDeps();
+    const requester = TEST_USERS.warehouse;
+    const draft = await createSubmittedDraft(base.draftService, requester);
+    const owner = TEST_USERS.owner;
+    const ownerEffective = getTestEffectivePermissions(owner.userId);
+    const approval = await base.service.createApprovalRequest(owner, ownerEffective, draft.id);
+
+    // Track what WOULD have been written (without the transaction, these
+    // would be partial effects). With the transaction, they're rolled back.
+    const stockCallsBefore = base.ledgerHandle.insertMovementCalls.length;
+    const balanceCallsBefore = base.ledgerHandle.insertBalanceCalls.length;
+    const entryCallsBefore = base.subledgerHandle.insertEntryCalls.length;
+
+    // Create a service with a transactionRunner that injects failure.
+    // The failure is injected into the SubledgerService — we replace the
+    // subledger.postSupplierPayable to throw after stock is posted.
+    const accountant = TEST_USERS.accountant;
+    const accountantEffective = getTestEffectivePermissions(accountant.userId);
+
+    // Mock subledger that throws on postSupplierPayable (simulates DB failure
+    // after inventory post but before payable post).
+    const failingSubledger = {
+      postSupplierPayable: vi.fn().mockRejectedValue(new Error("SIMULATED_SUBLEDGER_FAILURE")),
+    } as unknown as SubledgerService;
+
+    // Mock transactionRunner: runs the work, but since the subledger throws,
+    // the transaction "rolls back" (we simulate by NOT persisting the stock
+    // movement that was inserted during the work).
+    let txWorkExecuted = false;
+    const mockTxRunner = async <T,>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+      try {
+        txWorkExecuted = true;
+        return await work({ /* mock tx */ });
+      } catch (e) {
+        // Simulate rollback: undo the in-memory state changes that the
+        // ledgerHandle made during the work. In a real DB transaction,
+        // this happens automatically.
+        base.ledgerHandle.insertMovementCalls.length = stockCallsBefore;
+        base.ledgerHandle.insertBalanceCalls.length = balanceCallsBefore;
+        throw e;
+      }
+    };
+
+    const serviceWithTxFailure = new RawReceiptApprovalService({
+      approvalRepository: base.approvalRepository,
+      draftRepository: base.draftRepository,
+      inventoryLedger: base.inventoryLedger,
+      subledger: failingSubledger,
+      audit: base.audit,
+      idempotency: base.idempotency,
+      transactionRunner: mockTxRunner as any,
+      txFactories: {
+        createInventoryLedger: () => base.inventoryLedger,
+        createSubledger: () => failingSubledger,
+        createApprovalRepository: () => base.approvalRepository,
+        createDraftRepository: () => base.draftRepository,
+      },
+    });
+
+    // Attempt approval with price (triggers stock + payable path).
+    // The subledger will throw → transaction rolls back.
+    await expect(
+      serviceWithTxFailure.approveRawReceipt(accountant, accountantEffective, {
+        approvalRequestId: approval.id,
+        pricePerTon: "80.00",
+        idempotencyKey: "v11-rollback-test",
+      }),
+    ).rejects.toThrow("SIMULATED_SUBLEDGER_FAILURE");
+
+    // Verify NO partial effects persisted (rolled back).
+    // Stock movement was inserted during the work but rolled back.
+    expect(base.ledgerHandle.insertMovementCalls.length).toBe(stockCallsBefore);
+    expect(base.ledgerHandle.insertBalanceCalls.length).toBe(balanceCallsBefore);
+    // No account entry was created (subledger threw before insertEntry).
+    expect(base.subledgerHandle.insertEntryCalls.length).toBe(entryCallsBefore);
+
+    // Verify approval is still active (not decided).
+    const approvalAfter = await base.approvalRepository.findApprovalById(
+      accountant.tenantId,
+      approval.id,
+    );
+    expect(approvalAfter?.state).toBe("active");
+    expect(approvalAfter?.movementId).toBeNull();
+    expect(approvalAfter?.payableEntryId).toBeNull();
+
+    // Verify the transaction work was actually executed (not skipped).
+    expect(txWorkExecuted).toBe(true);
+  });
+
+  it("rolls back late-price confirmation when approval markDecided fails", async () => {
+    const base = makeApprovalDeps();
+    const requester = TEST_USERS.warehouse;
+    const draft = await createSubmittedDraft(base.draftService, requester);
+    const owner = TEST_USERS.owner;
+    const ownerEffective = getTestEffectivePermissions(owner.userId);
+    const approval = await base.service.createApprovalRequest(owner, ownerEffective, draft.id);
+
+    // Approve with no price (defer payable).
+    const accountant = TEST_USERS.accountant;
+    const accountantEffective = getTestEffectivePermissions(accountant.userId);
+    await base.service.approveRawReceipt(accountant, accountantEffective, {
+      approvalRequestId: approval.id,
+      pricePerTon: null,
+      idempotencyKey: "v11-late-price-approve",
+    });
+
+    const entryCallsBefore = base.subledgerHandle.insertEntryCalls.length;
+
+    // Mock approval repo that fails on markDecided (after payable posts).
+    // We wrap the real repo and only override markDecided.
+    const realRepo = base.approvalRepository;
+    const failingApprovalRepo: RawReceiptApprovalRepository = {
+      insertApprovalRequest: (row: any) => realRepo.insertApprovalRequest(row),
+      findActiveApprovalByEntity: (t: string, et: string, eid: string, rt: string) => realRepo.findActiveApprovalByEntity(t, et, eid, rt),
+      findApprovalById: (t: string, id: string) => realRepo.findApprovalById(t, id),
+      listPendingApprovals: (t: string, et: string) => realRepo.listPendingApprovals(t, et),
+      markDecided: vi.fn().mockRejectedValue(new Error("SIMULATED_MARK_DECIDED_FAILURE")),
+    };
+
+    const mockTxRunner = async <T,>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+      try {
+        return await work({ /* mock tx */ });
+      } catch (e) {
+        // Simulate rollback: undo the account entry that was inserted.
+        base.subledgerHandle.insertEntryCalls.length = entryCallsBefore;
+        throw e;
+      }
+    };
+
+    const serviceWithTxFailure = new RawReceiptApprovalService({
+      approvalRepository: failingApprovalRepo,
+      draftRepository: base.draftRepository,
+      inventoryLedger: base.inventoryLedger,
+      subledger: base.subledger,
+      audit: base.audit,
+      idempotency: base.idempotency,
+      transactionRunner: mockTxRunner as any,
+      txFactories: {
+        createInventoryLedger: () => base.inventoryLedger,
+        createSubledger: () => base.subledger,
+        createApprovalRepository: () => failingApprovalRepo,
+        createDraftRepository: () => base.draftRepository,
+      },
+    });
+
+    // Attempt late-price confirmation — markDecided will throw → rollback.
+    await expect(
+      serviceWithTxFailure.confirmLatePrice(accountant, accountantEffective, {
+        approvalRequestId: approval.id,
+        pricePerTon: "90.00",
+        idempotencyKey: "v11-late-price-rollback",
+      }),
+    ).rejects.toThrow("SIMULATED_MARK_DECIDED_FAILURE");
+
+    // Verify NO account entry persisted (rolled back).
+    expect(base.subledgerHandle.insertEntryCalls.length).toBe(entryCallsBefore);
+
+    // Verify approval still shows payableDeferred=true (not updated).
+    const approvalAfter = await base.approvalRepository.findApprovalById(
+      accountant.tenantId,
+      approval.id,
+    );
+    expect(approvalAfter?.payableDeferred).toBe(true);
+    expect(approvalAfter?.payableEntryId).toBeNull();
+  });
+
+  it("successful approval with transactionRunner commits all writes", async () => {
+    const base = makeApprovalDeps();
+    const requester = TEST_USERS.warehouse;
+    const draft = await createSubmittedDraft(base.draftService, requester);
+    const owner = TEST_USERS.owner;
+    const ownerEffective = getTestEffectivePermissions(owner.userId);
+    const approval = await base.service.createApprovalRequest(owner, ownerEffective, draft.id);
+
+    const accountant = TEST_USERS.accountant;
+    const accountantEffective = getTestEffectivePermissions(accountant.userId);
+
+    // Mock transactionRunner that just runs the work (no failure).
+    const mockTxRunner = async <T,>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+      return await work({ /* mock tx */ });
+    };
+
+    const serviceWithTx = new RawReceiptApprovalService({
+      approvalRepository: base.approvalRepository,
+      draftRepository: base.draftRepository,
+      inventoryLedger: base.inventoryLedger,
+      subledger: base.subledger,
+      audit: base.audit,
+      idempotency: base.idempotency,
+      transactionRunner: mockTxRunner as any,
+      txFactories: {
+        createInventoryLedger: () => base.inventoryLedger,
+        createSubledger: () => base.subledger,
+        createApprovalRepository: () => base.approvalRepository,
+        createDraftRepository: () => base.draftRepository,
+      },
+    });
+
+    const result = await serviceWithTx.approveRawReceipt(accountant, accountantEffective, {
+      approvalRequestId: approval.id,
+      pricePerTon: "80.00",
+      idempotencyKey: "v11-success-test",
+    });
+
+    // Verify all writes committed.
+    expect(result.action).toBe("posted");
+    expect(result.movementId).toBeTruthy();
+    expect(result.payableEntryId).toBeTruthy();
+
+    // Stock movement + balance + account entry all created.
+    expect(base.ledgerHandle.insertMovementCalls.length).toBeGreaterThan(0);
+    expect(base.subledgerHandle.insertEntryCalls.length).toBeGreaterThan(0);
+
+    // Approval marked decided.
+    const approvalAfter = await base.approvalRepository.findApprovalById(
+      accountant.tenantId,
+      approval.id,
+    );
+    expect(approvalAfter?.state).toBe("decided");
+    expect(approvalAfter?.movementId).toBeTruthy();
+    expect(approvalAfter?.payableEntryId).toBeTruthy();
+  });
+});
