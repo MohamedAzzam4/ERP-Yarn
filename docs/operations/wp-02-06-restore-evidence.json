@@ -1,8 +1,17 @@
 {
   "timestamp": "2026-07-05T19:09:14.368Z",
+  "status": "limited_restore_smoke_checkpoint",
+  "blocker": "blocked_on_separate_restore_target",
   "migrationVersion": "unknown",
-  "backupMethod": "Logical export via SELECT + sanitized SQL INSERT generation (postgres.js). pg_dump not available in environment.",
-  "restoreTarget": "Separate schema 'restore_smoke_target' within the same Supabase dev project. NOT the live 'public' schema. This is a local smoke restore, not a managed disaster-recovery setup.",
+  "backupMethod": "Logical export via SELECT + sanitized SQL INSERT generation (postgres.js). pg_dump not available in environment. This does NOT satisfy DEC-026 (exports are not backups) — not produced by an approved PostgreSQL backup method.",
+  "restoreTarget": "Separate schema 'restore_smoke_target' within the SAME Supabase dev database. NOT a separate database/environment. This does NOT satisfy DEC-025 (restore testing in a separate test database/environment). This is a limited schema-level smoke restore, NOT a final backup/restore acceptance.",
+  "separateTargetAvailable": false,
+  "blockerReason": "No separate restore target available: no local PostgreSQL (psql/pg_dump not installed, no sudo), no Docker, no separate Supabase project provided.",
+  "unblockOptions": [
+    "Provide a separate Supabase project DATABASE_URL for restore testing",
+    "Provide a local PostgreSQL connection string with pg_dump/pg_restore available",
+    "Owner explicitly accepts the limitation as a deferred pilot blocker (record in decision log)"
+  ],
   "sourceCounts": {
     "tenants": 1,
     "users": 2,
