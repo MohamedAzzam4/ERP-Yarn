@@ -46,6 +46,7 @@ import {
   DEMO_YARN_BY_COMPANY,
   DEMO_YARN_BY_COUNT,
   DEMO_YARN_STOCK,
+  DEMO_CHART_COLORS,
 } from "@/lib/fixtures/demo-fixtures";
 
 function parseNumeric(value: string): number {
@@ -67,15 +68,11 @@ export default function DemoOwnerDashboardPage() {
     value: c.currentBalanceKg + " كجم",
   }));
 
-  // Yarn distribution by count — donut segments
-  const yarnByCountSegments = DEMO_YARN_BY_COUNT.map((c) => ({
+  // Yarn distribution by count — donut segments.
+  // Uses DEMO_CHART_COLORS to guarantee distinct colors per segment.
+  const yarnByCountSegments = DEMO_YARN_BY_COUNT.map((c, i) => ({
     value: parseNumeric(c.currentBalanceKg),
-    color:
-      c.yarnCount === "2/24"
-        ? "var(--color-primary)"
-        : c.yarnCount === "1/24"
-          ? "var(--color-warning)"
-          : "var(--color-accent)",
+    color: [DEMO_CHART_COLORS.blue, DEMO_CHART_COLORS.amber, DEMO_CHART_COLORS.cyan][i % 3]!,
     label: "نمرة " + c.yarnCount,
   }));
 

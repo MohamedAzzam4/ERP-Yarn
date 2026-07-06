@@ -54,12 +54,23 @@
   --color-negative-stock: #c2414a;
   --color-needs-review: #c47a12;
 
-  /* Chart palette (PROVISIONAL). */
-  --color-chart-1: #2457c5;
-  --color-chart-2: #2a9d8f;
-  --color-chart-3: #c47a12;
-  --color-chart-4: #52657a;
-  --color-chart-5: #c2414a;
+  /* Chart palette (PROVISIONAL).
+   * Each value is visually distinct — no two tokens share the same hex.
+   * Revised 2026-07-06: added chart-6 (violet) and chart-7 (cyan) so charts
+   * with 5+ categories never need to reuse a color.
+   *
+   * IMPORTANT: --color-success and --color-accent are BOTH #2a9d8f (teal).
+   * --color-info and --color-primary are BOTH #2457c5 (blue). When building
+   * charts, use the chart-N tokens below (not the semantic tokens) to
+   * guarantee uniqueness within a single chart.
+   */
+  --color-chart-1: #2457c5; /* blue/navy */
+  --color-chart-2: #2a9d8f; /* teal */
+  --color-chart-3: #c47a12; /* amber */
+  --color-chart-4: #52657a; /* slate */
+  --color-chart-5: #c2414a; /* rose/red */
+  --color-chart-6: #7c3aed; /* violet */
+  --color-chart-7: #0891b2; /* cyan */
 
   /* Sidebar (PROVISIONAL). */
   --color-sidebar: #ffffff;

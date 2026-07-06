@@ -24,7 +24,21 @@ import { LtrValue } from "@/components/ui/ltr-value";
 
 const CHART_FOCUS_TRANSITION = "transition-all duration-200 ease-out";
 
-const BAR_COLORS = ["bg-primary", "bg-accent", "bg-warning", "bg-info", "bg-success"];
+// Chart color palette — 7 distinct colors, no duplicates.
+// Uses chart-N tokens (NOT semantic tokens like bg-primary/bg-success) because
+// semantic tokens have collisions:
+//   bg-primary === bg-info        (#2457c5 blue)
+//   bg-accent === bg-success      (#2a9d8f teal)
+// The chart-N tokens are guaranteed unique per globals.css @theme.
+const BAR_COLORS = [
+  "bg-chart-1", // blue/navy
+  "bg-chart-2", // teal
+  "bg-chart-3", // amber
+  "bg-chart-5", // rose
+  "bg-chart-4", // slate
+  "bg-chart-6", // violet
+  "bg-chart-7", // cyan
+];
 
 const SEVERITY_STYLES: Record<string, { dot: string; bar: string; text: string }> = {
   high: { dot: "bg-danger", bar: "bg-danger/70", text: "text-danger" },

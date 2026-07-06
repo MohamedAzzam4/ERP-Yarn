@@ -7,6 +7,16 @@
  *
  * All hrefs point to `/demo/*` routes. No real business routes are linked.
  * The real `nav-config.ts` and its tests are untouched.
+ *
+ * Restructured 2026-07-06:
+ *   - العمليات category now contains ONLY the 4 grouped input destinations:
+ *     إدخال الشراء / إدخال البيع / إدخال التشغيل / حركة الخيوط
+ *   - Old input entries removed from sidebar (إدخال الخيوط, استلام خام جديد,
+ *     الإنتاج لدى مصانع التشغيل).
+ *   - Overview pages (نظرة عامة على المخزون, نظرة عامة على المبيعات) moved
+ *     to a new "نظرات عامة" category.
+ *   - Old routes /demo/owner/yarn-entry and /demo/worker/raw-receipt redirect
+ *     to /demo/owner/purchase (the new grouped purchase input page).
  */
 
 export interface DemoNavItem {
@@ -27,19 +37,26 @@ export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
     labelAr: "لوحة المعلومات",
     items: [
       { id: "demo-dashboard", labelAr: "لوحة التحكم", href: "/demo/owner/dashboard" },
-      // Renamed 2026-07-05: was "مركز المراجعات" → "مركز الاعتماد والمتابعة"
-      // (مراجعة now maps specifically to yarn/fiber result review)
       { id: "demo-reviews", labelAr: "مركز الاعتماد والمتابعة", href: "/demo/owner/reviews" },
     ],
   },
   {
+    // العمليات = input destinations only (restructured 2026-07-06)
     id: "operations",
     labelAr: "العمليات",
     items: [
+      { id: "demo-purchase", labelAr: "إدخال الشراء", href: "/demo/owner/purchase" },
+      { id: "demo-sales-entry", labelAr: "إدخال البيع", href: "/demo/owner/sales-entry" },
+      { id: "demo-operation", labelAr: "إدخال التشغيل", href: "/demo/owner/operation" },
+      { id: "demo-yarn-movement", labelAr: "حركة الخيوط", href: "/demo/owner/yarn-movement" },
+    ],
+  },
+  {
+    // Overview pages moved here from العمليات (new category 2026-07-06)
+    id: "overviews",
+    labelAr: "نظرات عامة",
+    items: [
       { id: "demo-inventory", labelAr: "نظرة عامة على المخزون", href: "/demo/owner/inventory" },
-      // New 2026-07-05: yarn entry page added under inventory category per stakeholder request
-      { id: "demo-yarn-entry", labelAr: "إدخال الخيوط", href: "/demo/owner/yarn-entry" },
-      { id: "demo-production", labelAr: "الإنتاج لدى مصانع التشغيل", href: "/demo/owner/production" },
       { id: "demo-sales", labelAr: "نظرة عامة على المبيعات", href: "/demo/owner/sales" },
     ],
   },
@@ -55,13 +72,6 @@ export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
     labelAr: "التقارير",
     items: [
       { id: "demo-activity", labelAr: "النشاطات والإشعارات", href: "/demo/owner/activity" },
-    ],
-  },
-  {
-    id: "worker",
-    labelAr: "مهام العامل",
-    items: [
-      { id: "demo-worker-receipt", labelAr: "استلام خام جديد", href: "/demo/worker/raw-receipt" },
     ],
   },
 ];

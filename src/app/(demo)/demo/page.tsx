@@ -24,18 +24,19 @@ interface ScreenCard {
 }
 
 const SCREENS: ScreenCard[] = [
-  // Renamed 2026-07-05: "اتجاه المراجعات" → "اتجاه طلبات الاعتماد والمتابعة"
-  // (مراجعة now maps specifically to yarn/fiber result review)
+  // Dashboard + reviews
   { href: "/demo/owner/dashboard", labelAr: "لوحة التحكم", descAr: "KPIs، توزيع المخزون (خامات/شعيرات/خيوط)، اتجاه طلبات الاعتماد والمتابعة، أرصدة مصانع التشغيل، آخر النشاطات.", groupAr: "القيادة والإدارة" },
   { href: "/demo/owner/reviews", labelAr: "مركز الاعتماد والمتابعة", descAr: "بطاقات ملخصات، جدول الطلبات المعلقة، فلاتر وبحث، أزرار اعتماد/رفض معطلة.", groupAr: "القيادة والإدارة" },
-  { href: "/demo/owner/inventory", labelAr: "نظرة عامة على المخزون", descAr: "إجمالي المخزون (خامات/شعيرات/خيوط)، أرصدة الخيوط بالمخازن، توزيع حسب الموقع، تنبيهات السالب والمنخفض.", groupAr: "القيادة والإدارة" },
-  // New 2026-07-05: yarn entry page
-  { href: "/demo/owner/yarn-entry", labelAr: "إدخال الخيوط", descAr: "نموذج إدخال بيانات وأرصدة ونتائج مراجعة فنية للخيوط، مستوحى من جدول أرصدة الخيوط بالمخازن.", groupAr: "القيادة والإدارة" },
-  { href: "/demo/owner/production", labelAr: "الإنتاج لدى مصانع التشغيل", descAr: "أوامر الإنتاج، المخزون تحت التشغيل لدى المصانع، المدخلات والمخرجات، أرصدة المصانع.", groupAr: "القيادة والإدارة" },
+  // 4 grouped input destinations (restructured 2026-07-06)
+  { href: "/demo/owner/purchase", labelAr: "إدخال الشراء", descAr: "شراء خامات / شراء خيوط — تبويب متعدد، أقسام مجمعة، أزرار مسودة/مراجعة تجريبية.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/sales-entry", labelAr: "إدخال البيع", descAr: "بيع خامات / بيع خيوط — تبويب متعدد، أقسام مجمعة، أزرار مسودة/مراجعة تجريبية.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/operation", labelAr: "إدخال التشغيل", descAr: "تشغيل خيوط لدى الشركات / زوي خيوط لدى شركات — تبويب متعدد، أقسام مجمعة.", groupAr: "القيادة والإدارة" },
+  { href: "/demo/owner/yarn-movement", labelAr: "حركة الخيوط", descAr: "نموذج واحد لحركة الخيوط المنتجة بين المخازن أو للعملاء.", groupAr: "القيادة والإدارة" },
+  // Overview pages
+  { href: "/demo/owner/inventory", labelAr: "نظرة عامة على المخزون", descAr: "إجمالي المخزون (خامات/شعيرات/خيوط)، أرصدة الخيوط بالمخازن، توزيع حسب الموقع، تنبيهات.", groupAr: "القيادة والإدارة" },
   { href: "/demo/owner/sales", labelAr: "نظرة عامة على المبيعات", descAr: "أوامر البيع، حالة الحجز، أرصدة العملاء، مخططات مبسطة.", groupAr: "القيادة والإدارة" },
   { href: "/demo/owner/parties", labelAr: "الموردون والعملاء والمصانع", descAr: "قوائم البيانات الأساسية، الأرصدة، ملخصات العلاقات، الحالة النشطة/غير النشطة.", groupAr: "القيادة والإدارة" },
   { href: "/demo/owner/activity", labelAr: "النشاطات والإشعارات", descAr: "شرائط نشاط قابلة للطي، لوحة إشعارات، زر تحديث يدوي.", groupAr: "القيادة والإدارة" },
-  { href: "/demo/worker/raw-receipt", labelAr: "استلام خام جديد (مسؤول تسجيل البيانات)", descAr: "نموذج لمسي كبير، 11 حقلاً مرئياً، أزرار مسودة/مراجعة، تغذية راجعة للتحميل.", groupAr: "مسؤولو تسجيل البيانات والإدخال" },
 ];
 
 // Stakeholder terminology (revised 2026-07-05):
@@ -54,7 +55,6 @@ const ROLE_LABELS: Record<string, string> = {
 
 export default function DemoHomePage() {
   const ownerScreens = SCREENS.filter((s) => s.groupAr === "القيادة والإدارة");
-  const workerScreens = SCREENS.filter((s) => s.groupAr === "مسؤولو تسجيل البيانات والإدخال");
 
   return (
     <DemoShell
@@ -112,31 +112,6 @@ export default function DemoHomePage() {
                 <span className="text-card-title text-foreground group-hover:text-primary">{s.labelAr}</span>
                 <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   شاشة
-                </span>
-              </div>
-              <p className="text-sm text-muted-foreground leading-relaxed">{s.descAr}</p>
-              <span className="mt-auto text-[10px] text-muted-foreground" dir="ltr">
-                <LtrValue>{s.href}</LtrValue>
-              </span>
-            </Link>
-          ))}
-        </div>
-      </section>
-
-      {/* Worker screens */}
-      <section className="mb-6">
-        <h2 className="text-section-title text-foreground mb-3">شاشات مسؤولي تسجيل البيانات والإدخال</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {workerScreens.map((s) => (
-            <Link
-              key={s.href}
-              href={s.href}
-              className="group flex flex-col gap-2 rounded-xl border border-border bg-surface p-5 transition-all duration-200 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-card-title text-foreground group-hover:text-primary">{s.labelAr}</span>
-                <span className="shrink-0 rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
-                  عامل
                 </span>
               </div>
               <p className="text-sm text-muted-foreground leading-relaxed">{s.descAr}</p>

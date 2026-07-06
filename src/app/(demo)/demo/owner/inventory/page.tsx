@@ -53,13 +53,13 @@ export default function DemoInventoryOverviewPage() {
   const locationBars = DEMO_LOCATIONS.map((l) => ({ label: l.nameAr, value: l.totalStockKg + " كجم" }));
 
   // Three-layer inventory composition: خامات / شعيرات / خيوط + لدى مصانع التشغيل
-  // (revised 2026-07-05 — was خام/تحت التشغيل/خيط جاهز, now explicitly includes
-  // شعيرات as a distinct layer per stakeholder request)
+  // Chart color fix 2026-07-06: was using var(--color-success) and
+  // var(--color-accent) — both #2a9d8f (teal). Now uses chart-N tokens.
   const compositionSegments = [
-    { value: totalRawKg, color: "var(--color-primary)", label: "خامات" },
-    { value: 4800, color: "var(--color-warning)", label: "شعيرات" },
-    { value: parseNumeric(DEMO_YARN_KPIS.totalCurrentBalanceKg), color: "var(--color-success)", label: "خيوط" },
-    { value: totalWipKg, color: "var(--color-accent)", label: "لدى مصانع التشغيل" },
+    { value: totalRawKg, color: "var(--color-chart-1)", label: "خامات" },               // blue
+    { value: 4800, color: "var(--color-chart-3)", label: "شعيرات" },                     // amber
+    { value: parseNumeric(DEMO_YARN_KPIS.totalCurrentBalanceKg), color: "var(--color-chart-2)", label: "خيوط" }, // teal
+    { value: totalWipKg, color: "var(--color-chart-6)", label: "لدى مصانع التشغيل" },    // violet
   ];
 
   const yarnByCompanyBars = DEMO_YARN_BY_COMPANY.map((c) => ({

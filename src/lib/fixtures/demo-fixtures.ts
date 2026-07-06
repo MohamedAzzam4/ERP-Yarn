@@ -40,8 +40,8 @@ export const DEMO_USERS: ReadonlyArray<DemoUser> = [
   //                              ليست جودة ISO العامة)
   { role: "owner", displayNameAr: "رئيس مجلس الإدارة / العضو المنتدب التنفيذي", landingRoute: "/demo/owner/dashboard" },
   { role: "accountant", displayNameAr: "المدير المالي", landingRoute: "/demo/owner/reviews" },
-  { role: "warehouse_employee", displayNameAr: "مسؤول تسجيل البيانات أو المدخلات", landingRoute: "/demo/worker/raw-receipt" },
-  { role: "production_employee", displayNameAr: "مسؤول متابعة تشغيل الخيوط", landingRoute: "/demo/owner/production" },
+  { role: "warehouse_employee", displayNameAr: "مسؤول تسجيل البيانات أو المدخلات", landingRoute: "/demo/owner/purchase" },
+  { role: "production_employee", displayNameAr: "مسؤول متابعة تشغيل الخيوط", landingRoute: "/demo/owner/operation" },
   { role: "quality_employee", displayNameAr: "مدير المراجعة", landingRoute: "/demo/owner/reviews" },
 ];
 
@@ -263,7 +263,7 @@ export interface DemoKpiCard {
 
 export const DEMO_OWNER_KPI_CARDS: ReadonlyArray<DemoKpiCard> = [
   { labelAr: "إجمالي المخزون", value: "18,450.000 كجم", accent: "primary", chipText: "مخزون", href: "/demo/owner/inventory" },
-  { labelAr: "مخزون لدى مصانع التشغيل", value: "6,200.000 كجم", accent: "accent", chipText: "تشغيل", href: "/demo/owner/production" },
+  { labelAr: "مخزون لدى مصانع التشغيل", value: "6,200.000 كجم", accent: "accent", chipText: "تشغيل", href: "/demo/owner/inventory" },
   { labelAr: "مبيعات الشهر الحالي", value: "320,000.00 جنيه", accent: "success", chipText: "مالي", href: "/demo/owner/sales" },
   { labelAr: "مراجعات مطلوبة", value: "8", accent: "warning", chipText: "مراجعة", href: "/demo/owner/reviews" },
   { labelAr: "تحذيرات مهمة", value: "3", accent: "danger", chipText: "تنبيه", href: "/demo/owner/reviews" },
@@ -288,12 +288,15 @@ export const DEMO_SEARCH_ENTRIES: ReadonlyArray<DemoSearchEntry> = [
   { labelAr: "مركز الاعتماد والمتابعة", href: "/demo/owner/reviews", groupAr: "لوحة المعلومات", keywords: ["reviews", "مراجعات", "اعتماد", "متابعة"] },
   { labelAr: "نظرة عامة على المخزون", href: "/demo/owner/inventory", groupAr: "المخزون", keywords: ["inventory", "مخزون", "رصيد", "خيوط"] },
   { labelAr: "أرصدة الخيوط بالمخازن", href: "/demo/owner/inventory", groupAr: "المخزون", keywords: ["yarn", "خيوط", "أرصدة", "شعيرات"] },
-  { labelAr: "إدخال الخيوط", href: "/demo/owner/yarn-entry", groupAr: "المخزون", keywords: ["yarn", "entry", "إدخال", "خيوط", "تسجيل"] },
-  { labelAr: "الإنتاج لدى مصانع التشغيل", href: "/demo/owner/production", groupAr: "الإنتاج", keywords: ["production", "إنتاج", "مصنع", "تشغيل"] },
+  { labelAr: "إدخال الشراء", href: "/demo/owner/purchase", groupAr: "العمليات", keywords: ["purchase", "شراء", "خامات", "خيوط"] },
+  { labelAr: "إدخال البيع", href: "/demo/owner/sales-entry", groupAr: "العمليات", keywords: ["sales", "بيع", "خامات", "خيوط"] },
+  { labelAr: "إدخال التشغيل", href: "/demo/owner/operation", groupAr: "العمليات", keywords: ["operation", "تشغيل", "زوي", "مصنع"] },
+  { labelAr: "حركة الخيوط", href: "/demo/owner/yarn-movement", groupAr: "العمليات", keywords: ["movement", "حركة", "خيوط", "نقل"] },
   { labelAr: "نظرة عامة على المبيعات", href: "/demo/owner/sales", groupAr: "المبيعات", keywords: ["sales", "مبيعات", "أمر بيع"] },
   { labelAr: "الموردون والعملاء والمصانع", href: "/demo/owner/parties", groupAr: "الإدارة", keywords: ["parties", "suppliers", "customers", "موردين", "عملاء", "مصانع"] },
   { labelAr: "النشاطات والإشعارات", href: "/demo/owner/activity", groupAr: "التقارير", keywords: ["activity", "notifications", "نشاط", "إشعارات"] },
-  { labelAr: "استلام خام جديد", href: "/demo/worker/raw-receipt", groupAr: "مهام العامل", keywords: ["raw", "receipt", "استلام", "خام"] },
+  // Old routes /demo/owner/yarn-entry and /demo/worker/raw-receipt now redirect
+  // to /demo/owner/purchase — removed from search to avoid confusion.
 ];
 
 // ---------------------------------------------------------------------------
@@ -303,12 +306,28 @@ export const DEMO_SEARCH_ENTRIES: ReadonlyArray<DemoSearchEntry> = [
 
 // Inventory composition — ثلاث طبقات واضحة: خامات / شعيرات / خيوط
 // (revised 2026-07-05 to make yarn visible at the dashboard top-level)
+//
+// Chart color fix 2026-07-06: was using var(--color-success) for "خيوط" and
+// var(--color-accent) for "لدى مصانع التشغيل" — both are #2a9d8f (teal).
+// Now uses chart-N tokens which are guaranteed unique per globals.css.
 export const DEMO_DASHBOARD_INVENTORY_COMPOSITION = [
-  { labelAr: "خامات", valueKg: "10,200.000", color: "var(--color-primary)" },
-  { labelAr: "شعيرات", valueKg: "4,800.000", color: "var(--color-warning)" },
-  { labelAr: "خيوط", valueKg: "3,250.000", color: "var(--color-success)" },
-  { labelAr: "لدى مصانع التشغيل", valueKg: "6,200.000", color: "var(--color-accent)" },
+  { labelAr: "خامات", valueKg: "10,200.000", color: "var(--color-chart-1)" },   // blue
+  { labelAr: "شعيرات", valueKg: "4,800.000", color: "var(--color-chart-3)" },   // amber
+  { labelAr: "خيوط", valueKg: "3,250.000", color: "var(--color-chart-2)" },     // teal
+  { labelAr: "لدى مصانع التشغيل", valueKg: "6,200.000", color: "var(--color-chart-6)" }, // violet
 ] as const;
+
+// Explicit chart color palette for donut/bar segments — guaranteed unique.
+// Use this when building chart segment data programmatically.
+export const DEMO_CHART_COLORS = {
+  blue: "var(--color-chart-1)",    // #2457c5
+  teal: "var(--color-chart-2)",    // #2a9d8f
+  amber: "var(--color-chart-3)",   // #c47a12
+  slate: "var(--color-chart-4)",   // #52657a
+  rose: "var(--color-chart-5)",    // #c2414a
+  violet: "var(--color-chart-6)",  // #7c3aed
+  cyan: "var(--color-chart-7)",    // #0891b2
+} as const;
 
 export const DEMO_DASHBOARD_ATTENTION_ITEMS = [
   { labelAr: "استلام خام بدون سعر", count: 3, severity: "high" as const },
@@ -645,6 +664,298 @@ export const DEMO_YARN_ENTRY_SECTIONS: ReadonlyArray<{
       "Tick",
       "Neps",
       "Hairs",
+    ],
+  },
+];
+
+// ===========================================================================
+// Grouped input form fixtures (added 2026-07-06)
+//
+// 4 grouped input destinations, each with tabbed variants:
+//   1. إدخال الشراء     — شراء خامات / شراء خيوط
+//   2. إدخال البيع      — بيع خامات / بيع خيوط
+//   3. إدخال التشغيل    — تشغيل خيوط لدى الشركات / زوي خيوط لدى شركات
+//   4. حركة الخيوط      — single form
+//
+// All values are SYNTHETIC. No real client data. Used only to pre-populate
+// the demo forms so stakeholders can immediately understand the screen.
+// ===========================================================================
+
+import type { DemoFormField, DemoFormSection } from "@/components/demo/demo-form-shared";
+
+// --- 1a. شراء خامات (Purchase Raw Materials) ---
+
+export const PURCHASE_RAW_SECTIONS: ReadonlyArray<DemoFormSection> = [
+  {
+    titleAr: "بيانات أساسية",
+    fields: [
+      { labelAr: "نوع الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
+      { labelAr: "صنف الخام", defaultValue: "السودان", ltr: false, type: "select", options: ["السودان", "مصر", "أمريكا"] },
+      { labelAr: "اسم المورد", defaultValue: "عثمان", ltr: false, type: "select", options: ["عثمان", "كارجيل", "النيل للتجارة"] },
+      { labelAr: "رقم رسالة", defaultValue: "PR-2026-0042", ltr: true },
+      { labelAr: "تاريخ استلام الخام / تاريخ التخزين", defaultValue: "20/06/2026", ltr: true },
+      { labelAr: "موسم إنتاج الخام", defaultValue: "2024/2025", ltr: true },
+    ],
+  },
+  {
+    titleAr: "الكميات والأوزان",
+    fields: [
+      { labelAr: "الكمية", defaultValue: "1,250.000", ltr: true, type: "number" },
+      { labelAr: "عدد بالات الرسالة", defaultValue: "25", ltr: true, type: "number" },
+      { labelAr: "وزن قائم للرسالة", defaultValue: "1,250.000", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "الأسعار والمدفوعات",
+    fields: [
+      { labelAr: "سعر الطن", defaultValue: "52,000.00", ltr: true, type: "number" },
+      { labelAr: "إجمالي سعر الرسالة", defaultValue: "65,000.00", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "التخزين والحركة",
+    fields: [
+      { labelAr: "مكان التخزين", defaultValue: "31اسكندرية", ltr: false, type: "select", options: ["31اسكندرية", "مخزن مصر ايران", "منطقة تخزين ب"] },
+    ],
+  },
+  {
+    titleAr: "ملاحظات",
+    fields: [
+      { labelAr: "ملاحظات", defaultValue: "تم الاستلام ظاهرياً، يحتاج مراجعة الجودة", ltr: false, type: "textarea" },
+    ],
+  },
+];
+
+// --- 1b. شراء خيوط (Purchase Yarn) ---
+
+export const PURCHASE_YARN_SECTIONS: ReadonlyArray<DemoFormSection> = [
+  {
+    titleAr: "بيانات أساسية",
+    fields: [
+      { labelAr: "نمرة الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30", "2/20"] },
+      { labelAr: "نوع الخيط", defaultValue: "قطن مروس", ltr: false, type: "select", options: ["قطن مروس", "قطن فرد", "قطن مزوي"] },
+      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
+      { labelAr: "معامل برم الخيط", defaultValue: "18.5", ltr: true },
+      { labelAr: "التاريخ أو رقم الرسالة / رقم اللوط", defaultValue: "YPR-2026-0015", ltr: true },
+      { labelAr: "لون الكونز", defaultValue: "أبيض", ltr: false, type: "select", options: ["أبيض", "أصفر", "أخضر"] },
+      { labelAr: "العميل", defaultValue: "عميل النسيج", ltr: false, type: "select", options: ["عميل النسيج", "مصنع الغزال", "شركة الأطلس"] },
+      { labelAr: "البلد", defaultValue: "مصر", ltr: false, type: "select", options: ["مصر", "السودان", "تركيا"] },
+    ],
+  },
+  {
+    titleAr: "الكميات والأوزان",
+    fields: [
+      { labelAr: "وزن قائم", defaultValue: "5,400.000", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "الأسعار والمدفوعات",
+    fields: [
+      { labelAr: "سعر الطن", defaultValue: "78,000.00", ltr: true, type: "number" },
+      { labelAr: "إجمالي السعر", defaultValue: "421,200.00", ltr: true, type: "number" },
+      { labelAr: "مدفوع مقدمًا", defaultValue: "100,000.00", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "ملاحظات",
+    fields: [
+      { labelAr: "ملاحظات", defaultValue: "خصم الكمية عند الاستلام", ltr: false, type: "textarea" },
+    ],
+  },
+];
+
+// --- 2a. بيع خامات (Sales Raw Materials) ---
+
+export const SALES_RAW_SECTIONS: ReadonlyArray<DemoFormSection> = [
+  {
+    titleAr: "بيانات أساسية",
+    fields: [
+      { labelAr: "نوع الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
+      { labelAr: "صنف الخام", defaultValue: "السودان", ltr: false, type: "select", options: ["السودان", "مصر", "أمريكا"] },
+      { labelAr: "المشتري / العميل", defaultValue: "عميل النسيج", ltr: false, type: "select", options: ["عميل النسيج", "مصنع الغزال", "شركة الأطلس"] },
+      { labelAr: "رقم الرسالة", defaultValue: "PR-2026-0038", ltr: true },
+      { labelAr: "التاريخ", defaultValue: "20/06/2026", ltr: true },
+    ],
+  },
+  {
+    titleAr: "الكميات والأوزان",
+    fields: [
+      { labelAr: "الكمية", defaultValue: "410.000", ltr: true, type: "number" },
+      { labelAr: "عدد البال المباع", defaultValue: "8", ltr: true, type: "number" },
+      { labelAr: "وزن قائم للبيع", defaultValue: "410.000", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "الأسعار والمدفوعات",
+    fields: [
+      { labelAr: "سعر البيع", defaultValue: "55,000.00", ltr: true, type: "number" },
+      { labelAr: "إجمالي سعر البيع", defaultValue: "22,550.00", ltr: true, type: "number" },
+      { labelAr: "مدفوع مقدم", defaultValue: "10,000.00", ltr: true, type: "number" },
+      { labelAr: "باقي", defaultValue: "12,550.00", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "ملاحظات",
+    fields: [
+      { labelAr: "ملاحظات", defaultValue: "تسليم خلال 3 أيام", ltr: false, type: "textarea" },
+    ],
+  },
+];
+
+// --- 2b. بيع خيوط (Sales Yarn) ---
+
+export const SALES_YARN_SECTIONS: ReadonlyArray<DemoFormSection> = [
+  {
+    titleAr: "بيانات أساسية",
+    fields: [
+      { labelAr: "العميل", defaultValue: "عميل النسيج", ltr: false, type: "select", options: ["عميل النسيج", "مصنع الغزال", "شركة الأطلس"] },
+      { labelAr: "البلد", defaultValue: "مصر", ltr: false, type: "select", options: ["مصر", "السودان", "تركيا"] },
+      { labelAr: "التاريخ / تاريخ البيع", defaultValue: "20/06/2026", ltr: true },
+      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
+      { labelAr: "نوعه", defaultValue: "قطن مروس", ltr: false, type: "select", options: ["قطن مروس", "قطن فرد", "قطن مزوي"] },
+      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري"] },
+    ],
+  },
+  {
+    titleAr: "برم ومصنع الإنتاج",
+    fields: [
+      { labelAr: "معامل البرم", defaultValue: "18.5", ltr: true },
+      { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
+      { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
+      { labelAr: "مصنع إنتاج الفرد / الشركة المنتجة للفرد", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
+      { labelAr: "مصنع إنتاج الزوي / الشركة المنتجة للزوي", defaultValue: "زوى عبدالحميد", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
+      { labelAr: "لون الكونز", defaultValue: "أبيض", ltr: false, type: "select", options: ["أبيض", "أصفر", "أخضر"] },
+    ],
+  },
+  {
+    titleAr: "الكميات والأوزان",
+    fields: [
+      { labelAr: "الكمية", defaultValue: "1,820.000", ltr: true, type: "number" },
+      { labelAr: "الوزن القائم", defaultValue: "1,820.000", ltr: true, type: "number" },
+      { labelAr: "عدد الشكاير", defaultValue: "36", ltr: true, type: "number" },
+      { labelAr: "الرسالة أو اللوط", defaultValue: "YLOT-2026-0015", ltr: true },
+    ],
+  },
+  {
+    titleAr: "الأسعار والمدفوعات",
+    fields: [
+      { labelAr: "سعر الطن", defaultValue: "82,000.00", ltr: true, type: "number" },
+      { labelAr: "إجمالي السعر", defaultValue: "149,240.00", ltr: true, type: "number" },
+      { labelAr: "المدفوع مقدم", defaultValue: "50,000.00", ltr: true, type: "number" },
+      { labelAr: "باقي الحساب", defaultValue: "99,240.00", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "ملاحظات",
+    fields: [
+      { labelAr: "ملاحظات", defaultValue: "شحن خلال أسبوع", ltr: false, type: "textarea" },
+    ],
+  },
+];
+
+// --- 3a. تشغيل خيوط لدى الشركات (Spinning Operation) ---
+
+export const OPERATION_SPINNING_SECTIONS: ReadonlyArray<DemoFormSection> = [
+  {
+    titleAr: "بيانات أساسية",
+    fields: [
+      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
+      { labelAr: "نوعه", defaultValue: "قطن فرد", ltr: false, type: "select", options: ["قطن فرد", "قطن مروس", "قطن مزوي"] },
+      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري"] },
+      { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
+      { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
+      { labelAr: "الشركة المنتجة للفرد", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
+      { labelAr: "الشركة المنتجة للزوي", defaultValue: "زوى عبدالحميد", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
+    ],
+  },
+  {
+    titleAr: "الكميات والأوزان",
+    fields: [
+      { labelAr: "وزن الخام", defaultValue: "5,000.000", ltr: true, type: "number" },
+      { labelAr: "وزن الخيط المتوقع", defaultValue: "4,250.000", ltr: true, type: "number" },
+      { labelAr: "وزن الخيط الفعلي للفرد", defaultValue: "2,800.000", ltr: true, type: "number" },
+      { labelAr: "وزن الخيط الفعلي المزوي", defaultValue: "2,450.000", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "الأسعار والمدفوعات",
+    fields: [
+      { labelAr: "سعر تشغيل طن الفرد", defaultValue: "8,500.00", ltr: true, type: "number" },
+      { labelAr: "سعر تشغيل طن الزوي", defaultValue: "6,200.00", ltr: true, type: "number" },
+      { labelAr: "نسبة العادم", defaultValue: "15.0", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "التاريخ والملاحظات",
+    fields: [
+      { labelAr: "التاريخ", defaultValue: "20/06/2026", ltr: true },
+      { labelAr: "ملاحظات", defaultValue: "جاري التشغيل — متوقع التسليم 25/06/2026", ltr: false, type: "textarea" },
+    ],
+  },
+];
+
+// --- 3b. زوي خيوط لدى شركات (Twisting Operation) ---
+
+export const OPERATION_TWISTING_SECTIONS: ReadonlyArray<DemoFormSection> = [
+  {
+    titleAr: "بيانات أساسية",
+    fields: [
+      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
+      { labelAr: "نوعه", defaultValue: "قطن مزوي", ltr: false, type: "select", options: ["قطن مزوي", "قطن فرد", "قطن مروس"] },
+      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري"] },
+      { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
+      { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
+      { labelAr: "الشركة المنتجة للغزل", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
+      { labelAr: "مصنع الزوي", defaultValue: "زوى عبدالحميد", ltr: false, type: "select", options: ["زوى عبدالحميد", "زوى ابوقمر", "مصر ايران"] },
+    ],
+  },
+  {
+    titleAr: "الكميات والأوزان",
+    fields: [
+      { labelAr: "الوزن القائم", defaultValue: "2,800.000", ltr: true, type: "number" },
+      { labelAr: "عدد الشكاير", defaultValue: "56", ltr: true, type: "number" },
+      { labelAr: "كمية إنتاج", defaultValue: "2,450.000", ltr: true, type: "number" },
+      { labelAr: "وزن الخيط المتوقع", defaultValue: "2,600.000", ltr: true, type: "number" },
+      { labelAr: "وزن الخيط الزوي الفعلي", defaultValue: "2,450.000", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "التاريخ والملاحظات",
+    fields: [
+      { labelAr: "تاريخ الإنتاج", defaultValue: "18/06/2026", ltr: true },
+      { labelAr: "ملاحظات", defaultValue: "تم التشغيل بنجاح", ltr: false, type: "textarea" },
+      { labelAr: "مكان التخزين", defaultValue: "مخازن", ltr: false, type: "select", options: ["مخازن", "31اسكندرية", "مخزن مصر ايران"] },
+    ],
+  },
+];
+
+// --- 4. حركة الخيوط (Yarn Movement) ---
+
+export const YARN_MOVEMENT_SECTIONS: ReadonlyArray<DemoFormSection> = [
+  {
+    titleAr: "بيانات أساسية",
+    fields: [
+      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
+      { labelAr: "نوع الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
+      { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
+      { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
+      { labelAr: "الشركة المنتجة للخيط", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
+      { labelAr: "جهة النقل", defaultValue: "مخازن", ltr: false, type: "select", options: ["مخازن", "31اسكندرية", "مخزن مصر ايران", "مصنع الغزال"] },
+      { labelAr: "التاريخ", defaultValue: "20/06/2026", ltr: true },
+    ],
+  },
+  {
+    titleAr: "الكميات والأوزان",
+    fields: [
+      { labelAr: "وزن قائم", defaultValue: "1,820.000", ltr: true, type: "number" },
+      { labelAr: "عدد شكاير", defaultValue: "36", ltr: true, type: "number" },
+    ],
+  },
+  {
+    titleAr: "الغرض والملاحظات",
+    fields: [
+      { labelAr: "الغرض من النقل", defaultValue: "نقل للبيع", ltr: false, type: "select", options: ["نقل للبيع", "نقل للتخزين", "نقل للتشغيل", "نقل للعميل"] },
+      { labelAr: "ملاحظات", defaultValue: "نقل داخلي بين المخازن", ltr: false, type: "textarea" },
     ],
   },
 ];
