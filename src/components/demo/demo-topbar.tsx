@@ -22,6 +22,7 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { LtrValue } from "@/components/ui/ltr-value";
+import { EgycotLogo } from "@/components/demo/egycot-logo";
 import {
   DEMO_NOTIFICATIONS,
   DEMO_SEARCH_ENTRIES,
@@ -393,6 +394,7 @@ export function DemoTopbar({
       role="banner"
     >
       <div className="flex items-center justify-between gap-4 px-4 py-3">
+        {/* Brand area: EGYCOT logo + company name */}
         <div className="flex min-w-0 items-center gap-3">
           {onToggleSidebar && (
             <Button
@@ -408,20 +410,24 @@ export function DemoTopbar({
           )}
           <Link
             href="/demo"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/70 font-heading text-base font-bold text-primary-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="الصفحة الرئيسية للعرض التفاعلي"
+            className="flex shrink-0 items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg"
+            aria-label="الصفحة الرئيسية — إيجيكوت للتجارة الدولية"
           >
-            E
+            <EgycotLogo size={32} showText={true} textVariant="both" compact={true} />
           </Link>
-          <div className="flex min-w-0 flex-col">
-            {/* Top line: ERP-Yarn title */}
-            <h1 className="truncate text-heading-4 font-bold text-primary leading-tight">
-              {tenantLabel ?? "ERP-Yarn — عرض تفاعلي"}
-            </h1>
-            {/* Bottom line: persona role label (if provided) OR userName */}
-            <p className="truncate text-xs text-muted-foreground">
-              {roleLabel ?? userName}
-            </p>
+        </div>
+
+        {/* User/persona area: user name + role (separate from company branding) */}
+        <div className="hidden min-w-0 items-center gap-2 sm:flex">
+          <div className="flex flex-col text-left">
+            <span className="truncate text-xs font-medium text-foreground">
+              {userName}
+            </span>
+            {roleLabel && (
+              <span className="truncate text-[10px] text-muted-foreground">
+                {roleLabel}
+              </span>
+            )}
           </div>
         </div>
 

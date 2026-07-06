@@ -20,6 +20,7 @@ import * as React from "react";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
+import { EgycotLogo } from "@/components/demo/egycot-logo";
 import type { ManagementNavCategory } from "./nav-config";
 
 // --- Inline SVG icons ---
@@ -151,13 +152,8 @@ export function Sidebar({
           ) : (
             <>
               <div className="flex min-w-0 flex-1 items-center gap-2 pr-1">
-                <div
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary/70 font-heading text-xs font-bold text-primary-foreground"
-                  aria-hidden="true"
-                >
-                  E
-                </div>
-                <span className="truncate text-sm font-bold text-primary font-heading">القائمة</span>
+                <EgycotLogo size={24} showText={false} />
+                <span className="truncate text-sm font-bold text-navy font-heading">إيجيكوت</span>
               </div>
               <Button
                 type="button"

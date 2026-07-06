@@ -4,6 +4,7 @@ import { SubmitButton } from "@/components/ui/submit-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Container } from "@/components/ui/container";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { EgycotLogo, EGYCOT_NAME_AR, EGYCOT_NAME_EN } from "@/components/demo/egycot-logo";
 
 /**
  * Login page — private email/password sign-in.
@@ -49,8 +50,20 @@ export default async function LoginPage({
   const resetInfo = params.reset ? RESET_MESSAGES[params.reset] : undefined;
 
   return (
-    <Container size="sm" className="flex min-h-screen items-center justify-center">
-      <Card className="w-full max-w-md">
+    <div className="egycot-login-bg min-h-screen flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        {/* EGYCOT branding — logo + company names above the login card */}
+        <div className="mb-6 flex flex-col items-center gap-2 text-center">
+          <EgycotLogo size={56} showText={false} />
+          <h1 className="font-heading text-lg font-bold text-navy">
+            {EGYCOT_NAME_AR}
+          </h1>
+          <p className="text-xs text-muted-foreground" dir="ltr">
+            {EGYCOT_NAME_EN}
+          </p>
+        </div>
+
+        <Card className="w-full shadow-md">
         <CardHeader>
           <CardTitle className="text-center text-heading-3">تسجيل الدخول</CardTitle>
         </CardHeader>
@@ -121,6 +134,7 @@ export default async function LoginPage({
           </div>
         </CardContent>
       </Card>
-    </Container>
+      </div>
+    </div>
   );
 }

@@ -906,8 +906,9 @@ describe("DEC-075 sidebar collapse button redesign", () => {
   it("sidebar header pairs brand title with collapse toggle (no empty band)", () => {
     // When expanded, the header shows a brand mark + title + toggle together
     // (not a large empty strip with just the toggle centered).
-    expect(sidebar).toMatch(/القائمة/);
-    expect(sidebar).toMatch(/from-primary to-primary\/70/);
+    // Updated 2026-07-06: brand mark is now EgycotLogo (not old "E" gradient box)
+    expect(sidebar).toMatch(/إيجيكوت/);
+    expect(sidebar).toMatch(/EgycotLogo/);
     // Header is a compact h-14 row, not a tall py-2 band
     expect(sidebar).toMatch(/h-14/);
   });

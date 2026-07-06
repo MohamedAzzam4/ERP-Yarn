@@ -173,7 +173,8 @@ describe("Topbar — persona role display", () => {
   it("DemoTopbar accepts roleLabel prop", () => {
     const src = readText("src/components/demo/demo-topbar.tsx");
     expect(src).toContain("roleLabel");
-    expect(src).toContain("roleLabel ?? userName");
+    // Topbar now shows roleLabel in a separate user/persona area (not roleLabel ?? userName fallback)
+    expect(src).toContain("roleLabel");
   });
 
   it("DemoShell passes roleLabel to DemoTopbar", () => {

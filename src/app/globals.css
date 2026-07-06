@@ -18,64 +18,63 @@
  */
 
 @theme {
-  /* Surface tokens — PROVISIONAL Calm Enterprise palette. */
+  /* Surface tokens — EGYCOT-inspired palette (tuned 2026-07-06). */
   --color-background: #f4f7fb;
   --color-surface: #ffffff;
   --color-surface-elevated: #ffffff;
-  --color-foreground: #1e293b;
+  --color-surface-tinted: #f8fbff;
+  --color-foreground: #0f172a;
   --color-muted: #f1f5f9;
   --color-muted-foreground: #64748b;
-  --color-border: #e2e8f0;
-  --color-input: #e2e8f0;
-  --color-ring: #2457c5;
+  --color-border: #d8e2ee;
+  --color-input: #d8e2ee;
+  --color-ring: #2f5ecb;
   --color-overlay: rgba(15, 23, 42, 0.4);
 
-  /* Brand tokens (PROVISIONAL). */
-  --color-primary: #2457c5;
+  /* EGYCOT brand tokens (tuned 2026-07-06). */
+  --color-navy: #0b1f4d;
+  --color-primary: #2f5ecb;
   --color-primary-foreground: #ffffff;
-  --color-accent: #2a9d8f;
+  --color-cotton-green: #137a3f;
+  --color-cotton-soft: #dcefd8;
+  --color-accent: #137a3f;
   --color-accent-foreground: #ffffff;
 
-  /* Status tokens (PROVISIONAL). */
-  --color-success: #2a9d8f;
+  /* Status tokens — tuned for contrast (2026-07-06). */
+  --color-success: #16834a;
   --color-success-foreground: #ffffff;
-  --color-warning: #c47a12;
+  --color-warning: #d97706;
   --color-warning-foreground: #ffffff;
-  --color-danger: #c2414a;
+  --color-danger: #dc2626;
   --color-danger-foreground: #ffffff;
-  --color-info: #2457c5;
+  --color-info: #2563eb;
   --color-info-foreground: #ffffff;
 
-  /* Workflow status tokens (PROVISIONAL). */
-  --color-pending: #c47a12;
-  --color-approved: #2a9d8f;
-  --color-rejected: #c2414a;
-  --color-blocked: #c2414a;
-  --color-negative-stock: #c2414a;
-  --color-needs-review: #c47a12;
+  /* Workflow status tokens (tuned 2026-07-06). */
+  --color-pending: #d97706;
+  --color-approved: #16834a;
+  --color-rejected: #dc2626;
+  --color-blocked: #dc2626;
+  --color-negative-stock: #dc2626;
+  --color-needs-review: #d97706;
 
-  /* Chart palette (PROVISIONAL).
+  /* Chart palette — 7 distinct colors, EGYCOT-tuned.
    * Each value is visually distinct — no two tokens share the same hex.
-   * Revised 2026-07-06: added chart-6 (violet) and chart-7 (cyan) so charts
-   * with 5+ categories never need to reuse a color.
-   *
-   * IMPORTANT: --color-success and --color-accent are BOTH #2a9d8f (teal).
-   * --color-info and --color-primary are BOTH #2457c5 (blue). When building
-   * charts, use the chart-N tokens below (not the semantic tokens) to
-   * guarantee uniqueness within a single chart.
+   * Uses EGYCOT brand-inspired hues (navy, cotton green, blue) plus
+   * complementary amber, slate, violet, cyan for variety.
    */
-  --color-chart-1: #2457c5; /* blue/navy */
-  --color-chart-2: #2a9d8f; /* teal */
-  --color-chart-3: #c47a12; /* amber */
+  --color-chart-1: #2f5ecb; /* EGYCOT blue */
+  --color-chart-2: #137a3f; /* cotton green */
+  --color-chart-3: #d97706; /* amber */
   --color-chart-4: #52657a; /* slate */
-  --color-chart-5: #c2414a; /* rose/red */
+  --color-chart-5: #dc2626; /* red */
   --color-chart-6: #7c3aed; /* violet */
   --color-chart-7: #0891b2; /* cyan */
 
-  /* Sidebar (PROVISIONAL). */
+  /* Sidebar (tuned 2026-07-06). */
   --color-sidebar: #ffffff;
-  --color-sidebar-foreground: #1e293b;
-  --color-sidebar-active: #2457c5;
+  --color-sidebar-foreground: #0f172a;
+  --color-sidebar-active: #2f5ecb;
 
   /*
    * Typography — Font family variables.
@@ -267,5 +266,76 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * EGYCOT logo animation (added 2026-07-06).
+ * Subtle, professional, hover-only. Disabled under prefers-reduced-motion.
+ *
+ * - .egycot-fiber-line: slow stroke-dash movement (hover only)
+ * - .egycot-cotton-boll: soft green glow pulse (hover only)
+ */
+.egycot-logo-mark .egycot-fiber-line {
+  stroke-dasharray: 40;
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.egycot-logo-mark:hover .egycot-fiber-line {
+  animation: egycot-fiber-dash 3s linear infinite;
+}
+
+.egycot-logo-mark .egycot-cotton-boll {
+  transition: filter 0.3s ease;
+}
+
+.egycot-logo-mark:hover .egycot-cotton-boll {
+  animation: egycot-glow-pulse 2.5s ease-in-out infinite;
+}
+
+@keyframes egycot-fiber-dash {
+  0% { stroke-dashoffset: 0; }
+  50% { stroke-dashoffset: -20; }
+  100% { stroke-dashoffset: -40; }
+}
+
+@keyframes egycot-glow-pulse {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 3px rgba(19, 122, 63, 0.3)); }
+}
+
+/*
+ * EGYCOT login background — subtle branded watermark (added 2026-07-06).
+ * Light blue/white gradient with very low opacity cotton/fiber curve.
+ * Not dark, not decorative-heavy — just a subtle brand presence.
+ */
+.egycot-login-bg {
+  background: linear-gradient(180deg, #f8fbff 0%, #f4f7fb 50%, #f0f4fa 100%);
+  position: relative;
+}
+
+.egycot-login-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800' fill='none'%3E%3Cpath d='M0 600 Q300 550 600 580 T1200 560' stroke='%23137a3f' stroke-width='2' opacity='0.04'/%3E%3Cpath d='M0 650 Q300 620 600 640 T1200 620' stroke='%232f5ecb' stroke-width='1.5' opacity='0.05'/%3E%3Cpath d='M0 700 Q300 680 600 690 T1200 680' stroke='%23137a3f' stroke-width='1' opacity='0.03'/%3E%3Ccircle cx='200' cy='200' r='80' fill='%23dcefd8' opacity='0.15'/%3E%3Ccircle cx='1000' cy='150' r='60' fill='%23dcefd8' opacity='0.1'/%3E%3C/svg%3E");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.egycot-login-bg > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Reduce motion: disable EGYCOT animations */
+@media (prefers-reduced-motion: reduce) {
+  .egycot-logo-mark:hover .egycot-fiber-line,
+  .egycot-logo-mark:hover .egycot-cotton-boll {
+    animation: none !important;
   }
 }
