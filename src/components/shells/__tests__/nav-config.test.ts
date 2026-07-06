@@ -29,12 +29,12 @@ describe("WORKER_TASKS", () => {
     expect(labels).toContain("تسجيل إنتاج");
     expect(labels).toContain("تسجيل جودة");
     // WP-02-07: worker traceability task
-    expect(labels).toContain("الدفعات");
+    expect(labels).toContain("رسائل الخام");
   });
 
   it("has NO financial terminology in labels", () => {
-    // Note: "الدفعات" (batches) contains the substring "دفع" (payment) but
-    // is NOT a financial term — it means "batches/lots". We use full-word
+    // Note: "رسائل الخام" (raw batches) is a domain-specific term for raw material lots.
+    // It is NOT a financial term. We use full-word
     // matching to avoid false positives.
     const financialExactWords = new Set([
       "سعر", "تكلفة", "دفع", "رصيد", "ربح", "حساب", "مديونية", "دائن",
@@ -352,8 +352,8 @@ describe("isWorkerRoute / isManagementRoute", () => {
 
 describe("No financial terminology in worker nav (Contract 02 §Worker Task Mode)", () => {
   it("worker task labels contain no financial/accounting terms", () => {
-    // Note: "الدفعات" (batches) contains the substring "دفع" (payment) but
-    // is NOT a financial term — it means "batches/lots". We use full-word
+    // Note: "رسائل الخام" (raw batches) is a domain-specific term for raw material lots.
+    // It is NOT a financial term. We use full-word
     // matching to avoid false positives.
     const forbiddenExact = new Set([
       "سعر", // price

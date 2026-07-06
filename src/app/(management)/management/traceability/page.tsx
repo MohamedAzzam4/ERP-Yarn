@@ -76,7 +76,7 @@ export default async function TraceabilityPage() {
 
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-heading-4 text-foreground">قائمة الدفعات</CardTitle>
+            <CardTitle className="text-heading-4 text-foreground">قائمة رسائل الخام</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             {dbAvailable ? (
@@ -112,7 +112,7 @@ export default async function TraceabilityPage() {
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
                   <p className="text-sm font-medium text-foreground">لا توجد دفعات خامات</p>
-                  <p className="text-xs text-muted-foreground mt-1">ستظهر الدفعات هنا عند إنشاء مسودات استلام الخامات.</p>
+                  <p className="text-xs text-muted-foreground mt-1">ستظهر رسائل الخام هنا عند إنشاء مسودات استلام الخامات.</p>
                 </div>
               )
             ) : (

@@ -62,13 +62,13 @@ export default async function WorkerRawBatchesPage() {
     >
       <Container size="xl" className="py-6">
         <div className="mb-6">
-          <h1 className="text-heading-2 text-foreground mb-1">الدفعات</h1>
+          <h1 className="text-heading-2 text-foreground mb-1">رسائل الخام</h1>
           <p className="text-sm text-muted-foreground">عرض للقراءة فقط — بيانات تشغيلية</p>
         </div>
 
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-heading-4 text-foreground">قائمة الدفعات</CardTitle>
+            <CardTitle className="text-heading-4 text-foreground">قائمة رسائل الخام</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             {dbAvailable ? (
@@ -104,7 +104,7 @@ export default async function WorkerRawBatchesPage() {
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
                   <p className="text-sm font-medium text-foreground">لا توجد دفعات</p>
-                  <p className="text-xs text-muted-foreground mt-1">ستظهر الدفعات هنا عند إنشاء مسودات الاستلام.</p>
+                  <p className="text-xs text-muted-foreground mt-1">ستظهر رسائل الخام هنا عند إنشاء مسودات الاستلام.</p>
                 </div>
               )
             ) : (

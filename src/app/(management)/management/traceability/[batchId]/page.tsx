@@ -203,7 +203,7 @@ export default async function TraceabilityDetailPage({ params }: { params: Promi
 
             <div className="mt-4">
               <Link href="/management/traceability" className="text-primary hover:underline min-h-[44px] inline-flex items-center">
-                العودة لقائمة الدفعات
+                العودة لقائمة رسائل الخام
               </Link>
             </div>
           </>
