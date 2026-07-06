@@ -7,18 +7,20 @@
  *   - بيع خامات  (Sales Raw Materials)
  *   - بيع خيوط   (Sales Yarn)
  *
+ * Corrected 2026-07-06: removed pre-entry summary cards, narrow layout, review modal.
+ *
  * Demo-only: no real submit, no API call, no DB write.
  */
 "use client";
 
 import * as React from "react";
 import { DemoShell } from "@/components/demo/demo-shell";
-import { DemoPageHeader, DemoFooterNote } from "@/components/demo/demo-charts";
+import { DemoFooterNote } from "@/components/demo/demo-charts";
 import {
   DemoSegmentedTabs,
   DemoFormSectionCard,
   DemoActionButtons,
-  DemoSummaryCard,
+  DemoFormLayout,
 } from "@/components/demo/demo-form-shared";
 import {
   SALES_RAW_SECTIONS,
@@ -37,55 +39,33 @@ export default function DemoSalesEntryPage() {
   return (
     <DemoShell
       userName="مسؤول تسجيل البيانات أو المدخلات"
-      breadcrumbs={[{ label: "العمليات" }, { label: "إدخال البيع" }]}
+      breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "إدخال البيع" }]}
     >
-      <DemoPageHeader
-        titleAr="إدخال البيع"
-        subtitleAr="اختر نوع البيع ثم أدخل البيانات — شاشة تجريبية للعرض"
-      />
+      <DemoFormLayout>
+        <div className="mb-4">
+          <h1 className="text-heading-2 text-foreground mb-1">إدخال البيع</h1>
+          <p className="text-sm text-muted-foreground">
+            اختر نوع البيع ثم أدخل البيانات — شاشة تجريبية للعرض
+          </p>
+        </div>
 
-      {/* Segmented tabs */}
-      <div className="mb-6">
-        <DemoSegmentedTabs
-          tabs={TABS}
-          activeTab={activeTab}
-          onChange={setActiveTab}
-          ariaLabel="نوع البيع"
-        />
-      </div>
+        <div className="mb-6">
+          <DemoSegmentedTabs
+            tabs={TABS}
+            activeTab={activeTab}
+            onChange={setActiveTab}
+            ariaLabel="نوع البيع"
+          />
+        </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2 lg:grid-cols-4">
-        <DemoSummaryCard labelAr="نوع البيع" value={activeTab === "raw" ? "خامات" : "خيوط"} accent="primary" />
-        <DemoSummaryCard
-          labelAr="الكمية"
-          value={activeTab === "raw" ? "410.000" : "1,820.000"}
-          unitAr="كجم"
-          accent="accent"
-        />
-        <DemoSummaryCard
-          labelAr="إجمالي السعر"
-          value={activeTab === "raw" ? "22,550.00" : "149,240.00"}
-          unitAr="جنيه"
-          accent="success"
-        />
-        <DemoSummaryCard
-          labelAr="المتبقي"
-          value={activeTab === "raw" ? "12,550.00" : "99,240.00"}
-          unitAr="جنيه"
-          accent="warning"
-        />
-      </div>
+        {sections.map((section, i) => (
+          <DemoFormSectionCard key={i} section={section} />
+        ))}
 
-      {/* Form sections */}
-      {sections.map((section, i) => (
-        <DemoFormSectionCard key={i} section={section} />
-      ))}
+        <DemoActionButtons sections={sections} />
 
-      {/* Action buttons */}
-      <DemoActionButtons />
-
-      <DemoFooterNote />
+        <DemoFooterNote />
+      </DemoFormLayout>
     </DemoShell>
   );
 }

@@ -8,8 +8,10 @@
  * All hrefs point to `/demo/*` routes. No real business routes are linked.
  * The real `nav-config.ts` and its tests are untouched.
  *
- * Restructured 2026-07-06:
- *   - العمليات category now contains ONLY the 4 grouped input destinations:
+ * Restructured 2026-07-06 (corrected 2026-07-06):
+ *   - Sidebar order: لوحة المعلومات → نظرات عامة → البيانات الأساسية →
+ *     التقارير → العمليات / مهام الإدخال (input section LAST).
+ *   - العمليات / مهام الإدخال contains ONLY the 4 grouped input destinations:
  *     إدخال الشراء / إدخال البيع / إدخال التشغيل / حركة الخيوط
  *   - Old input entries removed from sidebar (إدخال الخيوط, استلام خام جديد,
  *     الإنتاج لدى مصانع التشغيل).
@@ -41,18 +43,6 @@ export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
     ],
   },
   {
-    // العمليات = input destinations only (restructured 2026-07-06)
-    id: "operations",
-    labelAr: "العمليات",
-    items: [
-      { id: "demo-purchase", labelAr: "إدخال الشراء", href: "/demo/owner/purchase" },
-      { id: "demo-sales-entry", labelAr: "إدخال البيع", href: "/demo/owner/sales-entry" },
-      { id: "demo-operation", labelAr: "إدخال التشغيل", href: "/demo/owner/operation" },
-      { id: "demo-yarn-movement", labelAr: "حركة الخيوط", href: "/demo/owner/yarn-movement" },
-    ],
-  },
-  {
-    // Overview pages moved here from العمليات (new category 2026-07-06)
     id: "overviews",
     labelAr: "نظرات عامة",
     items: [
@@ -72,6 +62,17 @@ export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
     labelAr: "التقارير",
     items: [
       { id: "demo-activity", labelAr: "النشاطات والإشعارات", href: "/demo/owner/activity" },
+    ],
+  },
+  {
+    // العمليات / مهام الإدخال — input destinations, placed LAST per stakeholder request
+    id: "operations",
+    labelAr: "العمليات / مهام الإدخال",
+    items: [
+      { id: "demo-purchase", labelAr: "إدخال الشراء", href: "/demo/owner/purchase" },
+      { id: "demo-sales-entry", labelAr: "إدخال البيع", href: "/demo/owner/sales-entry" },
+      { id: "demo-operation", labelAr: "إدخال التشغيل", href: "/demo/owner/operation" },
+      { id: "demo-yarn-movement", labelAr: "حركة الخيوط", href: "/demo/owner/yarn-movement" },
     ],
   },
 ];

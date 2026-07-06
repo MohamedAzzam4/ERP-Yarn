@@ -243,4 +243,99 @@ describe("Demo input screens — sidebar structure", () => {
     expect(overviews).toBeDefined();
     expect(overviews!.items.length).toBeGreaterThanOrEqual(2);
   });
+
+  it("input section (operations) is the LAST category in the sidebar", () => {
+    const lastCategory = DEMO_NAV_CATEGORIES[DEMO_NAV_CATEGORIES.length - 1];
+    expect(lastCategory!.id).toBe("operations");
+  });
+
+  it("sidebar order: dashboard → overviews → master-data → reports → operations", () => {
+    const ids = DEMO_NAV_CATEGORIES.map((c: { id: string }) => c.id);
+    expect(ids).toEqual(["dashboard", "overviews", "master-data", "reports", "operations"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No pre-entry summary/KPI cards on input pages
+// ---------------------------------------------------------------------------
+
+describe("Demo input screens — no pre-entry summary cards", () => {
+  const inputPages = [
+    "src/app/(demo)/demo/owner/purchase/page.tsx",
+    "src/app/(demo)/demo/owner/sales-entry/page.tsx",
+    "src/app/(demo)/demo/owner/operation/page.tsx",
+    "src/app/(demo)/demo/owner/yarn-movement/page.tsx",
+  ];
+
+  for (const page of inputPages) {
+    it(`${page} does not render DemoSummaryCard`, () => {
+      const src = readText(page);
+      // Must not import or render the DemoSummaryCard component
+      expect(src).not.toMatch(/DemoSummaryCard/);
+    });
+  }
+
+  it("input pages use DemoFormLayout (narrow centered layout)", () => {
+    for (const page of inputPages) {
+      const src = readText(page);
+      expect(src).toContain("DemoFormLayout");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review confirmation modal
+// ---------------------------------------------------------------------------
+
+describe("Demo input screens — review confirmation modal", () => {
+  it("DemoReviewModal component exists in demo-form-shared.tsx", () => {
+    const src = readText("src/components/demo/demo-form-shared.tsx");
+    expect(src).toContain("DemoReviewModal");
+    expect(src).toContain("مراجعة سريعة قبل الحفظ");
+    expect(src).toContain("مراجعة سريعة قبل الإرسال");
+  });
+
+  it("DemoReviewModal has رجوع للتعديل and تأكيد actions", () => {
+    const src = readText("src/components/demo/demo-form-shared.tsx");
+    expect(src).toContain("رجوع للتعديل");
+    expect(src).toContain("تأكيد حفظ المسودة");
+    expect(src).toContain("تأكيد الإرسال للمراجعة");
+  });
+
+  it("DemoActionButtons opens review modal before processing", () => {
+    const src = readText("src/components/demo/demo-form-shared.tsx");
+    expect(src).toContain("openReview");
+    expect(src).toContain("reviewOpen");
+    expect(src).toContain("DemoReviewModal");
+  });
+
+  it("DemoActionButtons requires sections prop (to show review)", () => {
+    const src = readText("src/components/demo/demo-form-shared.tsx");
+    expect(src).toMatch(/sections.*DemoFormSection/);
+  });
+
+  it("all 4 input pages pass sections to DemoActionButtons", () => {
+    const inputPages = [
+      "src/app/(demo)/demo/owner/purchase/page.tsx",
+      "src/app/(demo)/demo/owner/sales-entry/page.tsx",
+      "src/app/(demo)/demo/owner/operation/page.tsx",
+      "src/app/(demo)/demo/owner/yarn-movement/page.tsx",
+    ];
+    for (const page of inputPages) {
+      const src = readText(page);
+      expect(src).toContain("DemoActionButtons sections={");
+    }
+  });
+
+  it("review modal has no real API/DB calls", () => {
+    const src = readText("src/components/demo/demo-form-shared.tsx");
+    expect(src).not.toMatch(/\bfetch\s*\(/);
+    expect(src).not.toMatch(/useMutation/);
+    expect(src).not.toMatch(/supabase/i);
+  });
+
+  it("demo helper text remains in review modal", () => {
+    const src = readText("src/components/demo/demo-form-shared.tsx");
+    expect(src).toContain("شاشة تجريبية للعرض — لا يتم تسجيل أو ترحيل أي بيانات");
+  });
 });

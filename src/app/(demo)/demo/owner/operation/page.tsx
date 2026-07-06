@@ -7,18 +7,20 @@
  *   - تشغيل خيوط لدى الشركات   (Spinning Operation)
  *   - زوي خيوط لدى شركات       (Twisting Operation)
  *
+ * Corrected 2026-07-06: removed pre-entry summary cards, narrow layout, review modal.
+ *
  * Demo-only: no real submit, no API call, no DB write.
  */
 "use client";
 
 import * as React from "react";
 import { DemoShell } from "@/components/demo/demo-shell";
-import { DemoPageHeader, DemoFooterNote } from "@/components/demo/demo-charts";
+import { DemoFooterNote } from "@/components/demo/demo-charts";
 import {
   DemoSegmentedTabs,
   DemoFormSectionCard,
   DemoActionButtons,
-  DemoSummaryCard,
+  DemoFormLayout,
 } from "@/components/demo/demo-form-shared";
 import {
   OPERATION_SPINNING_SECTIONS,
@@ -37,59 +39,33 @@ export default function DemoOperationPage() {
   return (
     <DemoShell
       userName="مسؤول متابعة تشغيل الخيوط"
-      breadcrumbs={[{ label: "العمليات" }, { label: "إدخال التشغيل" }]}
+      breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "إدخال التشغيل" }]}
     >
-      <DemoPageHeader
-        titleAr="إدخال التشغيل"
-        subtitleAr="اختر نوع التشغيل ثم أدخل البيانات — شاشة تجريبية للعرض"
-      />
+      <DemoFormLayout>
+        <div className="mb-4">
+          <h1 className="text-heading-2 text-foreground mb-1">إدخال التشغيل</h1>
+          <p className="text-sm text-muted-foreground">
+            اختر نوع التشغيل ثم أدخل البيانات — شاشة تجريبية للعرض
+          </p>
+        </div>
 
-      {/* Segmented tabs */}
-      <div className="mb-6">
-        <DemoSegmentedTabs
-          tabs={TABS}
-          activeTab={activeTab}
-          onChange={setActiveTab}
-          ariaLabel="نوع التشغيل"
-        />
-      </div>
+        <div className="mb-6">
+          <DemoSegmentedTabs
+            tabs={TABS}
+            activeTab={activeTab}
+            onChange={setActiveTab}
+            ariaLabel="نوع التشغيل"
+          />
+        </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2 lg:grid-cols-4">
-        <DemoSummaryCard
-          labelAr="نوع التشغيل"
-          value={activeTab === "spinning" ? "تشغيل (فرد)" : "زوي (مزوي)"}
-          accent="primary"
-        />
-        <DemoSummaryCard
-          labelAr="وزن الخام"
-          value={activeTab === "spinning" ? "5,000.000" : "2,800.000"}
-          unitAr="كجم"
-          accent="accent"
-        />
-        <DemoSummaryCard
-          labelAr="الإنتاج الفعلي"
-          value={activeTab === "spinning" ? "2,800.000" : "2,450.000"}
-          unitAr="كجم"
-          accent="success"
-        />
-        <DemoSummaryCard
-          labelAr="نسبة العادم"
-          value={activeTab === "spinning" ? "15.0" : "12.5"}
-          unitAr="%"
-          accent="warning"
-        />
-      </div>
+        {sections.map((section, i) => (
+          <DemoFormSectionCard key={i} section={section} />
+        ))}
 
-      {/* Form sections */}
-      {sections.map((section, i) => (
-        <DemoFormSectionCard key={i} section={section} />
-      ))}
+        <DemoActionButtons sections={sections} />
 
-      {/* Action buttons */}
-      <DemoActionButtons />
-
-      <DemoFooterNote />
+        <DemoFooterNote />
+      </DemoFormLayout>
     </DemoShell>
   );
 }

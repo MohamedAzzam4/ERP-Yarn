@@ -7,22 +7,24 @@
  *   - شراء خامات  (Purchase Raw Materials)
  *   - شراء خيوط   (Purchase Yarn)
  *
- * Replaces the old /demo/owner/yarn-entry and /demo/worker/raw-receipt pages
- * (both redirect here).
+ * Corrected 2026-07-06:
+ *   - Removed pre-entry summary/KPI cards (mobile-first form, no totals before input)
+ *   - Narrow centered layout (max-w-2xl) for desktop, full-width on mobile
+ *   - Buttons open DemoReviewModal first (مراجعة سريعة قبل الحفظ/الإرسال)
+ *   - After confirmation: loading → success state (no real API/DB)
  *
- * Demo-only: no real submit, no API call, no DB write. Buttons show simulated
- * loading → success state. All data is synthetic fixtures.
+ * Demo-only: no real submit, no API call, no DB write.
  */
 "use client";
 
 import * as React from "react";
 import { DemoShell } from "@/components/demo/demo-shell";
-import { DemoPageHeader, DemoFooterNote } from "@/components/demo/demo-charts";
+import { DemoFooterNote } from "@/components/demo/demo-charts";
 import {
   DemoSegmentedTabs,
   DemoFormSectionCard,
   DemoActionButtons,
-  DemoSummaryCard,
+  DemoFormLayout,
 } from "@/components/demo/demo-form-shared";
 import {
   PURCHASE_RAW_SECTIONS,
@@ -41,54 +43,37 @@ export default function DemoPurchasePage() {
   return (
     <DemoShell
       userName="مسؤول تسجيل البيانات أو المدخلات"
-      breadcrumbs={[{ label: "العمليات" }, { label: "إدخال الشراء" }]}
+      breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "إدخال الشراء" }]}
     >
-      <DemoPageHeader
-        titleAr="إدخال الشراء"
-        subtitleAr="اختر نوع الشراء ثم أدخل البيانات — شاشة تجريبية للعرض"
-      />
+      <DemoFormLayout>
+        {/* Title + guidance — plain, no gradient/glass (mobile-first form) */}
+        <div className="mb-4">
+          <h1 className="text-heading-2 text-foreground mb-1">إدخال الشراء</h1>
+          <p className="text-sm text-muted-foreground">
+            اختر نوع الشراء ثم أدخل البيانات — شاشة تجريبية للعرض
+          </p>
+        </div>
 
-      {/* Segmented tabs */}
-      <div className="mb-6">
-        <DemoSegmentedTabs
-          tabs={TABS}
-          activeTab={activeTab}
-          onChange={setActiveTab}
-          ariaLabel="نوع الشراء"
-        />
-      </div>
+        {/* Segmented tabs */}
+        <div className="mb-6">
+          <DemoSegmentedTabs
+            tabs={TABS}
+            activeTab={activeTab}
+            onChange={setActiveTab}
+            ariaLabel="نوع الشراء"
+          />
+        </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2 lg:grid-cols-4">
-        <DemoSummaryCard labelAr="نوع الشراء" value={activeTab === "raw" ? "خامات" : "خيوط"} accent="primary" />
-        <DemoSummaryCard
-          labelAr={activeTab === "raw" ? "الكمية الإجمالية" : "الوزن القائم"}
-          value={activeTab === "raw" ? "1,250.000" : "5,400.000"}
-          unitAr="كجم"
-          accent="accent"
-        />
-        <DemoSummaryCard
-          labelAr="إجمالي السعر"
-          value={activeTab === "raw" ? "65,000.00" : "421,200.00"}
-          unitAr="جنيه"
-          accent="success"
-        />
-        <DemoSummaryCard
-          labelAr="الحالة"
-          value="مسودة"
-          accent="warning"
-        />
-      </div>
+        {/* Form sections — no pre-entry summary cards */}
+        {sections.map((section, i) => (
+          <DemoFormSectionCard key={i} section={section} />
+        ))}
 
-      {/* Form sections */}
-      {sections.map((section, i) => (
-        <DemoFormSectionCard key={i} section={section} />
-      ))}
+        {/* Action buttons — open review modal first */}
+        <DemoActionButtons sections={sections} />
 
-      {/* Action buttons */}
-      <DemoActionButtons />
-
-      <DemoFooterNote />
+        <DemoFooterNote />
+      </DemoFormLayout>
     </DemoShell>
   );
 }
