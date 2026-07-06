@@ -83,7 +83,8 @@ describe("User activity — navigation", () => {
 describe("User activity — user selector", () => {
   it("page has a user selector dropdown", () => {
     const src = readText("src/app/(demo)/demo/owner/user-activity/page.tsx");
-    expect(src).toContain("اختر المستخدم");
+    // Label was changed from "اختر المستخدم" to "فلترة حسب المستخدم" per correction
+    expect(src).toContain("فلترة حسب المستخدم");
     expect(src).toContain("<select");
     expect(src).toContain("selectedUserId");
   });
@@ -214,6 +215,84 @@ describe("User activity — page content", () => {
     expect(src).toContain("القسم");
     expect(src).toContain("الحالة");
     expect(src).toContain("ملاحظة مختصرة");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Correction tests (added 2026-07-06)
+// ---------------------------------------------------------------------------
+
+describe("User activity — corrections (filter bar + alignment + no duplication)", () => {
+  const pageSrc = readText("src/app/(demo)/demo/owner/user-activity/page.tsx");
+
+  // 1. No duplicate selected-user text outside the dropdown
+  it("does NOT render selected user name as separate text outside the dropdown", () => {
+    // The old code had: {selectedUser && (<div>...{selectedUser.nameAr}...</div>)}
+    // This should be removed — the user name only appears in the <select> + <option>
+    expect(pageSrc).not.toContain("selectedUser.nameAr");
+    expect(pageSrc).not.toContain("selectedUser.roleLabelAr");
+    // The selectedUser variable itself should not be used for display
+    expect(pageSrc).not.toMatch(/selectedUser\./);
+  });
+
+  // 2. Filter bar is compact + blue-tinted (not large white card)
+  it("filter bar uses data-demo-filter-bar attribute for identification", () => {
+    expect(pageSrc).toContain("data-demo-filter-bar");
+  });
+
+  it("filter bar uses blue-tinted background (bg-primary/5) + border-primary/15", () => {
+    expect(pageSrc).toContain("bg-primary/5");
+    expect(pageSrc).toContain("border-primary/15");
+  });
+
+  it("filter bar uses rounded-xl (not large card with shadow)", () => {
+    expect(pageSrc).toContain("rounded-xl");
+  });
+
+  it("filter bar does NOT use a large Card component", () => {
+    // The filter bar should be a plain <div>, not wrapped in <Card>
+    // Check that the filter bar section doesn't start with <Card
+    const filterBarMatch = pageSrc.match(/data-demo-filter-bar[\s\S]*?<\/div>/);
+    expect(filterBarMatch).not.toBeNull();
+    // The filter bar div should not be inside a <Card> wrapper
+    expect(pageSrc).not.toMatch(/<Card[^>]*>[\s\S]*?data-demo-filter-bar/);
+  });
+
+  it("filter bar label is 'فلترة حسب المستخدم' (not 'اختر المستخدم')", () => {
+    expect(pageSrc).toContain("فلترة حسب المستخدم");
+  });
+
+  // 3. Table title is "سجل النشاط" + muted subtitle (no user name duplication)
+  it("table title is 'سجل النشاط' without appending the selected user name", () => {
+    expect(pageSrc).toContain(">سجل النشاط<");
+    // Should NOT contain the old pattern: سجل النشاط — {selectedUser?.nameAr}
+    expect(pageSrc).not.toContain("سجل النشاط — {selectedUser");
+  });
+
+  it("table has muted subtitle 'يعرض العمليات الخاصة بالمستخدم المحدد'", () => {
+    expect(pageSrc).toContain("يعرض العمليات الخاصة بالمستخدم المحدد");
+  });
+
+  // 4. Numeric/date values right-aligned in RTL with LTR isolation
+  it("summary cards use text-right alignment for numeric values", () => {
+    expect(pageSrc).toContain("text-right");
+  });
+
+  it("summary card numeric values use LtrValue with inline-block", () => {
+    expect(pageSrc).toContain('<LtrValue className="inline-block">');
+  });
+
+  it("date/time table cells use text-right alignment", () => {
+    // The date/time cell should have text-right on the <td>
+    expect(pageSrc).toMatch(/<td[^>]*text-right[^>]*>[\s\S]*?act\.dateTime/);
+  });
+
+  it("date/time values use LtrValue for LTR isolation", () => {
+    expect(pageSrc).toContain('<LtrValue className="inline-block text-muted-foreground">{act.dateTime}</LtrValue>');
+  });
+
+  it("document reference cells use text-right alignment", () => {
+    expect(pageSrc).toMatch(/<td[^>]*text-right[^>]*>[\s\S]*?act\.documentRef/);
   });
 });
 
