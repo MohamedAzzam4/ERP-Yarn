@@ -62,6 +62,7 @@ export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
     labelAr: "التقارير",
     items: [
       { id: "demo-activity", labelAr: "النشاطات والإشعارات", href: "/demo/owner/activity" },
+      { id: "demo-user-activity", labelAr: "سجل نشاط المستخدمين", href: "/demo/owner/user-activity" },
     ],
   },
   {

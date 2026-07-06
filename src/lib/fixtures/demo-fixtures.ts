@@ -477,6 +477,7 @@ export const DEMO_SEARCH_ENTRIES: ReadonlyArray<DemoSearchEntry> = [
   { labelAr: "نظرة عامة على المبيعات", href: "/demo/owner/sales", groupAr: "المبيعات", keywords: ["sales", "مبيعات", "أمر بيع"] },
   { labelAr: "الموردون والعملاء والمصانع", href: "/demo/owner/parties", groupAr: "الإدارة", keywords: ["parties", "suppliers", "customers", "موردين", "عملاء", "مصانع"] },
   { labelAr: "النشاطات والإشعارات", href: "/demo/owner/activity", groupAr: "التقارير", keywords: ["activity", "notifications", "نشاط", "إشعارات"] },
+  { labelAr: "سجل نشاط المستخدمين", href: "/demo/owner/user-activity", groupAr: "التقارير", keywords: ["user", "activity", "سجل", "نشاط", "مستخدمين"] },
   // Old routes /demo/owner/yarn-entry and /demo/worker/raw-receipt now redirect
   // to /demo/owner/purchase — removed from search to avoid confusion.
 ];
@@ -1143,3 +1144,199 @@ export const YARN_MOVEMENT_SECTIONS: ReadonlyArray<DemoFormSection> = [
     ],
   },
 ];
+
+// ===========================================================================
+// User activity history — سجل نشاط المستخدمين (added 2026-07-06)
+//
+// Fixture data for the executive/accountant "user activity history" page.
+// Lets the executive/accountant select a demo user and view everything that
+// user has done in the demo. All data is SYNTHETIC — no real audit log.
+// ===========================================================================
+
+export interface DemoActivityUser {
+  id: string;
+  nameAr: string;
+  roleLabelAr: string;
+}
+
+// Demo users for the activity selector
+export const DEMO_ACTIVITY_USERS: ReadonlyArray<DemoActivityUser> = [
+  { id: "ahmed-fathy", nameAr: "أحمد فتحي", roleLabelAr: "مسؤول تسجيل البيانات أو المدخلات" },
+  { id: "mohamed-abbasi", nameAr: "محمد عباسي", roleLabelAr: "مسؤول تسجيل البيانات أو المدخلات" },
+  { id: "accountant", nameAr: "المدير المالي", roleLabelAr: "المدير المالي" },
+  { id: "executive", nameAr: "رئيس مجلس الإدارة", roleLabelAr: "رئيس مجلس الإدارة / العضو المنتدب التنفيذي" },
+];
+
+export type DemoActivityStatus = "draft" | "submitted" | "needs_edit" | "approved";
+
+export interface DemoUserActivity {
+  userId: string;
+  dateTime: string;       // DD/MM/YYYY HH:MM
+  operationTypeAr: string;
+  documentRef: string;    // المستند / الرقم المرجعي
+  sectionAr: string;      // القسم
+  status: DemoActivityStatus;
+  noteAr: string;         // ملاحظة مختصرة
+}
+
+export const DEMO_USER_ACTIVITIES: ReadonlyArray<DemoUserActivity> = [
+  // أحمد فتحي — مسؤول تسجيل البيانات
+  {
+    userId: "ahmed-fathy",
+    dateTime: "20/06/2026 10:24",
+    operationTypeAr: "إنشاء مسودة شراء خامات",
+    documentRef: "PR-2026-0042",
+    sectionAr: "إدخال الشراء",
+    status: "draft",
+    noteAr: "مسودة شراء قطن سودانى من المورد أحمد فتحي",
+  },
+  {
+    userId: "ahmed-fathy",
+    dateTime: "20/06/2026 11:15",
+    operationTypeAr: "إرسال بيانات بيع خيوط للمراجعة",
+    documentRef: "SALE-2026-0015",
+    sectionAr: "إدخال البيع",
+    status: "submitted",
+    noteAr: "بيع خيوط 2/24 للعميل محمد عباسي",
+  },
+  {
+    userId: "ahmed-fathy",
+    dateTime: "19/06/2026 14:30",
+    operationTypeAr: "تعديل حركة خيوط",
+    documentRef: "MV-2026-0008",
+    sectionAr: "حركة الخيوط",
+    status: "needs_edit",
+    noteAr: "تعديل وزن قائم من 1,820 إلى 1,850 كجم",
+  },
+  {
+    userId: "ahmed-fathy",
+    dateTime: "19/06/2026 09:00",
+    operationTypeAr: "إضافة قيمة غير موجودة بالقائمة: مصنع جديد",
+    documentRef: "—",
+    sectionAr: "إدخال التشغيل",
+    status: "submitted",
+    noteAr: "إضافة مصنع زوي «مصنع النور» كقيمة جديدة للمراجعة",
+  },
+  {
+    userId: "ahmed-fathy",
+    dateTime: "18/06/2026 16:45",
+    operationTypeAr: "حفظ مسودة تشغيل خيوط لدى الشركات",
+    documentRef: "OP-2026-0011",
+    sectionAr: "إدخال التشغيل",
+    status: "draft",
+    noteAr: "مسودة تشغيل لدى شركة مصر إيران",
+  },
+  {
+    userId: "ahmed-fathy",
+    dateTime: "18/06/2026 08:30",
+    operationTypeAr: "إرسال إدخال تشغيل للمراجعة",
+    documentRef: "OP-2026-0010",
+    sectionAr: "إدخال التشغيل",
+    status: "submitted",
+    noteAr: "تشغيل خيوط لدى مصنع أبو قمر",
+  },
+
+  // محمد عباسي — مسؤول تسجيل البيانات
+  {
+    userId: "mohamed-abbasi",
+    dateTime: "20/06/2026 09:10",
+    operationTypeAr: "إنشاء مسودة شراء خيوط",
+    documentRef: "YPR-2026-0015",
+    sectionAr: "إدخال الشراء",
+    status: "draft",
+    noteAr: "مسودة شراء خيوط 2/24 من شركة الدلتا",
+  },
+  {
+    userId: "mohamed-abbasi",
+    dateTime: "19/06/2026 13:20",
+    operationTypeAr: "إرسال بيانات بيع خامات للمراجعة",
+    documentRef: "SALE-2026-0014",
+    sectionAr: "إدخال البيع",
+    status: "submitted",
+    noteAr: "بيع قطن مصري للعميل محمود الغوطي",
+  },
+  {
+    userId: "mohamed-abbasi",
+    dateTime: "18/06/2026 11:00",
+    operationTypeAr: "تعديل حركة خيوط",
+    documentRef: "MV-2026-0007",
+    sectionAr: "حركة الخيوط",
+    status: "needs_edit",
+    noteAr: "تعديل جهة النقل من مخازن إلى 31اسكندرية",
+  },
+  {
+    userId: "mohamed-abbasi",
+    dateTime: "17/06/2026 15:45",
+    operationTypeAr: "حفظ مسودة حركة خيوط",
+    documentRef: "MV-2026-0006",
+    sectionAr: "حركة الخيوط",
+    status: "draft",
+    noteAr: "نقل داخلي بين المخازن",
+  },
+
+  // المدير المالي — accountant
+  {
+    userId: "accountant",
+    dateTime: "20/06/2026 12:00",
+    operationTypeAr: "اعتماد طلب بيع خيوط",
+    documentRef: "SALE-2026-0012",
+    sectionAr: "مركز الاعتماد والمتابعة",
+    status: "approved",
+    noteAr: "اعتماد بيع خيوط للعميل محمد عباسي",
+  },
+  {
+    userId: "accountant",
+    dateTime: "19/06/2026 10:30",
+    operationTypeAr: "رفض طلب شراء خامات",
+    documentRef: "PR-2026-0040",
+    sectionAr: "مركز الاعتماد والمتابعة",
+    status: "needs_edit",
+    noteAr: "يحتاج مراجعة السعر — سعر الطن غير مطابق",
+  },
+  {
+    userId: "accountant",
+    dateTime: "18/06/2026 14:00",
+    operationTypeAr: "اعتماد حركة خيوط",
+    documentRef: "MV-2026-0005",
+    sectionAr: "مركز الاعتماد والمتابعة",
+    status: "approved",
+    noteAr: "نقل خيوط للبيع معتمد",
+  },
+
+  // رئيس مجلس الإدارة — executive
+  {
+    userId: "executive",
+    dateTime: "20/06/2026 08:00",
+    operationTypeAr: "مراجعة لوحة التحكم",
+    documentRef: "—",
+    sectionAr: "لوحة المعلومات",
+    status: "approved",
+    noteAr: "مراجعة مؤشرات الأداء اليومية",
+  },
+  {
+    userId: "executive",
+    dateTime: "19/06/2026 16:00",
+    operationTypeAr: "اعتماد مراجعة تكلفة تشغيل",
+    documentRef: "OP-2026-0009",
+    sectionAr: "مركز الاعتماد والمتابعة",
+    status: "approved",
+    noteAr: "اعتماد تكلفة تشغيل لدى شركة شبين",
+  },
+];
+
+// Helper: get activities for a specific user
+export function getActivitiesByUser(userId: string): ReadonlyArray<DemoUserActivity> {
+  return DEMO_USER_ACTIVITIES.filter((a) => a.userId === userId);
+}
+
+// Helper: get summary counts for a specific user
+export function getActivitySummaryByUser(userId: string) {
+  const userActivities = getActivitiesByUser(userId);
+  return {
+    total: userActivities.length,
+    drafts: userActivities.filter((a) => a.status === "draft").length,
+    submitted: userActivities.filter((a) => a.status === "submitted").length,
+    needsEdit: userActivities.filter((a) => a.status === "needs_edit").length,
+    lastActivity: userActivities[0]?.dateTime ?? "—",
+  };
+}
