@@ -24,7 +24,7 @@ import { LtrValue } from "@/components/ui/ltr-value";
 import { cn } from "@/lib/cn";
 import { DemoShell } from "@/components/demo/demo-shell";
 import {
-  DemoPageHeader,
+  DemoCompactHeading,
   DemoFooterNote,
 } from "@/components/demo/demo-charts";
 import {
@@ -61,7 +61,7 @@ export default function DemoProductionPage() {
       userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "العمليات" }, { label: "الإنتاج لدى مصانع التشغيل" }]}
     >
-      <DemoPageHeader
+      <DemoCompactHeading
         titleAr="الإنتاج لدى مصانع التشغيل"
         subtitleAr="أوامر الإنتاج الخارجية، المخزون تحت التشغيل لدى المصانع، المدخلات والمخرجات، أرصدة المصانع"
       />

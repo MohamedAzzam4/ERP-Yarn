@@ -18,7 +18,7 @@ import { DemoShell } from "@/components/demo/demo-shell";
 import {
   DemoMiniTrendLine,
   DemoStackedBar,
-  DemoPageHeader,
+  DemoCompactHeading,
   DemoFooterNote,
 } from "@/components/demo/demo-charts";
 import {
@@ -71,7 +71,7 @@ export default function DemoSalesPage() {
       userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "العمليات" }, { label: "نظرة عامة على المبيعات" }]}
     >
-      <DemoPageHeader
+      <DemoCompactHeading
         titleAr="نظرة عامة على المبيعات"
         subtitleAr="أوامر البيع، حالة الحجز، أرصدة العملاء، اتجاه المبيعات"
       />

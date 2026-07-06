@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { cn } from "@/lib/cn";
 import { DemoShell } from "@/components/demo/demo-shell";
-import { DemoPageHeader, DemoFooterNote } from "@/components/demo/demo-charts";
+import { DemoCompactHeading, DemoFooterNote } from "@/components/demo/demo-charts";
 import {
   DEMO_ACTIVITY_STRIPS,
   DEMO_NOTIFICATIONS,
@@ -116,7 +116,7 @@ export default function DemoActivityPage() {
       userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "التقارير" }, { label: "النشاطات والإشعارات" }]}
     >
-      <DemoPageHeader
+      <DemoCompactHeading
         titleAr="النشاطات والإشعارات"
         subtitleAr="شرائط نشاط قابلة للطي (يمكن فتح أكثر من شريط معاً)، لوحة إشعارات، وزر تحديث يدوي"
       />

@@ -41,6 +41,9 @@ export interface DemoFormField {
   type?: "text" | "number" | "select" | "textarea";
   options?: string[];
   placeholder?: string;
+  /** Label for the inline custom-value field shown when "غير موجود بالقائمة" is selected.
+   * Example: "اكتب اسم العميل", "اكتب اسم المورد". */
+  customLabelAr?: string;
 }
 
 export interface DemoFormSection {
@@ -52,21 +55,55 @@ export interface DemoFormSection {
 // DemoFieldRenderer — renders a single field (input/select/textarea)
 // ---------------------------------------------------------------------------
 
+// Sentinel value used as the <option> value for "not in list".
+export const NOT_IN_LIST_VALUE = "__not_in_list__";
+
 let fieldIdCounter = 0;
 
 export function DemoField({ field }: { field: DemoFormField }) {
   const [id] = React.useState(() => `demo-field-${++fieldIdCounter}`);
+  const [customId] = React.useState(() => `demo-field-custom-${++fieldIdCounter}`);
+  const [selectedValue, setSelectedValue] = React.useState(field.defaultValue);
+  const [customValue, setCustomValue] = React.useState("");
+  const showCustom = selectedValue === NOT_IN_LIST_VALUE;
 
+  // Select dropdown with "غير موجود بالقائمة" support
   if (field.type === "select" && field.options) {
+    const customLabel = field.customLabelAr ?? `اكتب ${field.labelAr}`;
     return (
       <div>
         <label htmlFor={id} className={labelClass}>{field.labelAr}</label>
-        <select id={id} defaultValue={field.defaultValue} className={inputClass}>
+        <select
+          id={id}
+          value={selectedValue}
+          onChange={(e) => setSelectedValue(e.target.value)}
+          className={inputClass}
+        >
           {field.options.map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
           ))}
-          <option value="other">غير موجود في القائمة</option>
+          <option value={NOT_IN_LIST_VALUE}>غير موجود بالقائمة</option>
         </select>
+        {/* Inline custom field — appears when "غير موجود بالقائمة" is selected */}
+        {showCustom && (
+          <div className="mt-2 animate-in fade-in slide-in-from-top-2 duration-200">
+            <label htmlFor={customId} className={labelClass}>
+              {customLabel} <span className="text-danger" aria-hidden="true">*</span>
+            </label>
+            <input
+              id={customId}
+              type="text"
+              value={customValue}
+              onChange={(e) => setCustomValue(e.target.value)}
+              className={inputClass}
+              placeholder={customLabel}
+              aria-required="true"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              سيتم إرسال القيمة الجديدة للمراجعة قبل اعتمادها في القوائم
+            </p>
+          </div>
+        )}
       </div>
     );
   }
@@ -265,6 +302,13 @@ export function DemoReviewModal({
                         <dt className="text-xs text-muted-foreground shrink-0">{field.labelAr}</dt>
                         <dd className="text-sm font-medium text-foreground text-left" dir={field.ltr ? "ltr" : undefined}>
                           {field.ltr ? <LtrValue>{field.defaultValue}</LtrValue> : field.defaultValue}
+                          {/* If this is a select field with custom-value support, show a hint
+                              that custom values will appear here when "غير موجود بالقائمة" is selected. */}
+                          {field.type === "select" && field.customLabelAr && (
+                            <span className="block text-[10px] text-muted-foreground mt-0.5">
+                              {field.customLabelAr} عند اختيار «غير موجود بالقائمة»
+                            </span>
+                          )}
                         </dd>
                       </div>
                     ))}

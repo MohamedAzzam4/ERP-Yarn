@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { cn } from "@/lib/cn";
 import { DemoShell } from "@/components/demo/demo-shell";
-import { DemoPageHeader, DemoFooterNote } from "@/components/demo/demo-charts";
+import { DemoCompactHeading, DemoFooterNote } from "@/components/demo/demo-charts";
 import { REVIEW_QUEUE_FIXTURE } from "@/lib/fixtures/reference-fixtures";
 
 type Severity = "low" | "medium" | "high";
@@ -65,7 +65,7 @@ export default function DemoReviewCenterPage() {
       userName="المدير المالي"
       breadcrumbs={[{ label: "لوحة المعلومات" }, { label: "مركز الاعتماد والمتابعة" }]}
     >
-      <DemoPageHeader
+      <DemoCompactHeading
         titleAr="مركز الاعتماد والمتابعة"
         subtitleAr="طلبات الاعتماد والمتابعة المعلقة تتطلب اتخاذ إجراء — استخدم البحث والفلتر لتضييق النتائج"
       />

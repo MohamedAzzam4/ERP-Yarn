@@ -553,6 +553,37 @@ export function DemoPageHeader({
 }
 
 // ---------------------------------------------------------------------------
+// DemoCompactHeading — compact page heading (added 2026-07-06).
+//
+// Replaces DemoPageHeader on content-heavy pages (dashboard, reviews, inventory,
+// sales, parties, activity) per stakeholder request:
+//   - No large glass/gradient container
+//   - No huge vertical padding
+//   - Just: small accent bar + medium title + optional one-line subtitle
+//   - Important content starts immediately after
+// ---------------------------------------------------------------------------
+
+export function DemoCompactHeading({
+  titleAr,
+  subtitleAr,
+}: {
+  titleAr: string;
+  subtitleAr?: string;
+}) {
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-2">
+        <span className="inline-block h-5 w-1 rounded-full bg-primary" aria-hidden="true" />
+        <h1 className="text-heading-3 text-foreground">{titleAr}</h1>
+      </div>
+      {subtitleAr && (
+        <p className="mt-1 text-sm text-muted-foreground">{subtitleAr}</p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // DemoCard — same shape as the production Card but with optional glass accent
 // for management surfaces. Use plain <Card> from "@/components/ui/card" for
 // non-glass surfaces.

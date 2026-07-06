@@ -22,7 +22,7 @@ import { DemoShell } from "@/components/demo/demo-shell";
 import {
   DemoDonutChart,
   DemoLocationBars,
-  DemoPageHeader,
+  DemoCompactHeading,
   DemoFooterNote,
 } from "@/components/demo/demo-charts";
 import {
@@ -75,7 +75,7 @@ export default function DemoInventoryOverviewPage() {
       userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "العمليات" }, { label: "نظرة عامة على المخزون" }]}
     >
-      <DemoPageHeader
+      <DemoCompactHeading
         titleAr="نظرة عامة على المخزون"
         subtitleAr="إجمالي المخزون (خامات / شعيرات / خيوط)، أرصدة الخيوط بالمخازن، التوزيع حسب الموقع، وآخر الحركات"
       />

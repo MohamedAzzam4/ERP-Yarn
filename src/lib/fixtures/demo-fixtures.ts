@@ -45,6 +45,114 @@ export const DEMO_USERS: ReadonlyArray<DemoUser> = [
   { role: "quality_employee", displayNameAr: "مدير المراجعة", landingRoute: "/demo/owner/reviews" },
 ];
 
+// ===========================================================================
+// Stakeholder-approved demo names (added 2026-07-06)
+//
+// These are the canonical Arabic names approved by the stakeholder for use
+// across all demo screens. All previous synthetic names (عثمان, كارجيل,
+// عميل النسيج, مصنع الغزال, قمح دلتا, نسر النيل, etc.) have been replaced
+// with these approved names in dropdowns, tables, charts, and fixtures.
+//
+// DO NOT use any other customer/factory/company names in the demo.
+// ===========================================================================
+
+// Customers / local yarn buyers (عملاء / مشترو الخيوط المحليون)
+export const DEMO_CUSTOMERS: ReadonlyArray<string> = [
+  "أحمد فتحي",
+  "حمدي عبد المنصف",
+  "مأمون النجار",
+  "محمد عباسي",
+  "محمود الغوطي",
+  "محمد الجمل",
+  "أحمد الجمل",
+  "مرسي البكري",
+  "حمودة",
+  "البرلسي",
+  "السهيلي",
+];
+
+// Twisting factories (مصانع الزوي)
+export const DEMO_TWISTING_FACTORIES: ReadonlyArray<string> = [
+  "مصنع أبو قمر",
+  "مصنع النور",
+];
+
+// Yarn manufacturing companies (شركات تصنيع الغزل)
+export const DEMO_YARN_COMPANIES: ReadonlyArray<string> = [
+  "شركة مصر إيران",
+  "شركة الدلتا",
+  "شركة شبين",
+  "شركة الدقهلية",
+  "شركة الوجه القبلي",
+];
+
+// Suppliers (موردون) — used in purchase raw form
+export const DEMO_SUPPLIERS: ReadonlyArray<string> = [
+  "أحمد فتحي",
+  "حمدي عبد المنصف",
+  "مأمون النجار",
+  "محمد عباسي",
+];
+
+// Raw types (أنواع الخام)
+export const DEMO_RAW_TYPES: ReadonlyArray<string> = [
+  "قطن سودانى",
+  "قطن مصري",
+  "قطن أمريكي",
+];
+
+// Raw grades (أصناف الخام)
+export const DEMO_RAW_GRADES: ReadonlyArray<string> = [
+  "السودان",
+  "مصر",
+  "أمريكا",
+];
+
+// Yarn types (أنواع الخيط)
+export const DEMO_YARN_TYPES: ReadonlyArray<string> = [
+  "قطن مروس",
+  "قطن فرد",
+  "قطن مزوي",
+];
+
+// Yarn counts (نمرات الخيط)
+export const DEMO_YARN_COUNTS: ReadonlyArray<string> = [
+  "2/24",
+  "1/24",
+  "2/30",
+  "2/20",
+  "3/40",
+];
+
+// Storage locations (أماكن التخزين)
+export const DEMO_STORAGE_LOCATIONS: ReadonlyArray<string> = [
+  "مخازن",
+  "31اسكندرية",
+  "مخزن مصر ايران",
+];
+
+// Countries (البلد)
+export const DEMO_COUNTRIES: ReadonlyArray<string> = [
+  "مصر",
+  "السودان",
+  "تركيا",
+];
+
+// Cone colors (لون الكونز)
+export const DEMO_CONE_COLORS: ReadonlyArray<string> = [
+  "أبيض",
+  "أصفر",
+  "أخضر",
+];
+
+// Transfer purposes (الغرض من النقل)
+export const DEMO_TRANSFER_PURPOSES: ReadonlyArray<string> = [
+  "نقل للبيع",
+  "نقل للتخزين",
+  "نقل للتشغيل",
+  "نقل للعميل",
+];
+
 // ---------------------------------------------------------------------------
 // Locations (extended — adds storage zones for inventory overview)
 // ---------------------------------------------------------------------------
@@ -63,9 +171,9 @@ export interface DemoLocation {
 export const DEMO_LOCATIONS: ReadonlyArray<DemoLocation> = [
   { code: "WH-ALX-31", nameAr: "31اسكندرية", type: "warehouse", totalStockKg: "12,250.000", rawKg: "9,800.000", wipKg: "0.000", finishedKg: "2,450.000", status: "active" },
   { code: "WH-MISR-01", nameAr: "مخزن مصر ايران", type: "warehouse", totalStockKg: "3,800.000", rawKg: "400.000", wipKg: "0.000", finishedKg: "3,400.000", status: "low_stock" },
-  { code: "FAC-SPIN-01", nameAr: "مصر ايران", type: "external_factory", totalStockKg: "3,800.000", rawKg: "1,200.000", wipKg: "1,400.000", finishedKg: "1,200.000", status: "active" },
-  { code: "FAC-TWIST-01", nameAr: "زوى عبدالحميد", type: "external_factory", totalStockKg: "1,600.000", rawKg: "500.000", wipKg: "700.000", finishedKg: "400.000", status: "active" },
-  { code: "FAC-TWIST-02", nameAr: "زوى ابوقمر", type: "external_factory", totalStockKg: "800.000", rawKg: "300.000", wipKg: "-50.000", finishedKg: "550.000", status: "negative_stock" },
+  { code: "FAC-SPIN-01", nameAr: "شركة مصر إيران", type: "external_factory", totalStockKg: "3,800.000", rawKg: "1,200.000", wipKg: "1,400.000", finishedKg: "1,200.000", status: "active" },
+  { code: "FAC-TWIST-01", nameAr: "مصنع أبو قمر", type: "external_factory", totalStockKg: "1,600.000", rawKg: "500.000", wipKg: "700.000", finishedKg: "400.000", status: "active" },
+  { code: "FAC-TWIST-02", nameAr: "مصنع النور", type: "external_factory", totalStockKg: "800.000", rawKg: "300.000", wipKg: "-50.000", finishedKg: "550.000", status: "negative_stock" },
   { code: "WH-ZONE-B", nameAr: "منطقة تخزين ب", type: "storage_zone", totalStockKg: "200.000", rawKg: "0.000", wipKg: "0.000", finishedKg: "200.000", status: "low_stock" },
 ];
 
@@ -86,15 +194,23 @@ export interface DemoParty {
 }
 
 export const DEMO_PARTIES: ReadonlyArray<DemoParty> = [
-  { code: "SUP-001", nameAr: "عثمان", type: "supplier", categoryAr: "مورد قطن", balanceEgp: "−45,200.00", activeOrders: 2, relationshipStart: "12/03/2023", status: "active", lastTransactionDate: "20/06/2026" },
-  { code: "SUP-002", nameAr: "كارجيل", type: "supplier", categoryAr: "مورد قطن مستورد", balanceEgp: "−120,800.00", activeOrders: 1, relationshipStart: "05/11/2022", status: "active", lastTransactionDate: "18/06/2026" },
-  { code: "SUP-003", nameAr: "النيل للتجارة", type: "supplier", categoryAr: "مورد قطن", balanceEgp: "0.00", activeOrders: 0, relationshipStart: "22/01/2024", status: "inactive", lastTransactionDate: "15/02/2026" },
-  { code: "CUS-001", nameAr: "عميل النسيج", type: "customer", categoryAr: "عميل مصنّع", balanceEgp: "+85,400.00", activeOrders: 3, relationshipStart: "10/05/2023", status: "active", lastTransactionDate: "20/06/2026" },
-  { code: "CUS-002", nameAr: "مصنع الغزال", type: "customer", categoryAr: "عميل مصنّع", balanceEgp: "+12,300.00", activeOrders: 1, relationshipStart: "18/09/2024", status: "active", lastTransactionDate: "19/06/2026" },
-  { code: "CUS-003", nameAr: "شركة الأطلس", type: "customer", categoryAr: "عميل تاجر", balanceEgp: "0.00", activeOrders: 0, relationshipStart: "03/07/2023", status: "inactive", lastTransactionDate: "30/04/2026" },
-  { code: "FAC-001", nameAr: "مصر ايران", type: "factory", categoryAr: "مصنع حلج/غزل", balanceEgp: "−45,000.00", activeOrders: 2, relationshipStart: "01/01/2022", status: "active", lastTransactionDate: "20/06/2026" },
-  { code: "FAC-002", nameAr: "زوى عبدالحميد", type: "factory", categoryAr: "مصنع برم", balanceEgp: "−28,000.00", activeOrders: 1, relationshipStart: "14/06/2022", status: "active", lastTransactionDate: "19/06/2026" },
-  { code: "FAC-003", nameAr: "زوى ابوقمر", type: "factory", categoryAr: "مصنع برم", balanceEgp: "−19,000.00", activeOrders: 1, relationshipStart: "20/02/2024", status: "active", lastTransactionDate: "18/06/2026" },
+  // Suppliers — using approved customer names (stakeholder uses same people as suppliers/buyers)
+  { code: "SUP-001", nameAr: "أحمد فتحي", type: "supplier", categoryAr: "مورد قطن", balanceEgp: "−45,200.00", activeOrders: 2, relationshipStart: "12/03/2023", status: "active", lastTransactionDate: "20/06/2026" },
+  { code: "SUP-002", nameAr: "حمدي عبد المنصف", type: "supplier", categoryAr: "مورد قطن مستورد", balanceEgp: "−120,800.00", activeOrders: 1, relationshipStart: "05/11/2022", status: "active", lastTransactionDate: "18/06/2026" },
+  { code: "SUP-003", nameAr: "مأمون النجار", type: "supplier", categoryAr: "مورد قطن", balanceEgp: "0.00", activeOrders: 0, relationshipStart: "22/01/2024", status: "inactive", lastTransactionDate: "15/02/2026" },
+  // Customers — stakeholder-approved local yarn buyers
+  { code: "CUS-001", nameAr: "محمد عباسي", type: "customer", categoryAr: "مشتري خيوط", balanceEgp: "+85,400.00", activeOrders: 3, relationshipStart: "10/05/2023", status: "active", lastTransactionDate: "20/06/2026" },
+  { code: "CUS-002", nameAr: "محمود الغوطي", type: "customer", categoryAr: "مشتري خيوط", balanceEgp: "+12,300.00", activeOrders: 1, relationshipStart: "18/09/2024", status: "active", lastTransactionDate: "19/06/2026" },
+  { code: "CUS-003", nameAr: "محمد الجمل", type: "customer", categoryAr: "مشتري خيوط", balanceEgp: "0.00", activeOrders: 0, relationshipStart: "03/07/2023", status: "inactive", lastTransactionDate: "30/04/2026" },
+  { code: "CUS-004", nameAr: "أحمد الجمل", type: "customer", categoryAr: "مشتري خيوط", balanceEgp: "+22,800.00", activeOrders: 1, relationshipStart: "14/02/2024", status: "active", lastTransactionDate: "18/06/2026" },
+  { code: "CUS-005", nameAr: "مرسي البكري", type: "customer", categoryAr: "مشتري خيوط", balanceEgp: "+8,650.00", activeOrders: 1, relationshipStart: "22/11/2023", status: "active", lastTransactionDate: "17/06/2026" },
+  // Yarn manufacturing companies — stakeholder-approved
+  { code: "FAC-001", nameAr: "شركة مصر إيران", type: "factory", categoryAr: "شركة تصنيع غزل", balanceEgp: "−45,000.00", activeOrders: 2, relationshipStart: "01/01/2022", status: "active", lastTransactionDate: "20/06/2026" },
+  { code: "FAC-002", nameAr: "شركة الدلتا", type: "factory", categoryAr: "شركة تصنيع غزل", balanceEgp: "−28,000.00", activeOrders: 1, relationshipStart: "14/06/2022", status: "active", lastTransactionDate: "19/06/2026" },
+  { code: "FAC-003", nameAr: "شركة شبين", type: "factory", categoryAr: "شركة تصنيع غزل", balanceEgp: "−19,000.00", activeOrders: 1, relationshipStart: "20/02/2024", status: "active", lastTransactionDate: "18/06/2026" },
+  // Twisting factories — stakeholder-approved
+  { code: "TWIST-001", nameAr: "مصنع أبو قمر", type: "factory", categoryAr: "مصنع زوي", balanceEgp: "−12,500.00", activeOrders: 1, relationshipStart: "10/08/2023", status: "active", lastTransactionDate: "19/06/2026" },
+  { code: "TWIST-002", nameAr: "مصنع النور", type: "factory", categoryAr: "مصنع زوي", balanceEgp: "−8,200.00", activeOrders: 1, relationshipStart: "05/04/2024", status: "active", lastTransactionDate: "18/06/2026" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -113,12 +229,12 @@ export interface DemoInventoryMovement {
 
 export const DEMO_INVENTORY_MOVEMENTS: ReadonlyArray<DemoInventoryMovement> = [
   { document: "RR-2026-0007", date: "20/06/2026", typeAr: "استلام خام", locationAr: "31اسكندرية", quantityKg: "1,250.000", direction: "in", stateAr: "مرسل للمراجعة" },
-  { document: "TR-2026-0004", date: "19/06/2026", typeAr: "نقل مخزون", locationAr: "مخزن مصر ايران", quantityKg: "320.000", direction: "transfer", stateAr: "مرسل للمراجعة" },
-  { document: "PR-2026-0003", date: "19/06/2026", typeAr: "استلام إنتاج من مصنع", locationAr: "زوى عبدالحميد", quantityKg: "640.000", direction: "in", stateAr: "مرسل للمراجعة" },
-  { document: "ISS-2026-0011", date: "18/06/2026", typeAr: "صرف خام لمصنع", locationAr: "مصر ايران", quantityKg: "800.000", direction: "out", stateAr: "معتمد" },
+  { document: "TR-2026-0004", date: "19/06/2026", typeAr: "نقل مخزون", locationAr: "مخزن شركة مصر إيران", quantityKg: "320.000", direction: "transfer", stateAr: "مرسل للمراجعة" },
+  { document: "PR-2026-0003", date: "19/06/2026", typeAr: "استلام إنتاج من مصنع", locationAr: "مصنع أبو قمر", quantityKg: "640.000", direction: "in", stateAr: "مرسل للمراجعة" },
+  { document: "ISS-2026-0011", date: "18/06/2026", typeAr: "صرف خام لمصنع", locationAr: "شركة مصر إيران", quantityKg: "800.000", direction: "out", stateAr: "معتمد" },
   { document: "SALE-2026-0012", date: "18/06/2026", typeAr: "صرف بيع", locationAr: "31اسكندرية", quantityKg: "410.000", direction: "out", stateAr: "معتمد" },
   { document: "ADJ-2026-0005", date: "17/06/2026", typeAr: "تسوية مخزون", locationAr: "31اسكندرية", quantityKg: "−12.500", direction: "out", stateAr: "معتمد" },
-  { document: "RR-2026-0006", date: "16/06/2026", typeAr: "استلام خام", locationAr: "مخزن مصر ايران", quantityKg: "980.000", direction: "in", stateAr: "معتمد" },
+  { document: "RR-2026-0006", date: "16/06/2026", typeAr: "استلام خام", locationAr: "مخزن شركة مصر إيران", quantityKg: "980.000", direction: "in", stateAr: "معتمد" },
   { document: "RET-2026-0002", date: "15/06/2026", typeAr: "استلام مرتجع", locationAr: "31اسكندرية", quantityKg: "75.000", direction: "in", stateAr: "معتمد" },
 ];
 
@@ -142,11 +258,11 @@ export interface DemoProductionOrder {
 }
 
 export const DEMO_PRODUCTION_ORDERS: ReadonlyArray<DemoProductionOrder> = [
-  { order: "PO-2026-0014", factoryNameAr: "مصر ايران", factoryCode: "FAC-001", rawMaterialAr: "قطن سودانى", rawIssuedKg: "5,000.000", wipKg: "1,400.000", finishedReceivedKg: "2,800.000", yieldPct: "84.0%", stageAr: "غزل", startDate: "05/06/2026", expectedFinishDate: "25/06/2026", stateAr: "جاري التشغيل" },
-  { order: "PO-2026-0013", factoryNameAr: "زوى عبدالحميد", factoryCode: "FAC-002", rawMaterialAr: "قطن مصري", rawIssuedKg: "1,800.000", wipKg: "700.000", finishedReceivedKg: "900.000", yieldPct: "88.9%", stageAr: "برم", startDate: "08/06/2026", expectedFinishDate: "22/06/2026", stateAr: "جاري التشغيل" },
-  { order: "PO-2026-0012", factoryNameAr: "زوى ابوقمر", factoryCode: "FAC-003", rawMaterialAr: "قطن سودانى", rawIssuedKg: "1,200.000", wipKg: "−50.000", finishedReceivedKg: "1,150.000", yieldPct: "95.8%", stageAr: "برم", startDate: "01/06/2026", expectedFinishDate: "20/06/2026", stateAr: "يحتاج مراجعة" },
-  { order: "PO-2026-0011", factoryNameAr: "مصر ايران", factoryCode: "FAC-001", rawMaterialAr: "قطن مصري", rawIssuedKg: "3,000.000", wipKg: "0.000", finishedReceivedKg: "2,580.000", yieldPct: "86.0%", stageAr: "غزل", startDate: "20/05/2026", expectedFinishDate: "10/06/2026", stateAr: "مكتمل" },
-  { order: "PO-2026-0010", factoryNameAr: "زوى عبدالحميد", factoryCode: "FAC-002", rawMaterialAr: "قطن سودانى", rawIssuedKg: "2,200.000", wipKg: "0.000", finishedReceivedKg: "1,920.000", yieldPct: "87.3%", stageAr: "برم", startDate: "12/05/2026", expectedFinishDate: "02/06/2026", stateAr: "مكتمل" },
+  { order: "PO-2026-0014", factoryNameAr: "شركة مصر إيران", factoryCode: "FAC-001", rawMaterialAr: "قطن سودانى", rawIssuedKg: "5,000.000", wipKg: "1,400.000", finishedReceivedKg: "2,800.000", yieldPct: "84.0%", stageAr: "غزل", startDate: "05/06/2026", expectedFinishDate: "25/06/2026", stateAr: "جاري التشغيل" },
+  { order: "PO-2026-0013", factoryNameAr: "مصنع أبو قمر", factoryCode: "TWIST-001", rawMaterialAr: "قطن مصري", rawIssuedKg: "1,800.000", wipKg: "700.000", finishedReceivedKg: "900.000", yieldPct: "88.9%", stageAr: "برم", startDate: "08/06/2026", expectedFinishDate: "22/06/2026", stateAr: "جاري التشغيل" },
+  { order: "PO-2026-0012", factoryNameAr: "مصنع النور", factoryCode: "TWIST-002", rawMaterialAr: "قطن سودانى", rawIssuedKg: "1,200.000", wipKg: "−50.000", finishedReceivedKg: "1,150.000", yieldPct: "95.8%", stageAr: "برم", startDate: "01/06/2026", expectedFinishDate: "20/06/2026", stateAr: "يحتاج مراجعة" },
+  { order: "PO-2026-0011", factoryNameAr: "شركة مصر إيران", factoryCode: "FAC-001", rawMaterialAr: "قطن مصري", rawIssuedKg: "3,000.000", wipKg: "0.000", finishedReceivedKg: "2,580.000", yieldPct: "86.0%", stageAr: "غزل", startDate: "20/05/2026", expectedFinishDate: "10/06/2026", stateAr: "مكتمل" },
+  { order: "PO-2026-0010", factoryNameAr: "مصنع أبو قمر", factoryCode: "TWIST-001", rawMaterialAr: "قطن سودانى", rawIssuedKg: "2,200.000", wipKg: "0.000", finishedReceivedKg: "1,920.000", yieldPct: "87.3%", stageAr: "برم", startDate: "12/05/2026", expectedFinishDate: "02/06/2026", stateAr: "مكتمل" },
 ];
 
 export interface DemoFactoryStockBalance {
@@ -160,9 +276,9 @@ export interface DemoFactoryStockBalance {
 }
 
 export const DEMO_FACTORY_STOCK_BALANCES: ReadonlyArray<DemoFactoryStockBalance> = [
-  { factoryCode: "FAC-001", factoryNameAr: "مصر ايران", rawKg: "1,200.000", wipKg: "1,400.000", finishedKg: "1,200.000", totalKg: "3,800.000", payableEgp: "45,000.00" },
-  { factoryCode: "FAC-002", factoryNameAr: "زوى عبدالحميد", rawKg: "500.000", wipKg: "700.000", finishedKg: "400.000", totalKg: "1,600.000", payableEgp: "28,000.00" },
-  { factoryCode: "FAC-003", factoryNameAr: "زوى ابوقمر", rawKg: "300.000", wipKg: "−50.000", finishedKg: "550.000", totalKg: "800.000", payableEgp: "19,000.00" },
+  { factoryCode: "FAC-001", factoryNameAr: "شركة مصر إيران", rawKg: "1,200.000", wipKg: "1,400.000", finishedKg: "1,200.000", totalKg: "3,800.000", payableEgp: "45,000.00" },
+  { factoryCode: "TWIST-001", factoryNameAr: "مصنع أبو قمر", rawKg: "500.000", wipKg: "700.000", finishedKg: "400.000", totalKg: "1,600.000", payableEgp: "28,000.00" },
+  { factoryCode: "TWIST-002", factoryNameAr: "مصنع النور", rawKg: "300.000", wipKg: "−50.000", finishedKg: "550.000", totalKg: "800.000", payableEgp: "19,000.00" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -181,11 +297,11 @@ export interface DemoSalesOrder {
 }
 
 export const DEMO_SALES_ORDERS: ReadonlyArray<DemoSalesOrder> = [
-  { order: "SALE-2026-0012", customerCode: "CUS-001", customerNameAr: "عميل النسيج", date: "18/06/2026", quantityKg: "410.000", amountEgp: "82,000.00", reservationStatusAr: "محجوز بالكامل", stateAr: "معتمد" },
-  { order: "SALE-2026-0011", customerCode: "CUS-002", customerNameAr: "مصنع الغزال", date: "17/06/2026", quantityKg: "180.000", amountEgp: "36,400.00", reservationStatusAr: "محجوز جزئياً", stateAr: "معتمد" },
-  { order: "SALE-2026-0010", customerCode: "CUS-001", customerNameAr: "عميل النسيج", date: "15/06/2026", quantityKg: "320.000", amountEgp: "67,200.00", reservationStatusAr: "محجوز بالكامل", stateAr: "معتمد" },
-  { order: "SALE-2026-0009", customerCode: "CUS-002", customerNameAr: "مصنع الغزال", date: "14/06/2026", quantityKg: "95.000", amountEgp: "18,050.00", reservationStatusAr: "بانتظار التحقق", stateAr: "مرسل للمراجعة" },
-  { order: "SALE-2026-0008", customerCode: "CUS-001", customerNameAr: "عميل النسيج", date: "12/06/2026", quantityKg: "260.000", amountEgp: "54,600.00", reservationStatusAr: "محجوز بالكامل", stateAr: "معتمد" },
+  { order: "SALE-2026-0012", customerCode: "CUS-001", customerNameAr: "محمد عباسي", date: "18/06/2026", quantityKg: "410.000", amountEgp: "82,000.00", reservationStatusAr: "محجوز بالكامل", stateAr: "معتمد" },
+  { order: "SALE-2026-0011", customerCode: "CUS-002", customerNameAr: "محمود الغوطي", date: "17/06/2026", quantityKg: "180.000", amountEgp: "36,400.00", reservationStatusAr: "محجوز جزئياً", stateAr: "معتمد" },
+  { order: "SALE-2026-0010", customerCode: "CUS-001", customerNameAr: "محمد عباسي", date: "15/06/2026", quantityKg: "320.000", amountEgp: "67,200.00", reservationStatusAr: "محجوز بالكامل", stateAr: "معتمد" },
+  { order: "SALE-2026-0009", customerCode: "CUS-002", customerNameAr: "محمود الغوطي", date: "14/06/2026", quantityKg: "95.000", amountEgp: "18,050.00", reservationStatusAr: "بانتظار التحقق", stateAr: "مرسل للمراجعة" },
+  { order: "SALE-2026-0008", customerCode: "CUS-004", customerNameAr: "أحمد الجمل", date: "12/06/2026", quantityKg: "260.000", amountEgp: "54,600.00", reservationStatusAr: "محجوز بالكامل", stateAr: "معتمد" },
 ];
 
 export interface DemoCustomerBalance {
@@ -198,9 +314,9 @@ export interface DemoCustomerBalance {
 }
 
 export const DEMO_CUSTOMER_BALANCES: ReadonlyArray<DemoCustomerBalance> = [
-  { customerCode: "CUS-001", customerNameAr: "عميل النسيج", totalSalesEgp: "203,800.00", paidEgp: "118,400.00", outstandingEgp: "85,400.00", statusAr: "مستحق" },
-  { customerCode: "CUS-002", customerNameAr: "مصنع الغزال", totalSalesEgp: "54,450.00", paidEgp: "42,150.00", outstandingEgp: "12,300.00", statusAr: "مستحق" },
-  { customerCode: "CUS-003", customerNameAr: "شركة الأطلس", totalSalesEgp: "0.00", paidEgp: "0.00", outstandingEgp: "0.00", statusAr: "—" },
+  { customerCode: "CUS-001", customerNameAr: "محمد عباسي", totalSalesEgp: "203,800.00", paidEgp: "118,400.00", outstandingEgp: "85,400.00", statusAr: "مستحق" },
+  { customerCode: "CUS-002", customerNameAr: "محمود الغوطي", totalSalesEgp: "54,450.00", paidEgp: "42,150.00", outstandingEgp: "12,300.00", statusAr: "مستحق" },
+  { customerCode: "CUS-003", customerNameAr: "محمد الجمل", totalSalesEgp: "0.00", paidEgp: "0.00", outstandingEgp: "0.00", statusAr: "—" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -220,9 +336,9 @@ export interface DemoActivityStrip {
 
 export const DEMO_ACTIVITY_STRIPS: ReadonlyArray<DemoActivityStrip> = [
   { id: "act-1", document: "RR-2026-0007", date: "20/06/2026", timeAr: "10:24", categoryAr: "استلام خام", summaryAr: "تم إرسال استلام خام رقم RR-2026-0007 للمراجعة من قبل عامل مخزن 1 — يحتاج اعتماد ومُراجعة السعر.", actorAr: "عامل مخزن 1", severity: "info" },
-  { id: "act-2", document: "PR-2026-0003", date: "19/06/2026", timeAr: "15:42", categoryAr: "استلام إنتاج", summaryAr: "تم استلام إنتاج من مصنع زوى عبدالحميد — يحتاج مراجعة تكلفة التشغيل قبل الاعتماد.", actorAr: "عامل إنتاج 1", severity: "warning" },
-  { id: "act-3", document: "PO-2026-0012", date: "18/06/2026", timeAr: "09:10", categoryAr: "إنتاج خارجي", summaryAr: "تنبيه: أمر إنتاج PO-2026-0012 لدى مصنع زوى ابوقمر يظهر مخزون تحت التشغيل بالسالب — يحتاج تحقق فوري.", actorAr: "النظام", severity: "danger" },
-  { id: "act-4", document: "SALE-2026-0012", date: "18/06/2026", timeAr: "11:30", categoryAr: "مبيعات", summaryAr: "تم اعتماد أمر البيع SALE-2026-0012 للعميل عميل النسيج بقيمة 82,000.00 جنيه وحجز المخزون بالكامل.", actorAr: "محاسب المراجعة", severity: "success" },
+  { id: "act-2", document: "PR-2026-0003", date: "19/06/2026", timeAr: "15:42", categoryAr: "استلام إنتاج", summaryAr: "تم استلام إنتاج من مصنع أبو قمر — يحتاج مراجعة تكلفة التشغيل قبل الاعتماد.", actorAr: "مسؤول متابعة تشغيل الخيوط", severity: "warning" },
+  { id: "act-3", document: "PO-2026-0012", date: "18/06/2026", timeAr: "09:10", categoryAr: "إنتاج خارجي", summaryAr: "تنبيه: أمر إنتاج PO-2026-0012 لدى مصنع النور يظهر مخزون تحت التشغيل بالسالب — يحتاج تحقق فوري.", actorAr: "النظام", severity: "danger" },
+  { id: "act-4", document: "SALE-2026-0012", date: "18/06/2026", timeAr: "11:30", categoryAr: "مبيعات", summaryAr: "تم اعتماد أمر البيع SALE-2026-0012 للعميل محمد عباسي بقيمة 82,000.00 جنيه وحجز المخزون بالكامل.", actorAr: "المدير المالي", severity: "success" },
   { id: "act-5", document: "MIG-2026-OPEN", date: "18/06/2026", timeAr: "08:00", categoryAr: "ترحيل تاريخي", summaryAr: "تحذير ترحيل تاريخي: يوجد 3 سجلات قديمة لا تزال مفتوحة للمراجعة قبل إغلاق مرحلة الترحيل.", actorAr: "مالك النظام", severity: "warning" },
   { id: "act-6", document: "ADJ-2026-0005", date: "17/06/2026", timeAr: "14:15", categoryAr: "تسوية مخزون", summaryAr: "تم اعتماد تسوية مخزون بكمية −12.500 كجم في موقع 31اسكندرية بعد جرد ربع سنوي.", actorAr: "محاسب المراجعة", severity: "info" },
 ];
@@ -242,7 +358,7 @@ export interface DemoNotification {
 
 export const DEMO_NOTIFICATIONS: ReadonlyArray<DemoNotification> = [
   { id: "n-1", titleAr: "مراجعة عاجلة مطلوبة", bodyAr: "أمر الإنتاج PO-2026-0012 يحتاج مراجعة تكلفة التشغيل قبل الإغلاق.", date: "20/06/2026", severity: "warning", read: false },
-  { id: "n-2", titleAr: "مخزون سالب", bodyAr: "موقع زوى ابوقمر يظهر رصيد تحت التشغيل بالسالب — تحقق من حركات الإصدار والاستلام.", date: "20/06/2026", severity: "danger", read: false },
+  { id: "n-2", titleAr: "مخزون سالب", bodyAr: "موقع مصنع النور يظهر رصيد تحت التشغيل بالسالب — تحقق من حركات الإصدار والاستلام.", date: "20/06/2026", severity: "danger", read: false },
   { id: "n-3", titleAr: "طلب مراجعة جديد", bodyAr: "وصل استلام خام RR-2026-0007 بانتظار اعتمادك.", date: "20/06/2026", severity: "info", read: false },
   { id: "n-4", titleAr: "تم الاعتماد", bodyAr: "تم اعتماد أمر البيع SALE-2026-0012 بنجاح.", date: "18/06/2026", severity: "success", read: true },
   { id: "n-5", titleAr: "تحذير ترحيل تاريخي", bodyAr: "3 سجلات قديمة لا تزال مفتوحة للمراجعة.", date: "18/06/2026", severity: "warning", read: true },
@@ -337,9 +453,9 @@ export const DEMO_DASHBOARD_ATTENTION_ITEMS = [
 ];
 
 export const DEMO_DASHBOARD_FACTORY_BALANCES = [
-  { factoryNameAr: "مصر ايران", stockKg: "3,800.000", payableEgp: "45,000.00" },
-  { factoryNameAr: "زوى عبدالحميد", stockKg: "1,600.000", payableEgp: "28,000.00" },
-  { factoryNameAr: "زوى ابوقمر", stockKg: "800.000", payableEgp: "19,000.00" },
+  { factoryNameAr: "شركة مصر إيران", stockKg: "3,800.000", payableEgp: "45,000.00" },
+  { factoryNameAr: "مصنع أبو قمر", stockKg: "1,600.000", payableEgp: "28,000.00" },
+  { factoryNameAr: "مصنع النور", stockKg: "800.000", payableEgp: "19,000.00" },
 ];
 
 export const DEMO_DASHBOARD_INVENTORY_BY_LOCATION = [
@@ -414,7 +530,7 @@ export interface DemoYarnStockRow {
 export const DEMO_YARN_STOCK: ReadonlyArray<DemoYarnStockRow> = [
   {
     storageDate: "12/05/2026",
-    companyAr: "قمح دلتا",
+    companyAr: "شركة مصر إيران",
     orderNumber: "10370",
     yarnCount: "2/24",
     twistSingle: "18.5",
@@ -436,7 +552,7 @@ export const DEMO_YARN_STOCK: ReadonlyArray<DemoYarnStockRow> = [
   },
   {
     storageDate: "14/05/2026",
-    companyAr: "قمح دلتا",
+    companyAr: "شركة الدلتا",
     orderNumber: "10371",
     yarnCount: "1/24",
     twistSingle: "16.2",
@@ -458,7 +574,7 @@ export const DEMO_YARN_STOCK: ReadonlyArray<DemoYarnStockRow> = [
   },
   {
     storageDate: "20/05/2026",
-    companyAr: "نسر النيل",
+    companyAr: "شركة شبين",
     orderNumber: "10378",
     yarnCount: "2/24",
     twistSingle: "19.1",
@@ -480,7 +596,7 @@ export const DEMO_YARN_STOCK: ReadonlyArray<DemoYarnStockRow> = [
   },
   {
     storageDate: "01/06/2026",
-    companyAr: "غزل الشرق",
+    companyAr: "شركة الدقهلية",
     orderNumber: "10493",
     yarnCount: "1/24",
     twistSingle: "15.8",
@@ -502,7 +618,7 @@ export const DEMO_YARN_STOCK: ReadonlyArray<DemoYarnStockRow> = [
   },
   {
     storageDate: "08/06/2026",
-    companyAr: "خيوط الواحة",
+    companyAr: "شركة الوجه القبلي",
     orderNumber: "10512",
     yarnCount: "2/30",
     twistSingle: "21.4",
@@ -524,7 +640,7 @@ export const DEMO_YARN_STOCK: ReadonlyArray<DemoYarnStockRow> = [
   },
   {
     storageDate: "15/06/2026",
-    companyAr: "نسر النيل",
+    companyAr: "شركة مصر إيران",
     orderNumber: "10534",
     yarnCount: "2/24",
     twistSingle: "18.9",
@@ -559,10 +675,10 @@ export interface DemoYarnCompanyBalance {
 }
 
 export const DEMO_YARN_BY_COMPANY: ReadonlyArray<DemoYarnCompanyBalance> = [
-  { companyAr: "قمح دلتا", currentBalanceKg: "2,460.000", totalProducedKg: "9,550.000", balesCount: "58" },
-  { companyAr: "نسر النيل", currentBalanceKg: "3,130.000", totalProducedKg: "9,500.000", balesCount: "64" },
-  { companyAr: "غزل الشرق", currentBalanceKg: "780.000", totalProducedKg: "3,820.000", balesCount: "26" },
-  { companyAr: "خيوط الواحة", currentBalanceKg: "1,420.000", totalProducedKg: "4,860.000", balesCount: "32" },
+  { companyAr: "شركة مصر إيران", currentBalanceKg: "2,460.000", totalProducedKg: "9,550.000", balesCount: "58" },
+  { companyAr: "شركة الدلتا", currentBalanceKg: "3,130.000", totalProducedKg: "9,500.000", balesCount: "64" },
+  { companyAr: "شركة شبين", currentBalanceKg: "780.000", totalProducedKg: "3,820.000", balesCount: "26" },
+  { companyAr: "شركة الوجه القبلي", currentBalanceKg: "1,420.000", totalProducedKg: "4,860.000", balesCount: "32" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -684,14 +800,16 @@ export const DEMO_YARN_ENTRY_SECTIONS: ReadonlyArray<{
 import type { DemoFormField, DemoFormSection } from "@/components/demo/demo-form-shared";
 
 // --- 1a. شراء خامات (Purchase Raw Materials) ---
+// Uses stakeholder-approved names from DEMO_SUPPLIERS, DEMO_RAW_TYPES, etc.
+// Every select field has customLabelAr for "غير موجود بالقائمة" behavior.
 
 export const PURCHASE_RAW_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "بيانات أساسية",
     fields: [
-      { labelAr: "نوع الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
-      { labelAr: "صنف الخام", defaultValue: "السودان", ltr: false, type: "select", options: ["السودان", "مصر", "أمريكا"] },
-      { labelAr: "اسم المورد", defaultValue: "عثمان", ltr: false, type: "select", options: ["عثمان", "كارجيل", "النيل للتجارة"] },
+      { labelAr: "نوع الخام", defaultValue: DEMO_RAW_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_TYPES], customLabelAr: "اكتب نوع الخام" },
+      { labelAr: "صنف الخام", defaultValue: DEMO_RAW_GRADES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_GRADES], customLabelAr: "اكتب صنف الخام" },
+      { labelAr: "اسم المورد", defaultValue: DEMO_SUPPLIERS[0]!, ltr: false, type: "select", options: [...DEMO_SUPPLIERS], customLabelAr: "اكتب اسم المورد" },
       { labelAr: "رقم رسالة", defaultValue: "PR-2026-0042", ltr: true },
       { labelAr: "تاريخ استلام الخام / تاريخ التخزين", defaultValue: "20/06/2026", ltr: true },
       { labelAr: "موسم إنتاج الخام", defaultValue: "2024/2025", ltr: true },
@@ -715,7 +833,7 @@ export const PURCHASE_RAW_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "التخزين والحركة",
     fields: [
-      { labelAr: "مكان التخزين", defaultValue: "31اسكندرية", ltr: false, type: "select", options: ["31اسكندرية", "مخزن مصر ايران", "منطقة تخزين ب"] },
+      { labelAr: "مكان التخزين", defaultValue: DEMO_STORAGE_LOCATIONS[0]!, ltr: false, type: "select", options: [...DEMO_STORAGE_LOCATIONS], customLabelAr: "اكتب مكان التخزين" },
     ],
   },
   {
@@ -732,14 +850,14 @@ export const PURCHASE_YARN_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "بيانات أساسية",
     fields: [
-      { labelAr: "نمرة الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30", "2/20"] },
-      { labelAr: "نوع الخيط", defaultValue: "قطن مروس", ltr: false, type: "select", options: ["قطن مروس", "قطن فرد", "قطن مزوي"] },
-      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
+      { labelAr: "نمرة الخيط", defaultValue: DEMO_YARN_COUNTS[0]!, ltr: true, type: "select", options: [...DEMO_YARN_COUNTS], customLabelAr: "اكتب نمرة الخيط" },
+      { labelAr: "نوع الخيط", defaultValue: DEMO_YARN_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_YARN_TYPES], customLabelAr: "اكتب نوع الخيط" },
+      { labelAr: "الخام", defaultValue: DEMO_RAW_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_TYPES], customLabelAr: "اكتب نوع الخام" },
       { labelAr: "معامل برم الخيط", defaultValue: "18.5", ltr: true },
       { labelAr: "التاريخ أو رقم الرسالة / رقم اللوط", defaultValue: "YPR-2026-0015", ltr: true },
-      { labelAr: "لون الكونز", defaultValue: "أبيض", ltr: false, type: "select", options: ["أبيض", "أصفر", "أخضر"] },
-      { labelAr: "العميل", defaultValue: "عميل النسيج", ltr: false, type: "select", options: ["عميل النسيج", "مصنع الغزال", "شركة الأطلس"] },
-      { labelAr: "البلد", defaultValue: "مصر", ltr: false, type: "select", options: ["مصر", "السودان", "تركيا"] },
+      { labelAr: "لون الكونز", defaultValue: DEMO_CONE_COLORS[0]!, ltr: false, type: "select", options: [...DEMO_CONE_COLORS], customLabelAr: "اكتب لون الكونز" },
+      { labelAr: "العميل", defaultValue: DEMO_CUSTOMERS[0]!, ltr: false, type: "select", options: [...DEMO_CUSTOMERS], customLabelAr: "اكتب اسم العميل" },
+      { labelAr: "البلد", defaultValue: DEMO_COUNTRIES[0]!, ltr: false, type: "select", options: [...DEMO_COUNTRIES], customLabelAr: "اكتب اسم البلد" },
     ],
   },
   {
@@ -770,9 +888,9 @@ export const SALES_RAW_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "بيانات أساسية",
     fields: [
-      { labelAr: "نوع الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
-      { labelAr: "صنف الخام", defaultValue: "السودان", ltr: false, type: "select", options: ["السودان", "مصر", "أمريكا"] },
-      { labelAr: "المشتري / العميل", defaultValue: "عميل النسيج", ltr: false, type: "select", options: ["عميل النسيج", "مصنع الغزال", "شركة الأطلس"] },
+      { labelAr: "نوع الخام", defaultValue: DEMO_RAW_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_TYPES], customLabelAr: "اكتب نوع الخام" },
+      { labelAr: "صنف الخام", defaultValue: DEMO_RAW_GRADES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_GRADES], customLabelAr: "اكتب صنف الخام" },
+      { labelAr: "المشتري / العميل", defaultValue: DEMO_CUSTOMERS[0]!, ltr: false, type: "select", options: [...DEMO_CUSTOMERS], customLabelAr: "اكتب اسم العميل" },
       { labelAr: "رقم الرسالة", defaultValue: "PR-2026-0038", ltr: true },
       { labelAr: "التاريخ", defaultValue: "20/06/2026", ltr: true },
     ],
@@ -808,12 +926,12 @@ export const SALES_YARN_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "بيانات أساسية",
     fields: [
-      { labelAr: "العميل", defaultValue: "عميل النسيج", ltr: false, type: "select", options: ["عميل النسيج", "مصنع الغزال", "شركة الأطلس"] },
-      { labelAr: "البلد", defaultValue: "مصر", ltr: false, type: "select", options: ["مصر", "السودان", "تركيا"] },
+      { labelAr: "العميل", defaultValue: DEMO_CUSTOMERS[0]!, ltr: false, type: "select", options: [...DEMO_CUSTOMERS], customLabelAr: "اكتب اسم العميل" },
+      { labelAr: "البلد", defaultValue: DEMO_COUNTRIES[0]!, ltr: false, type: "select", options: [...DEMO_COUNTRIES], customLabelAr: "اكتب اسم البلد" },
       { labelAr: "التاريخ / تاريخ البيع", defaultValue: "20/06/2026", ltr: true },
-      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
-      { labelAr: "نوعه", defaultValue: "قطن مروس", ltr: false, type: "select", options: ["قطن مروس", "قطن فرد", "قطن مزوي"] },
-      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري"] },
+      { labelAr: "الخيط", defaultValue: DEMO_YARN_COUNTS[0]!, ltr: true, type: "select", options: [...DEMO_YARN_COUNTS], customLabelAr: "اكتب نمرة الخيط" },
+      { labelAr: "نوعه", defaultValue: DEMO_YARN_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_YARN_TYPES], customLabelAr: "اكتب نوع الخيط" },
+      { labelAr: "الخام", defaultValue: DEMO_RAW_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_TYPES], customLabelAr: "اكتب نوع الخام" },
     ],
   },
   {
@@ -822,9 +940,9 @@ export const SALES_YARN_SECTIONS: ReadonlyArray<DemoFormSection> = [
       { labelAr: "معامل البرم", defaultValue: "18.5", ltr: true },
       { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
       { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
-      { labelAr: "مصنع إنتاج الفرد / الشركة المنتجة للفرد", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
-      { labelAr: "مصنع إنتاج الزوي / الشركة المنتجة للزوي", defaultValue: "زوى عبدالحميد", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
-      { labelAr: "لون الكونز", defaultValue: "أبيض", ltr: false, type: "select", options: ["أبيض", "أصفر", "أخضر"] },
+      { labelAr: "مصنع إنتاج الفرد / الشركة المنتجة للفرد", defaultValue: DEMO_YARN_COMPANIES[0]!, ltr: false, type: "select", options: [...DEMO_YARN_COMPANIES], customLabelAr: "اكتب اسم الشركة المنتجة للفرد" },
+      { labelAr: "مصنع إنتاج الزوي / الشركة المنتجة للزوي", defaultValue: DEMO_TWISTING_FACTORIES[0]!, ltr: false, type: "select", options: [...DEMO_TWISTING_FACTORIES], customLabelAr: "اكتب اسم مصنع الزوي" },
+      { labelAr: "لون الكونز", defaultValue: DEMO_CONE_COLORS[0]!, ltr: false, type: "select", options: [...DEMO_CONE_COLORS], customLabelAr: "اكتب لون الكونز" },
     ],
   },
   {
@@ -859,13 +977,13 @@ export const OPERATION_SPINNING_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "بيانات أساسية",
     fields: [
-      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
-      { labelAr: "نوعه", defaultValue: "قطن فرد", ltr: false, type: "select", options: ["قطن فرد", "قطن مروس", "قطن مزوي"] },
-      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري"] },
+      { labelAr: "الخيط", defaultValue: DEMO_YARN_COUNTS[0]!, ltr: true, type: "select", options: [...DEMO_YARN_COUNTS], customLabelAr: "اكتب نمرة الخيط" },
+      { labelAr: "نوعه", defaultValue: DEMO_YARN_TYPES[1]!, ltr: false, type: "select", options: [...DEMO_YARN_TYPES], customLabelAr: "اكتب نوع الخيط" },
+      { labelAr: "الخام", defaultValue: DEMO_RAW_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_TYPES], customLabelAr: "اكتب نوع الخام" },
       { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
       { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
-      { labelAr: "الشركة المنتجة للفرد", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
-      { labelAr: "الشركة المنتجة للزوي", defaultValue: "زوى عبدالحميد", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
+      { labelAr: "الشركة المنتجة للفرد", defaultValue: DEMO_YARN_COMPANIES[0]!, ltr: false, type: "select", options: [...DEMO_YARN_COMPANIES], customLabelAr: "اكتب اسم الشركة المنتجة للفرد" },
+      { labelAr: "الشركة المنتجة للزوي", defaultValue: DEMO_TWISTING_FACTORIES[0]!, ltr: false, type: "select", options: [...DEMO_TWISTING_FACTORIES], customLabelAr: "اكتب اسم مصنع الزوي" },
     ],
   },
   {
@@ -900,13 +1018,13 @@ export const OPERATION_TWISTING_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "بيانات أساسية",
     fields: [
-      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
-      { labelAr: "نوعه", defaultValue: "قطن مزوي", ltr: false, type: "select", options: ["قطن مزوي", "قطن فرد", "قطن مروس"] },
-      { labelAr: "الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري"] },
+      { labelAr: "الخيط", defaultValue: DEMO_YARN_COUNTS[0]!, ltr: true, type: "select", options: [...DEMO_YARN_COUNTS], customLabelAr: "اكتب نمرة الخيط" },
+      { labelAr: "نوعه", defaultValue: DEMO_YARN_TYPES[2]!, ltr: false, type: "select", options: [...DEMO_YARN_TYPES], customLabelAr: "اكتب نوع الخيط" },
+      { labelAr: "الخام", defaultValue: DEMO_RAW_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_TYPES], customLabelAr: "اكتب نوع الخام" },
       { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
       { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
-      { labelAr: "الشركة المنتجة للغزل", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
-      { labelAr: "مصنع الزوي", defaultValue: "زوى عبدالحميد", ltr: false, type: "select", options: ["زوى عبدالحميد", "زوى ابوقمر", "مصر ايران"] },
+      { labelAr: "الشركة المنتجة للغزل", defaultValue: DEMO_YARN_COMPANIES[0]!, ltr: false, type: "select", options: [...DEMO_YARN_COMPANIES], customLabelAr: "اكتب اسم الشركة المنتجة للغزل" },
+      { labelAr: "مصنع الزوي", defaultValue: DEMO_TWISTING_FACTORIES[0]!, ltr: false, type: "select", options: [...DEMO_TWISTING_FACTORIES], customLabelAr: "اكتب اسم مصنع الزوي" },
     ],
   },
   {
@@ -924,7 +1042,7 @@ export const OPERATION_TWISTING_SECTIONS: ReadonlyArray<DemoFormSection> = [
     fields: [
       { labelAr: "تاريخ الإنتاج", defaultValue: "18/06/2026", ltr: true },
       { labelAr: "ملاحظات", defaultValue: "تم التشغيل بنجاح", ltr: false, type: "textarea" },
-      { labelAr: "مكان التخزين", defaultValue: "مخازن", ltr: false, type: "select", options: ["مخازن", "31اسكندرية", "مخزن مصر ايران"] },
+      { labelAr: "مكان التخزين", defaultValue: DEMO_STORAGE_LOCATIONS[0]!, ltr: false, type: "select", options: [...DEMO_STORAGE_LOCATIONS], customLabelAr: "اكتب مكان التخزين" },
     ],
   },
 ];
@@ -935,12 +1053,12 @@ export const YARN_MOVEMENT_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "بيانات أساسية",
     fields: [
-      { labelAr: "الخيط", defaultValue: "2/24", ltr: true, type: "select", options: ["2/24", "1/24", "2/30"] },
-      { labelAr: "نوع الخام", defaultValue: "قطن سودانى", ltr: false, type: "select", options: ["قطن سودانى", "قطن مصري", "قطن أمريكي"] },
+      { labelAr: "الخيط", defaultValue: DEMO_YARN_COUNTS[0]!, ltr: true, type: "select", options: [...DEMO_YARN_COUNTS], customLabelAr: "اكتب نمرة الخيط" },
+      { labelAr: "نوع الخام", defaultValue: DEMO_RAW_TYPES[0]!, ltr: false, type: "select", options: [...DEMO_RAW_TYPES], customLabelAr: "اكتب نوع الخام" },
       { labelAr: "معامل برم الفرد", defaultValue: "18.5", ltr: true },
       { labelAr: "معامل برم الزوي", defaultValue: "9.2", ltr: true },
-      { labelAr: "الشركة المنتجة للخيط", defaultValue: "مصر ايران", ltr: false, type: "select", options: ["مصر ايران", "زوى عبدالحميد", "زوى ابوقمر"] },
-      { labelAr: "جهة النقل", defaultValue: "مخازن", ltr: false, type: "select", options: ["مخازن", "31اسكندرية", "مخزن مصر ايران", "مصنع الغزال"] },
+      { labelAr: "الشركة المنتجة للخيط", defaultValue: DEMO_YARN_COMPANIES[0]!, ltr: false, type: "select", options: [...DEMO_YARN_COMPANIES], customLabelAr: "اكتب اسم الشركة المنتجة للخيط" },
+      { labelAr: "جهة النقل", defaultValue: DEMO_STORAGE_LOCATIONS[0]!, ltr: false, type: "select", options: [...DEMO_STORAGE_LOCATIONS, ...DEMO_CUSTOMERS.slice(0, 3)], customLabelAr: "اكتب جهة النقل" },
       { labelAr: "التاريخ", defaultValue: "20/06/2026", ltr: true },
     ],
   },
@@ -954,7 +1072,7 @@ export const YARN_MOVEMENT_SECTIONS: ReadonlyArray<DemoFormSection> = [
   {
     titleAr: "الغرض والملاحظات",
     fields: [
-      { labelAr: "الغرض من النقل", defaultValue: "نقل للبيع", ltr: false, type: "select", options: ["نقل للبيع", "نقل للتخزين", "نقل للتشغيل", "نقل للعميل"] },
+      { labelAr: "الغرض من النقل", defaultValue: DEMO_TRANSFER_PURPOSES[0]!, ltr: false, type: "select", options: [...DEMO_TRANSFER_PURPOSES], customLabelAr: "اكتب الغرض من النقل" },
       { labelAr: "ملاحظات", defaultValue: "نقل داخلي بين المخازن", ltr: false, type: "textarea" },
     ],
   },

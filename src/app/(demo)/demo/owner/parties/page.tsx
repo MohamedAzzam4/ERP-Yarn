@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { cn } from "@/lib/cn";
 import { DemoShell } from "@/components/demo/demo-shell";
-import { DemoPageHeader, DemoFooterNote } from "@/components/demo/demo-charts";
+import { DemoCompactHeading, DemoFooterNote } from "@/components/demo/demo-charts";
 import { DEMO_PARTIES } from "@/lib/fixtures/demo-fixtures";
 
 function parseNumeric(value: string): number {
@@ -117,7 +117,7 @@ export default function DemoPartiesPage() {
       userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "البيانات الأساسية" }, { label: "الموردون والعملاء والمصانع" }]}
     >
-      <DemoPageHeader
+      <DemoCompactHeading
         titleAr="الموردون والعملاء والمصانع"
         subtitleAr="قوائم البيانات الأساسية مع الأرصدة وملخصات العلاقات — الحالة النشطة/غير النشطة للعرض فقط"
       />

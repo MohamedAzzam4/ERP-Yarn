@@ -30,7 +30,7 @@ import {
   DemoReviewTrendChart,
   DemoStackedBar,
   DemoKpiCard,
-  DemoPageHeader,
+  DemoCompactHeading,
   DemoFooterNote,
 } from "@/components/demo/demo-charts";
 import {
@@ -96,7 +96,7 @@ export default function DemoOwnerDashboardPage() {
       userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "لوحة المعلومات" }, { label: "لوحة التحكم" }]}
     >
-      <DemoPageHeader
+      <DemoCompactHeading
         titleAr="لوحة التحكم"
         subtitleAr="نظرة عامة سريعة على أداء النظام — اضغط على أي بطاقة KPI للانتقال إلى التفاصيل"
       />
