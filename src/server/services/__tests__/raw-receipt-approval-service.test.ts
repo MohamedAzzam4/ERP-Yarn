@@ -137,6 +137,7 @@ class MockInventoryLedgerTransactionHandle implements InventoryLedgerTransaction
     return updated;
   }
   async listMovementsForBalance(): Promise<any[]> { return []; }
+  async listAllBalances(): Promise<any[]> { return []; }
 }
 
 class MockSubledgerTransactionHandle implements SubledgerTransactionHandle {

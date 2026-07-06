@@ -157,6 +157,9 @@ export interface InventoryLedgerTransactionHandle {
 
   /** List all movements for an item/location (for reconciliation). */
   listMovementsForBalance(tenantId: string, itemId: string, locationId: string): Promise<StockMovement[]>;
+
+  /** List all balance rows for a tenant (for batch reconciliation). WP-03-01. */
+  listAllBalances(tenantId: string): Promise<InventoryBalance[]>;
 }
 
 // ---------------------------------------------------------------------------

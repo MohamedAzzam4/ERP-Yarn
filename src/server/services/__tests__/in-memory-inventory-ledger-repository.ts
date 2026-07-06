@@ -128,4 +128,8 @@ export class InMemoryInventoryLedgerRepository implements InventoryLedgerTransac
         (m.toLocationId === locationId || m.fromLocationId === locationId),
     );
   }
+
+  async listAllBalances(tenantId: string): Promise<InventoryBalance[]> {
+    return [...this.balances.values()].filter((b) => b.tenantId === tenantId);
+  }
 }

@@ -269,6 +269,9 @@ export class TransactionalTestStore {
         (m) => m.tenantId === tenantId && m.itemId === itemId && (m.toLocationId === locationId || m.fromLocationId === locationId),
       );
     },
+    listAllBalances: async (tenantId: string): Promise<InventoryBalance[]> => {
+      return [...this.activeBalances.values()].filter((b) => b.tenantId === tenantId);
+    },
   };
 
   // --- Audit handle (AuditTransactionHandle) ---

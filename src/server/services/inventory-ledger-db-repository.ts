@@ -28,7 +28,7 @@
  * TransactionalTestStore instead (no DB needed).
  */
 import "server-only";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
 import { stockMovements, inventoryBalances } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -244,14 +244,31 @@ export class InventoryLedgerDbRepository implements InventoryLedgerTransactionHa
   }
 
   async listMovementsForBalance(tenantId: string, itemId: string, locationId: string): Promise<StockMovement[]> {
+    // List movements where this location is EITHER the source or destination.
+    // This is needed for full reconciliation (WP-03-01) which must account
+    // for transfers OUT of this location (-qty) as well as receipts IN (+qty).
     return this.db
       .select()
       .from(stockMovements)
       .where(and(
         eq(stockMovements.tenantId, tenantId),
         eq(stockMovements.itemId, itemId),
-        eq(stockMovements.toLocationId, locationId),
+        or(
+          eq(stockMovements.toLocationId, locationId),
+          eq(stockMovements.fromLocationId, locationId),
+        ),
       ));
+  }
+
+  /**
+   * List all balance rows for a tenant (WP-03-01 batch reconciliation).
+   * Bounded by tenant — no global search.
+   */
+  async listAllBalances(tenantId: string): Promise<InventoryBalance[]> {
+    return this.db
+      .select()
+      .from(inventoryBalances)
+      .where(eq(inventoryBalances.tenantId, tenantId));
   }
 }
 

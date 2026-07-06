@@ -121,6 +121,26 @@ export function isNegativeKg(value: string): boolean {
   return compareKg(value, "0.000") < 0;
 }
 
+/**
+ * Subtract b from a. Returns a normalized 3-decimal string.
+ * "1500.000" - "500.000" → "1000.000"
+ * "500.000" - "1500.000" → "-1000.000" (negative result allowed for reconciliation)
+ */
+export function subtractKg(a: string, b: string): string {
+  const aNorm = normalizeKg(a);
+  const bNorm = normalizeKg(b);
+  const aVal = toScaledInt(aNorm);
+  const bVal = toScaledInt(bNorm);
+  const diff = aVal - bVal;
+  const diffStr = diff.toString();
+  const isNeg = diffStr.startsWith("-");
+  const absStr = isNeg ? diffStr.slice(1) : diffStr;
+  const padded = absStr.padStart(4, "0");
+  const intPart = padded.slice(0, -3) || "0";
+  const fracPart = padded.slice(-3);
+  return `${isNeg ? "-" : ""}${intPart}.${fracPart}`;
+}
+
 // --- Internal helper: convert normalized string to scaled BigInt ---
 
 function toScaledInt(normalized: string): bigint {
