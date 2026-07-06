@@ -174,7 +174,7 @@ export interface NewMovementInput {
   movementStatus: string;
   itemId: string;
   fromLocationId: string | null;
-  toLocationId: string;
+  toLocationId: string | null;
   quantityKg: string;
   movementDate: string;
   sourceDocumentType: string;
@@ -795,19 +795,27 @@ export class InventoryLedgerService {
     }
     requireTenantMatch(user, balance.tenantId);
 
-    // For negative adjustment, check sufficient stock (but allow negative — it's a visible alert, not silently blocked)
-    // Contract 04 §16: "Negatives are controlled/visible."
-    // We DO allow negative results from adjustment — the reconciliation will flag it.
+    // Contract 04 §8: "Positive absolute quantities; explicit movement matrix."
+    // The DB CHECK constraint requires quantity_kg > 0.
+    // For negative adjustments, we store the ABSOLUTE value and use
+    // fromLocationId (source) to indicate a decrease.
+    // For positive adjustments, we use toLocationId (destination) for an increase.
+    // The reconciliation service interprets: FROM location = -qty, TO location = +qty.
+    const isNegative = normalizedQty.startsWith("-");
+    const absQty = isNegative ? normalizedQty.slice(1) : normalizedQty;
 
     const movement = await this.deps.ledger.insertMovement({
       tenantId, docNo: docNoResult.docNo, movementType: "inventory_adjustment", movementStatus: "posted",
-      itemId: input.itemId, fromLocationId: null, toLocationId: input.locationId,
-      quantityKg: normalizedQty, movementDate: input.movementDate,
+      itemId: input.itemId,
+      fromLocationId: isNegative ? input.locationId : null,
+      toLocationId: isNegative ? null : input.locationId,
+      quantityKg: absQty, movementDate: input.movementDate,
       sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId,
       idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
     });
 
-    const newOnHand = addKg(balance.onHandQtyKg, normalizedQty); // addKg handles signed (negative) quantities
+    // Apply the signed effect on balance
+    const newOnHand = addKg(balance.onHandQtyKg, normalizedQty);
     const updatedBalance = await this.deps.ledger.updateBalance(tenantId, input.itemId, input.locationId, { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 });
     if (!updatedBalance) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during update.");
 
@@ -996,7 +1004,7 @@ export class InventoryLedgerService {
 
     const movement = await this.deps.ledger.insertMovement({
       tenantId, docNo: docNoResult.docNo, movementType: "reversal", movementStatus: "posted",
-      itemId: original.itemId, fromLocationId: original.toLocationId ?? original.fromLocationId, toLocationId: original.toLocationId ?? original.fromLocationId ?? "",
+      itemId: original.itemId, fromLocationId: locationId, toLocationId: null,
       quantityKg: original.quantityKg, // absolute qty; effect is inverse via movementType
       movementDate: input.reversalDate,
       sourceDocumentType: "stock_movement", sourceDocumentId: input.originalMovementId,
