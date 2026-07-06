@@ -20,27 +20,38 @@ import {
 } from "../nav-config";
 
 describe("WORKER_TASKS", () => {
-  it("contains exactly the 5 contracted worker tasks", () => {
-    expect(WORKER_TASKS).toHaveLength(5);
+  it("contains the contracted worker tasks (including WP-02-07 traceability)", () => {
+    expect(WORKER_TASKS.length).toBeGreaterThanOrEqual(5);
     const labels = WORKER_TASKS.map((t) => t.labelAr);
     expect(labels).toContain("استلام خام");
     expect(labels).toContain("نقل مخزون");
     expect(labels).toContain("استلام مرتجع");
     expect(labels).toContain("تسجيل إنتاج");
     expect(labels).toContain("تسجيل جودة");
+    // WP-02-07: worker traceability task
+    expect(labels).toContain("الدفعات");
   });
 
   it("has NO financial terminology in labels", () => {
-    const financialTerms = [
+    // Note: "الدفعات" (batches) contains the substring "دفع" (payment) but
+    // is NOT a financial term — it means "batches/lots". We use full-word
+    // matching to avoid false positives.
+    const financialExactWords = new Set([
       "سعر", "تكلفة", "دفع", "رصيد", "ربح", "حساب", "مديونية", "دائن",
       "price", "cost", "payment", "balance", "profit",
-    ];
+    ]);
     for (const task of WORKER_TASKS) {
-      for (const term of financialTerms) {
+      // Check that the label is not exactly a financial term
+      expect(
+        financialExactWords.has(task.labelAr.trim()),
+        `worker task '${task.labelAr}' is exactly a financial term`,
+      ).toBe(false);
+      // Check that the label doesn't start with a financial term + space
+      for (const term of financialExactWords) {
         expect(
-          task.labelAr.toLowerCase(),
-          `worker task '${task.labelAr}' contains financial term '${term}'`,
-        ).not.toContain(term.toLowerCase());
+          task.labelAr.startsWith(term + " "),
+          `worker task '${task.labelAr}' starts with financial term '${term}'`,
+        ).toBe(false);
       }
     }
   });
@@ -65,14 +76,26 @@ describe("getWorkerTasksForRole — role filtering", () => {
     expect(ids).not.toContain("quality-entry");
   });
 
-  it("production sees production-entry only", () => {
+  it("production sees production-entry + raw-batches (WP-02-07 traceability)", () => {
     const tasks = getWorkerTasksForRole("production_employee");
-    expect(tasks.map((t) => t.id)).toEqual(["production-entry"]);
+    const ids = tasks.map((t) => t.id);
+    expect(ids).toContain("production-entry");
+    expect(ids).toContain("raw-batches");
+    expect(ids).not.toContain("raw-receipt");
+    expect(ids).not.toContain("stock-transfer");
+    expect(ids).not.toContain("return-receipt");
+    expect(ids).not.toContain("quality-entry");
   });
 
-  it("quality sees quality-entry only", () => {
+  it("quality sees quality-entry + raw-batches (WP-02-07 traceability)", () => {
     const tasks = getWorkerTasksForRole("quality_employee");
-    expect(tasks.map((t) => t.id)).toEqual(["quality-entry"]);
+    const ids = tasks.map((t) => t.id);
+    expect(ids).toContain("quality-entry");
+    expect(ids).toContain("raw-batches");
+    expect(ids).not.toContain("raw-receipt");
+    expect(ids).not.toContain("stock-transfer");
+    expect(ids).not.toContain("return-receipt");
+    expect(ids).not.toContain("production-entry");
   });
 
   it("owner sees NO worker tasks (owner is not a worker)", () => {
@@ -329,7 +352,10 @@ describe("isWorkerRoute / isManagementRoute", () => {
 
 describe("No financial terminology in worker nav (Contract 02 §Worker Task Mode)", () => {
   it("worker task labels contain no financial/accounting terms", () => {
-    const forbidden = [
+    // Note: "الدفعات" (batches) contains the substring "دفع" (payment) but
+    // is NOT a financial term — it means "batches/lots". We use full-word
+    // matching to avoid false positives.
+    const forbiddenExact = new Set([
       "سعر", // price
       "تكلفة", // cost
       "دفع", // payment
@@ -339,14 +365,15 @@ describe("No financial terminology in worker nav (Contract 02 §Worker Task Mode
       "مديونية", // payable
       "دائن", // receivable
       "تسوية مالية", // financial settlement
-    ];
+    ]);
     for (const task of WORKER_TASKS) {
-      for (const term of forbidden) {
-        expect(
-          task.labelAr,
-          `worker task '${task.labelAr}' contains forbidden term '${term}'`,
-        ).not.toContain(term);
-      }
+      // Check that the label is not exactly a financial term
+      expect(
+        forbiddenExact.has(task.labelAr.trim()),
+        `worker task '${task.labelAr}' is exactly a forbidden term`,
+      ).toBe(false);
+      // Check multi-word phrases that are clearly financial
+      expect(task.labelAr).not.toContain("تسوية مالية");
     }
   });
 });

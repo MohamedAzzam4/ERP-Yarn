@@ -307,3 +307,54 @@ describe("WP-02-07 RawBatchTraceService — bounded query", () => {
     expect(trace.batchNo).toBe("BATCH-001");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 6. Worker DTO redaction (DEC-063 proof).
+// ---------------------------------------------------------------------------
+
+describe("WP-02-07 RawBatchTraceService — worker DTO redaction", () => {
+  it("worker trace result has no financial fields in the DTO", async () => {
+    const service = makeService();
+    const warehouseUser = makeUserContext(TEST_USERS.warehouse.userId, TEST_TENANT_ID);
+    const warehouseEff = getTestEffectivePermissions(TEST_USERS.warehouse.userId);
+
+    const trace = await service.traceRawBatch(warehouseUser as any, warehouseEff, TEST_BATCH_ID);
+
+    // The RawBatchTrace DTO must NOT contain any of these financial field keys.
+    const forbiddenKeys = [
+      "purchasePricePerTon", "totalPurchaseCost", "pricePerTon",
+      "payableAmount", "payableEntryId", "accountEntryId",
+      "balance", "profit", "cost", "settlement",
+    ];
+    for (const key of forbiddenKeys) {
+      expect(trace).not.toHaveProperty(key);
+    }
+
+    // financialFieldsRedacted must be true for workers.
+    expect(trace.financialFieldsRedacted).toBe(true);
+  });
+
+  it("owner trace result has no financial fields in the DTO either (DTO is operational-only)", async () => {
+    const service = makeService();
+    const ownerUser = makeUserContext(TEST_USERS.owner.userId, TEST_TENANT_ID);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    const trace = await service.traceRawBatch(ownerUser as any, ownerEff, TEST_BATCH_ID);
+
+    // The RawBatchTrace DTO is operational-only by design — it doesn't expose
+    // financial fields even for management. Financial details are accessed
+    // through other management screens (approval detail, etc.).
+    const forbiddenKeys = [
+      "purchasePricePerTon", "totalPurchaseCost", "pricePerTon",
+      "payableAmount", "payableEntryId", "accountEntryId",
+      "balance", "profit", "cost", "settlement",
+    ];
+    for (const key of forbiddenKeys) {
+      expect(trace).not.toHaveProperty(key);
+    }
+
+    // financialFieldsRedacted is false for owner (they CAN see financials
+    // through other screens, but this DTO doesn't expose them).
+    expect(trace.financialFieldsRedacted).toBe(false);
+  });
+});

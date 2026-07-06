@@ -25,6 +25,7 @@ export interface WorkerTaskItem {
 
 export const WORKER_TASKS: ReadonlyArray<WorkerTaskItem> = [
   { id: "raw-receipt", labelAr: "استلام خام", href: "/worker/raw-receipts/new", icon: "PackagePlus", roles: ["warehouse_employee"], permissionKey: "inventory.receive.create" },
+  { id: "raw-batches", labelAr: "الدفعات", href: "/worker/raw-batches", icon: "PackageSearch", roles: ["warehouse_employee", "production_employee", "quality_employee"], permissionKey: "inventory.view_quantity" },
   { id: "stock-transfer", labelAr: "نقل مخزون", href: "/worker/stock-transfer", icon: "ArrowLeftRight", roles: ["warehouse_employee"], permissionKey: "inventory.transfer.create" },
   { id: "return-receipt", labelAr: "استلام مرتجع", href: "/worker/return-receipt", icon: "Undo2", roles: ["warehouse_employee"], permissionKey: "returns.create" },
   { id: "production-entry", labelAr: "تسجيل إنتاج", href: "/worker/production-entry", icon: "Factory", roles: ["production_employee"], permissionKey: "production.issue_draft.create" },
