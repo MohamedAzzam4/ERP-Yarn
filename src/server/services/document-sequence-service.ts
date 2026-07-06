@@ -45,6 +45,7 @@ const DEFAULT_PREFIXES: Record<string, string> = {
   raw_receipt: "RC", raw_receipt_approval: "RCA",
   transfer: "TR", transfer_approval: "TRA",
   adjustment: "AD", adjustment_approval: "ADA",
+  return_receipt: "RR", reversal: "REV", stock_block: "BLK", stock_unblock: "UBL",
   sales_order: "SO", sales_approval: "SOA",
   production_order: "PO", production_issue: "PI",
   production_receipt: "PR", production_wip_return: "WR",

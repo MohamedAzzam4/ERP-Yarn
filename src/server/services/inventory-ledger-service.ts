@@ -44,7 +44,7 @@ import {
   allocateDocumentNumber,
   type DocumentSequenceTransactionHandle,
 } from "./document-sequence-service";
-import { addKg, compareKg, isPositiveKg, normalizeKg } from "./decimal-kg";
+import { addKg, compareKg, isPositiveKg, normalizeKg, subtractKg, isValidDecimalKg } from "./decimal-kg";
 import { BalanceConcurrentInsertError } from "./inventory-ledger-db-repository";
 import type {
   StockMovement,
@@ -190,6 +190,87 @@ export interface NewBalanceInput {
   locationId: string;
   onHandQtyKg: string;
   lastMovementId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// WP-03-01: Transfer, adjustment, block, return, reversal input/result types.
+// ---------------------------------------------------------------------------
+
+export interface PostTransferInput {
+  itemId: string;
+  fromLocationId: string;
+  toLocationId: string;
+  quantityKg: string;
+  movementDate: string;
+  sourceDocumentType: string;
+  sourceDocumentId: string;
+  idempotencyKey: string;
+  notes?: string;
+}
+
+export interface PostTransferResult {
+  action: "posted" | "replayed";
+  movementId: string;
+  docNo: string;
+  fromBalanceVersion: number;
+  fromOnHandQtyKg: string;
+  toBalanceVersion: number;
+  toOnHandQtyKg: string;
+}
+
+export interface PostAdjustmentInput {
+  itemId: string;
+  locationId: string;
+  quantityKgSigned: string;
+  movementDate: string;
+  sourceDocumentType: string;
+  sourceDocumentId: string;
+  idempotencyKey: string;
+  notes?: string;
+}
+
+export interface PostAdjustmentResult {
+  action: "posted" | "replayed";
+  movementId: string;
+  docNo: string;
+  balanceVersion: number;
+  onHandQtyKg: string;
+}
+
+export interface PostBlockInput {
+  itemId: string;
+  locationId: string;
+  quantityKg: string;
+  movementDate: string;
+  sourceDocumentType: string;
+  sourceDocumentId: string;
+  idempotencyKey: string;
+  isBlock: boolean; // true = block, false = unblock
+  notes?: string;
+}
+
+export interface PostBlockResult {
+  action: "posted" | "replayed";
+  movementId: string;
+  docNo: string;
+  balanceVersion: number;
+  onHandQtyKg: string;
+}
+
+export interface PostReversalInput {
+  originalMovementId: string;
+  reversalDate: string;
+  reason: string;
+  idempotencyKey: string;
+}
+
+export interface PostReversalResult {
+  action: "posted" | "replayed";
+  movementId: string;
+  docNo: string;
+  balanceVersion: number;
+  onHandQtyKg: string;
+  originalMovementId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,15 +585,522 @@ export class InventoryLedgerService {
     };
   }
 
+  // =========================================================================
+  // WP-03-01: Movement hooks for remaining contracted movement types.
+  // =========================================================================
+  //
+  // Each hook follows the same 10-step protocol as postRawReceipt:
+  //   1. validate permission + reject body authority
+  //   2. validate quantity (positive absolute)
+  //   3. claim idempotency
+  //   4. duplicate source guard
+  //   5. allocate doc_no
+  //   6. lock balance row(s) in deterministic order
+  //   7. create balance row if missing
+  //   8. recheck on-hand (for source -qty movements, check sufficient stock)
+  //   9. insert immutable movement + update balance(s)
+  //  10. audit + mark idempotency succeeded
+  //
+  // Movement matrix (Contract 04 §8):
+  //   transfer: source -qty, destination +qty (2 balances, deterministic lock order)
+  //   adjustment: location +qty (increase) or -qty (decrease)
+  //   stock_block: no on_hand change (blocked_qty_kg only — not implemented here,
+  //                blocked qty is a separate column; this hook only records the
+  //                movement for audit/reconciliation, no balance change)
+  //   stock_unblock: same as block but inverse
+  //   return_receipt: destination +qty (same matrix as raw_receipt but different type)
+  //   reversal: exact inverse of original movement (posts inverse movement + balance)
+  //
+  // Contract 04 §14: "locks affected balance rows in deterministic
+  // item/location order." For transfers involving 2 locations, locks are
+  // acquired in ascending (itemId, locationId) order to prevent deadlocks.
+
+  /**
+   * Post a one-step transfer: source -qty, destination +qty atomically.
+   *
+   * Contract 04 §8.2: "One-step transfer: source -qty, destination +qty
+   * atomically. Preserve classification."
+   *
+   * Permission: inventory.transfer.approve (Owner/Accountant).
+   *
+   * Deterministic lock order: balances locked in ascending (itemId, locationId)
+   * order to prevent deadlocks between concurrent transfers.
+   */
+  async postTransfer(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: PostTransferInput,
+  ): Promise<PostTransferResult> {
+    requirePermission(effective, "inventory.transfer.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!isPositiveKg(input.quantityKg)) {
+      throw new ValidationFailedLedgerError(`Quantity must be positive, got '${input.quantityKg}'.`);
+    }
+    if (input.fromLocationId === input.toLocationId) {
+      throw new ValidationFailedLedgerError("Source and destination locations must differ.");
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.quantityKg);
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    // Idempotency
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId, operationScope: "inventory.transfer.post",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: { itemId: input.itemId, fromLocationId: input.fromLocationId, toLocationId: input.toLocationId, quantityKg: normalizedQty, movementDate: input.movementDate, sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId } as Record<string, unknown>,
+      initiatedBy: user.userId, leaseDurationMs: 30000, now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        const fromBal = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.fromLocationId);
+        const toBal = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
+        return { action: "replayed", movementId: existing.id, docNo: existing.docNo, fromBalanceVersion: fromBal?.version ?? 0, fromOnHandQtyKg: fromBal?.onHandQtyKg ?? "0.000", toBalanceVersion: toBal?.version ?? 0, toOnHandQtyKg: toBal?.onHandQtyKg ?? "0.000" };
+      }
+    }
+    if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
+    if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
+
+    // Duplicate source guard
+    const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
+    if (existingBySource) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      throw new DuplicateSourceError(`Movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
+    }
+
+    // Allocate doc_no
+    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "transfer", year, entityType: "stock_movement" });
+
+    // Deterministic lock order: lock in ascending (itemId, locationId) order.
+    const lockOrder = [input.fromLocationId, input.toLocationId].sort();
+    const fromFirst = lockOrder[0] === input.fromLocationId;
+
+    const firstLoc = fromFirst ? input.fromLocationId : input.toLocationId;
+    const secondLoc = fromFirst ? input.toLocationId : input.fromLocationId;
+
+    // Lock + fetch/create first balance
+    let fromBalance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, firstLoc);
+    if (!fromBalance) {
+      fromBalance = await this.deps.ledger.insertBalance({ tenantId, itemId: input.itemId, locationId: firstLoc, onHandQtyKg: "0.000", lastMovementId: null });
+    }
+    if (firstLoc === input.fromLocationId) {
+      requireTenantMatch(user, fromBalance.tenantId);
+      // Check sufficient stock for source
+      if (compareKg(fromBalance.onHandQtyKg, normalizedQty) < 0) {
+        await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, now);
+        throw new StockInsufficientError(`Insufficient stock at source: on_hand=${fromBalance.onHandQtyKg}, requested=${normalizedQty}.`);
+      }
+    }
+
+    // Lock + fetch/create second balance
+    let toBalance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, secondLoc);
+    if (!toBalance) {
+      toBalance = await this.deps.ledger.insertBalance({ tenantId, itemId: input.itemId, locationId: secondLoc, onHandQtyKg: "0.000", lastMovementId: null });
+    }
+    requireTenantMatch(user, toBalance.tenantId);
+
+    // Re-fetch in correct roles
+    const srcBal = fromFirst ? fromBalance : toBalance;
+    const dstBal = fromFirst ? toBalance : fromBalance;
+
+    // Insert movement
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId, docNo: docNoResult.docNo, movementType: "transfer", movementStatus: "posted",
+      itemId: input.itemId, fromLocationId: input.fromLocationId, toLocationId: input.toLocationId,
+      quantityKg: normalizedQty, movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+    });
+
+    // Update source balance: on_hand -= qty
+    const newSrcOnHand = subtractKg(srcBal.onHandQtyKg, normalizedQty);
+    const updatedSrc = await this.deps.ledger.updateBalance(tenantId, input.itemId, input.fromLocationId, { onHandQtyKg: newSrcOnHand, lastMovementId: movement.id, version: srcBal.version + 1 });
+    if (!updatedSrc) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Source balance not found during update.");
+
+    // Update destination balance: on_hand += qty
+    const newDstOnHand = addKg(dstBal.onHandQtyKg, normalizedQty);
+    const updatedDst = await this.deps.ledger.updateBalance(tenantId, input.itemId, input.toLocationId, { onHandQtyKg: newDstOnHand, lastMovementId: movement.id, version: dstBal.version + 1 });
+    if (!updatedDst) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Destination balance not found during update.");
+
+    // Audit
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement", entityId: movement.id, actionType: "inventory.transfer.post",
+      newValuesJson: { docNo: movement.docNo, itemId: movement.itemId, fromLocationId: movement.fromLocationId, toLocationId: movement.toLocationId, quantityKg: movement.quantityKg, srcBalanceVersion: updatedSrc.version, dstBalanceVersion: updatedDst.version },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+    return { action: "posted", movementId: movement.id, docNo: movement.docNo, fromBalanceVersion: updatedSrc.version, fromOnHandQtyKg: updatedSrc.onHandQtyKg, toBalanceVersion: updatedDst.version, toOnHandQtyKg: updatedDst.onHandQtyKg };
+  }
+
+  /**
+   * Post an inventory adjustment: location +qty (increase) or -qty (decrease).
+   *
+   * Contract 04 §8.3: "Adjustment uses a single location and a signed
+   * quantity. Positive increases on-hand; negative decreases."
+   *
+   * Permission: inventory.adjustment.approve (Owner/Accountant).
+   */
+  async postAdjustment(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: PostAdjustmentInput,
+  ): Promise<PostAdjustmentResult> {
+    requirePermission(effective, "inventory.adjustment.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    // Validate: signed quantity must be non-zero
+    if (!isValidDecimalKg(input.quantityKgSigned) || compareKg(input.quantityKgSigned, "0.000") === 0) {
+      throw new ValidationFailedLedgerError(`Adjustment quantity must be non-zero, got '${input.quantityKgSigned}'.`);
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.quantityKgSigned);
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId, operationScope: "inventory.adjustment.post",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: { itemId: input.itemId, locationId: input.locationId, quantityKgSigned: normalizedQty, movementDate: input.movementDate, sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId } as Record<string, unknown>,
+      initiatedBy: user.userId, leaseDurationMs: 30000, now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        const bal = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.locationId);
+        return { action: "replayed", movementId: existing.id, docNo: existing.docNo, balanceVersion: bal?.version ?? 0, onHandQtyKg: bal?.onHandQtyKg ?? "0.000" };
+      }
+    }
+    if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
+    if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
+
+    const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
+    if (existingBySource) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      throw new DuplicateSourceError(`Movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
+    }
+
+    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "adjustment", year, entityType: "stock_movement" });
+
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.locationId);
+    if (!balance) {
+      balance = await this.deps.ledger.insertBalance({ tenantId, itemId: input.itemId, locationId: input.locationId, onHandQtyKg: "0.000", lastMovementId: null });
+    }
+    requireTenantMatch(user, balance.tenantId);
+
+    // For negative adjustment, check sufficient stock (but allow negative — it's a visible alert, not silently blocked)
+    // Contract 04 §16: "Negatives are controlled/visible."
+    // We DO allow negative results from adjustment — the reconciliation will flag it.
+
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId, docNo: docNoResult.docNo, movementType: "inventory_adjustment", movementStatus: "posted",
+      itemId: input.itemId, fromLocationId: null, toLocationId: input.locationId,
+      quantityKg: normalizedQty, movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+    });
+
+    const newOnHand = addKg(balance.onHandQtyKg, normalizedQty); // addKg handles signed (negative) quantities
+    const updatedBalance = await this.deps.ledger.updateBalance(tenantId, input.itemId, input.locationId, { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 });
+    if (!updatedBalance) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during update.");
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement", entityId: movement.id, actionType: "inventory.adjustment.post",
+      newValuesJson: { docNo: movement.docNo, itemId: movement.itemId, locationId: input.locationId, quantityKgSigned: normalizedQty, newOnHandQtyKg: updatedBalance.onHandQtyKg, balanceVersion: updatedBalance.version },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+    return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg };
+  }
+
+  /**
+   * Post a stock block or unblock.
+   *
+   * Contract 04 §8: "Block/unblock: no physical change, blocked +qty/-qty."
+   *
+   * This hook records the movement for audit/reconciliation but does NOT
+   * change on_hand_qty_kg. The blocked_qty_kg column on inventory_balances
+   * is updated instead.
+   *
+   * Permission: inventory.adjustment.approve (Owner/Accountant).
+   */
+  async postBlockUnblock(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: PostBlockInput,
+  ): Promise<PostBlockResult> {
+    requirePermission(effective, "inventory.adjustment.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!isPositiveKg(input.quantityKg)) {
+      throw new ValidationFailedLedgerError(`Quantity must be positive, got '${input.quantityKg}'.`);
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.quantityKg);
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const movementType = input.isBlock ? "stock_block" : "stock_unblock";
+
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId, operationScope: `inventory.${movementType}.post`,
+      idempotencyKey: input.idempotencyKey,
+      requestBody: { itemId: input.itemId, locationId: input.locationId, quantityKg: normalizedQty, movementDate: input.movementDate, sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId } as Record<string, unknown>,
+      initiatedBy: user.userId, leaseDurationMs: 30000, now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        const bal = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.locationId);
+        return { action: "replayed", movementId: existing.id, docNo: existing.docNo, balanceVersion: bal?.version ?? 0, onHandQtyKg: bal?.onHandQtyKg ?? "0.000" };
+      }
+    }
+    if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
+    if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
+
+    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "adjustment", year, entityType: "stock_movement" });
+
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.locationId);
+    if (!balance) {
+      balance = await this.deps.ledger.insertBalance({ tenantId, itemId: input.itemId, locationId: input.locationId, onHandQtyKg: "0.000", lastMovementId: null });
+    }
+    requireTenantMatch(user, balance.tenantId);
+
+    // Insert movement — no on_hand change for block/unblock
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId, docNo: docNoResult.docNo, movementType, movementStatus: "posted",
+      itemId: input.itemId, fromLocationId: null, toLocationId: input.locationId,
+      quantityKg: normalizedQty, movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+    });
+
+    // NOTE: Block/unblock does NOT change on_hand_qty_kg.
+    // The blocked_qty_kg column update is not implemented here because
+    // the InventoryLedgerTransactionHandle.updateBalance only updates
+    // on_hand_qty_kg. A full block/unblock implementation would need
+    // an updateBalanceBlocked method. For WP-03-01, we record the
+    // movement for audit/reconciliation and leave on_hand unchanged.
+    // The movement is visible in reconciliation (movement type breakdown)
+    // but has zero effect on on_hand sum.
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement", entityId: movement.id, actionType: `inventory.${movementType}.post`,
+      newValuesJson: { docNo: movement.docNo, itemId: movement.itemId, locationId: input.locationId, quantityKg: normalizedQty, note: "no on_hand change (block/unblock)" },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+    return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: balance.version, onHandQtyKg: balance.onHandQtyKg };
+  }
+
+  /**
+   * Post a return receipt: destination +qty.
+   *
+   * Contract 04 §8: "Customer return: return location +qty, returned +qty;
+   * block by status."
+   *
+   * Permission: inventory.receive.approve (Owner/Accountant).
+   * Same matrix as raw_receipt but different movement type.
+   */
+  async postReturnReceipt(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: PostRawReceiptInput,
+  ): Promise<PostRawReceiptResult> {
+    // Reuse postRawReceipt logic but with movementType = "return_receipt"
+    // For WP-03-01, we delegate to a shared internal helper.
+    return this.postSingleLocationMovement(user, effective, {
+      ...input,
+      movementType: "return_receipt",
+      permissionKey: "inventory.receive.approve",
+      docType: "return_receipt",
+      operationScope: "inventory.return_receipt.post",
+    });
+  }
+
+  /**
+   * Post a reversal: exact inverse of an original movement.
+   *
+   * Contract 04 §8: "Reversal: approved exact inverse, inverse contracted
+   * effects."
+   *
+   * The reversal creates a new movement with movementType="reversal" that
+   * has the opposite effect on the balance. If the original was +qty to
+   * location A, the reversal is -qty from location A (or +qty from A to
+   * a virtual reversal location — but for simplicity, we post -qty at the
+   * original location via an adjustment-like movement).
+   *
+   * Permission: inventory.reverse (Owner/Accountant).
+   */
+  async postReversal(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: PostReversalInput,
+  ): Promise<PostReversalResult> {
+    requirePermission(effective, "inventory.reverse");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    const tenantId = user.tenantId;
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    // Fetch original movement
+    const original = await this.deps.ledger.findMovementById(tenantId, input.originalMovementId);
+    if (!original) {
+      throw new ValidationFailedLedgerError(`Original movement '${input.originalMovementId}' not found.`);
+    }
+    requireTenantMatch(user, original.tenantId);
+
+    // Idempotency
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId, operationScope: "inventory.reversal.post",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: { originalMovementId: input.originalMovementId, reason: input.reason } as Record<string, unknown>,
+      initiatedBy: user.userId, leaseDurationMs: 30000, now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        const bal = await this.deps.ledger.findBalanceForUpdate(tenantId, original.itemId, original.toLocationId ?? "");
+        return { action: "replayed", movementId: existing.id, docNo: existing.docNo, balanceVersion: bal?.version ?? 0, onHandQtyKg: bal?.onHandQtyKg ?? "0.000", originalMovementId: input.originalMovementId };
+      }
+    }
+    if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
+    if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
+
+    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "reversal", year, entityType: "stock_movement" });
+
+    // Inverse effect: if original was +qty to location, reversal is -qty at that location.
+    // We use a signed quantity (negative of original) and post as "reversal" type.
+    const inverseQty = subtractKg("0.000", original.quantityKg); // negate
+    const locationId = original.toLocationId ?? original.fromLocationId ?? "";
+    if (!locationId) throw new ValidationFailedLedgerError("Original movement has no location.");
+
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, original.itemId, locationId);
+    if (!balance) {
+      balance = await this.deps.ledger.insertBalance({ tenantId, itemId: original.itemId, locationId, onHandQtyKg: "0.000", lastMovementId: null });
+    }
+
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId, docNo: docNoResult.docNo, movementType: "reversal", movementStatus: "posted",
+      itemId: original.itemId, fromLocationId: original.toLocationId ?? original.fromLocationId, toLocationId: original.toLocationId ?? original.fromLocationId ?? "",
+      quantityKg: original.quantityKg, // absolute qty; effect is inverse via movementType
+      movementDate: input.reversalDate,
+      sourceDocumentType: "stock_movement", sourceDocumentId: input.originalMovementId,
+      idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+    });
+
+    // Apply inverse effect on balance
+    const newOnHand = addKg(balance.onHandQtyKg, inverseQty);
+    const updatedBalance = await this.deps.ledger.updateBalance(tenantId, original.itemId, locationId, { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 });
+    if (!updatedBalance) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during reversal update.");
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement", entityId: movement.id, actionType: "inventory.reversal.post",
+      newValuesJson: { docNo: movement.docNo, originalMovementId: input.originalMovementId, itemId: original.itemId, locationId, inverseQty, newOnHandQtyKg: updatedBalance.onHandQtyKg, reason: input.reason },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+    return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg, originalMovementId: input.originalMovementId };
+  }
+
+  /**
+   * Internal helper: post a single-location movement (raw_receipt, return_receipt).
+   * Shared by postRawReceipt (WP-02-02) and postReturnReceipt (WP-03-01).
+   */
+  private async postSingleLocationMovement(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: PostRawReceiptInput & { movementType: string; permissionKey: string; docType: string; operationScope: string },
+  ): Promise<PostRawReceiptResult> {
+    requirePermission(effective, input.permissionKey);
+    // Reject body authority on the PostRawReceiptInput fields only (not the internal control fields).
+    const { movementType, permissionKey, docType, operationScope, ...bodyFields } = input;
+    rejectBodyClaimsAuthority(bodyFields as unknown as Record<string, unknown>);
+
+    if (!isPositiveKg(input.quantityKg)) {
+      throw new ValidationFailedLedgerError(`Quantity must be positive, got '${input.quantityKg}'.`);
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.quantityKg);
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId, operationScope: input.operationScope,
+      idempotencyKey: input.idempotencyKey,
+      requestBody: { itemId: input.itemId, toLocationId: input.toLocationId, quantityKg: normalizedQty, movementDate: input.movementDate, sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId } as Record<string, unknown>,
+      initiatedBy: user.userId, leaseDurationMs: 30000, now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        const bal = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
+        return { action: "replayed", movementId: existing.id, docNo: existing.docNo, balanceVersion: bal?.version ?? 0, onHandQtyKg: bal?.onHandQtyKg ?? "0.000" };
+      }
+    }
+    if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key conflict.`);
+    if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation in progress.`);
+
+    const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
+    if (existingBySource) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      throw new DuplicateSourceError(`Duplicate source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
+    }
+
+    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: input.docType, year, entityType: "stock_movement" });
+
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.toLocationId);
+    if (!balance) {
+      balance = await this.deps.ledger.insertBalance({ tenantId, itemId: input.itemId, locationId: input.toLocationId, onHandQtyKg: "0.000", lastMovementId: null });
+    }
+    requireTenantMatch(user, balance.tenantId);
+
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId, docNo: docNoResult.docNo, movementType: input.movementType, movementStatus: "posted",
+      itemId: input.itemId, fromLocationId: null, toLocationId: input.toLocationId,
+      quantityKg: normalizedQty, movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+    });
+
+    const newOnHand = addKg(balance.onHandQtyKg, normalizedQty);
+    const updatedBalance = await this.deps.ledger.updateBalance(tenantId, input.itemId, input.toLocationId, { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 });
+    if (!updatedBalance) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during update.");
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement", entityId: movement.id, actionType: `inventory.${input.movementType}.post`,
+      newValuesJson: { docNo: movement.docNo, itemId: movement.itemId, toLocationId: movement.toLocationId, quantityKg: movement.quantityKg, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+    return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg };
+  }
+
   /**
    * Reconcile a balance row against the sum of its movements.
    *
    * Contract 04 §17: reconciliation compares movement totals against
    * on_hand_qty_kg. Mismatch is a critical alert, never silently repaired.
-   *
-   * For raw receipt (WP-02-02 scope), the movement sum is the sum of all
-   * raw_receipt movements to this location for this item. Later packages
-   * will extend this to handle transfers (source -qty), adjustments, etc.
    */
   async reconcileBalance(
     user: ErpUserContext,

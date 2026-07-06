@@ -50,20 +50,13 @@ export function normalizeKg(value: string | null | undefined): string {
 export function addKg(a: string, b: string): string {
   const aNorm = normalizeKg(a);
   const bNorm = normalizeKg(b);
-  const aParts = aNorm.split(".");
-  const bParts = bNorm.split(".");
-  // Parse as integers with 3 decimal places (multiply by 1000)
-  const aVal = BigInt(aParts[0]!) * 1000n + (aNorm.startsWith("-") ? -BigInt(aParts[1]!) : BigInt(aParts[1]!));
-  const bVal = BigInt(bParts[0]!) * 1000n + (bNorm.startsWith("-") ? -BigInt(bParts[1]!) : BigInt(bParts[1]!));
-  // Need to handle signs properly
-  const aSigned = aNorm.startsWith("-") ? -BigInt(aParts[0]!.slice(0, 0) || aParts[0]!) * 1000n - BigInt(aParts[1]!) : BigInt(aParts[0]!) * 1000n + BigInt(aParts[1]!);
-  const bSigned = bNorm.startsWith("-") ? -BigInt(bParts[0]!) * 1000n - BigInt(bParts[1]!) : BigInt(bParts[0]!) * 1000n + BigInt(bParts[1]!);
-  const sum = aSigned + bSigned;
-  // Convert back to string with 3 decimal places
+  const aVal = toScaledInt(aNorm);
+  const bVal = toScaledInt(bNorm);
+  const sum = aVal + bVal;
   const sumStr = sum.toString();
   const isNeg = sumStr.startsWith("-");
   const absStr = isNeg ? sumStr.slice(1) : sumStr;
-  const padded = absStr.padStart(4, "0"); // ensure at least 1 int digit + 3 frac
+  const padded = absStr.padStart(4, "0");
   const intPart = padded.slice(0, -3) || "0";
   const fracPart = padded.slice(-3);
   return `${isNeg ? "-" : ""}${intPart}.${fracPart}`;
