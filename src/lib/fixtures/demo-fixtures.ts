@@ -30,6 +30,72 @@ export interface DemoUser {
   landingRoute: string;
 }
 
+// ===========================================================================
+// Demo quick-login personas (added 2026-07-06)
+//
+// Exactly 3 quick-login choices on the /login page. The old 5-role DEMO_USERS
+// array + "الدخول السريع حسب الدور" section have been removed from the demo
+// home page. Login now shows only these 3 buttons.
+//
+// - executive: رئيس مجلس الإدارة / العضو المنتدب التنفيذي → management dashboard
+// - accountant: المدير المالي → same management screens as executive
+// - data-entry: مسؤول تسجيل البيانات أو المدخلات → task hub (4 cards, no sidebar)
+// ===========================================================================
+
+export type DemoPersona = "executive" | "accountant" | "data-entry";
+
+export interface DemoQuickLogin {
+  persona: DemoPersona;
+  labelAr: string;
+  roleLabelAr: string;
+  href: string;
+  descriptionAr: string;
+}
+
+export const DEMO_QUICK_LOGINS: ReadonlyArray<DemoQuickLogin> = [
+  {
+    persona: "executive",
+    labelAr: "دخول سريع لرئيس مجلس الإدارة / العضو المنتدب التنفيذي",
+    roleLabelAr: "رئيس مجلس الإدارة / العضو المنتدب التنفيذي",
+    href: "/demo/executive/dashboard",
+    descriptionAr: "لوحة التحكم، الاعتماد والمتابعة، نظرات عامة على المخزون والمبيعات",
+  },
+  {
+    persona: "accountant",
+    labelAr: "دخول سريع للمحاسب",
+    roleLabelAr: "المدير المالي",
+    href: "/demo/accountant/dashboard",
+    descriptionAr: "نفس شاشات الإدارة التنفيذية — لوحة التحكم والمتابعة",
+  },
+  {
+    persona: "data-entry",
+    labelAr: "دخول سريع لمسؤول إدخال البيانات",
+    roleLabelAr: "مسؤول تسجيل البيانات أو المدخلات",
+    href: "/demo/data-entry",
+    descriptionAr: "مهام الإدخال: شراء، بيع، تشغيل، حركة خيوط — بدون قائمة جانبية",
+  },
+];
+
+// Helper: map persona → role label for topbar display
+export function personaRoleLabel(persona: DemoPersona): string {
+  const login = DEMO_QUICK_LOGINS.find((l) => l.persona === persona);
+  return login?.roleLabelAr ?? "زائر العرض التفاعلي";
+}
+
+// Helper: map persona → display name for topbar
+export function personaDisplayName(persona: DemoPersona): string {
+  switch (persona) {
+    case "executive":
+      return "ERP-Yarn";
+    case "accountant":
+      return "ERP-Yarn";
+    case "data-entry":
+      return "ERP-Yarn";
+    default:
+      return "ERP-Yarn";
+  }
+}
+
 export const DEMO_USERS: ReadonlyArray<DemoUser> = [
   // Stakeholder terminology (revised 2026-07-05):
   //   - مالك النظام            → رئيس مجلس الإدارة / العضو المنتدب التنفيذي

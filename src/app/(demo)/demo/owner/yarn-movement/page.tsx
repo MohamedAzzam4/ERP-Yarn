@@ -21,7 +21,9 @@ import { YARN_MOVEMENT_SECTIONS } from "@/lib/fixtures/demo-fixtures";
 export default function DemoYarnMovementPage() {
   return (
     <DemoShell
-      userName="مسؤول تسجيل البيانات أو المدخلات"
+      userName="ERP-Yarn"
+      persona="data-entry"
+      roleLabel="مسؤول تسجيل البيانات أو المدخلات"
       breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "حركة الخيوط" }]}
     >
       <DemoFormLayout>

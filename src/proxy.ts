@@ -45,14 +45,23 @@ export async function proxy(request: NextRequest) {
     request: { headers: request.headers },
   });
 
-  // Demo track short-circuit: /demo routes are public AND have zero Supabase
-  // interaction (synthetic fixtures only). Skipping the Supabase session
-  // refresh for them keeps the demo runnable in environments without Supabase
-  // env vars (e.g. local visual inspection, Vercel Preview without secrets).
-  // This does NOT weaken auth on any real route — /demo has no auth to begin
-  // with, and all other public routes (login, api/health, etc.) still get
-  // their session refresh below.
-  if (request.nextUrl.pathname === "/demo" || request.nextUrl.pathname.startsWith("/demo/")) {
+  // Demo track short-circuit: /demo routes AND /login are public AND have zero
+  // Supabase interaction needed for the demo (synthetic fixtures only). Skipping
+  // the Supabase session refresh for them keeps the demo runnable in environments
+  // without Supabase env vars (e.g. local visual inspection, Vercel Preview
+  // without secrets).
+  //
+  // This does NOT weaken auth on any real route:
+  //   - /demo has no auth to begin with
+  //   - /login still works for real email/password sign-in (the signIn server
+  //     action creates its own Supabase client with env vars when they ARE set)
+  //   - All other public routes (api/health, api/bootstrap, api/auth) still get
+  //     their session refresh below.
+  if (
+    request.nextUrl.pathname === "/demo" ||
+    request.nextUrl.pathname.startsWith("/demo/") ||
+    request.nextUrl.pathname === "/login"
+  ) {
     return response;
   }
 

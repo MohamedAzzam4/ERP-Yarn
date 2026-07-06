@@ -114,7 +114,8 @@ export default function DemoPartiesPage() {
 
   return (
     <DemoShell
-      userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
+      userName="ERP-Yarn"
+      roleLabel="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "البيانات الأساسية" }, { label: "الموردون والعملاء والمصانع" }]}
     >
       <DemoCompactHeading

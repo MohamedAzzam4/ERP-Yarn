@@ -9,6 +9,11 @@
  *   - Renders the persistent DemoBanner above the topbar.
  *   - Has NO server-only imports, NO auth coupling, NO onSignOut server action.
  *
+ * Updated 2026-07-06:
+ *   - Added `persona` prop ("executive" | "accountant" | "data-entry").
+ *   - Topbar now shows persona role label under the ERP-Yarn title.
+ *   - Data-entry persona hides the sidebar entirely (task-hub mode).
+ *
  * Layout (RTL):
  *   ┌────────────────────────────────────────────┐
  *   │  DemoBanner (sticky warning)               │
@@ -33,12 +38,21 @@ import { Sidebar } from "@/components/shells/sidebar";
 import { DemoTopbar } from "@/components/demo/demo-topbar";
 import { DemoBanner } from "@/components/demo/demo-banner";
 import { DEMO_NAV_CATEGORIES } from "@/components/demo/demo-nav-config";
+import {
+  personaRoleLabel,
+  type DemoPersona,
+} from "@/lib/fixtures/demo-fixtures";
 
 export interface DemoShellProps {
+  /** Display name shown in topbar (e.g. "ERP-Yarn"). */
   userName: string;
   tenantLabel?: string;
   children: React.ReactNode;
   breadcrumbs?: ReadonlyArray<{ label: string; href?: string }>;
+  /** Demo persona for topbar role display. Data-entry persona hides sidebar. */
+  persona?: DemoPersona;
+  /** Override the role label shown in topbar (defaults to persona label). */
+  roleLabel?: string;
 }
 
 export function DemoShell({
@@ -46,11 +60,19 @@ export function DemoShell({
   tenantLabel = "ERP-Yarn — عرض تفاعلي",
   children,
   breadcrumbs,
+  persona,
+  roleLabel,
 }: DemoShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = React.useState(false);
   const pathname = usePathname();
   const router = useRouter();
+
+  // Data-entry persona: hide sidebar entirely (task-hub mode)
+  const hideSidebar = persona === "data-entry";
+
+  // Compute the role label to display in topbar
+  const topbarRoleLabel = roleLabel ?? (persona ? personaRoleLabel(persona) : undefined);
 
   return (
     <div className="min-h-screen bg-background">
@@ -58,31 +80,30 @@ export function DemoShell({
       <DemoTopbar
         userName={userName}
         tenantLabel={tenantLabel}
-        onToggleSidebar={() => setMobileSidebarOpen((v) => !v)}
-        sidebarCollapsed={sidebarCollapsed}
+        roleLabel={topbarRoleLabel}
+        onToggleSidebar={hideSidebar ? undefined : () => setMobileSidebarOpen((v) => !v)}
+        sidebarCollapsed={hideSidebar ? true : sidebarCollapsed}
         onExitDemo={() => router.push("/login")}
       />
 
       <div className="flex">
-        {/* Sidebar — existing component, already collapsible with clean dots.
-            We cast DEMO_NAV_CATEGORIES to the Sidebar's prop type because
-            DemoNavCategory is structurally identical to ManagementNavCategory
-            (id, labelAr, items[]). This avoids touching the original
-            nav-config.ts (which is server-only and test-pinned). */}
-        <Sidebar
-          categories={DEMO_NAV_CATEGORIES as unknown as React.ComponentProps<typeof Sidebar>["categories"]}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
-          mobileOpen={mobileSidebarOpen}
-          onCloseMobile={() => setMobileSidebarOpen(false)}
-          currentPath={pathname}
-        />
+        {/* Sidebar — hidden for data-entry persona */}
+        {!hideSidebar && (
+          <Sidebar
+            categories={DEMO_NAV_CATEGORIES as unknown as React.ComponentProps<typeof Sidebar>["categories"]}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+            mobileOpen={mobileSidebarOpen}
+            onCloseMobile={() => setMobileSidebarOpen(false)}
+            currentPath={pathname}
+          />
+        )}
 
         <main
           role="main"
           className={cn(
             "flex-1 min-w-0",
-            sidebarCollapsed ? "lg:mr-16" : "lg:mr-64",
+            hideSidebar ? "" : sidebarCollapsed ? "lg:mr-16" : "lg:mr-64",
           )}
         >
           <div className="p-4 sm:p-6">
@@ -91,10 +112,10 @@ export function DemoShell({
                 <ol className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                   <li className="flex items-center gap-2">
                     <Link
-                      href="/demo"
+                      href={persona === "data-entry" ? "/demo/data-entry" : "/demo"}
                       className="hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
-                      العرض التفاعلي
+                      {persona === "data-entry" ? "مهام الإدخال" : "العرض التفاعلي"}
                     </Link>
                     <span aria-hidden="true">/</span>
                   </li>

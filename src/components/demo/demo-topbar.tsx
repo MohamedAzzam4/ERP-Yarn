@@ -372,6 +372,8 @@ export interface DemoTopbarProps {
   onToggleSidebar?: () => void;
   sidebarCollapsed?: boolean;
   onExitDemo?: () => void;
+  /** Role label shown under the title in the topbar (e.g. "المدير المالي"). */
+  roleLabel?: string;
 }
 
 export function DemoTopbar({
@@ -380,6 +382,7 @@ export function DemoTopbar({
   onToggleSidebar,
   sidebarCollapsed,
   onExitDemo,
+  roleLabel,
 }: DemoTopbarProps) {
   return (
     <header
@@ -411,10 +414,14 @@ export function DemoTopbar({
             E
           </Link>
           <div className="flex min-w-0 flex-col">
+            {/* Top line: ERP-Yarn title */}
             <h1 className="truncate text-heading-4 font-bold text-primary leading-tight">
               {tenantLabel ?? "ERP-Yarn — عرض تفاعلي"}
             </h1>
-            <p className="truncate text-xs text-muted-foreground">{userName}</p>
+            {/* Bottom line: persona role label (if provided) OR userName */}
+            <p className="truncate text-xs text-muted-foreground">
+              {roleLabel ?? userName}
+            </p>
           </div>
         </div>
 

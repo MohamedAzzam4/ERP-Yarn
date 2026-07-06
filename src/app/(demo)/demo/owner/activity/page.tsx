@@ -113,7 +113,8 @@ export default function DemoActivityPage() {
 
   return (
     <DemoShell
-      userName="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
+      userName="ERP-Yarn"
+      roleLabel="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "التقارير" }, { label: "النشاطات والإشعارات" }]}
     >
       <DemoCompactHeading

@@ -90,13 +90,34 @@ export default async function LoginPage({
               <Button type="submit" variant="outline" className="w-full min-h-[44px]">إرسال رابط الاستعادة</Button>
             </form>
           </details>
-          <div className="border-t border-border pt-3 text-center">
-            <a
-              href="/demo"
-              className="inline-flex items-center gap-1 text-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-            >
-              عرض تفاعلي لأصحاب المصلحة (بيانات تجريبية) ←
-            </a>
+          {/* Quick demo login — 3 persona choices (replaces old single demo link) */}
+          <div className="border-t border-border pt-3">
+            <p className="text-center text-xs text-muted-foreground mb-2">
+              دخول سريع للعرض التفاعلي (بيانات تجريبية)
+            </p>
+            <div className="space-y-2">
+              <a
+                href="/demo/executive/dashboard"
+                className="flex min-h-[44px] w-full items-center justify-center rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                دخول سريع لرئيس مجلس الإدارة / العضو المنتدب التنفيذي
+              </a>
+              <a
+                href="/demo/accountant/dashboard"
+                className="flex min-h-[44px] w-full items-center justify-center rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                دخول سريع للمحاسب
+              </a>
+              <a
+                href="/demo/data-entry"
+                className="flex min-h-[44px] w-full items-center justify-center rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                دخول سريع لمسؤول إدخال البيانات
+              </a>
+            </div>
+            <p className="mt-2 text-center text-[10px] text-muted-foreground">
+              عرض تفاعلي تجريبي — لا يتطلب بيانات اعتماد فعلية
+            </p>
           </div>
         </CardContent>
       </Card>
