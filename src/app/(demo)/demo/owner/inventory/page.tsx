@@ -72,7 +72,7 @@ export default function DemoInventoryOverviewPage() {
 
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="إيجيكوت للتجارة الدولية"
       roleLabel="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "العمليات" }, { label: "نظرة عامة على المخزون" }]}
     >

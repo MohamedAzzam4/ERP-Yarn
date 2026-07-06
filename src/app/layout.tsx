@@ -19,9 +19,9 @@ import "./globals.css";
  */
 
 export const metadata: Metadata = {
-  title: "ERP-Yarn",
+  title: "إيجيكوت للتجارة الدولية — EGYCOT",
   description:
-    "Specialized Yarn Trading & Outsourced Manufacturing ERP — foundation",
+    "إيجيكوت للتجارة الدولية — EGYCOT For International Trading — نظام تخطيط موارد مؤسسي متخصص في تجارة الخامات والتصنيع لدى الغير",
   robots: { index: false, follow: false },
 };
 

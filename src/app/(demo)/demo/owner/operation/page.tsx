@@ -38,7 +38,7 @@ export default function DemoOperationPage() {
 
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="مسؤول تسجيل البيانات أو المدخلات"
       persona="data-entry"
       roleLabel="مسؤول متابعة تشغيل الخيوط"
       breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "إدخال التشغيل" }]}

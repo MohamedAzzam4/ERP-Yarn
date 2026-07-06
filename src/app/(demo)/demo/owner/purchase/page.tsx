@@ -42,7 +42,7 @@ export default function DemoPurchasePage() {
 
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="مسؤول تسجيل البيانات أو المدخلات"
       persona="data-entry"
       roleLabel="مسؤول تسجيل البيانات أو المدخلات"
       breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "إدخال الشراء" }]}

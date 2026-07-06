@@ -110,7 +110,7 @@ export default async function DemoOwnerDashboardPage({
 
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="إيجيكوت للتجارة الدولية"
       persona={persona}
       roleLabel={roleLabel}
       breadcrumbs={[{ label: "لوحة المعلومات" }, { label: "لوحة التحكم" }]}

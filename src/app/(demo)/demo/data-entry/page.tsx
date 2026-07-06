@@ -51,7 +51,7 @@ const TASKS: TaskCard[] = [
 export default function DemoDataEntryHubPage() {
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="إيجيكوت للتجارة الدولية"
       persona="data-entry"
       roleLabel="مسؤول تسجيل البيانات أو المدخلات"
       breadcrumbs={[{ label: "مهام الإدخال" }]}

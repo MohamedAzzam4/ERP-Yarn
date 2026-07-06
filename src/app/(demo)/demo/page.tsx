@@ -38,7 +38,7 @@ const SCREENS: ScreenCard[] = [
 export default function DemoHomePage() {
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="إيجيكوت للتجارة الدولية"
       persona="executive"
       breadcrumbs={[{ label: "الرئيسية" }]}
     >

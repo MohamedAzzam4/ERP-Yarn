@@ -270,28 +270,44 @@ body {
 }
 
 /*
- * EGYCOT logo animation (added 2026-07-06).
- * Subtle, professional, hover-only. Disabled under prefers-reduced-motion.
+ * EGYCOT logo animation (added 2026-07-06, enhanced 2026-07-06).
+ * Subtle but visible, professional, hover/focus-only.
+ * Disabled under prefers-reduced-motion.
  *
- * - .egycot-fiber-line: slow stroke-dash movement (hover only)
- * - .egycot-cotton-boll: soft green glow pulse (hover only)
+ * On hover/focus:
+ *   - Soft green glow halo around the cotton boll
+ *   - Stroke highlight on the cotton outline
+ *   - Very slight lift (scale 1.03) — not bouncy
+ *   - Slow stroke-dash movement on the fiber line
  */
-.egycot-logo-mark .egycot-fiber-line {
-  stroke-dasharray: 40;
-  stroke-dashoffset: 0;
-  transition: stroke-dashoffset 0.3s ease;
+.egycot-logo-mark {
+  transition: transform 0.3s ease;
+  outline: none;
 }
 
-.egycot-logo-mark:hover .egycot-fiber-line {
-  animation: egycot-fiber-dash 3s linear infinite;
+.egycot-logo-mark:hover,
+.egycot-logo-mark:focus-visible {
+  transform: scale(1.03);
 }
 
 .egycot-logo-mark .egycot-cotton-boll {
   transition: filter 0.3s ease;
 }
 
-.egycot-logo-mark:hover .egycot-cotton-boll {
+.egycot-logo-mark:hover .egycot-cotton-boll,
+.egycot-logo-mark:focus-visible .egycot-cotton-boll {
   animation: egycot-glow-pulse 2.5s ease-in-out infinite;
+}
+
+.egycot-logo-mark .egycot-fiber-line {
+  stroke-dasharray: 40;
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.egycot-logo-mark:hover .egycot-fiber-line,
+.egycot-logo-mark:focus-visible .egycot-fiber-line {
+  animation: egycot-fiber-dash 3s linear infinite;
 }
 
 @keyframes egycot-fiber-dash {
@@ -301,8 +317,8 @@ body {
 }
 
 @keyframes egycot-glow-pulse {
-  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
-  50% { filter: drop-shadow(0 0 3px rgba(19, 122, 63, 0.3)); }
+  0%, 100% { filter: drop-shadow(0 0 1px rgba(19, 122, 63, 0.2)); }
+  50% { filter: drop-shadow(0 0 6px rgba(19, 122, 63, 0.45)); }
 }
 
 /*

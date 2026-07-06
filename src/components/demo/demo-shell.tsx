@@ -11,7 +11,7 @@
  *
  * Updated 2026-07-06:
  *   - Added `persona` prop ("executive" | "accountant" | "data-entry").
- *   - Topbar now shows persona role label under the ERP-Yarn title.
+ *   - Topbar now shows persona role label under the EGYCOT company branding.
  *   - Data-entry persona hides the sidebar entirely (task-hub mode).
  *
  * Layout (RTL):
@@ -57,7 +57,7 @@ export interface DemoShellProps {
 
 export function DemoShell({
   userName,
-  tenantLabel = "ERP-Yarn — عرض تفاعلي",
+  tenantLabel = "إيجيكوت للتجارة الدولية",
   children,
   breadcrumbs,
   persona,

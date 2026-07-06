@@ -2,9 +2,9 @@
  * EgycotLogo — EGYCOT-inspired coded emblem component.
  *
  * This is NOT the official EGYCOT logo. It is a coded SVG emblem inspired by
- * the EGYCOT brand identity (cotton outline, green stem, navy/blue corporate
- * colors). If a real vector logo is later provided, this component can be
- * replaced without touching the rest of the UI.
+ * the EGYCOT brand identity (cotton boll with rounded lobes, "EGYCOT" text
+ * inside, green Y stem). If a real vector logo is later provided, this
+ * component can be replaced without touching the rest of the UI.
  *
  * Brand identity:
  *   Arabic name:  إيجيكوت للتجارة الدولية
@@ -14,10 +14,10 @@
  *   Cotton green:    #137a3f
  *   Soft cotton:     #dcefd8
  *
- * Animation:
- *   - Subtle stroke-dash movement on the fiber line (slow, hover-only)
- *   - Soft green glow pulse on the cotton boll (slow, hover-only)
- *   - All animation disabled under prefers-reduced-motion
+ * Animation (hover/focus only, reduced-motion respected):
+ *   - Soft green glow halo around the cotton boll
+ *   - Stroke highlight on the cotton outline
+ *   - Very slight lift (scale 1.03) — not bouncy
  */
 "use client";
 
@@ -49,57 +49,75 @@ export function EgycotLogo({
   compact = false,
 }: EgycotLogoProps) {
   return (
-    <div className={cn("flex items-center gap-2", className)}>
-      {/* Logo mark — inline SVG cotton emblem */}
+    <div className={cn("egycot-logo-container flex items-center gap-2", className)}>
+      {/* Logo mark — inline SVG cotton emblem with EGYCOT text inside */}
       <svg
         width={size}
         height={size}
-        viewBox="0 0 48 48"
+        viewBox="0 0 100 100"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         role="img"
-        aria-label="EGYCOT"
+        aria-label="EGYCOT — إيجيكوت للتجارة الدولية"
         className="egycot-logo-mark shrink-0"
+        tabIndex={0}
       >
-        {/* Cotton boll — rounded cloud-like shape (top of the cotton plant) */}
+        {/* Cotton boll — 3 rounded lobes arranged in a circular cluster */}
         <g className="egycot-cotton-boll">
-          <circle cx="24" cy="16" r="6" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="1.5" />
-          <circle cx="18" cy="14" r="4.5" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="1.5" />
-          <circle cx="30" cy="14" r="4.5" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="1.5" />
-          <circle cx="15" cy="19" r="3.5" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="1.5" />
-          <circle cx="33" cy="19" r="3.5" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="1.5" />
+          {/* Top lobe */}
+          <ellipse cx="50" cy="30" rx="16" ry="18" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="2" />
+          {/* Left lobe */}
+          <ellipse cx="32" cy="44" rx="14" ry="16" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="2" />
+          {/* Right lobe */}
+          <ellipse cx="68" cy="44" rx="14" ry="16" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="2" />
+          {/* Center lobe (slightly behind, fills the gap) */}
+          <ellipse cx="50" cy="44" rx="15" ry="17" fill="var(--color-cotton-soft)" stroke="var(--color-cotton-green)" strokeWidth="2" />
         </g>
 
-        {/* Stem — green Y shape connecting boll to base */}
+        {/* EGYCOT text — centered inside the cotton boll */}
+        <text
+          x="50"
+          y="48"
+          textAnchor="middle"
+          fontFamily="var(--font-heading), Arial, sans-serif"
+          fontSize="9"
+          fontWeight="700"
+          fill="var(--color-cotton-green)"
+          className="egycot-logo-text"
+        >
+          EGYCOT
+        </text>
+
+        {/* Green Y stem — below the cotton boll */}
         <path
-          d="M24 22 L24 30 M24 30 L20 36 M24 30 L28 36"
+          d="M50 58 L50 72 M50 72 L42 82 M50 72 L58 82"
           stroke="var(--color-cotton-green)"
-          strokeWidth="2"
+          strokeWidth="2.5"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
         />
 
-        {/* Leaves — small green accents on the stem */}
+        {/* Small leaves on the stem */}
         <path
-          d="M24 26 Q20 25 18 27 Q20 28 24 27 Z"
+          d="M50 66 Q44 64 42 68 Q45 70 50 68 Z"
           fill="var(--color-cotton-green)"
-          opacity="0.8"
+          opacity="0.85"
         />
         <path
-          d="M24 26 Q28 25 30 27 Q28 28 24 27 Z"
+          d="M50 66 Q56 64 58 68 Q55 70 50 68 Z"
           fill="var(--color-cotton-green)"
-          opacity="0.8"
+          opacity="0.85"
         />
 
-        {/* Fiber line — subtle decorative curve at bottom (animated on hover) */}
+        {/* Subtle fiber line at bottom (animated on hover) */}
         <path
-          d="M10 40 Q24 36 38 40"
+          d="M30 88 Q50 84 70 88"
           stroke="var(--color-primary)"
           strokeWidth="1"
           strokeLinecap="round"
           fill="none"
-          opacity="0.4"
+          opacity="0.3"
           className="egycot-fiber-line"
         />
       </svg>

@@ -417,15 +417,15 @@ export function DemoTopbar({
           </Link>
         </div>
 
-        {/* User/persona area: user name + role (separate from company branding) */}
+        {/* User/persona area: user name + role (SEPARATE from company branding) */}
         <div className="hidden min-w-0 items-center gap-2 sm:flex">
           <div className="flex flex-col text-left">
             <span className="truncate text-xs font-medium text-foreground">
-              {userName}
+              {roleLabel ?? userName}
             </span>
             {roleLabel && (
               <span className="truncate text-[10px] text-muted-foreground">
-                {roleLabel}
+                {userName}
               </span>
             )}
           </div>

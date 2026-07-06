@@ -58,7 +58,7 @@ export default function DemoProductionPage() {
 
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="إيجيكوت للتجارة الدولية"
       roleLabel="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
       breadcrumbs={[{ label: "العمليات" }, { label: "الإنتاج لدى مصانع التشغيل" }]}
     >

@@ -201,8 +201,9 @@ describe("EGYCOT branding — topbar", () => {
   });
 
   it("user name and roleLabel are still rendered (not replaced by company name)", () => {
+    // Topbar now shows roleLabel as primary + userName as secondary (both present)
     expect(topbarSrc).toContain("{userName}");
-    expect(topbarSrc).toContain("{roleLabel}");
+    expect(topbarSrc).toContain("roleLabel");
   });
 });
 

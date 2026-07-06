@@ -62,7 +62,7 @@ export default function DemoReviewCenterPage() {
 
   return (
     <DemoShell
-      userName="ERP-Yarn"
+      userName="إيجيكوت للتجارة الدولية"
       roleLabel="المدير المالي"
       breadcrumbs={[{ label: "لوحة المعلومات" }, { label: "مركز الاعتماد والمتابعة" }]}
     >
