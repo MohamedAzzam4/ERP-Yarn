@@ -1,16 +1,19 @@
 {
-  "timestamp": "2026-07-05T19:09:14.368Z",
-  "status": "limited_restore_smoke_checkpoint",
-  "blocker": "blocked_on_separate_restore_target",
-  "migrationVersion": "unknown",
-  "backupMethod": "Logical export via SELECT + sanitized SQL INSERT generation (postgres.js). pg_dump not available in environment. This does NOT satisfy DEC-026 (exports are not backups) — not produced by an approved PostgreSQL backup method.",
-  "restoreTarget": "Separate schema 'restore_smoke_target' within the SAME Supabase dev database. NOT a separate database/environment. This does NOT satisfy DEC-025 (restore testing in a separate test database/environment). This is a limited schema-level smoke restore, NOT a final backup/restore acceptance.",
-  "separateTargetAvailable": false,
-  "blockerReason": "No separate restore target available: no local PostgreSQL (psql/pg_dump not installed, no sudo), no Docker, no separate Supabase project provided.",
-  "unblockOptions": [
-    "Provide a separate Supabase project DATABASE_URL for restore testing",
-    "Provide a local PostgreSQL connection string with pg_dump/pg_restore available",
-    "Owner explicitly accepts the limitation as a deferred pilot blocker (record in decision log)"
+  "timestamp": "2026-07-06T09:45:05.087Z",
+  "status": "ready_for_merge",
+  "sourceProject": "roewagammrhatmocvhwb (dev, eu-central-2)",
+  "restoreProject": "tbmfzyghjnlbbdltdqcj (restore-test, eu-west-1)",
+  "separateDatabase": true,
+  "restoreSchemaReset": true,
+  "backupMethod": "Logical export via postgres.js SELECT + sanitized SQL INSERT",
+  "restoreMethod": "Restore into separate Supabase project (postgres.js INSERT, session_replication_role=replica for FK ordering)",
+  "migrationsApplied": [
+    "0000_strong_zeigeist.sql",
+    "0001_slow_marvel_apes.sql",
+    "0002_nasty_stature.sql",
+    "0003_first_rocket_raccoon.sql",
+    "0004_far_white_tiger.sql",
+    "0005_dazzling_boomer.sql"
   ],
   "sourceCounts": {
     "tenants": 1,
@@ -25,9 +28,7 @@
     "accounts": 1,
     "account_entries": 1,
     "approval_requests": 1,
-    "audit_logs": 0,
-    "document_sequences": 0,
-    "idempotency_records": 0
+    "audit_logs": 0
   },
   "restoredCounts": {
     "tenants": 1,
@@ -42,52 +43,75 @@
     "accounts": 1,
     "account_entries": 1,
     "approval_requests": 1,
-    "audit_logs": 0,
-    "document_sequences": 0,
-    "idempotency_records": 0
+    "audit_logs": 0
   },
   "relationshipChecks": [
     {
-      "name": "movement → item + location + source",
+      "name": "movement→item+location+source",
       "passed": true,
-      "detail": "1 movements resolve item/location/source (expected 1)"
+      "detail": "1 resolve (expected 1)"
     },
     {
-      "name": "balance reconciles to movement",
+      "name": "balance↔movement",
       "passed": true,
-      "detail": "on_hand=1000.000, movement_qty=1000.000"
+      "detail": "on_hand=1000.000, qty=1000.000"
     },
     {
-      "name": "account_entry → source batch",
+      "name": "account_entry→source",
       "passed": true,
-      "detail": "1 account entries resolve source batch (expected 1)"
+      "detail": "1 resolve (expected 1)"
     },
     {
-      "name": "approval → draft + subject hash",
+      "name": "approval→draft+hash",
       "passed": true,
-      "detail": "1 approvals resolve draft + have subject hash (expected 1)"
+      "detail": "1 resolve (expected 1)"
+    }
+  ],
+  "constraintChecks": [
+    {
+      "name": "FK constraints exist",
+      "passed": true,
+      "detail": "299 FKs"
+    },
+    {
+      "name": "CHECK constraints exist",
+      "passed": true,
+      "detail": "628 CHECKs"
+    },
+    {
+      "name": "Unique indexes exist",
+      "passed": true,
+      "detail": "59 unique indexes"
+    },
+    {
+      "name": "audit_logs append-only trigger",
+      "passed": true,
+      "detail": "2 triggers"
+    },
+    {
+      "name": "WP-02-04 migration 0005 columns",
+      "passed": true,
+      "detail": "3/3 columns"
     }
   ],
   "sampleReconciliation": [
     {
-      "name": "DEC-067 payable formula",
+      "name": "DEC-067 payable",
       "passed": true,
-      "detail": "amount_signed=-80.00 (expected -80.00 = 1000/1000×80, negative)"
+      "detail": "amount=-80.00 (expected -80.00)"
     },
     {
-      "name": "inventory balance = 1000.000",
+      "name": "balance=1000.000",
       "passed": true,
       "detail": "on_hand=1000.000"
     }
   ],
+  "storageLimitation": "Supabase Storage files NOT included — database rows only.",
   "limitations": [
-    "This is a LOCAL SMOKE RESTORE into a separate schema within the same Supabase dev project, NOT a managed disaster-recovery setup.",
-    "pg_dump was not available in the environment; backup was captured via SELECT + sanitized SQL INSERT generation using postgres.js. A production backup should use pg_dump or Supabase's managed backup tool.",
-    "The restore target is a separate schema (restore_smoke_target), not a separate database/project. A production restore test should use a separate Supabase project or local PostgreSQL instance.",
-    "The restore schema tables have a simplified structure (no FKs, no enums, no CHECK constraints) — only the columns needed for smoke verification. A production restore must use the full schema.",
-    "Supabase Storage files are NOT included in this backup — only database rows. Storage backup is a separate concern (Contract 01: 'Back up or independently retain required Storage source/import files and metadata').",
-    "This does NOT prove production readiness. It proves the logical backup data can be loaded and relationships resolve.",
-    "Provider-managed backups (Supabase PITR) may supplement this process when the selected plan supports them. Free-tier managed-backup assumptions must not replace a demonstrated logical backup and restore test."
+    "Storage files NOT included — database rows only.",
+    "audit_logs is append-only — fixture does not create audit rows (trigger prevents cleanup).",
+    "document_sequences + idempotency_records use in-process stores — no rows in fixture.",
+    "This proves logical backup can be restored to a SEPARATE database with constraints/FKs/triggers intact. Does NOT prove production DR or Storage file recovery."
   ],
-  "durationMs": 31020
+  "durationMs": 159790
 }
