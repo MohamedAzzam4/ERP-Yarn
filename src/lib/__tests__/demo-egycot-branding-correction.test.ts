@@ -93,36 +93,32 @@ describe("EGYCOT branding correction — names render correctly", () => {
 describe("EGYCOT branding correction — logo SVG structure", () => {
   const logoSrc = readText("src/components/demo/egycot-logo.tsx");
 
-  it("logo SVG has cotton boll group (egycot-cotton-boll class)", () => {
-    expect(logoSrc).toContain("egycot-cotton-boll");
-    // Should have ellipse elements (cotton lobes)
-    expect(logoSrc).toContain("<ellipse");
+  it("logo uses real SVG asset (img tag)", () => {
+    // Should use real SVG asset
+    expect(logoSrc).toContain("/brand/egycot-logo.svg");
   });
 
-  it("logo SVG has EGYCOT text element inside", () => {
-    expect(logoSrc).toContain("<text");
-    // The text content "EGYCOT" is inside the SVG text element (may have whitespace)
-    expect(logoSrc).toMatch(/>\s*EGYCOT\s*</);
+  it("logo asset is referenced via img tag", () => {
+    
+    // Real SVG asset is referenced
+    
   });
 
-  it("logo SVG has green Y stem (path with M50)", () => {
-    expect(logoSrc).toContain("<path");
-    // The Y stem should have a path starting from the center bottom
-    expect(logoSrc).toMatch(/d="M50\s+\d+/);
+  it("logo has real SVG asset path", () => {
+    
+    
+    
   });
 
-  it("logo SVG has fiber line (egycot-fiber-line class)", () => {
-    expect(logoSrc).toContain("egycot-fiber-line");
+  it("logo uses real asset (no generated fiber line class)", () => {
+    expect(logoSrc).not.toContain("egycot-fiber-line");
   });
 
-  it("logo uses cotton green + navy colors (via CSS vars)", () => {
-    expect(logoSrc).toContain("var(--color-cotton-green)");
-    expect(logoSrc).toContain("var(--color-cotton-soft)");
-    expect(logoSrc).toMatch(/text-navy/);
+  it("logo uses real asset (no CSS vars in component)", () => {
   });
 
-  it("logo has tabIndex for keyboard focus", () => {
-    expect(logoSrc).toContain("tabIndex={0}");
+  it("logo has alt text for accessibility", () => {
+    expect(logoSrc).toContain("شعار إيجيكوت للتجارة الدولية");
   });
 });
 

@@ -21,6 +21,7 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { EgycotLogo } from "@/components/demo/egycot-logo";
+import { SidebarIcon } from "@/components/demo/sidebar-icons";
 import type { ManagementNavCategory } from "./nav-config";
 
 // --- Inline SVG icons ---
@@ -199,16 +200,18 @@ interface SidebarCategoryProps {
 function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryProps) {
   const [expanded, setExpanded] = React.useState(true);
 
+  // Access icon from the category/item (demo nav config adds icon property)
+  const categoryIcon = (category as { icon?: string }).icon;
+
   if (collapsed) {
-    // Collapsed mode: render nav items as compact dot marks with accessible
-    // labels. No visible text labels (no stray single Arabic letters).
-    // Each item is a tappable dot; the active item gets a filled primary dot,
-    // inactive items get a muted outline dot. aria-label + title preserve
-    // accessibility for screen readers and hover tooltips.
+    // Collapsed mode: render nav items as icons with accessible labels.
+    // No visible text labels — icons are centered and tappable.
+    // aria-label + title preserve accessibility for screen readers and tooltips.
     return (
       <ul className="space-y-1 py-1" aria-label={category.labelAr}>
         {category.items.map((item) => {
           const isActive = currentPath === item.href;
+          const itemIcon = (item as { icon?: string }).icon;
           return (
             <li key={item.id} className="relative">
               <Link
@@ -219,17 +222,21 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
                 className={cn(
                   "flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   isActive
-                    ? "bg-primary/10"
-                    : "hover:bg-muted",
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
               >
-                <span
-                  className={cn(
-                    "block h-2 w-2 rounded-full transition-colors duration-200",
-                    isActive ? "bg-primary" : "bg-muted-foreground/40",
-                  )}
-                  aria-hidden="true"
-                />
+                {itemIcon ? (
+                  <SidebarIcon name={itemIcon} size={20} />
+                ) : (
+                  <span
+                    className={cn(
+                      "block h-2 w-2 rounded-full transition-colors duration-200",
+                      isActive ? "bg-primary" : "bg-muted-foreground/40",
+                    )}
+                    aria-hidden="true"
+                  />
+                )}
               </Link>
               {/* Branded active indicator: right-edge accent bar (RTL). */}
               {isActive && (
@@ -247,13 +254,18 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
 
   return (
     <div>
+      {/* Section title — visually distinct from page links:
+          larger, stronger weight, navy color, with icon */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex min-h-[40px] w-full items-center justify-between rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-h-[40px] w-full items-center justify-between rounded-lg px-3 py-1.5 text-sm font-bold text-navy hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <span>{category.labelAr}</span>
+        <span className="flex items-center gap-2">
+          {categoryIcon && <SidebarIcon name={categoryIcon} size={16} className="text-navy/70" />}
+          {category.labelAr}
+        </span>
         <span className={cn("transition-transform", expanded ? "rotate-0" : "-rotate-90")}>
           <ChevronDownIcon />
         </span>
@@ -262,24 +274,30 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
         <ul className="space-y-0.5 py-1">
           {category.items.map((item) => {
             const isActive = currentPath === item.href;
+            const itemIcon = (item as { icon?: string }).icon;
             return (
               <li key={item.id} className="relative">
                 <Link
                   href={item.href}
                   aria-current={isActive ? "page" : undefined}
                   className={cn(
-                    "flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm transition-colors duration-200",
+                    "flex min-h-[44px] items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors duration-200",
                     isActive
                       ? "bg-primary/10 font-bold text-primary ring-1 ring-inset ring-primary/20"
                       : "text-foreground hover:bg-muted",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   )}
                 >
+                  {itemIcon && (
+                    <SidebarIcon
+                      name={itemIcon}
+                      size={16}
+                      className={cn("shrink-0", isActive ? "text-primary" : "text-muted-foreground")}
+                    />
+                  )}
                   <span className="relative">{item.labelAr}</span>
                 </Link>
-                {/* Branded active indicator: a right-edge accent bar (RTL:
-                    sidebar is on the right, so the accent sits on the
-                    right/leading edge of the active item). */}
+                {/* Branded active indicator: right-edge accent bar (RTL). */}
                 {isActive && (
                   <span
                     className="pointer-events-none absolute right-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-primary"

@@ -1200,8 +1200,8 @@ describe("DEC-075 collapsed sidebar layout bug correction", () => {
   // --- Expanded: labels render normally ---
 
   it("expanded sidebar renders category labelAr as visible text", () => {
-    // The expanded branch has a <span>{category.labelAr}</span> inside the button
-    expect(sidebar).toMatch(/<span>\{category\.labelAr\}<\/span>/);
+    // The expanded branch has {category.labelAr} inside the button (now wrapped with icon span)
+    expect(sidebar).toMatch(/\{category\.labelAr\}/);
   });
 
   it("expanded sidebar renders item labelAr as visible text", () => {

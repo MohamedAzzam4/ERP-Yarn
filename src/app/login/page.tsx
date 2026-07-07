@@ -50,11 +50,17 @@ export default async function LoginPage({
   const resetInfo = params.reset ? RESET_MESSAGES[params.reset] : undefined;
 
   return (
-    <div className="egycot-login-bg min-h-screen flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <div
+      className="egycot-login-bg min-h-screen flex items-center justify-center p-4"
+      style={{ backgroundImage: "url(/brand/login-background.png)", backgroundSize: "cover", backgroundPosition: "center" }}
+    >
+      {/* Light overlay for readability over the background image */}
+      <div className="absolute inset-0 bg-white/40 z-0" aria-hidden="true" />
+
+      <div className="relative z-10 w-full max-w-md">
         {/* EGYCOT branding — logo + company names above the login card */}
         <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <EgycotLogo size={56} showText={false} />
+          <EgycotLogo size={64} showText={false} />
           <h1 className="font-heading text-lg font-bold text-navy">
             {EGYCOT_NAME_AR}
           </h1>
@@ -63,7 +69,8 @@ export default async function LoginPage({
           </p>
         </div>
 
-        <Card className="w-full shadow-md">
+        {/* Glassmorphism login card */}
+        <Card className="w-full border border-white/40 bg-white/65 backdrop-blur-xl shadow-lg">
         <CardHeader>
           <CardTitle className="text-center text-heading-3">تسجيل الدخول</CardTitle>
         </CardHeader>

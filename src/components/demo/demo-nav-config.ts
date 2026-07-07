@@ -8,72 +8,72 @@
  * All hrefs point to `/demo/*` routes. No real business routes are linked.
  * The real `nav-config.ts` and its tests are untouched.
  *
- * Restructured 2026-07-06 (corrected 2026-07-06):
- *   - Sidebar order: لوحة المعلومات → نظرات عامة → البيانات الأساسية →
- *     التقارير → العمليات / مهام الإدخال (input section LAST).
- *   - العمليات / مهام الإدخال contains ONLY the 4 grouped input destinations:
- *     إدخال الشراء / إدخال البيع / إدخال التشغيل / حركة الخيوط
- *   - Old input entries removed from sidebar (إدخال الخيوط, استلام خام جديد,
- *     الإنتاج لدى مصانع التشغيل).
- *   - Overview pages (نظرة عامة على المخزون, نظرة عامة على المبيعات) moved
- *     to a new "نظرات عامة" category.
- *   - Old routes /demo/owner/yarn-entry and /demo/worker/raw-receipt redirect
- *     to /demo/owner/purchase (the new grouped purchase input page).
+ * Updated 2026-07-07:
+ *   - Added icon names to each item + category for sidebar icon rendering.
+ *   - Icons are rendered as inline SVG in the sidebar component.
  */
 
 export interface DemoNavItem {
   id: string;
   labelAr: string;
   href: string;
+  /** Icon name for sidebar rendering (maps to inline SVG in sidebar component). */
+  icon?: string;
 }
 
 export interface DemoNavCategory {
   id: string;
   labelAr: string;
   items: ReadonlyArray<DemoNavItem>;
+  /** Icon name for the category header (collapsed mode). */
+  icon?: string;
 }
 
 export const DEMO_NAV_CATEGORIES: ReadonlyArray<DemoNavCategory> = [
   {
     id: "dashboard",
     labelAr: "لوحة المعلومات",
+    icon: "dashboard",
     items: [
-      { id: "demo-dashboard", labelAr: "لوحة التحكم", href: "/demo/owner/dashboard" },
-      { id: "demo-reviews", labelAr: "مركز الاعتماد والمتابعة", href: "/demo/owner/reviews" },
+      { id: "demo-dashboard", labelAr: "لوحة التحكم", href: "/demo/owner/dashboard", icon: "dashboard" },
+      { id: "demo-reviews", labelAr: "مركز الاعتماد والمتابعة", href: "/demo/owner/reviews", icon: "check" },
     ],
   },
   {
     id: "overviews",
     labelAr: "نظرات عامة",
+    icon: "chart",
     items: [
-      { id: "demo-inventory", labelAr: "نظرة عامة على المخزون", href: "/demo/owner/inventory" },
-      { id: "demo-sales", labelAr: "نظرة عامة على المبيعات", href: "/demo/owner/sales" },
+      { id: "demo-inventory", labelAr: "نظرة عامة على المخزون", href: "/demo/owner/inventory", icon: "boxes" },
+      { id: "demo-sales", labelAr: "نظرة عامة على المبيعات", href: "/demo/owner/sales", icon: "trending" },
     ],
   },
   {
     id: "master-data",
     labelAr: "البيانات الأساسية",
+    icon: "database",
     items: [
-      { id: "demo-parties", labelAr: "الموردون والعملاء والمصانع", href: "/demo/owner/parties" },
+      { id: "demo-parties", labelAr: "الموردون والعملاء والمصانع", href: "/demo/owner/parties", icon: "users" },
     ],
   },
   {
     id: "reports",
     labelAr: "التقارير",
+    icon: "document",
     items: [
-      { id: "demo-activity", labelAr: "النشاطات والإشعارات", href: "/demo/owner/activity" },
-      { id: "demo-user-activity", labelAr: "سجل نشاط المستخدمين", href: "/demo/owner/user-activity" },
+      { id: "demo-activity", labelAr: "النشاطات والإشعارات", href: "/demo/owner/activity", icon: "bell" },
+      { id: "demo-user-activity", labelAr: "سجل نشاط المستخدمين", href: "/demo/owner/user-activity", icon: "history" },
     ],
   },
   {
-    // العمليات / مهام الإدخال — input destinations, placed LAST per stakeholder request
     id: "operations",
     labelAr: "العمليات / مهام الإدخال",
+    icon: "edit",
     items: [
-      { id: "demo-purchase", labelAr: "إدخال الشراء", href: "/demo/owner/purchase" },
-      { id: "demo-sales-entry", labelAr: "إدخال البيع", href: "/demo/owner/sales-entry" },
-      { id: "demo-operation", labelAr: "إدخال التشغيل", href: "/demo/owner/operation" },
-      { id: "demo-yarn-movement", labelAr: "حركة الخيوط", href: "/demo/owner/yarn-movement" },
+      { id: "demo-purchase", labelAr: "إدخال الشراء", href: "/demo/owner/purchase", icon: "cart" },
+      { id: "demo-sales-entry", labelAr: "إدخال البيع", href: "/demo/owner/sales-entry", icon: "receipt" },
+      { id: "demo-operation", labelAr: "إدخال التشغيل", href: "/demo/owner/operation", icon: "factory" },
+      { id: "demo-yarn-movement", labelAr: "حركة الخيوط", href: "/demo/owner/yarn-movement", icon: "transfer" },
     ],
   },
 ];

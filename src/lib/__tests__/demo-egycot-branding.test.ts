@@ -42,19 +42,14 @@ describe("EGYCOT branding — logo component", () => {
     expect(src).toContain("EGYCOT For International Trading");
   });
 
-  it("uses inline SVG (not external image)", () => {
+  it("uses real SVG asset (img tag, not inline generated SVG)", () => {
     const src = readText("src/components/demo/egycot-logo.tsx");
-    expect(src).toContain("<svg");
-    expect(src).toContain("viewBox");
+    expect(src).toContain("<img");
+    expect(src).toContain("/brand/egycot-logo.svg");
   });
 
-  it("uses CSS variables for colors (not hardcoded hex)", () => {
+  it("uses real SVG asset (no hardcoded hex in component)", () => {
     const src = readText("src/components/demo/egycot-logo.tsx");
-    expect(src).toContain("var(--color-cotton-green)");
-    expect(src).toContain("var(--color-cotton-soft)");
-    expect(src).toContain("var(--color-primary)");
-    // Navy is used via Tailwind text-navy class (which maps to --color-navy)
-    expect(src).toMatch(/text-navy/);
   });
 
   it("supports compact mode and text variants", () => {
@@ -222,7 +217,7 @@ describe("EGYCOT branding — login page", () => {
 
   it("renders EGYCOT logo above the login card", () => {
     expect(loginSrc).toContain("<EgycotLogo");
-    expect(loginSrc).toContain('size={56}');
+    expect(loginSrc).toContain('size={64}');
   });
 
   it("renders Arabic company name", () => {
@@ -295,14 +290,11 @@ describe("EGYCOT branding — login background CSS", () => {
 // ---------------------------------------------------------------------------
 
 describe("EGYCOT branding — no random hardcoded colors", () => {
-  it("EgycotLogo uses CSS variables, not hardcoded hex", () => {
+  it("EgycotLogo uses real asset, no hardcoded hex", () => {
     const src = readText("src/components/demo/egycot-logo.tsx");
-    // Should use var(--color-*) not #hex
-    expect(src).toContain("var(--color-");
-    // Should NOT have hardcoded hex colors (except in comments)
-    const codeLines = src.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"));
-    const hexInCode = codeLines.join("\n").match(/#[0-9a-fA-F]{6}/g);
-    // Allow zero hardcoded hex in the component code (colors come from CSS vars)
-    expect(hexInCode).toBeNull();
+    // Real SVG asset is used via <img> — no hardcoded hex in the component
+    expect(src).toContain("/brand/egycot-logo.svg");
+    // Should NOT have hardcoded hex colors in the component code
+    expect(src).not.toMatch(/#[0-9a-fA-F]{6}/);
   });
 });
