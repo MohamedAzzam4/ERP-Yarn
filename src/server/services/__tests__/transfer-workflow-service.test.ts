@@ -398,3 +398,185 @@ describe("WP-03-02 listPendingTransfers", () => {
     expect(pending[0]!.state).toBe("active");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 7. Regression: reason field is human-readable, not JSON.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-02 regression: reason vs submittedChildVersionSummary", () => {
+  it("createTransferRequest stores human-readable text in reason, not JSON", async () => {
+    const { service, approvalRepository } = makeDeps();
+    const whUser = makeUser(TEST_USERS.warehouse.userId);
+    const whEff = getTestEffectivePermissions(TEST_USERS.warehouse.userId);
+
+    const req = await service.createTransferRequest(whUser as any, whEff, {
+      itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
+      quantityKg: "300.000", reason: "نقل مخزون لموقع ب",
+    });
+
+    // Fetch the raw approval from the repository
+    const raw = await approvalRepository.findApprovalById(TEST_TENANT_ID, req.id);
+    expect(raw).toBeTruthy();
+    expect(raw!.reason).toBe("نقل مخزون لموقع ب"); // human-readable, NOT JSON
+    // reason should NOT be parseable as JSON with quantityKg
+    expect(() => JSON.parse(raw!.reason!)).toThrow();
+  });
+
+  it("createTransferRequest with null reason stores null in reason", async () => {
+    const { service, approvalRepository } = makeDeps();
+    const whUser = makeUser(TEST_USERS.warehouse.userId);
+    const whEff = getTestEffectivePermissions(TEST_USERS.warehouse.userId);
+
+    const req = await service.createTransferRequest(whUser as any, whEff, {
+      itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
+      quantityKg: "300.000", // no reason
+    });
+
+    const raw = await approvalRepository.findApprovalById(TEST_TENANT_ID, req.id);
+    expect(raw!.reason).toBeNull();
+  });
+
+  it("transfer payload is stored in submittedChildVersionSummary", async () => {
+    const { service, approvalRepository } = makeDeps();
+    const whUser = makeUser(TEST_USERS.warehouse.userId);
+    const whEff = getTestEffectivePermissions(TEST_USERS.warehouse.userId);
+
+    const req = await service.createTransferRequest(whUser as any, whEff, {
+      itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
+      quantityKg: "300.000", reason: "test",
+    });
+
+    const raw = await approvalRepository.findApprovalById(TEST_TENANT_ID, req.id);
+    const payload = raw!.submittedChildVersionSummary as any;
+    expect(payload).toBeTruthy();
+    expect(payload.itemId).toBe(TEST_ITEM_ID);
+    expect(payload.fromLocationId).toBe(TEST_LOC_A);
+    expect(payload.toLocationId).toBe(TEST_LOC_B);
+    expect(payload.quantityKg).toBe("300.000");
+  });
+
+  it("approveTransfer reads params from submittedChildVersionSummary, not reason", async () => {
+    const { service, inventoryLedger, ledgerRepo } = makeDeps();
+    await seedStock(inventoryLedger, "1000.000");
+
+    const whUser = makeUser(TEST_USERS.warehouse.userId);
+    const whEff = getTestEffectivePermissions(TEST_USERS.warehouse.userId);
+    const req = await service.createTransferRequest(whUser as any, whEff, {
+      itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
+      quantityKg: "250.000", reason: "human reason text",
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+    const result = await service.approveTransfer(ownerUser as any, ownerEff, {
+      transferRequestId: req.id, idempotencyKey: "reg-approve-1",
+    });
+
+    // Verify the transfer used 250.000 (from payload), not some value parsed from reason
+    expect(result.fromOnHandQtyKg).toBe("750.000"); // 1000 - 250 = 750
+    expect(result.toOnHandQtyKg).toBe("250.000");
+  });
+
+  it("approveTransfer does not parse transfer quantity from reason", async () => {
+    const { service, approvalRepository, inventoryLedger } = makeDeps();
+    await seedStock(inventoryLedger, "1000.000");
+
+    // Manually create an approval with reason containing JSON-like text
+    // but payload in submittedChildVersionSummary with different quantity
+    const whUser = makeUser(TEST_USERS.warehouse.userId);
+    const whEff = getTestEffectivePermissions(TEST_USERS.warehouse.userId);
+
+    // Create normally (stores payload correctly)
+    const req = await service.createTransferRequest(whUser as any, whEff, {
+      itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
+      quantityKg: "100.000", reason: '{"quantityKg": "999.000"}', // deceptive JSON in reason
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+    const result = await service.approveTransfer(ownerUser as any, ownerEff, {
+      transferRequestId: req.id, idempotencyKey: "reg-approve-2",
+    });
+
+    // Should use 100.000 from payload, NOT 999.000 from reason
+    expect(result.fromOnHandQtyKg).toBe("900.000"); // 1000 - 100 = 900
+    expect(result.toOnHandQtyKg).toBe("100.000");
+  });
+
+  it("malformed submittedChildVersionSummary is handled safely (defaults to 0.000, fails at posting)", async () => {
+    const { service, approvalRepository, inventoryLedger } = makeDeps();
+    await seedStock(inventoryLedger, "1000.000");
+
+    // Insert a malformed approval directly
+    const malformed = await approvalRepository.insertApprovalRequest({
+      tenantId: TEST_TENANT_ID,
+      requestType: "stock_transfer",
+      entityType: "transfer_request",
+      entityId: `${TEST_ITEM_ID}:${TEST_LOC_A}:${TEST_LOC_B}`,
+      riskLevel: "standard",
+      requestedBy: TEST_USERS.warehouse.userId,
+      reason: "test malformed",
+      subjectVersion: 1,
+      subjectHash: "aabb".repeat(16),
+      createdBy: TEST_USERS.warehouse.userId,
+      submittedChildVersionSummary: { broken: "no quantity" }, // malformed
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    // Should fail because quantity defaults to "0.000" which is not positive
+    await expect(service.approveTransfer(ownerUser as any, ownerEff, {
+      transferRequestId: malformed.id, idempotencyKey: "reg-malformed-1",
+    })).rejects.toThrow();
+  });
+
+  it("missing submittedChildVersionSummary is handled safely (defaults to 0.000, fails at posting)", async () => {
+    const { service, approvalRepository, inventoryLedger } = makeDeps();
+    await seedStock(inventoryLedger, "1000.000");
+
+    // Insert an approval without submittedChildVersionSummary (simulates old data)
+    const noPayload = await approvalRepository.insertApprovalRequest({
+      tenantId: TEST_TENANT_ID,
+      requestType: "stock_transfer",
+      entityType: "transfer_request",
+      entityId: `${TEST_ITEM_ID}:${TEST_LOC_A}:${TEST_LOC_B}`,
+      riskLevel: "standard",
+      requestedBy: TEST_USERS.warehouse.userId,
+      reason: "test no payload",
+      subjectVersion: 1,
+      subjectHash: "ccdd".repeat(16),
+      createdBy: TEST_USERS.warehouse.userId,
+      submittedChildVersionSummary: null, // explicitly null
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    // Should fail because quantity defaults to "0.000"
+    await expect(service.approveTransfer(ownerUser as any, ownerEff, {
+      transferRequestId: noPayload.id, idempotencyKey: "reg-nopayload-1",
+    })).rejects.toThrow();
+  });
+
+  it("listPendingTransfers shows human-readable reason, not raw JSON", async () => {
+    const { service } = makeDeps();
+    const whUser = makeUser(TEST_USERS.warehouse.userId);
+    const whEff = getTestEffectivePermissions(TEST_USERS.warehouse.userId);
+
+    await service.createTransferRequest(whUser as any, whEff, {
+      itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
+      quantityKg: "100.000", reason: "نقل لمخزن ب",
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+    const pending = await service.listPendingTransfers(ownerUser as any, ownerEff);
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.reason).toBe("نقل لمخزن ب"); // human-readable
+    // reason should NOT look like JSON
+    expect(pending[0]!.reason).not.toContain("{");
+    expect(pending[0]!.reason).not.toContain("quantityKg");
+  });
+});
