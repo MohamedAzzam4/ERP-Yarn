@@ -156,6 +156,8 @@ export class TransferWorkflowService {
 
     // Store transfer params in submittedChildVersionSummary (JSONB, Contract 03 §7.6).
     // The `reason` field is used for the human-readable reason only.
+    // entityId is a UUID column, so we generate a random UUID for the entity
+    // and store the composite key (itemId:fromLoc:toLoc) in the payload.
     const transferParams = {
       itemId: input.itemId,
       fromLocationId: input.fromLocationId,
@@ -163,10 +165,17 @@ export class TransferWorkflowService {
       quantityKg: input.quantityKg,
     };
 
-    // Check for existing active request for same entity (idempotent create).
-    const existing = await this.deps.approvalRepository.findActiveApprovalByEntity(
-      user.tenantId, TRANSFER_ENTITY_TYPE, `${input.itemId}:${input.fromLocationId}:${input.toLocationId}`, TRANSFER_REQUEST_TYPE,
+    // Generate a UUID for this transfer entity
+    const { randomUUID } = await import("node:crypto");
+    const entityId = randomUUID();
+
+    // Idempotency: check if an active transfer request with the same subjectHash
+    // already exists for this tenant. The subjectHash is deterministic from the
+    // transfer params, so identical params produce the same hash.
+    const existingApprovals = await this.deps.approvalRepository.listPendingApprovals(
+      user.tenantId, TRANSFER_ENTITY_TYPE,
     );
+    const existing = existingApprovals.find(a => a.subjectHash === subjectHash && a.state === "active");
     if (existing) {
       return this.mapApprovalToTransfer(existing);
     }
@@ -175,7 +184,7 @@ export class TransferWorkflowService {
       tenantId: user.tenantId,
       requestType: TRANSFER_REQUEST_TYPE,
       entityType: TRANSFER_ENTITY_TYPE,
-      entityId: `${input.itemId}:${input.fromLocationId}:${input.toLocationId}`,
+      entityId,
       riskLevel: "standard",
       requestedBy: user.userId,
       reason: input.reason ?? null, // human-readable reason only
@@ -234,15 +243,16 @@ export class TransferWorkflowService {
       throw new TransferRequesterCannotApproveError(approval.id, user.userId);
     }
 
-    // Parse the entity ID back to transfer params
-    const parts = approval.entityId.split(":");
-    const itemId = parts[0] ?? "";
-    const fromLocationId = parts[1] ?? "";
-    const toLocationId = parts[2] ?? "";
-
-    // Extract quantity from the structured payload (submittedChildVersionSummary)
+    // Extract all transfer params from the structured payload (submittedChildVersionSummary)
     const payload = (approval as any).submittedChildVersionSummary ?? {};
+    const itemId = (payload as any).itemId ?? "";
+    const fromLocationId = (payload as any).fromLocationId ?? "";
+    const toLocationId = (payload as any).toLocationId ?? "";
     const quantityKg = (payload as any).quantityKg ?? "0.000";
+
+    if (!itemId || !fromLocationId || !toLocationId) {
+      throw new TransferWorkflowError("VALIDATION_FAILED", "Transfer payload missing required fields in submittedChildVersionSummary.");
+    }
 
     // Post the transfer via InventoryLedgerService
     const transferInput: PostTransferInput = {
@@ -260,11 +270,26 @@ export class TransferWorkflowService {
     try {
       const result = await this.deps.inventoryLedger.postTransfer(user, effective, transferInput);
 
-      // Mark approval as decided
-      await this.deps.approvalRepository.markDecided(
+      // Mark approval as decided (conditional WHERE state='active').
+      // If another concurrent call already decided this approval, markDecided
+      // returns null — meaning our transfer posting was a duplicate.
+      // We should not have posted it, but since we did, we need to reverse it.
+      const decided = await this.deps.approvalRepository.markDecided(
         user.tenantId, approval.id, user.userId, input.decisionNotes ?? null,
         result.movementId, null, false,
       );
+
+      if (!decided) {
+        // Another concurrent call already decided this approval.
+        // Our transfer movement is a duplicate — reverse it.
+        await this.deps.inventoryLedger.postReversal(user, effective, {
+          originalMovementId: result.movementId,
+          reversalDate: new Date().toISOString().slice(0, 10),
+          reason: "Concurrent approval duplicate reversal",
+          idempotencyKey: `${input.idempotencyKey}:reversal`,
+        });
+        throw new TransferAlreadyDecidedError(approval.id, "decided (concurrent)");
+      }
 
       await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
         entityType: TRANSFER_ENTITY_TYPE, entityId: approval.id,
@@ -325,14 +350,14 @@ export class TransferWorkflowService {
   }
 
   private mapApprovalToTransfer(approval: any): TransferRequest {
-    const parts = approval.entityId?.split(":") ?? [];
+    const payload = approval?.submittedChildVersionSummary ?? {};
     return {
       id: approval.id,
       tenantId: approval.tenantId,
-      itemId: parts[0] ?? "",
-      fromLocationId: parts[1] ?? "",
-      toLocationId: parts[2] ?? "",
-      quantityKg: this.extractQuantityFromPayload(approval),
+      itemId: (payload as any).itemId ?? "",
+      fromLocationId: (payload as any).fromLocationId ?? "",
+      toLocationId: (payload as any).toLocationId ?? "",
+      quantityKg: (payload as any).quantityKg ?? "0.000",
       reason: approval.reason, // human-readable reason (not JSON payload)
       state: approval.state,
       requestedBy: approval.requestedBy,

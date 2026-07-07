@@ -989,13 +989,40 @@ export class InventoryLedgerService {
     if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
     if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
 
+    // Duplicate source guard: prevent double reversal of the same movement.
+    // sourceDocumentType='stock_movement', sourceDocumentId=originalMovementId.
+    const existingReversal = await this.deps.ledger.findMovementBySource(tenantId, "stock_movement", input.originalMovementId);
+    if (existingReversal) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate reversal" }, lastErrorClass: "DuplicateSourceError" }, now);
+      throw new DuplicateSourceError(`A reversal already exists for movement ${input.originalMovementId}.`);
+    }
+
     const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "reversal", year, entityType: "stock_movement" });
 
-    // Inverse effect: if original was +qty to location, reversal is -qty at that location.
-    // We use a signed quantity (negative of original) and post as "reversal" type.
-    const inverseQty = subtractKg("0.000", original.quantityKg); // negate
-    const locationId = original.toLocationId ?? original.fromLocationId ?? "";
+    // Inverse effect:
+    // - For movements that DECREASED a location (fromLocationId, e.g. transfer source):
+    //   reversal ADDS qty back to that location.
+    // - For movements that INCREASED a location (toLocationId, e.g. raw_receipt):
+    //   reversal SUBTRACTS qty from that location.
+    //
+    // For single-location movements (raw_receipt, adjustment), toLocationId is set
+    // and fromLocationId is null → reversal subtracts from toLocationId.
+    // For transfers, fromLocationId is the source → reversal adds back to fromLocationId.
+    //
+    // We choose the location to apply the inverse:
+    // - If fromLocationId exists (source was decreased), add back there.
+    // - Else use toLocationId (destination was increased), subtract there.
+    const isSourceMovement = original.fromLocationId !== null;
+    const locationId = isSourceMovement
+      ? (original.fromLocationId ?? "")
+      : (original.toLocationId ?? original.fromLocationId ?? "");
     if (!locationId) throw new ValidationFailedLedgerError("Original movement has no location.");
+
+    // For source movements (transfer source, negative adjustment): reversal = +qty (add back)
+    // For dest movements (raw_receipt, return, positive adjustment): reversal = -qty (subtract)
+    const inverseQty = isSourceMovement
+      ? original.quantityKg  // positive: add back what was removed
+      : subtractKg("0.000", original.quantityKg); // negative: remove what was added
 
     let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, original.itemId, locationId);
     if (!balance) {

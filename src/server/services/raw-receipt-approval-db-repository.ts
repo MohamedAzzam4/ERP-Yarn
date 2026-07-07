@@ -172,6 +172,7 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
       movementId?: string | null;
       payableEntryId?: string | null;
       payableDeferred?: boolean;
+      [key: string]: unknown;
     };
     return {
       id: row.id,
@@ -193,6 +194,7 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
       movementId: summary.movementId ?? null,
       payableEntryId: summary.payableEntryId ?? null,
       payableDeferred: summary.payableDeferred ?? false,
+      submittedChildVersionSummary: row.submittedChildVersionSummary as Record<string, unknown> | null,
       createdBy: row.createdBy ?? null,
       createdAt: row.createdAt ?? null,
       updatedBy: row.updatedBy ?? null,
