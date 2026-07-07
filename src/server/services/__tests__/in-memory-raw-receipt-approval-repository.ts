@@ -38,6 +38,7 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
       movementId: null,
       payableEntryId: null,
       payableDeferred: false,
+      submittedChildVersionSummary: row.submittedChildVersionSummary ?? null,
       createdBy: row.createdBy,
       createdAt: NOW(),
       updatedBy: null,

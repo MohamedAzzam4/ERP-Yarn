@@ -93,6 +93,10 @@ export interface RawReceiptApprovalRequest {
   movementId: string | null; // set after approval posts stock
   payableEntryId: string | null; // set after approval posts payable (null = late-price)
   payableDeferred: boolean; // true if price was not available
+  /** Raw structured payload from submitted_child_version_summary JSONB.
+   * Used by WP-02-05 (movementId/payableEntryId/payableDeferred) and
+   * WP-03-02 (transfer params: itemId/fromLocationId/toLocationId/quantityKg). */
+  submittedChildVersionSummary?: Record<string, unknown> | null;
   createdBy: string | null;
   createdAt: Date | null;
   updatedBy: string | null;
@@ -203,6 +207,12 @@ export interface NewApprovalRequestInput {
   subjectVersion: number;
   subjectHash: string;
   createdBy: string;
+  /** Optional structured payload (JSONB) for workflow-specific data.
+   * Stored in submitted_child_version_summary. Contract 03 §7.6:
+   * "submitted child/line version summary." Used by WP-02-05 for
+   * movementId/payableEntryId after approval, and by WP-03-02 for
+   * transfer params at creation time. */
+  submittedChildVersionSummary?: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------

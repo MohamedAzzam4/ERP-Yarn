@@ -154,11 +154,14 @@ export class TransferWorkflowService {
 
     const subjectHash = computeTransferSubjectHash(input);
 
-    // Store transfer params as JSON in the reason field for retrieval at approval time.
-    const transferParams = JSON.stringify({
-      itemId: input.itemId, fromLocationId: input.fromLocationId, toLocationId: input.toLocationId,
-      quantityKg: input.quantityKg, reason: input.reason ?? null,
-    });
+    // Store transfer params in submittedChildVersionSummary (JSONB, Contract 03 §7.6).
+    // The `reason` field is used for the human-readable reason only.
+    const transferParams = {
+      itemId: input.itemId,
+      fromLocationId: input.fromLocationId,
+      toLocationId: input.toLocationId,
+      quantityKg: input.quantityKg,
+    };
 
     // Check for existing active request for same entity (idempotent create).
     const existing = await this.deps.approvalRepository.findActiveApprovalByEntity(
@@ -175,10 +178,11 @@ export class TransferWorkflowService {
       entityId: `${input.itemId}:${input.fromLocationId}:${input.toLocationId}`,
       riskLevel: "standard",
       requestedBy: user.userId,
-      reason: transferParams,
+      reason: input.reason ?? null, // human-readable reason only
       subjectVersion: 1,
       subjectHash,
       createdBy: user.userId,
+      submittedChildVersionSummary: transferParams, // structured payload in JSONB
     });
 
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
@@ -236,12 +240,16 @@ export class TransferWorkflowService {
     const fromLocationId = parts[1] ?? "";
     const toLocationId = parts[2] ?? "";
 
+    // Extract quantity from the structured payload (submittedChildVersionSummary)
+    const payload = (approval as any).submittedChildVersionSummary ?? {};
+    const quantityKg = (payload as any).quantityKg ?? "0.000";
+
     // Post the transfer via InventoryLedgerService
     const transferInput: PostTransferInput = {
       itemId,
       fromLocationId,
       toLocationId,
-      quantityKg: this.extractQuantityFromReason(approval.reason),
+      quantityKg,
       movementDate: new Date().toISOString().slice(0, 10),
       sourceDocumentType: TRANSFER_ENTITY_TYPE,
       sourceDocumentId: approval.id,
@@ -310,27 +318,22 @@ export class TransferWorkflowService {
     return approvals.map(a => this.mapApprovalToTransfer(a));
   }
 
-  private extractQuantityFromReason(reason: string | null): string {
-    // The quantity is stored in the approval_requests reason field as JSON
-    // We store the full transfer input in the reason for retrieval at approval time
-    if (!reason) return "0.000";
-    try {
-      const parsed = JSON.parse(reason);
-      return parsed.quantityKg ?? "0.000";
-    } catch {
-      return "0.000";
-    }
+  private extractQuantityFromPayload(approval: any): string {
+    // Read quantity from the structured payload (submittedChildVersionSummary).
+    const payload = approval?.submittedChildVersionSummary ?? {};
+    return (payload as any).quantityKg ?? "0.000";
   }
 
   private mapApprovalToTransfer(approval: any): TransferRequest {
+    const parts = approval.entityId?.split(":") ?? [];
     return {
       id: approval.id,
       tenantId: approval.tenantId,
-      itemId: approval.entityId?.split(":")[0] ?? "",
-      fromLocationId: approval.entityId?.split(":")[1] ?? "",
-      toLocationId: approval.entityId?.split(":")[2] ?? "",
-      quantityKg: this.extractQuantityFromReason(approval.reason),
-      reason: approval.reason,
+      itemId: parts[0] ?? "",
+      fromLocationId: parts[1] ?? "",
+      toLocationId: parts[2] ?? "",
+      quantityKg: this.extractQuantityFromPayload(approval),
+      reason: approval.reason, // human-readable reason (not JSON payload)
       state: approval.state,
       requestedBy: approval.requestedBy,
       decidedBy: approval.decidedBy,
