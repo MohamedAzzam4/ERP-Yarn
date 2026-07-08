@@ -19,6 +19,19 @@
  *   3. reverseMovement — calls postReversal via InventoryLedgerService
  *
  * DEC-080: requester cannot approve own transfer request.
+ *
+ * ATOMICITY CONTRACT (Contract 06 §6 — Universal Approval Contract):
+ *   `approveTransfer` MUST commit `markDecided + postTransfer + movementId update`
+ *   as a single DB transaction. If `postTransfer` fails, the approval MUST NOT be
+ *   left in `decided` state. The ordering is:
+ *     1. (outside tx) claim workflow-level idempotency
+ *     2. (outside tx) check approval state, DEC-080, fetch payload
+ *     3. (inside tx) postTransfer → markDecided(movementId, ...) LAST
+ *     4. (outside tx) audit + markSucceeded on idempotency
+ *   If `markDecided` returns null (concurrent loser), the transaction rolls back —
+ *   no movement, no balance change, no decided approval.
+ *   If `postTransfer` throws, the transaction rolls back — no movement, no decided
+ *   approval. The caller can retry with a NEW idempotency key after fixing the cause.
  */
 import "server-only";
 
@@ -26,7 +39,13 @@ import type { ErpUserContext } from "@/server/auth/erp-context";
 import { requirePermission, requireTenantMatch, rejectBodyClaimsAuthority } from "@/server/security/guards";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import { appendAuditLog, type AuditTransactionHandle } from "./audit-service";
-import { claimIdempotency, markSucceeded, markBusinessFailed, type IdempotencyTransactionHandle, type IdempotencyClaimInput } from "./idempotency-service";
+import {
+  claimIdempotency,
+  markSucceeded,
+  markBusinessFailed,
+  type IdempotencyTransactionHandle,
+  type IdempotencyClaimInput,
+} from "./idempotency-service";
 import type { InventoryLedgerService, PostTransferInput, PostTransferResult, PostReversalInput, PostReversalResult } from "./inventory-ledger-service";
 import type { RawReceiptApprovalRepository } from "./raw-receipt-approval-service";
 import { createHash } from "node:crypto";
@@ -106,6 +125,39 @@ function computeTransferSubjectHash(input: CreateTransferRequestInput): string {
 }
 
 // ---------------------------------------------------------------------------
+// Transaction runner + factories (mirrors RawReceiptApprovalService pattern).
+// ---------------------------------------------------------------------------
+
+/**
+ * A transaction runner that wraps work in a single DB transaction.
+ *
+ * When provided, `approveTransfer` wraps ALL DB writes (stock movement,
+ * inventory balance update, approval_requests markDecided) in this
+ * transaction. If any write fails, the entire transaction rolls back —
+ * no partial effects (no "decided but no movement" state).
+ *
+ * The `work` callback receives a transaction-scoped `tx` object. The
+ * factory functions use this `tx` to construct transaction-scoped
+ * repositories + services.
+ *
+ * When NOT provided (unit tests with in-memory repos), the services run
+ * without a DB transaction boundary — tests must simulate rollback in
+ * their mock transactionRunner if they want to verify atomicity.
+ */
+export type TransferTransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+/**
+ * Factory functions for creating transaction-scoped services/repos.
+ * These are called inside the transaction runner with the `tx` object.
+ */
+export interface TransferTransactionScopedFactories {
+  /** Create an InventoryLedgerService that uses the transaction-scoped `tx`. */
+  createInventoryLedger: (tx: unknown) => InventoryLedgerService;
+  /** Create a RawReceiptApprovalRepository that uses the transaction-scoped `tx`. */
+  createApprovalRepository: (tx: unknown) => RawReceiptApprovalRepository;
+}
+
+// ---------------------------------------------------------------------------
 // Service deps.
 // ---------------------------------------------------------------------------
 
@@ -114,6 +166,18 @@ export interface TransferWorkflowServiceDeps {
   inventoryLedger: InventoryLedgerService;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
+  /**
+   * Optional transaction runner. When provided, all DB writes in
+   * approveTransfer are wrapped in a single DB transaction.
+   * When absent (unit tests with in-memory repos), services run without
+   * a DB transaction boundary.
+   */
+  transactionRunner?: TransferTransactionRunner;
+  /**
+   * Factory functions for creating transaction-scoped services/repos.
+   * Required when `transactionRunner` is provided.
+   */
+  txFactories?: TransferTransactionScopedFactories;
 }
 
 const TRANSFER_REQUEST_TYPE = "stock_transfer";
@@ -210,36 +274,117 @@ export class TransferWorkflowService {
    * Permission: inventory.transfer.approve (Owner/Accountant only).
    * DEC-080: requester cannot approve own request.
    *
-   * Calls InventoryLedgerService.postTransfer which handles:
-   * - idempotency
-   * - deterministic lock order
-   * - stock_movements + inventory_balances atomic update
-   * - audit
+   * ATOMICITY CONTRACT (Contract 06 §6 — Universal Approval Contract):
+   *   1. (outside tx) permission + validation + idempotency claim + state checks
+   *   2. (inside tx) postTransfer → markDecided(movementId, ...) LAST
+   *   3. (outside tx) audit + markSucceeded
+   *
+   * The `markDecided` is the LAST write inside the transaction, with conditional
+   * `WHERE state='active'`. This means:
+   *   - If `postTransfer` fails → tx rolls back, no movement, approval stays 'active'.
+   *   - If `markDecided` returns null (concurrent loser already decided) → tx rolls
+   *     back, no movement from this caller, the winner's movement persists.
+   *   - If both succeed → tx commits atomically (movement + decided approval together).
+   *
+   * This closes the "decided but no movement" atomicity gap: it is impossible
+   * for the approval to be `decided` without a corresponding posted movement
+   * (assuming `markDecided` and `postTransfer` both succeed).
    */
   async approveTransfer(
     user: ErpUserContext,
     effective: EffectivePermissions,
     input: ApproveTransferInput,
   ): Promise<PostTransferResult> {
+    // Step 1-2: permission + reject body authority.
     requirePermission(effective, "inventory.transfer.approve");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
-    // Fetch approval request
-    const approval = await this.deps.approvalRepository.findApprovalById(user.tenantId, input.transferRequestId);
+    if (!input.transferRequestId || input.transferRequestId.trim() === "") {
+      throw new TransferWorkflowError("VALIDATION_FAILED", "Transfer request ID is required.");
+    }
+    if (!input.idempotencyKey || input.idempotencyKey.trim() === "") {
+      throw new TransferWorkflowError("VALIDATION_FAILED", "Idempotency key is required.");
+    }
+
+    // Step 3: fetch approval request (for state check + payload extraction).
+    const approval = await this.deps.approvalRepository.findApprovalById(
+      user.tenantId, input.transferRequestId,
+    );
     if (!approval) throw new TransferRequestNotFoundError(input.transferRequestId);
     requireTenantMatch(user, approval.tenantId);
 
-    if (approval.state !== "active") {
-      // Already decided — replay (the transfer was either already posted or
-      // the first call is in progress and will post it).
-      if (approval.state === "decided") {
-        return { action: "replayed" as const, movementId: approval.movementId ?? "", docNo: "", fromBalanceVersion: 0, fromOnHandQtyKg: "0.000", toBalanceVersion: 0, toOnHandQtyKg: "0.000" };
+    // Step 4: claim workflow-level idempotency FIRST (before any state mutation).
+    // This is the workflow-level idempotency (separate from the inventory-level
+    // idempotency that postTransfer uses internally). Same key = replay; different
+    // key on a decided approval = TransferAlreadyDecidedError.
+    const now = new Date();
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId: user.tenantId,
+      operationScope: "transfer_workflow.approve",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        transferRequestId: input.transferRequestId,
+        decisionNotes: input.decisionNotes ?? null,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    };
+
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+
+    if (claim.action === "replay") {
+      // Prior call with same key succeeded — return the stored result.
+      // The approval row should already be marked decided with a movementId.
+      const refreshed = await this.deps.approvalRepository.findApprovalById(
+        user.tenantId, input.transferRequestId,
+      );
+      if (refreshed && refreshed.state === "decided" && refreshed.movementId) {
+        return {
+          action: "replayed" as const,
+          movementId: refreshed.movementId,
+          docNo: "",
+          fromBalanceVersion: 0,
+          fromOnHandQtyKg: "0.000",
+          toBalanceVersion: 0,
+          toOnHandQtyKg: "0.000",
+        };
       }
+      // Idempotency says replay but approval not decided — fall through to execute
+      // (this can happen if the prior call failed after claiming idempotency).
+    }
+
+    if (claim.action === "conflict") {
+      throw new TransferWorkflowError(
+        "IDEMPOTENCY_CONFLICT",
+        `Idempotency key '${input.idempotencyKey}' was used with a different request body.`,
+      );
+    }
+
+    if (claim.action === "in_progress") {
+      throw new TransferWorkflowError(
+        "OPERATION_IN_PROGRESS",
+        `Operation '${input.idempotencyKey}' is still in progress.`,
+      );
+    }
+
+    // claim.action === "execute" — fresh call. Now check approval state.
+    if (approval.state !== "active") {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409,
+        responseBody: { message: `Transfer already in state '${approval.state}'.` },
+        lastErrorClass: "TransferAlreadyDecidedError",
+      }, now);
       throw new TransferAlreadyDecidedError(approval.id, approval.state);
     }
 
-    // DEC-080: requester cannot approve
+    // DEC-080: requester cannot approve own request.
     if (approval.requestedBy === user.userId) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 403,
+        responseBody: { message: "Requester cannot approve own transfer request." },
+        lastErrorClass: "TransferRequesterCannotApproveError",
+      }, now);
       throw new TransferRequesterCannotApproveError(approval.id, user.userId);
     }
 
@@ -251,32 +396,14 @@ export class TransferWorkflowService {
     const quantityKg = (payload as any).quantityKg ?? "0.000";
 
     if (!itemId || !fromLocationId || !toLocationId) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 422,
+        responseBody: { message: "Transfer payload missing required fields in submittedChildVersionSummary." },
+        lastErrorClass: "TransferWorkflowError",
+      }, now);
       throw new TransferWorkflowError("VALIDATION_FAILED", "Transfer payload missing required fields in submittedChildVersionSummary.");
     }
 
-    // CRITICAL CONCURRENCY FIX: Mark the approval as decided BEFORE posting the transfer.
-    // The markDecided method uses conditional WHERE state='active' — only one concurrent
-    // call can succeed. The loser gets null and exits WITHOUT posting any movement.
-    // This prevents duplicate transfer movements from concurrent approvals.
-    //
-    // If the transfer posting fails after markDecided succeeds, the approval is left in
-    // "decided" state without a movementId. The caller can retry with the same
-    // idempotency key (postTransfer has its own idempotency), or an admin can
-    // manually reverse the decision. This is safer than posting first and hoping
-    // markDecided wins — that approach creates duplicate movements.
-    const prelimDecided = await this.deps.approvalRepository.markDecided(
-      user.tenantId, approval.id, user.userId, input.decisionNotes ?? null,
-      null, // movementId will be updated after successful posting
-      null, false,
-    );
-
-    if (!prelimDecided) {
-      // Another concurrent call already decided this approval.
-      // Exit WITHOUT posting any movement.
-      throw new TransferAlreadyDecidedError(approval.id, "decided (concurrent)");
-    }
-
-    // Post the transfer via InventoryLedgerService
     const transferInput: PostTransferInput = {
       itemId,
       fromLocationId,
@@ -285,36 +412,122 @@ export class TransferWorkflowService {
       movementDate: new Date().toISOString().slice(0, 10),
       sourceDocumentType: TRANSFER_ENTITY_TYPE,
       sourceDocumentId: approval.id,
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey: `${input.idempotencyKey}:transfer`,
       notes: input.decisionNotes ?? undefined,
     };
 
-    try {
-      const result = await this.deps.inventoryLedger.postTransfer(user, effective, transferInput);
+    // =====================================================================
+    // ATOMIC POSTING TRANSACTION (Contract 06 §6, §17.2; DEC-015; WP-03-02)
+    // =====================================================================
+    // All DB writes (stock_movement, inventory_balance, approval_requests
+    // markDecided) MUST commit or roll back together. If transactionRunner is
+    // provided, we wrap all DB writes in a single db.transaction(). If any
+    // write fails, the entire transaction rolls back — no partial stock post,
+    // no decided approval, no movementId attached.
+    //
+    // ORDERING (critical for atomicity):
+    //   1. postTransfer — creates movement + updates both balances
+    //   2. markDecided(movementId, ...) — LAST, conditional WHERE state='active'
+    //
+    // If markDecided returns null (concurrent loser), we throw → tx rolls back
+    // → postTransfer's movement + balance updates are discarded. The winner's
+    // movement + decided approval persist.
+    //
+    // If postTransfer throws (e.g., insufficient stock), tx rolls back →
+    // approval stays 'active', no movement, no movementId. Caller can retry
+    // with a NEW idempotency key after fixing the cause.
+    // =====================================================================
 
-      // Update the approval with the movementId (already decided, use updatePayableInfo
-      // which has conditional WHERE state='decided' to update the JSONB payload).
-      // We store movementId in the submittedChildVersionSummary alongside the transfer params.
-      await this.deps.approvalRepository.updatePayableInfo(
-        user.tenantId, approval.id,
-        result.movementId, // stored as movementId in the JSONB
+    const executePosting = async (
+      txScoped: {
+        inventoryLedger: InventoryLedgerService;
+        approvalRepository: RawReceiptApprovalRepository;
+      } | null,
+    ): Promise<PostTransferResult> => {
+      const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
+      const approvalRepo = txScoped?.approvalRepository ?? this.deps.approvalRepository;
+
+      // Step 9: post the transfer movement (creates movement + updates balances).
+      const transferResult: PostTransferResult = await invLedger.postTransfer(
+        user, effective, transferInput,
       );
 
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-        entityType: TRANSFER_ENTITY_TYPE, entityId: approval.id,
-        actionType: "transfer_request.approve",
-        newValuesJson: { movementId: result.movementId, docNo: result.docNo, fromOnHand: result.fromOnHandQtyKg, toOnHand: result.toOnHandQtyKg },
-        idempotencyKey: input.idempotencyKey,
-      });
+      // Step 10: mark approval decided (LAST, conditional WHERE state='active').
+      // This is the atomicity gate: if a concurrent caller already decided this
+      // approval, markDecided returns null and the transaction rolls back —
+      // undoing the postTransfer writes.
+      const decided = await approvalRepo.markDecided(
+        user.tenantId,
+        approval.id,
+        user.userId,
+        input.decisionNotes ?? null,
+        transferResult.movementId, // attach movementId atomically with the decision
+        null, // no payable for transfers
+        false, // payableDeferred
+      );
 
-      return result;
-    } catch (e) {
-      // The transfer failed. The approval is already marked "decided" but has no movementId.
-      // This is an inconsistent state — but it's safer than having duplicate movements.
-      // The caller can retry the transfer with the same idempotency key.
-      // An admin can review via reconciliation.
-      throw e;
+      if (!decided) {
+        // markDecided returned null — another concurrent transaction already
+        // decided this approval. The DB transaction will roll back (stock
+        // movement + balance updates all rolled back). Throw so the caller
+        // gets a clear conflict.
+        throw new TransferAlreadyDecidedError(approval.id, "decided (concurrent)");
+      }
+
+      return transferResult;
+    };
+
+    let transferResult: PostTransferResult;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        // Wrap all DB writes in a single outer transaction.
+        transferResult = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txInvLedger = this.deps.txFactories!.createInventoryLedger(tx);
+          const txApprovalRepo = this.deps.txFactories!.createApprovalRepository(tx);
+          return executePosting({ inventoryLedger: txInvLedger, approvalRepository: txApprovalRepo });
+        });
+      } else {
+        // No transaction runner (unit tests with in-memory repos).
+        transferResult = await executePosting(null);
+      }
+    } catch (txError) {
+      // The DB transaction rolled back. Mark idempotency as failed and re-throw.
+      // No partial DB state persists — stock_movement, inventory_balance,
+      // approval_requests are all rolled back.
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 500,
+        responseBody: { message: "Transfer posting transaction failed and rolled back." },
+        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+      }, now);
+      throw txError;
     }
+
+    // Step 11: audit (in-process — does not participate in DB transaction, but
+    // records the outcome for observability).
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: TRANSFER_ENTITY_TYPE, entityId: approval.id,
+      actionType: "transfer_request.approve",
+      newValuesJson: {
+        movementId: transferResult.movementId,
+        docNo: transferResult.docNo,
+        fromOnHand: transferResult.fromOnHandQtyKg,
+        toOnHand: transferResult.toOnHandQtyKg,
+        fromBalanceVersion: transferResult.fromBalanceVersion,
+        toBalanceVersion: transferResult.toBalanceVersion,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    // Step 12: mark idempotency succeeded (DB transaction already committed).
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200,
+      responseBody: {
+        movementId: transferResult.movementId,
+        docNo: transferResult.docNo,
+      },
+    }, now);
+
+    return transferResult;
   }
 
   /**
@@ -324,6 +537,13 @@ export class TransferWorkflowService {
    *
    * This creates a NEW movement (append-only) — the original is never edited.
    * Contract 04 §22: "Reversal: approved exact inverse; original retained."
+   *
+   * For transfer movements, the reversal restores BOTH sides:
+   *   source += qty (add back what was removed)
+   *   destination -= qty (remove what was added)
+   * This is handled by InventoryLedgerService.postReversal which detects the
+   * transfer movement type (fromLocationId !== null && toLocationId !== null)
+   * and applies the two-sided inverse.
    */
   async reverseMovement(
     user: ErpUserContext,
@@ -353,12 +573,6 @@ export class TransferWorkflowService {
     requirePermission(effective, "inventory.transfer.approve");
     const approvals = await this.deps.approvalRepository.listPendingApprovals(user.tenantId, TRANSFER_ENTITY_TYPE);
     return approvals.map(a => this.mapApprovalToTransfer(a));
-  }
-
-  private extractQuantityFromPayload(approval: any): string {
-    // Read quantity from the structured payload (submittedChildVersionSummary).
-    const payload = approval?.submittedChildVersionSummary ?? {};
-    return (payload as any).quantityKg ?? "0.000";
   }
 
   private mapApprovalToTransfer(approval: any): TransferRequest {

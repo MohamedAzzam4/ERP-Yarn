@@ -15,6 +15,34 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
   private approvals = new Map<string, RawReceiptApprovalRequest>();
   private counter = 0;
 
+  /**
+   * Snapshot the current state for transactional test rollback.
+   * Returns a deep-cloned copy of approvals + counter.
+   * Used by the mock transactionRunner in atomicity/concurrency tests
+   * to simulate DB transaction rollback. TEST-ONLY.
+   */
+  snapshot(): {
+    approvals: Map<string, RawReceiptApprovalRequest>;
+    counter: number;
+  } {
+    return {
+      approvals: new Map([...this.approvals].map(([k, v]) => [k, { ...v, submittedChildVersionSummary: v.submittedChildVersionSummary ? { ...v.submittedChildVersionSummary } : null }])),
+      counter: this.counter,
+    };
+  }
+
+  /**
+   * Restore state from a snapshot. Used to simulate DB transaction
+   * rollback in atomicity/concurrency tests. TEST-ONLY.
+   */
+  restore(snapshot: {
+    approvals: Map<string, RawReceiptApprovalRequest>;
+    counter: number;
+  }): void {
+    this.approvals = new Map([...snapshot.approvals].map(([k, v]) => [k, { ...v, submittedChildVersionSummary: v.submittedChildVersionSummary ? { ...v.submittedChildVersionSummary } : null }]));
+    this.counter = snapshot.counter;
+  }
+
   async insertApprovalRequest(row: NewApprovalRequestInput): Promise<RawReceiptApprovalRequest> {
     this.counter++;
     const id = nid("approval", this.counter);
@@ -93,6 +121,19 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
     // Conditional: only succeed if current state is 'active'.
     // Matches the DB-backed repository's conditional WHERE state = 'active'.
     if (existing.state !== "active") return null;
+    // JSONB MERGE (WP-03-02 fix): mirror the DB-backed `||` jsonb_concat
+    // behavior. Merge the new keys (movementId, payableEntryId,
+    // payableDeferred) into the existing submittedChildVersionSummary
+    // instead of overwriting it. This preserves workflow-specific payload
+    // (e.g., transfer params: itemId, fromLocationId, toLocationId,
+    // quantityKg stored at creation time by TransferWorkflowService).
+    const existingSummary = (existing.submittedChildVersionSummary ?? {}) as Record<string, unknown>;
+    const mergedSummary: Record<string, unknown> = {
+      ...existingSummary,
+      movementId,
+      payableEntryId,
+      payableDeferred,
+    };
     const updated: RawReceiptApprovalRequest = {
       ...existing,
       state: "decided",
@@ -102,6 +143,7 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
       movementId,
       payableEntryId,
       payableDeferred,
+      submittedChildVersionSummary: mergedSummary,
       updatedAt: NOW(),
       updatedBy: decidedBy,
     };
@@ -119,10 +161,20 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
     if (!existing) return null;
     // Conditional: only succeed if current state is 'decided'.
     if (existing.state !== "decided") return null;
+    // JSONB MERGE: mirror DB-backed `||` jsonb_concat. Merge the new
+    // payableEntryId + payableDeferred=false into the existing summary,
+    // preserving any existing keys (e.g., movementId, transfer params).
+    const existingSummary = (existing.submittedChildVersionSummary ?? {}) as Record<string, unknown>;
+    const mergedSummary: Record<string, unknown> = {
+      ...existingSummary,
+      payableEntryId,
+      payableDeferred: false,
+    };
     const updated: RawReceiptApprovalRequest = {
       ...existing,
       payableEntryId,
       payableDeferred: false,
+      submittedChildVersionSummary: mergedSummary,
       updatedAt: NOW(),
     };
     this.approvals.set(key, updated);

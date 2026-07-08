@@ -13,7 +13,7 @@
  * are called by the service, not this repository.
  */
 import "server-only";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { approvalRequests } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -113,6 +113,15 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
     // This is the critical concurrency guard for the approval flow.
     // Combined with the outer db.transaction(), it ensures exactly one
     // approval can decide a given approval_request.
+    // JSONB MERGE (WP-03-02 fix): we use `||` (jsonb_concat) to merge the
+    // new keys (movementId, payableEntryId, payableDeferred) into the
+    // existing submitted_child_version_summary instead of overwriting it.
+    // This preserves workflow-specific payload (e.g., transfer params:
+    // itemId, fromLocationId, toLocationId, quantityKg stored at creation
+    // time by TransferWorkflowService.createTransferRequest). Without this
+    // merge, markDecided would silently destroy the transfer params —
+    // breaking replay/recovery flows that need to read them later.
+    const mergePayload = JSON.stringify({ movementId, payableEntryId, payableDeferred });
     const [result] = await this.db
       .update(approvalRequests)
       .set({
@@ -120,11 +129,7 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
         decidedBy,
         decidedAt: new Date(),
         decisionNotes,
-        submittedChildVersionSummary: {
-          movementId,
-          payableEntryId,
-          payableDeferred,
-        },
+        submittedChildVersionSummary: sql`COALESCE(${approvalRequests.submittedChildVersionSummary}, '{}'::jsonb) || ${mergePayload}::jsonb`,
         updatedAt: new Date(),
         updatedBy: decidedBy,
       })
@@ -148,13 +153,14 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
     // This is the late-price confirmation path: the approval was already
     // decided (stock posted, payable deferred), and now we're recording the
     // posted payable entry ID.
+    // JSONB MERGE: mirror DB-backed `||` jsonb_concat. Merge the new
+    // payableEntryId + payableDeferred=false into the existing summary,
+    // preserving any existing keys (e.g., movementId, transfer params).
+    const mergePayload = JSON.stringify({ payableEntryId, payableDeferred: false });
     const [result] = await this.db
       .update(approvalRequests)
       .set({
-        submittedChildVersionSummary: {
-          payableEntryId,
-          payableDeferred: false,
-        },
+        submittedChildVersionSummary: sql`COALESCE(${approvalRequests.submittedChildVersionSummary}, '{}'::jsonb) || ${mergePayload}::jsonb`,
         updatedAt: new Date(),
       })
       .where(and(

@@ -21,6 +21,42 @@ export class InMemoryInventoryLedgerRepository implements InventoryLedgerTransac
   private movementCounter = 0;
   private balanceCounter = 0;
 
+  /**
+   * Snapshot the current state for transactional test rollback.
+   * Returns a deep-cloned copy of movements + balances + counters.
+   * Used by the mock transactionRunner in atomicity/concurrency tests
+   * to simulate DB transaction rollback. TEST-ONLY.
+   */
+  snapshot(): {
+    movements: Map<string, StockMovement>;
+    balances: Map<string, InventoryBalance>;
+    movementCounter: number;
+    balanceCounter: number;
+  } {
+    return {
+      movements: new Map([...this.movements].map(([k, v]) => [k, { ...v }])),
+      balances: new Map([...this.balances].map(([k, v]) => [k, { ...v }])),
+      movementCounter: this.movementCounter,
+      balanceCounter: this.balanceCounter,
+    };
+  }
+
+  /**
+   * Restore state from a snapshot. Used to simulate DB transaction
+   * rollback in atomicity/concurrency tests. TEST-ONLY.
+   */
+  restore(snapshot: {
+    movements: Map<string, StockMovement>;
+    balances: Map<string, InventoryBalance>;
+    movementCounter: number;
+    balanceCounter: number;
+  }): void {
+    this.movements = new Map([...snapshot.movements].map(([k, v]) => [k, { ...v }]));
+    this.balances = new Map([...snapshot.balances].map(([k, v]) => [k, { ...v }]));
+    this.movementCounter = snapshot.movementCounter;
+    this.balanceCounter = snapshot.balanceCounter;
+  }
+
   async insertMovement(row: NewMovementInput): Promise<StockMovement> {
     this.movementCounter++;
     const id = nid("mv", this.movementCounter);
