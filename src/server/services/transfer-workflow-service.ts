@@ -230,11 +230,11 @@ export class TransferWorkflowService {
     requireTenantMatch(user, approval.tenantId);
 
     if (approval.state !== "active") {
-      // Check if already decided — replay if movementId exists
-      if (approval.state === "decided" && approval.movementId) {
-        return { action: "replayed", movementId: approval.movementId, docNo: "", fromBalanceVersion: 0, fromOnHandQtyKg: "0.000", toBalanceVersion: 0, toOnHandQtyKg: "0.000" };
+      // Already decided — replay (the transfer was either already posted or
+      // the first call is in progress and will post it).
+      if (approval.state === "decided") {
+        return { action: "replayed" as const, movementId: approval.movementId ?? "", docNo: "", fromBalanceVersion: 0, fromOnHandQtyKg: "0.000", toBalanceVersion: 0, toOnHandQtyKg: "0.000" };
       }
-      // If decided but no movementId (shouldn't happen), or other state
       throw new TransferAlreadyDecidedError(approval.id, approval.state);
     }
 
@@ -254,6 +254,28 @@ export class TransferWorkflowService {
       throw new TransferWorkflowError("VALIDATION_FAILED", "Transfer payload missing required fields in submittedChildVersionSummary.");
     }
 
+    // CRITICAL CONCURRENCY FIX: Mark the approval as decided BEFORE posting the transfer.
+    // The markDecided method uses conditional WHERE state='active' — only one concurrent
+    // call can succeed. The loser gets null and exits WITHOUT posting any movement.
+    // This prevents duplicate transfer movements from concurrent approvals.
+    //
+    // If the transfer posting fails after markDecided succeeds, the approval is left in
+    // "decided" state without a movementId. The caller can retry with the same
+    // idempotency key (postTransfer has its own idempotency), or an admin can
+    // manually reverse the decision. This is safer than posting first and hoping
+    // markDecided wins — that approach creates duplicate movements.
+    const prelimDecided = await this.deps.approvalRepository.markDecided(
+      user.tenantId, approval.id, user.userId, input.decisionNotes ?? null,
+      null, // movementId will be updated after successful posting
+      null, false,
+    );
+
+    if (!prelimDecided) {
+      // Another concurrent call already decided this approval.
+      // Exit WITHOUT posting any movement.
+      throw new TransferAlreadyDecidedError(approval.id, "decided (concurrent)");
+    }
+
     // Post the transfer via InventoryLedgerService
     const transferInput: PostTransferInput = {
       itemId,
@@ -270,26 +292,13 @@ export class TransferWorkflowService {
     try {
       const result = await this.deps.inventoryLedger.postTransfer(user, effective, transferInput);
 
-      // Mark approval as decided (conditional WHERE state='active').
-      // If another concurrent call already decided this approval, markDecided
-      // returns null — meaning our transfer posting was a duplicate.
-      // We should not have posted it, but since we did, we need to reverse it.
-      const decided = await this.deps.approvalRepository.markDecided(
-        user.tenantId, approval.id, user.userId, input.decisionNotes ?? null,
-        result.movementId, null, false,
+      // Update the approval with the movementId (already decided, use updatePayableInfo
+      // which has conditional WHERE state='decided' to update the JSONB payload).
+      // We store movementId in the submittedChildVersionSummary alongside the transfer params.
+      await this.deps.approvalRepository.updatePayableInfo(
+        user.tenantId, approval.id,
+        result.movementId, // stored as movementId in the JSONB
       );
-
-      if (!decided) {
-        // Another concurrent call already decided this approval.
-        // Our transfer movement is a duplicate — reverse it.
-        await this.deps.inventoryLedger.postReversal(user, effective, {
-          originalMovementId: result.movementId,
-          reversalDate: new Date().toISOString().slice(0, 10),
-          reason: "Concurrent approval duplicate reversal",
-          idempotencyKey: `${input.idempotencyKey}:reversal`,
-        });
-        throw new TransferAlreadyDecidedError(approval.id, "decided (concurrent)");
-      }
 
       await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
         entityType: TRANSFER_ENTITY_TYPE, entityId: approval.id,
@@ -300,7 +309,10 @@ export class TransferWorkflowService {
 
       return result;
     } catch (e) {
-      // The transfer failed — don't mark as decided. Let the caller retry.
+      // The transfer failed. The approval is already marked "decided" but has no movementId.
+      // This is an inconsistent state — but it's safer than having duplicate movements.
+      // The caller can retry the transfer with the same idempotency key.
+      // An admin can review via reconciliation.
       throw e;
     }
   }

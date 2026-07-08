@@ -707,6 +707,12 @@ export class InventoryLedgerService {
     const srcBal = fromFirst ? fromBalance : toBalance;
     const dstBal = fromFirst ? toBalance : fromBalance;
 
+    // Stock check: ensure source has sufficient stock (checked after both balances are locked)
+    if (compareKg(srcBal.onHandQtyKg, normalizedQty) < 0) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, now);
+      throw new StockInsufficientError(`Insufficient stock at source: on_hand=${srcBal.onHandQtyKg}, requested=${normalizedQty}.`);
+    }
+
     // Insert movement
     const movement = await this.deps.ledger.insertMovement({
       tenantId, docNo: docNoResult.docNo, movementType: "transfer", movementStatus: "posted",
@@ -999,59 +1005,106 @@ export class InventoryLedgerService {
 
     const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "reversal", year, entityType: "stock_movement" });
 
-    // Inverse effect:
-    // - For movements that DECREASED a location (fromLocationId, e.g. transfer source):
-    //   reversal ADDS qty back to that location.
-    // - For movements that INCREASED a location (toLocationId, e.g. raw_receipt):
-    //   reversal SUBTRACTS qty from that location.
-    //
-    // For single-location movements (raw_receipt, adjustment), toLocationId is set
-    // and fromLocationId is null → reversal subtracts from toLocationId.
-    // For transfers, fromLocationId is the source → reversal adds back to fromLocationId.
-    //
-    // We choose the location to apply the inverse:
-    // - If fromLocationId exists (source was decreased), add back there.
-    // - Else use toLocationId (destination was increased), subtract there.
-    const isSourceMovement = original.fromLocationId !== null;
-    const locationId = isSourceMovement
-      ? (original.fromLocationId ?? "")
-      : (original.toLocationId ?? original.fromLocationId ?? "");
-    if (!locationId) throw new ValidationFailedLedgerError("Original movement has no location.");
+    // Determine if this is a two-location movement (transfer) or single-location.
+    const isTransfer = original.fromLocationId !== null && original.toLocationId !== null
+      && original.fromLocationId !== original.toLocationId;
 
-    // For source movements (transfer source, negative adjustment): reversal = +qty (add back)
-    // For dest movements (raw_receipt, return, positive adjustment): reversal = -qty (subtract)
-    const inverseQty = isSourceMovement
-      ? original.quantityKg  // positive: add back what was removed
-      : subtractKg("0.000", original.quantityKg); // negative: remove what was added
+    if (isTransfer) {
+      // Transfer reversal: reverse BOTH locations.
+      // Original: source -qty, dest +qty
+      // Reversal: source +qty (add back), dest -qty (remove)
+      const sourceLocId = original.fromLocationId!;
+      const destLocId = original.toLocationId!;
 
-    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, original.itemId, locationId);
-    if (!balance) {
-      balance = await this.deps.ledger.insertBalance({ tenantId, itemId: original.itemId, locationId, onHandQtyKg: "0.000", lastMovementId: null });
+      // Lock in deterministic order (ascending locationId)
+      const lockOrder = [sourceLocId, destLocId].sort();
+      const firstLoc = lockOrder[0]!;
+      const secondLoc = lockOrder[1]!;
+
+      // Lock + fetch first balance
+      let firstBalance = await this.deps.ledger.findBalanceForUpdate(tenantId, original.itemId, firstLoc);
+      if (!firstBalance) {
+        firstBalance = await this.deps.ledger.insertBalance({ tenantId, itemId: original.itemId, locationId: firstLoc, onHandQtyKg: "0.000", lastMovementId: null });
+      }
+
+      // Lock + fetch second balance
+      let secondBalance = await this.deps.ledger.findBalanceForUpdate(tenantId, original.itemId, secondLoc);
+      if (!secondBalance) {
+        secondBalance = await this.deps.ledger.insertBalance({ tenantId, itemId: original.itemId, locationId: secondLoc, onHandQtyKg: "0.000", lastMovementId: null });
+      }
+
+      // Insert reversal movement
+      const movement = await this.deps.ledger.insertMovement({
+        tenantId, docNo: docNoResult.docNo, movementType: "reversal", movementStatus: "posted",
+        itemId: original.itemId, fromLocationId: sourceLocId, toLocationId: destLocId,
+        quantityKg: original.quantityKg, movementDate: input.reversalDate,
+        sourceDocumentType: "stock_movement", sourceDocumentId: input.originalMovementId,
+        idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+      });
+
+      // Update source balance: +qty (add back what was removed)
+      const srcBalance = firstLoc === sourceLocId ? firstBalance : secondBalance;
+      const newSrcOnHand = addKg(srcBalance.onHandQtyKg, original.quantityKg);
+      const updatedSrc = await this.deps.ledger.updateBalance(tenantId, original.itemId, sourceLocId, { onHandQtyKg: newSrcOnHand, lastMovementId: movement.id, version: srcBalance.version + 1 });
+      if (!updatedSrc) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Source balance not found during reversal.");
+
+      // Update dest balance: -qty (remove what was added)
+      const dstBalance = firstLoc === destLocId ? firstBalance : secondBalance;
+      const newDstOnHand = subtractKg(dstBalance.onHandQtyKg, original.quantityKg);
+      const updatedDst = await this.deps.ledger.updateBalance(tenantId, original.itemId, destLocId, { onHandQtyKg: newDstOnHand, lastMovementId: movement.id, version: dstBalance.version + 1 });
+      if (!updatedDst) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Destination balance not found during reversal.");
+
+      await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+        entityType: "stock_movement", entityId: movement.id, actionType: "inventory.reversal.post",
+        newValuesJson: { docNo: movement.docNo, originalMovementId: input.originalMovementId, itemId: original.itemId, sourceLocId, destLocId, newSrcOnHand, newDstOnHand, reason: input.reason },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+      return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedSrc.version, onHandQtyKg: updatedSrc.onHandQtyKg, originalMovementId: input.originalMovementId };
+
+    } else {
+      // Single-location reversal (raw_receipt, return_receipt, adjustment)
+      // Original: toLocationId +qty (or fromLocationId -qty for negative adjustment)
+      // Reversal: inverse effect at the same location
+      const isSourceMovement = original.fromLocationId !== null;
+      const locationId = isSourceMovement
+        ? (original.fromLocationId ?? "")
+        : (original.toLocationId ?? original.fromLocationId ?? "");
+      if (!locationId) throw new ValidationFailedLedgerError("Original movement has no location.");
+
+      const inverseQty = isSourceMovement
+        ? original.quantityKg  // positive: add back what was removed
+        : subtractKg("0.000", original.quantityKg); // negative: remove what was added
+
+      let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, original.itemId, locationId);
+      if (!balance) {
+        balance = await this.deps.ledger.insertBalance({ tenantId, itemId: original.itemId, locationId, onHandQtyKg: "0.000", lastMovementId: null });
+      }
+
+      const movement = await this.deps.ledger.insertMovement({
+        tenantId, docNo: docNoResult.docNo, movementType: "reversal", movementStatus: "posted",
+        itemId: original.itemId, fromLocationId: locationId, toLocationId: null,
+        quantityKg: original.quantityKg, movementDate: input.reversalDate,
+        sourceDocumentType: "stock_movement", sourceDocumentId: input.originalMovementId,
+        idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+      });
+
+      const newOnHand = addKg(balance.onHandQtyKg, inverseQty);
+      const updatedBalance = await this.deps.ledger.updateBalance(tenantId, original.itemId, locationId, { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 });
+      if (!updatedBalance) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during reversal update.");
+
+      await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+        entityType: "stock_movement", entityId: movement.id, actionType: "inventory.reversal.post",
+        newValuesJson: { docNo: movement.docNo, originalMovementId: input.originalMovementId, itemId: original.itemId, locationId, inverseQty, newOnHandQtyKg: updatedBalance.onHandQtyKg, reason: input.reason },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+      return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg, originalMovementId: input.originalMovementId };
     }
-
-    const movement = await this.deps.ledger.insertMovement({
-      tenantId, docNo: docNoResult.docNo, movementType: "reversal", movementStatus: "posted",
-      itemId: original.itemId, fromLocationId: locationId, toLocationId: null,
-      quantityKg: original.quantityKg, // absolute qty; effect is inverse via movementType
-      movementDate: input.reversalDate,
-      sourceDocumentType: "stock_movement", sourceDocumentId: input.originalMovementId,
-      idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
-    });
-
-    // Apply inverse effect on balance
-    const newOnHand = addKg(balance.onHandQtyKg, inverseQty);
-    const updatedBalance = await this.deps.ledger.updateBalance(tenantId, original.itemId, locationId, { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 });
-    if (!updatedBalance) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during reversal update.");
-
-    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
-      entityType: "stock_movement", entityId: movement.id, actionType: "inventory.reversal.post",
-      newValuesJson: { docNo: movement.docNo, originalMovementId: input.originalMovementId, itemId: original.itemId, locationId, inverseQty, newOnHandQtyKg: updatedBalance.onHandQtyKg, reason: input.reason },
-      idempotencyKey: input.idempotencyKey,
-    });
-
-    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
-
-    return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg, originalMovementId: input.originalMovementId };
   }
 
   /**

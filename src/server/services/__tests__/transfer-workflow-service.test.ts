@@ -221,7 +221,7 @@ describe("WP-03-02 approveTransfer", () => {
     expect(transferMovements).toHaveLength(1);
   });
 
-  it("rejects already-decided transfer", async () => {
+  it("already-decided transfer returns replay", async () => {
     const { service, inventoryLedger } = makeDeps();
     await seedStock(inventoryLedger, "1000.000");
 
@@ -239,9 +239,7 @@ describe("WP-03-02 approveTransfer", () => {
       transferRequestId: req.id, idempotencyKey: "approve-4a",
     });
 
-    // Different idempotency key on already-decided — should replay (idempotent)
-    // The approval is already decided with a movementId, so a re-approve with
-    // a different key returns action=replayed (the prior result).
+    // Different idempotency key on already-decided — returns replay
     const replayResult = await service.approveTransfer(ownerUser as any, ownerEff, {
       transferRequestId: req.id, idempotencyKey: "approve-4b",
     });
