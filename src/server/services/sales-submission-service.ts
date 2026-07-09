@@ -475,7 +475,7 @@ export class SalesSubmissionService {
         user.tenantId, sale.id,
         {
           saleStatus: "pending_approval",
-          approvalStatus: "pending",
+          approvalStatus: "pending_approval",
           reservationStatus: "reserved",
         },
       );
