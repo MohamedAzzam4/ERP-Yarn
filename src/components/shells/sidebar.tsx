@@ -255,17 +255,14 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
   return (
     <div>
       {/* Section title — visually distinct from page links:
-          larger, stronger weight, navy color, with icon */}
+          larger, stronger weight, navy color, NO icon */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
         className="flex min-h-[40px] w-full items-center justify-between rounded-lg px-3 py-1.5 text-sm font-bold text-navy hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <span className="flex items-center gap-2">
-          {categoryIcon && <SidebarIcon name={categoryIcon} size={16} className="text-navy/70" />}
-          {category.labelAr}
-        </span>
+        <span>{category.labelAr}</span>
         <span className={cn("transition-transform", expanded ? "rotate-0" : "-rotate-90")}>
           <ChevronDownIcon />
         </span>

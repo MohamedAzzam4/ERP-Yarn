@@ -42,10 +42,7 @@ export default function DemoPurchasePage() {
 
   return (
     <DemoShell
-      userName="مسؤول تسجيل البيانات أو المدخلات"
-      persona="data-entry"
-      roleLabel="مسؤول تسجيل البيانات أو المدخلات"
-      breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "إدخال الشراء" }]}
+      forcePersona="data-entry"
     >
       <DemoFormLayout>
         {/* Title + guidance — plain, no gradient/glass (mobile-first form) */}

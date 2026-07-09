@@ -394,7 +394,7 @@ export function DemoTopbar({
       role="banner"
     >
       <div className="flex items-center justify-between gap-4 px-4 py-3">
-        {/* Brand area: EGYCOT logo + company name */}
+        {/* Brand area: EGYCOT logo only (no company name text) */}
         <div className="flex min-w-0 items-center gap-3">
           {onToggleSidebar && (
             <Button
@@ -413,19 +413,27 @@ export function DemoTopbar({
             className="flex shrink-0 items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg"
             aria-label="الصفحة الرئيسية — إيجيكوت للتجارة الدولية"
           >
-            <EgycotLogo size={32} showText={true} textVariant="both" compact={true} />
+            <EgycotLogo size={32} showText={false} />
           </Link>
         </div>
 
-        {/* User/persona area: user name + role (SEPARATE from company branding) */}
-        <div className="hidden min-w-0 items-center gap-2 sm:flex">
-          <div className="flex flex-col text-left">
+        {/* Persona block: current user/persona name + role (with avatar icon) */}
+        <div className="flex min-w-0 items-center gap-2">
+          {/* Avatar/persona icon */}
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+          </div>
+          {/* Persona name + role */}
+          <div className="hidden flex-col text-left sm:flex">
             <span className="truncate text-xs font-medium text-foreground">
               {roleLabel ?? userName}
             </span>
             {roleLabel && (
               <span className="truncate text-[10px] text-muted-foreground">
-                {userName}
+                {roleLabel}
               </span>
             )}
           </div>

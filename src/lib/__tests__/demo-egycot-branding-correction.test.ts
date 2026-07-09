@@ -61,11 +61,11 @@ describe("EGYCOT branding correction — no ERP-Yarn visible", () => {
 // ---------------------------------------------------------------------------
 
 describe("EGYCOT branding correction — names render correctly", () => {
-  it("topbar renders EgycotLogo with company name", () => {
+  it("topbar renders EGYCOT logo (no company name text)", () => {
     const src = readText("src/components/demo/demo-topbar.tsx");
     expect(src).toContain("<EgycotLogo");
-    // EgycotLogo with textVariant="both" shows both Arabic + English names
-    expect(src).toContain('textVariant="both"');
+    // EgycotLogo with showText=false shows logo only (no company name text)
+    expect(src).toContain('showText={false}');
   });
 
   it("login page renders Arabic company name", () => {
@@ -176,25 +176,23 @@ describe("EGYCOT branding correction — reduced motion", () => {
 describe("EGYCOT branding correction — topbar separation", () => {
   const topbarSrc = readText("src/components/demo/demo-topbar.tsx");
 
-  it("topbar has brand area (logo + company name) separate from persona area", () => {
+  it("topbar has brand area (logo) separate from persona area", () => {
     expect(topbarSrc).toContain("Brand area");
-    expect(topbarSrc).toContain("User/persona area");
+    expect(topbarSrc).toContain("Persona block");
   });
 
-  it("topbar brand area shows EgycotLogo (not userName)", () => {
-    // The brand area should contain EgycotLogo, not {userName}
-    const brandAreaMatch = topbarSrc.match(/Brand area[\s\S]*?User\/persona area/);
+  it("topbar brand area shows EGYCOT logo (no company name text)", () => {
+    const brandAreaMatch = topbarSrc.match(/Brand area[\s\S]*?Persona block/);
     expect(brandAreaMatch).not.toBeNull();
     const brandArea = brandAreaMatch![0];
-    expect(brandArea).toContain("<EgycotLogo");
+    expect(brandArea).toContain("EgycotLogo");
   });
 
-  it("topbar persona area shows roleLabel + userName (not company name)", () => {
-    const personaAreaMatch = topbarSrc.match(/User\/persona area[\s\S]*?<\/div>\s*<\/div>/);
+  it("topbar persona area shows roleLabel (from context)", () => {
+    const personaAreaMatch = topbarSrc.match(/Persona block[\s\S]*?<\/div>\s*<\/div>/);
     expect(personaAreaMatch).not.toBeNull();
     const personaArea = personaAreaMatch![0];
-    expect(personaArea).toContain("{roleLabel");
-    expect(personaArea).toContain("{userName}");
+    expect(personaArea).toContain("roleLabel");
   });
 });
 

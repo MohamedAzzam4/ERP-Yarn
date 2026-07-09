@@ -58,9 +58,6 @@ export default function DemoProductionPage() {
 
   return (
     <DemoShell
-      userName="إيجيكوت للتجارة الدولية"
-      roleLabel="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
-      breadcrumbs={[{ label: "العمليات" }, { label: "الإنتاج لدى مصانع التشغيل" }]}
     >
       <DemoCompactHeading
         titleAr="الإنتاج لدى مصانع التشغيل"

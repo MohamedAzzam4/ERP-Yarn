@@ -113,9 +113,6 @@ export default function DemoActivityPage() {
 
   return (
     <DemoShell
-      userName="إيجيكوت للتجارة الدولية"
-      roleLabel="رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
-      breadcrumbs={[{ label: "التقارير" }, { label: "النشاطات والإشعارات" }]}
     >
       <DemoCompactHeading
         titleAr="النشاطات والإشعارات"

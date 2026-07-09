@@ -54,24 +54,7 @@ function parseNumeric(value: string): number {
   return m ? parseFloat(m[0].replace(/,/g, "")) : 0;
 }
 
-export default async function DemoOwnerDashboardPage({
-  searchParams,
-}: {
-  searchParams?: Promise<{ persona?: string }>;
-}) {
-  const params = searchParams ? await searchParams : {};
-  const persona =
-    params.persona === "executive"
-      ? "executive"
-      : params.persona === "accountant"
-        ? "accountant"
-        : undefined;
-  const roleLabel =
-    persona === "executive"
-      ? "رئيس مجلس الإدارة / العضو المنتدب التنفيذي"
-      : persona === "accountant"
-        ? "المدير المالي"
-        : undefined;
+export default function DemoOwnerDashboardPage() {
   const donutSegments = DEMO_DASHBOARD_INVENTORY_COMPOSITION.map((c) => ({
     value: parseNumeric(c.valueKg),
     color: c.color,
@@ -110,10 +93,6 @@ export default async function DemoOwnerDashboardPage({
 
   return (
     <DemoShell
-      userName="إيجيكوت للتجارة الدولية"
-      persona={persona}
-      roleLabel={roleLabel}
-      breadcrumbs={[{ label: "لوحة المعلومات" }, { label: "لوحة التحكم" }]}
     >
       <DemoCompactHeading
         titleAr="لوحة التحكم"

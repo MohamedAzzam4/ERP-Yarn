@@ -38,9 +38,6 @@ const SCREENS: ScreenCard[] = [
 export default function DemoHomePage() {
   return (
     <DemoShell
-      userName="إيجيكوت للتجارة الدولية"
-      persona="executive"
-      breadcrumbs={[{ label: "الرئيسية" }]}
     >
       <DemoCompactHeading
         titleAr="شاشات العرض التفاعلي"

@@ -184,20 +184,20 @@ describe("EGYCOT branding — topbar", () => {
     expect(topbarSrc).toContain("<EgycotLogo");
   });
 
-  it("shows company name (Arabic) via EgycotLogo component", () => {
-    // The EgycotLogo component with textVariant="both" shows Arabic name
-    expect(topbarSrc).toContain('textVariant="both"');
+  it("shows EGYCOT logo (no company name text)", () => {
+    // Topbar shows logo only (showText={false}) — no company name text
+    expect(topbarSrc).toContain('showText={false}');
   });
 
-  it("user/persona area is separate from company branding", () => {
-    // The topbar should have two distinct areas: brand + user
+  it("persona block is separate from company branding", () => {
+    // The topbar should have two distinct areas: brand + persona
     expect(topbarSrc).toContain("Brand area");
-    expect(topbarSrc).toContain("User/persona area");
+    expect(topbarSrc).toContain("Persona block");
   });
 
-  it("user name and roleLabel are still rendered (not replaced by company name)", () => {
-    // Topbar now shows roleLabel as primary + userName as secondary (both present)
-    expect(topbarSrc).toContain("{userName}");
+  it("persona role is rendered in topbar (not company name)", () => {
+    // Topbar now shows roleLabel (from context) — no hardcoded company name
+    expect(topbarSrc).toContain("roleLabel");
     expect(topbarSrc).toContain("roleLabel");
   });
 });

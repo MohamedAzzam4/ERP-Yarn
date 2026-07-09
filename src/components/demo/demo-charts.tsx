@@ -553,14 +553,15 @@ export function DemoPageHeader({
 }
 
 // ---------------------------------------------------------------------------
-// DemoCompactHeading — compact page heading (added 2026-07-06).
+// DemoCompactHeading — compact page heading (updated 2026-07-07).
 //
-// Replaces DemoPageHeader on content-heavy pages (dashboard, reviews, inventory,
-// sales, parties, activity) per stakeholder request:
-//   - No large glass/gradient container
-//   - No huge vertical padding
-//   - Just: small accent bar + medium title + optional one-line subtitle
-//   - Important content starts immediately after
+// Shows only the title visible. The subtitle/description is hidden behind an
+// info icon (ⓘ) that shows a tooltip on hover/focus/click.
+//
+// - No large glass/gradient container
+// - No huge vertical padding
+// - Title + info icon only
+// - Important content starts immediately after
 // ---------------------------------------------------------------------------
 
 export function DemoCompactHeading({
@@ -570,15 +571,43 @@ export function DemoCompactHeading({
   titleAr: string;
   subtitleAr?: string;
 }) {
+  const [showTooltip, setShowTooltip] = React.useState(false);
+
   return (
     <div className="mb-4">
       <div className="flex items-center gap-2">
         <span className="inline-block h-5 w-1 rounded-full bg-primary" aria-hidden="true" />
         <h1 className="text-heading-3 text-foreground">{titleAr}</h1>
+        {subtitleAr && (
+          <div className="relative">
+            <button
+              type="button"
+              className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors"
+              aria-label={subtitleAr}
+              title={subtitleAr}
+              onMouseEnter={() => setShowTooltip(true)}
+              onMouseLeave={() => setShowTooltip(false)}
+              onFocus={() => setShowTooltip(true)}
+              onBlur={() => setShowTooltip(false)}
+              onClick={() => setShowTooltip((v) => !v)}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="16" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12.01" y2="8" />
+              </svg>
+            </button>
+            {showTooltip && (
+              <div
+                role="tooltip"
+                className="absolute right-0 top-full z-50 mt-1 w-64 rounded-lg border border-border bg-surface p-3 text-xs text-muted-foreground shadow-lg"
+              >
+                {subtitleAr}
+              </div>
+            )}
+          </div>
+        )}
       </div>
-      {subtitleAr && (
-        <p className="mt-1 text-sm text-muted-foreground">{subtitleAr}</p>
-      )}
     </div>
   );
 }

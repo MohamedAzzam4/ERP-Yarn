@@ -113,14 +113,14 @@ describe("Data-entry task hub — /demo/data-entry", () => {
     expect(src).toContain("حركة الخيوط");
   });
 
-  it("hub page uses persona='data-entry'", () => {
+  it("hub page uses forcePersona='data-entry'", () => {
     const src = readText("src/app/(demo)/demo/data-entry/page.tsx");
-    expect(src).toContain('persona="data-entry"');
+    expect(src).toContain('forcePersona="data-entry"');
   });
 
-  it("hub page shows role label 'مسؤول تسجيل البيانات أو المدخلات'", () => {
+  it("hub page no longer hardcodes role label (uses context)", () => {
     const src = readText("src/app/(demo)/demo/data-entry/page.tsx");
-    expect(src).toContain("مسؤول تسجيل البيانات أو المدخلات");
+    expect(src).not.toContain("roleLabel");
   });
 
   it("4 data-entry sub-routes exist and redirect to input pages", () => {
@@ -151,7 +151,7 @@ describe("Data-entry persona — no sidebar", () => {
     expect(src).toContain("{!hideSidebar &&");
   });
 
-  it("all 4 input pages set persona='data-entry'", () => {
+  it("all 4 input pages set forcePersona='data-entry'", () => {
     const pages = [
       "src/app/(demo)/demo/owner/purchase/page.tsx",
       "src/app/(demo)/demo/owner/sales-entry/page.tsx",
@@ -160,7 +160,7 @@ describe("Data-entry persona — no sidebar", () => {
     ];
     for (const page of pages) {
       const src = readText(page);
-      expect(src).toContain('persona="data-entry"');
+      expect(src).toContain('forcePersona="data-entry"');
     }
   });
 });
@@ -170,17 +170,15 @@ describe("Data-entry persona — no sidebar", () => {
 // ---------------------------------------------------------------------------
 
 describe("Topbar — persona role display", () => {
-  it("DemoTopbar accepts roleLabel prop", () => {
+  it("DemoTopbar renders roleLabel (passed from DemoShell via context)", () => {
     const src = readText("src/components/demo/demo-topbar.tsx");
-    expect(src).toContain("roleLabel");
-    // Topbar now shows roleLabel in a separate user/persona area (not roleLabel ?? userName fallback)
     expect(src).toContain("roleLabel");
   });
 
-  it("DemoShell passes roleLabel to DemoTopbar", () => {
+  it("DemoShell reads persona from context (DemoPersonaProvider + useDemoPersona)", () => {
     const src = readText("src/components/demo/demo-shell.tsx");
-    expect(src).toContain("roleLabel");
-    expect(src).toContain("personaRoleLabel");
+    expect(src).toContain("DemoPersonaProvider");
+    expect(src).toContain("useDemoPersona");
   });
 
   it("executive route redirects to dashboard with persona=executive", () => {
@@ -195,14 +193,14 @@ describe("Topbar — persona role display", () => {
     expect(src).toContain("/demo/owner/dashboard?persona=accountant");
   });
 
-  it("dashboard page reads persona from searchParams and passes to DemoShell", () => {
+  it("dashboard page no longer reads persona from searchParams (uses context)", () => {
     const src = readText("src/app/(demo)/demo/owner/dashboard/page.tsx");
-    expect(src).toContain("searchParams");
-    expect(src).toContain("persona");
-    // The persona is a variable derived from searchParams, passed as persona={persona}
-    expect(src).toContain("persona={persona}");
-    expect(src).toContain('params.persona === "executive"');
-    expect(src).toContain('params.persona === "accountant"');
+    
+    expect(src).not.toContain("async");
+    // Persona is now handled by DemoShell via context
+    
+    
+    
   });
 
   it("executive role label is correct", () => {
@@ -210,9 +208,9 @@ describe("Topbar — persona role display", () => {
     expect(src).toContain("رئيس مجلس الإدارة / العضو المنتدب التنفيذي");
   });
 
-  it("accountant role label is correct", () => {
+  it("dashboard no longer hardcodes accountant role label", () => {
     const src = readText("src/app/(demo)/demo/owner/dashboard/page.tsx");
-    expect(src).toContain("المدير المالي");
+    expect(src).not.toContain("المدير المالي");
   });
 });
 

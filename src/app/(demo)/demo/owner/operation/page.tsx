@@ -38,10 +38,7 @@ export default function DemoOperationPage() {
 
   return (
     <DemoShell
-      userName="مسؤول تسجيل البيانات أو المدخلات"
-      persona="data-entry"
-      roleLabel="مسؤول متابعة تشغيل الخيوط"
-      breadcrumbs={[{ label: "العمليات / مهام الإدخال" }, { label: "إدخال التشغيل" }]}
+      forcePersona="data-entry"
     >
       <DemoFormLayout>
         <div className="mb-4">

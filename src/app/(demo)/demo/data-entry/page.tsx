@@ -4,7 +4,7 @@
  *
  * Route: /demo/data-entry
  *
- * Shows 4 large cards for the 4 input tasks. No sidebar (persona="data-entry"
+ * Shows 4 large cards for the 4 input tasks. No sidebar (forcePersona="data-entry"
  * hides the sidebar in DemoShell). Mobile-first, touch-friendly.
  *
  * Demo-only: no real auth, no API, no DB write.
@@ -51,10 +51,7 @@ const TASKS: TaskCard[] = [
 export default function DemoDataEntryHubPage() {
   return (
     <DemoShell
-      userName="إيجيكوت للتجارة الدولية"
-      persona="data-entry"
-      roleLabel="مسؤول تسجيل البيانات أو المدخلات"
-      breadcrumbs={[{ label: "مهام الإدخال" }]}
+      forcePersona="data-entry"
     >
       {/* Compact heading — no large glass/gradient container */}
       <div className="mb-6">
