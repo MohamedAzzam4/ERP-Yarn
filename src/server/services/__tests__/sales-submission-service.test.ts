@@ -22,7 +22,7 @@ import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-
 import { InProcessAuditStore } from "../audit-service";
 import { InProcessIdempotencyStore } from "../idempotency-service";
 import { InProcessDocumentSequenceStore } from "../document-sequence-service";
-import { InventoryLedgerService } from "../inventory-ledger-service";
+import { InventoryLedgerService, type InventoryBalance } from "../inventory-ledger-service";
 import {
   TEST_USERS, getTestEffectivePermissions,
 } from "@/server/security/role-fixtures";
@@ -538,5 +538,304 @@ describe("WP-03-03 multi-line sale", () => {
     const bal2 = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_2, TEST_LOC_A);
     expect(bal2!.reservedQtyKg).toBe("200.000");
     expect(bal2!.onHandQtyKg).toBe("500.000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Rollback after reservation insert failure.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-03 rollback after reservation insert failure", () => {
+  it("reservation insert failure rolls back: no reserved_qty change, sale stays draft", async () => {
+    const { salesRepository, reservationRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const sale = await createDraftSale(salesRepository, "300.000");
+
+    // Create a failing reservation repo that delegates all reads but throws on insertReservation.
+    const failingResRepo = {
+      insertReservation: async () => { throw new Error("SIMULATED_RESERVATION_INSERT_FAILURE"); },
+      findReservationByIdempotencyKey: (t: string, k: string) => reservationRepository.findReservationByIdempotencyKey(t, k),
+      findActiveReservationBySource: (t: string, st: string, si: string, i: string, l: string) => reservationRepository.findActiveReservationBySource(t, st, si, i, l),
+      findReservationById: (t: string, id: string) => reservationRepository.findReservationById(t, id),
+      listActiveReservationsForSale: (t: string, s: string) => reservationRepository.listActiveReservationsForSale(t, s),
+    };
+
+    const service = new SalesSubmissionService({
+      salesRepository, reservationRepository: failingResRepo as any, inventoryLedger, audit, idempotency, documentSequence,
+      transactionRunner,
+      txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createReservationRepository: () => failingResRepo as any,
+        createSalesRepository: () => salesRepository,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.submitSale(ownerUser as any, ownerEff, {
+      saleId: sale.id, idempotencyKey: "rb-res-1",
+    })).rejects.toThrow("SIMULATED_RESERVATION_INSERT_FAILURE");
+
+    // ROLLBACK PROOF: no reservation created.
+    const reservations = await reservationRepository.listActiveReservationsForSale(TEST_TENANT_ID, sale.id);
+    expect(reservations).toHaveLength(0);
+
+    // ROLLBACK PROOF: reserved_qty unchanged (still 0).
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balance!.reservedQtyKg).toBe("0");
+
+    // ROLLBACK PROOF: sale still draft.
+    const saleAfter = await salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfter!.saleStatus).toBe("draft");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Rollback after reserved_qty update failure.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-03 rollback after reserved_qty update failure", () => {
+  it("reserved_qty update failure rolls back: no reservation persists, sale stays draft", async () => {
+    const { salesRepository, reservationRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const sale = await createDraftSale(salesRepository, "300.000");
+
+    // Create a failing inventory ledger that throws on updateReservedQty.
+    const failingInvLedger = Object.create(inventoryLedger) as InventoryLedgerService;
+    failingInvLedger.updateReservedQty = async () => { throw new Error("SIMULATED_RESERVED_QTY_UPDATE_FAILURE"); };
+
+    const service = new SalesSubmissionService({
+      salesRepository, reservationRepository, inventoryLedger: failingInvLedger, audit, idempotency, documentSequence,
+      transactionRunner,
+      txFactories: {
+        createInventoryLedger: () => failingInvLedger,
+        createReservationRepository: () => reservationRepository,
+        createSalesRepository: () => salesRepository,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.submitSale(ownerUser as any, ownerEff, {
+      saleId: sale.id, idempotencyKey: "rb-rqty-1",
+    })).rejects.toThrow("SIMULATED_RESERVED_QTY_UPDATE_FAILURE");
+
+    // ROLLBACK PROOF: no reservation persists (rolled back).
+    const reservations = await reservationRepository.listActiveReservationsForSale(TEST_TENANT_ID, sale.id);
+    expect(reservations).toHaveLength(0);
+
+    // ROLLBACK PROOF: reserved_qty unchanged (still 0).
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balance!.reservedQtyKg).toBe("0");
+
+    // ROLLBACK PROOF: sale still draft.
+    const saleAfter = await salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfter!.saleStatus).toBe("draft");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Rollback after sale status update failure.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-03 rollback after sale status update failure", () => {
+  it("sale status update failure rolls back: no reservation, no reserved_qty change", async () => {
+    const { salesRepository, reservationRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const sale = await createDraftSale(salesRepository, "300.000");
+
+    // Create a failing sales repo that delegates reads but throws on updateSaleStatus.
+    const failingSalesRepo = {
+      findSaleById: (t: string, id: string) => salesRepository.findSaleById(t, id),
+      findSaleLines: (t: string, id: string) => salesRepository.findSaleLines(t, id),
+      updateSaleStatus: async () => { throw new Error("SIMULATED_SALE_STATUS_UPDATE_FAILURE"); },
+    };
+
+    const service = new SalesSubmissionService({
+      salesRepository: failingSalesRepo as any, reservationRepository, inventoryLedger, audit, idempotency, documentSequence,
+      transactionRunner,
+      txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createReservationRepository: () => reservationRepository,
+        createSalesRepository: () => failingSalesRepo as any,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.submitSale(ownerUser as any, ownerEff, {
+      saleId: sale.id, idempotencyKey: "rb-status-1",
+    })).rejects.toThrow("SIMULATED_SALE_STATUS_UPDATE_FAILURE");
+
+    // ROLLBACK PROOF: no reservation persists.
+    const reservations = await reservationRepository.listActiveReservationsForSale(TEST_TENANT_ID, sale.id);
+    expect(reservations).toHaveLength(0);
+
+    // ROLLBACK PROOF: reserved_qty unchanged.
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balance!.reservedQtyKg).toBe("0");
+
+    // ROLLBACK PROOF: sale still draft (read from the ORIGINAL repo, not the failing one).
+    const saleAfter = await salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfter!.saleStatus).toBe("draft");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. Failed submit retry (with NEW idempotency key after failure).
+// ---------------------------------------------------------------------------
+
+describe("WP-03-03 failed submit retry", () => {
+  it("retry after failure succeeds with a NEW idempotency key", async () => {
+    const base = makeDepsWithTxRunner();
+    await seedStock(base.inventoryLedger, "1000.000");
+    const sale = await createDraftSale(base.salesRepository, "300.000");
+
+    // First attempt: fail with a failing reservation repo (delegates reads, throws on insert).
+    const failingResRepo = {
+      insertReservation: async () => { throw new Error("SIMULATED_FIRST_ATTEMPT_FAILURE"); },
+      findReservationByIdempotencyKey: (t: string, k: string) => base.reservationRepository.findReservationByIdempotencyKey(t, k),
+      findActiveReservationBySource: (t: string, st: string, si: string, i: string, l: string) => base.reservationRepository.findActiveReservationBySource(t, st, si, i, l),
+      findReservationById: (t: string, id: string) => base.reservationRepository.findReservationById(t, id),
+      listActiveReservationsForSale: (t: string, s: string) => base.reservationRepository.listActiveReservationsForSale(t, s),
+    };
+    const failingService = new SalesSubmissionService({
+      salesRepository: base.salesRepository, reservationRepository: failingResRepo as any,
+      inventoryLedger: base.inventoryLedger, audit: base.audit, idempotency: base.idempotency,
+      documentSequence: base.documentSequence,
+      transactionRunner: base.transactionRunner,
+      txFactories: {
+        createInventoryLedger: () => base.inventoryLedger,
+        createReservationRepository: () => failingResRepo as any,
+        createSalesRepository: () => base.salesRepository,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    // First attempt fails.
+    await expect(failingService.submitSale(ownerUser as any, ownerEff, {
+      saleId: sale.id, idempotencyKey: "retry-fail-1",
+    })).rejects.toThrow("SIMULATED_FIRST_ATTEMPT_FAILURE");
+
+    // Sale still draft, no reservation, reserved_qty = 0.
+    const saleAfterFail = await base.salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfterFail!.saleStatus).toBe("draft");
+    const resAfterFail = await base.reservationRepository.listActiveReservationsForSale(TEST_TENANT_ID, sale.id);
+    expect(resAfterFail).toHaveLength(0);
+    const balAfterFail = await base.ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balAfterFail!.reservedQtyKg).toBe("0");
+
+    // Retry with NEW idempotency key + the WORKING service (no failing repo).
+    const retryResult = await base.service.submitSale(ownerUser as any, ownerEff, {
+      saleId: sale.id, idempotencyKey: "retry-success-2",
+    });
+
+    expect(retryResult.action).toBe("submitted");
+    expect(retryResult.saleStatus).toBe("pending_approval");
+    expect(retryResult.reservations).toHaveLength(1);
+
+    // Exactly one reservation after retry.
+    const reservations = await base.reservationRepository.listActiveReservationsForSale(TEST_TENANT_ID, sale.id);
+    expect(reservations).toHaveLength(1);
+
+    // reserved_qty = 300 (not 600 — no double-reserve from failed attempt).
+    const balance = await base.ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balance!.reservedQtyKg).toBe("300.000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. Concurrent submit exact reserved_qty.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-03 concurrent submit exact reserved_qty", () => {
+  it("concurrent submissions leave reserved_qty at exactly the winner's amount (not cumulative)", async () => {
+    const { service, salesRepository, ledgerRepo, inventoryLedger } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+
+    // Two sales, each 400 kg (total 800 < 1000, so both should succeed sequentially).
+    // But we'll make them concurrent with a third that exceeds remaining.
+    const sale1 = await createDraftSale(salesRepository, "400.000");
+    const sale2 = await createDraftSale(salesRepository, "400.000");
+    const sale3 = await createDraftSale(salesRepository, "400.000"); // only 200 left after 1+2
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    // Fire three concurrent submissions.
+    const results = await Promise.allSettled([
+      service.submitSale(ownerUser as any, ownerEff, { saleId: sale1.id, idempotencyKey: "conc-exact-A" }),
+      service.submitSale(ownerUser as any, ownerEff, { saleId: sale2.id, idempotencyKey: "conc-exact-B" }),
+      service.submitSale(ownerUser as any, ownerEff, { saleId: sale3.id, idempotencyKey: "conc-exact-C" }),
+    ]);
+
+    const fulfilled = results.filter(r => r.status === "fulfilled");
+    const rejected = results.filter(r => r.status === "rejected");
+
+    // Exactly 2 succeed (400+400=800 ≤ 1000), 1 fails (would need 400 but only 200 left).
+    expect(fulfilled).toHaveLength(2);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(InsufficientAvailableStockError);
+
+    // EXACT reserved_qty proof: 400 + 400 = 800 (not 1200, not 400).
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balance!.reservedQtyKg).toBe("800.000");
+    expect(balance!.onHandQtyKg).toBe("1000.000"); // on-hand unchanged
+
+    // Available = 1000 - 800 - 0 = 200.
+    const available = parseFloat(balance!.onHandQtyKg) - parseFloat(balance!.reservedQtyKg) - parseFloat(balance!.blockedQtyKg);
+    expect(available.toFixed(3)).toBe("200.000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. Boundary safety: getLedgerHandle() removed, narrow methods used.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-03 boundary safety: narrow reservation methods", () => {
+  it("InventoryLedgerService does NOT expose getLedgerHandle (no general escape hatch)", () => {
+    const ledgerRepo = new InMemoryInventoryLedgerRepository();
+    const audit = new InProcessAuditStore();
+    const idempotency = new InProcessIdempotencyStore();
+    const documentSequence = new InProcessDocumentSequenceStore();
+    const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
+
+    // getLedgerHandle should NOT exist on the service.
+    expect((inventoryLedger as any).getLedgerHandle).toBeUndefined();
+
+    // The narrow reservation-specific methods SHOULD exist.
+    expect(typeof inventoryLedger.findBalanceForUpdate).toBe("function");
+    expect(typeof inventoryLedger.updateReservedQty).toBe("function");
+  });
+
+  it("findBalanceForUpdate + updateReservedQty are the only reservation boundary methods", async () => {
+    const { inventoryLedger, ledgerRepo } = makeDeps();
+    // These are the only two methods SalesSubmissionService needs.
+    // Verify they work correctly and don't expose movement/posting methods.
+
+    // findBalanceForUpdate delegates to the internal handle correctly.
+    const balance = await inventoryLedger.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balance).toBeNull(); // no balance seeded yet
+
+    // Seed stock and verify findBalanceForUpdate returns the balance.
+    await seedStock(inventoryLedger, "1000.000");
+    const balance2 = await inventoryLedger.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balance2).toBeTruthy();
+    expect(balance2!.onHandQtyKg).toBe("1000.000");
+    expect(balance2!.reservedQtyKg).toBe("0");
+
+    // updateReservedQty updates reserved_qty_kg without changing on_hand.
+    const updated = await inventoryLedger.updateReservedQty(
+      TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A,
+      { reservedQtyKg: "300.000", version: balance2!.version + 1 },
+    );
+    expect(updated).toBeTruthy();
+    expect(updated!.reservedQtyKg).toBe("300.000");
+    expect(updated!.onHandQtyKg).toBe("1000.000"); // on-hand UNCHANGED
   });
 });

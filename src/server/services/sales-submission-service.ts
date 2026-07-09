@@ -58,7 +58,7 @@ import {
   type DocumentSequenceTransactionHandle,
 } from "./document-sequence-service";
 import type { InventoryLedgerService } from "./inventory-ledger-service";
-import type { InventoryLedgerTransactionHandle, InventoryBalance } from "./inventory-ledger-service";
+import type { InventoryBalance } from "./inventory-ledger-service";
 import type { StockReservationRepository, NewStockReservationInput } from "./stock-reservation-repository";
 import type { StockReservation } from "@/server/db/schema/inventory-ledger";
 import type { SalesRepository } from "./sales-repository";
@@ -391,8 +391,8 @@ export class SalesSubmissionService {
           );
         }
 
-        // Lock balance (SELECT FOR UPDATE).
-        const balance = await invLedger.getLedgerHandle().findBalanceForUpdate(
+        // Lock balance (SELECT FOR UPDATE) via narrow reservation boundary.
+        const balance = await invLedger.findBalanceForUpdate(
           user.tenantId, line.itemId, line.locationId,
         );
         if (!balance) {
@@ -447,9 +447,9 @@ export class SalesSubmissionService {
         const reservation = await reservationRepo.insertReservation(reservationInput);
         createdReservations.push(reservation);
 
-        // Update balance reserved_qty_kg += qty (on_hand UNCHANGED).
+        // Update balance reserved_qty_kg += qty (on_hand UNCHANGED) via narrow boundary.
         const newReserved = addKg(balance.reservedQtyKg, normalizedQty);
-        const updated = await invLedger.getLedgerHandle().updateReservedQty(
+        const updated = await invLedger.updateReservedQty(
           user.tenantId, line.itemId, line.locationId,
           { reservedQtyKg: newReserved, version: balance.version + 1 },
         );

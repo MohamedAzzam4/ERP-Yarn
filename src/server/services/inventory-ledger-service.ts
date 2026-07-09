@@ -351,16 +351,52 @@ export class InventoryLedgerService {
   constructor(private readonly deps: InventoryLedgerServiceDeps) {}
 
   /**
-   * Expose the underlying ledger transaction handle (WP-03-03).
+   * Lock + fetch a balance row for update (WP-03-03).
    *
-   * Used by SalesSubmissionService to call findBalanceForUpdate +
-   * updateReservedQty directly for the reservation flow. Reservation is
-   * NOT a stock movement (Contract 04 §8), so it doesn't go through the
-   * full postRawReceipt/postTransfer protocol — it only updates the
-   * reserved_qty_kg column on the balance row.
+   * This is a NARROW reservation-specific boundary method. It delegates to
+   * the internal ledger handle's `findBalanceForUpdate` but does NOT expose
+   * the handle itself — callers cannot access `insertMovement`,
+   * `updateBalance`, or other movement/posting methods through this path.
+   *
+   * Used by SalesSubmissionService to lock the balance row before checking
+   * available stock and increasing `reserved_qty_kg`. The lock is held for
+   * the duration of the enclosing transaction.
+   *
+   * Contract 04 §9: "Submission locks sale/balances, validates available
+   * stock and state, inserts reservations per line, increases reserved
+   * quantity."
    */
-  getLedgerHandle(): InventoryLedgerTransactionHandle {
-    return this.deps.ledger;
+  async findBalanceForUpdate(
+    tenantId: string,
+    itemId: string,
+    locationId: string,
+  ): Promise<InventoryBalance | null> {
+    return this.deps.ledger.findBalanceForUpdate(tenantId, itemId, locationId);
+  }
+
+  /**
+   * Update the reserved_qty_kg on a balance row (WP-03-03).
+   *
+   * This is a NARROW reservation-specific boundary method. It delegates to
+   * the internal ledger handle's `updateReservedQty` but does NOT expose
+   * the handle itself.
+   *
+   * Used by SalesSubmissionService to increase `reserved_qty_kg` when a sale
+   * is submitted. Does NOT change `on_hand_qty_kg` — reservation only affects
+   * available-to-sell, not physical stock (Contract 04 §8, §9).
+   *
+   * The DB CHECK constraints enforce:
+   *   - reserved_qty_kg >= 0
+   *   - reserved_qty_kg <= GREATEST(on_hand_qty_kg, 0)
+   * So an over-reserve attempt will fail at the DB level.
+   */
+  async updateReservedQty(
+    tenantId: string,
+    itemId: string,
+    locationId: string,
+    patch: { reservedQtyKg: string; version: number },
+  ): Promise<InventoryBalance | null> {
+    return this.deps.ledger.updateReservedQty(tenantId, itemId, locationId, patch);
   }
 
   /**
