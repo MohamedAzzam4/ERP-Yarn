@@ -136,6 +136,14 @@ class MockInventoryLedgerTransactionHandle implements InventoryLedgerTransaction
     this.balances.set(key, updated);
     return updated;
   }
+  async updateReservedQty(tenantId: string, itemId: string, locationId: string, patch: { reservedQtyKg: string; version: number }): Promise<any | null> {
+    const key = `${tenantId}:${itemId}:${locationId}`;
+    const existing = this.balances.get(key);
+    if (!existing) return null;
+    const updated = { ...existing, reservedQtyKg: patch.reservedQtyKg, version: patch.version, updatedAt: new Date() };
+    this.balances.set(key, updated);
+    return updated;
+  }
   async listMovementsForBalance(): Promise<any[]> { return []; }
   async listAllBalances(): Promise<any[]> { return []; }
 }

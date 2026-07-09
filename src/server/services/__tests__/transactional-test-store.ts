@@ -264,6 +264,14 @@ export class TransactionalTestStore {
       this.activeBalances.set(key, updated);
       return updated;
     },
+    updateReservedQty: async (tenantId: string, itemId: string, locationId: string, patch: { reservedQtyKg: string; version: number }): Promise<InventoryBalance | null> => {
+      const key = `${tenantId}:${itemId}:${locationId}`;
+      const balance = this.activeBalances.get(key);
+      if (!balance) return null;
+      const updated: InventoryBalance = { ...balance, reservedQtyKg: patch.reservedQtyKg, version: patch.version, updatedAt: NOW() };
+      this.activeBalances.set(key, updated);
+      return updated;
+    },
     listMovementsForBalance: async (tenantId: string, itemId: string, locationId: string): Promise<StockMovement[]> => {
       return [...this.activeMovements.values()].filter(
         (m) => m.tenantId === tenantId && m.itemId === itemId && (m.toLocationId === locationId || m.fromLocationId === locationId),

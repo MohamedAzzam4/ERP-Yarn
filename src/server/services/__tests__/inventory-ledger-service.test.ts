@@ -765,6 +765,9 @@ describe("WP-02-02 locking — findBalanceForUpdate called before insert/update"
         callOrder.push("updateBalance");
         return originalLedger.updateBalance(tenantId, itemId, locationId, patch);
       },
+      updateReservedQty: async (tenantId, itemId, locationId, patch) => {
+        return originalLedger.updateReservedQty(tenantId, itemId, locationId, patch);
+      },
       listMovementsForBalance: async (tenantId, itemId, locationId) => {
         callOrder.push("listMovementsForBalance");
         return originalLedger.listMovementsForBalance(tenantId, itemId, locationId);

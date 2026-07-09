@@ -156,6 +156,41 @@ export class InMemoryInventoryLedgerRepository implements InventoryLedgerTransac
     return updated;
   }
 
+  /**
+   * Update the reserved_qty_kg on a balance row (WP-03-03).
+   * Mirrors the DB-backed repository. Enforces the same invariants:
+   *   - reserved_qty_kg >= 0
+   *   - reserved_qty_kg <= GREATEST(on_hand_qty_kg, 0)
+   */
+  async updateReservedQty(
+    tenantId: string,
+    itemId: string,
+    locationId: string,
+    patch: { reservedQtyKg: string; version: number },
+  ): Promise<InventoryBalance | null> {
+    const key = `${tenantId}:${itemId}:${locationId}`;
+    const balance = this.balances.get(key);
+    if (!balance) return null;
+    // Mirror DB CHECK constraints.
+    const newReserved = parseFloat(patch.reservedQtyKg);
+    if (newReserved < 0) {
+      throw new Error(`reserved_qty_kg cannot be negative (got ${patch.reservedQtyKg}).`);
+    }
+    const onHand = parseFloat(balance.onHandQtyKg);
+    const maxReserved = Math.max(onHand, 0);
+    if (newReserved > maxReserved) {
+      throw new Error(`reserved_qty_kg (${patch.reservedQtyKg}) cannot exceed on_hand_qty_kg (${balance.onHandQtyKg}).`);
+    }
+    const updated: InventoryBalance = {
+      ...balance,
+      reservedQtyKg: patch.reservedQtyKg,
+      version: patch.version,
+      updatedAt: NOW(),
+    };
+    this.balances.set(key, updated);
+    return updated;
+  }
+
   async listMovementsForBalance(tenantId: string, itemId: string, locationId: string): Promise<StockMovement[]> {
     return [...this.movements.values()].filter(
       (m) =>

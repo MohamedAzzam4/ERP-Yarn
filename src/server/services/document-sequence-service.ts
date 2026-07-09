@@ -47,6 +47,7 @@ const DEFAULT_PREFIXES: Record<string, string> = {
   adjustment: "AD", adjustment_approval: "ADA",
   return_receipt: "RR", reversal: "REV", stock_block: "BLK", stock_unblock: "UBL",
   sales_order: "SO", sales_approval: "SOA",
+  reservation: "RES", // WP-03-03: stock reservation numbering
   production_order: "PO", production_issue: "PI",
   production_receipt: "PR", production_wip_return: "WR",
   payment: "PAY", return_request: "RR", return_approval: "RRA",

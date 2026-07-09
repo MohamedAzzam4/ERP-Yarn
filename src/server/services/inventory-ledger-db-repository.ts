@@ -243,6 +243,40 @@ export class InventoryLedgerDbRepository implements InventoryLedgerTransactionHa
     return result ?? null;
   }
 
+  /**
+   * Update the reserved_qty_kg on a balance row (WP-03-03).
+   *
+   * Used by SalesSubmissionService to increase reserved quantity when a sale
+   * is submitted. Does NOT change on_hand_qty_kg — reservation only affects
+   * available-to-sell, not physical stock (Contract 04 §8, §9).
+   *
+   * The DB CHECK constraints enforce:
+   *   - reserved_qty_kg >= 0
+   *   - reserved_qty_kg <= GREATEST(on_hand_qty_kg, 0)
+   * So an over-reserve attempt will fail at the DB level.
+   */
+  async updateReservedQty(
+    tenantId: string,
+    itemId: string,
+    locationId: string,
+    patch: { reservedQtyKg: string; version: number },
+  ): Promise<InventoryBalance | null> {
+    const [result] = await this.db
+      .update(inventoryBalances)
+      .set({
+        reservedQtyKg: patch.reservedQtyKg,
+        version: patch.version,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(inventoryBalances.tenantId, tenantId),
+        eq(inventoryBalances.itemId, itemId),
+        eq(inventoryBalances.locationId, locationId),
+      ))
+      .returning();
+    return result ?? null;
+  }
+
   async listMovementsForBalance(tenantId: string, itemId: string, locationId: string): Promise<StockMovement[]> {
     // List movements where this location is EITHER the source or destination.
     // This is needed for full reconciliation (WP-03-01) which must account

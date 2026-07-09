@@ -155,6 +155,22 @@ export interface InventoryLedgerTransactionHandle {
     patch: { onHandQtyKg: string; lastMovementId: string; version: number },
   ): Promise<InventoryBalance | null>;
 
+  /**
+   * Update the reserved_qty_kg on a balance row (WP-03-03).
+   *
+   * Used by SalesSubmissionService to increase reserved quantity when a sale
+   * is submitted. Does NOT change on_hand_qty_kg — reservation only affects
+   * available-to-sell, not physical stock (Contract 04 §8, §9).
+   *
+   * Returns the updated row, or null if not found.
+   */
+  updateReservedQty(
+    tenantId: string,
+    itemId: string,
+    locationId: string,
+    patch: { reservedQtyKg: string; version: number },
+  ): Promise<InventoryBalance | null>;
+
   /** List all movements for an item/location (for reconciliation). */
   listMovementsForBalance(tenantId: string, itemId: string, locationId: string): Promise<StockMovement[]>;
 
@@ -333,6 +349,19 @@ export interface InventoryLedgerServiceDeps {
 
 export class InventoryLedgerService {
   constructor(private readonly deps: InventoryLedgerServiceDeps) {}
+
+  /**
+   * Expose the underlying ledger transaction handle (WP-03-03).
+   *
+   * Used by SalesSubmissionService to call findBalanceForUpdate +
+   * updateReservedQty directly for the reservation flow. Reservation is
+   * NOT a stock movement (Contract 04 §8), so it doesn't go through the
+   * full postRawReceipt/postTransfer protocol — it only updates the
+   * reserved_qty_kg column on the balance row.
+   */
+  getLedgerHandle(): InventoryLedgerTransactionHandle {
+    return this.deps.ledger;
+  }
 
   /**
    * Post a raw-receipt inventory effect.
