@@ -255,12 +255,12 @@ function SidebarCategory({ category, collapsed, currentPath }: SidebarCategoryPr
   return (
     <div>
       {/* Section title — visually distinct from page links:
-          larger, stronger weight, navy color, NO icon */}
+          larger, stronger weight, deep navy color (#0B3A75), NO icon */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex min-h-[40px] w-full items-center justify-between rounded-lg px-3 py-1.5 text-sm font-bold text-navy hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-h-[40px] w-full items-center justify-between rounded-lg px-3 py-1.5 text-sm font-bold text-[#0B3A75] hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <span>{category.labelAr}</span>
         <span className={cn("transition-transform", expanded ? "rotate-0" : "-rotate-90")}>

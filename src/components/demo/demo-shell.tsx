@@ -1,21 +1,17 @@
 /**
  * DemoShell — management-console-style shell for the stakeholder visual demo.
  *
- * Updated 2026-07-07:
- *   - Wraps content in DemoPersonaProvider for centralized persona state
- *   - Removed breadcrumbs (cleaner, less clutter)
- *   - Persona read from context (no hardcoded roleLabel per page)
- *   - Data-entry persona hides sidebar entirely (task-hub mode)
+ * Updated 2026-07-08:
+ *   - Removed DemoBanner (no persistent warning strip at top)
+ *   - Topbar moves up naturally (no spacer)
  */
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
 import { Sidebar } from "@/components/shells/sidebar";
 import { DemoTopbar } from "@/components/demo/demo-topbar";
-import { DemoBanner } from "@/components/demo/demo-banner";
 import { DEMO_NAV_CATEGORIES } from "@/components/demo/demo-nav-config";
 import {
   DemoPersonaProvider,
@@ -40,7 +36,6 @@ function DemoShellInner({ children, forcePersona }: DemoShellProps) {
 
   return (
     <div className="min-h-screen bg-background">
-      <DemoBanner />
       <DemoTopbar
         userName="إيجيكوت للتجارة الدولية"
         roleLabel={roleLabel}

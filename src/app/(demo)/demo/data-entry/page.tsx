@@ -11,7 +11,6 @@
  */
 import Link from "next/link";
 import { DemoShell } from "@/components/demo/demo-shell";
-import { DemoBanner } from "@/components/demo/demo-banner";
 import { DemoFooterNote } from "@/components/demo/demo-charts";
 
 interface TaskCard {
