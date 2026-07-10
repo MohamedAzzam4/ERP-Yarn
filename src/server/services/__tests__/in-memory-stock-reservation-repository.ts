@@ -123,4 +123,44 @@ export class InMemoryStockReservationRepository implements StockReservationRepos
         r.status === "active",
     );
   }
+
+  async markReservationFailed(
+    tenantId: string,
+    reservationId: string,
+    failureResolutionReason: string,
+    failureResolutionActor: string,
+  ): Promise<StockReservation | null> {
+    const key = `${tenantId}:${reservationId}`;
+    const existing = this.reservations.get(key);
+    if (!existing) return null;
+    // Conditional: only succeed if current status is 'active'.
+    if (existing.status !== "active") return null;
+    const updated: StockReservation = {
+      ...existing,
+      status: "failed",
+      failureResolutionReason,
+      failureResolutionActor,
+      failureResolutionAt: NOW(),
+    };
+    this.reservations.set(key, updated);
+    return updated;
+  }
+
+  async markReservationReleased(
+    tenantId: string,
+    reservationId: string,
+  ): Promise<StockReservation | null> {
+    const key = `${tenantId}:${reservationId}`;
+    const existing = this.reservations.get(key);
+    if (!existing) return null;
+    // Conditional: only succeed if current status is 'active'.
+    if (existing.status !== "active") return null;
+    const updated: StockReservation = {
+      ...existing,
+      status: "released",
+      releasedAt: NOW(),
+    };
+    this.reservations.set(key, updated);
+    return updated;
+  }
 }

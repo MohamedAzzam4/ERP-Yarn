@@ -174,4 +174,30 @@ export class InMemorySalesRepository implements SalesRepository {
     this.sales.set(key, updated);
     return updated;
   }
+
+  async updateSaleStatusConditional(
+    tenantId: string,
+    saleId: string,
+    patch: {
+      saleStatus: string;
+      approvalStatus: string;
+      reservationStatus: string | null;
+    },
+    expectedCurrentStatuses: string[],
+  ): Promise<SalesOrder | null> {
+    const key = `${tenantId}:${saleId}`;
+    const sale = this.sales.get(key);
+    if (!sale) return null;
+    // Conditional: only succeed if current sale_status is in expectedCurrentStatuses.
+    if (!expectedCurrentStatuses.includes(sale.saleStatus)) return null;
+    const updated: SalesOrder = {
+      ...sale,
+      saleStatus: patch.saleStatus as SalesOrder["saleStatus"],
+      approvalStatus: patch.approvalStatus as SalesOrder["approvalStatus"],
+      reservationStatus: patch.reservationStatus,
+      updatedAt: NOW(),
+    };
+    this.sales.set(key, updated);
+    return updated;
+  }
 }

@@ -82,4 +82,34 @@ export interface StockReservationRepository {
     tenantId: string,
     salesOrderId: string,
   ): Promise<StockReservation[]>;
+
+  /**
+   * Mark a reservation as `failed` (status transition active → failed).
+   * WP-03-04: used by the missing/corrupted reservation resolution.
+   *
+   * Conditional on status='active' — only one concurrent caller can
+   * transition a reservation to failed. Returns null if the reservation
+   * is not found or not in 'active' state.
+   *
+   * Also records the failure resolution reason/actor/time.
+   */
+  markReservationFailed(
+    tenantId: string,
+    reservationId: string,
+    failureResolutionReason: string,
+    failureResolutionActor: string,
+  ): Promise<StockReservation | null>;
+
+  /**
+   * Mark a reservation as `released` (status transition active → released).
+   * WP-03-04: used by the human rejection/cancellation resolution.
+   *
+   * Conditional on status='active' — only one concurrent caller can
+   * transition a reservation to released. Returns null if the reservation
+   * is not found or not in 'active' state.
+   */
+  markReservationReleased(
+    tenantId: string,
+    reservationId: string,
+  ): Promise<StockReservation | null>;
 }

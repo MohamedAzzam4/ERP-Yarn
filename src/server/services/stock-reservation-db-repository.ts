@@ -119,6 +119,54 @@ export class StockReservationDbRepository implements StockReservationRepository 
       );
     return results;
   }
+
+  async markReservationFailed(
+    tenantId: string,
+    reservationId: string,
+    failureResolutionReason: string,
+    failureResolutionActor: string,
+  ): Promise<StockReservation | null> {
+    // Conditional update: only succeed if current status is 'active'.
+    const [result] = await this.db
+      .update(stockReservations)
+      .set({
+        status: "failed",
+        failureResolutionReason,
+        failureResolutionActor,
+        failureResolutionAt: new Date(),
+      })
+      .where(
+        and(
+          eq(stockReservations.tenantId, tenantId),
+          eq(stockReservations.id, reservationId),
+          eq(stockReservations.status, "active"),
+        ),
+      )
+      .returning();
+    return result ?? null;
+  }
+
+  async markReservationReleased(
+    tenantId: string,
+    reservationId: string,
+  ): Promise<StockReservation | null> {
+    // Conditional update: only succeed if current status is 'active'.
+    const [result] = await this.db
+      .update(stockReservations)
+      .set({
+        status: "released",
+        releasedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(stockReservations.tenantId, tenantId),
+          eq(stockReservations.id, reservationId),
+          eq(stockReservations.status, "active"),
+        ),
+      )
+      .returning();
+    return result ?? null;
+  }
 }
 
 export function createStockReservationDbRepository(db: Db): StockReservationDbRepository {

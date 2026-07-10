@@ -50,4 +50,26 @@ export interface SalesRepository {
       reservationStatus: string | null;
     },
   ): Promise<SalesOrder | null>;
+
+  /**
+   * Conditionally update sale status ONLY IF the current sale_status is one
+   * of the `expectedCurrentStatuses` (WP-03-04).
+   *
+   * Used by SalesFailureResolutionService to prevent concurrent double-resolution:
+   * if two concurrent resolutions race, only the first one transitions the sale
+   * out of `pending_approval`/`approval_failed`/`needs_review`. The second one
+   * gets null and throws SaleAlreadyResolvedError.
+   *
+   * Returns the updated sale, or null if the current state doesn't match.
+   */
+  updateSaleStatusConditional(
+    tenantId: string,
+    saleId: string,
+    patch: {
+      saleStatus: string;
+      approvalStatus: string;
+      reservationStatus: string | null;
+    },
+    expectedCurrentStatuses: string[],
+  ): Promise<SalesOrder | null>;
 }

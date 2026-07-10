@@ -5,7 +5,7 @@
  * Full sale CRUD, approval, rejection, cancellation are deferred.
  */
 import "server-only";
-import { eq, and, asc } from "drizzle-orm";
+import { eq, and, asc, inArray } from "drizzle-orm";
 import { salesOrders, salesOrderLines } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -59,6 +59,36 @@ export class SalesDbRepository implements SalesRepository {
         updatedAt: new Date(),
       })
       .where(and(eq(salesOrders.tenantId, tenantId), eq(salesOrders.id, saleId)))
+      .returning();
+    return result ?? null;
+  }
+
+  async updateSaleStatusConditional(
+    tenantId: string,
+    saleId: string,
+    patch: {
+      saleStatus: string;
+      approvalStatus: string;
+      reservationStatus: string | null;
+    },
+    expectedCurrentStatuses: string[],
+  ): Promise<SalesOrder | null> {
+    // Conditional update: only succeed if current sale_status is in expectedCurrentStatuses.
+    const [result] = await this.db
+      .update(salesOrders)
+      .set({
+        saleStatus: patch.saleStatus as SalesOrder["saleStatus"],
+        approvalStatus: patch.approvalStatus as SalesOrder["approvalStatus"],
+        reservationStatus: patch.reservationStatus,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(salesOrders.tenantId, tenantId),
+          eq(salesOrders.id, saleId),
+          inArray(salesOrders.saleStatus, expectedCurrentStatuses as any[]),
+        ),
+      )
       .returning();
     return result ?? null;
   }
