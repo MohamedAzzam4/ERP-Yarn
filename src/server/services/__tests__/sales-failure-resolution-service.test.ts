@@ -934,3 +934,311 @@ describe("WP-03-04 duplicate critical alert prevention", () => {
     expect(alerts[0]!.severity).toBe("critical");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 16. technical_system does not write business-visible audit.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-04 technical_system no business audit", () => {
+  it("technical_system failure does NOT write a business audit log entry", async () => {
+    const { service, salesRepository, reservationRepository, audit, ledgerRepo, inventoryLedger } = makeDeps();
+    await seedStock(inventoryLedger, "1000.000");
+
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    if (balance) {
+      await ledgerRepo.updateReservedQty(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A, {
+        reservedQtyKg: "300.000", version: balance.version + 1,
+      });
+    }
+
+    const { sale } = await createPendingSaleWithReservation(salesRepository, reservationRepository, "300.000");
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await service.resolveSaleFailure(ownerUser as any, ownerEff as any, {
+      saleId: sale.id,
+      reason: "technical_system",
+      resolutionReason: "Database timeout",
+      idempotencyKey: "tech-noaudit-1",
+    });
+
+    // NO business audit entry should exist for technical_system.
+    const auditRows = audit.getRows();
+    const resolutionAudit = auditRows.find((r) => r.actionType === "sales_failure_resolution.resolve");
+    expect(resolutionAudit).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. Audit is inside transaction (audit failure rolls back).
+// ---------------------------------------------------------------------------
+
+describe("WP-03-04 audit inside transaction", () => {
+  it("audit failure rolls back the entire transaction (sale stays pending, reservation stays active)", async () => {
+    const { salesRepository, reservationRepository, alertRepository, ledgerRepo, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    if (balance) {
+      await ledgerRepo.updateReservedQty(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A, {
+        reservedQtyKg: "300.000", version: balance.version + 1,
+      });
+    }
+
+    const { sale, reservation } = await createPendingSaleWithReservation(salesRepository, reservationRepository, "300.000");
+
+    const failingAudit = new InProcessAuditStore();
+    failingAudit.setShouldFail(true);
+
+    const service = new SalesFailureResolutionService({
+      salesRepository, reservationRepository, alertRepository, inventoryLedger,
+      audit: failingAudit, idempotency,
+      transactionRunner, txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createReservationRepository: () => reservationRepository,
+        createSalesRepository: () => salesRepository,
+        createAlertRepository: () => alertRepository,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.resolveSaleFailure(ownerUser as any, ownerEff as any, {
+      saleId: sale.id,
+      reason: "human_rejection_cancellation",
+      resolutionReason: "Cancelled",
+      idempotencyKey: "audit-rb-1",
+    })).rejects.toThrow();
+
+    const saleAfter = await salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfter!.saleStatus).toBe("pending_approval");
+
+    const reservationAfter = await reservationRepository.findReservationById(TEST_TENANT_ID, reservation.id);
+    expect(reservationAfter!.status).toBe("active");
+
+    const balanceAfter = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balanceAfter!.reservedQtyKg).toBe("300.000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. Rollback after alert creation failure.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-04 rollback after alert creation failure", () => {
+  it("alert creation failure rolls back: sale stays pending, reservation stays active", async () => {
+    const { salesRepository, reservationRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    if (balance) {
+      await ledgerRepo.updateReservedQty(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A, {
+        reservedQtyKg: "300.000", version: balance.version + 1,
+      });
+    }
+
+    const { sale, reservation } = await createPendingSaleWithReservation(salesRepository, reservationRepository, "300.000");
+
+    const realAlertRepo = new InMemoryOperationalAlertRepository();
+    const failingAlertRepo = {
+      insertAlert: async () => { throw new Error("SIMULATED_ALERT_INSERT_FAILURE"); },
+      findAlertsForSource: (t: string, et: string, eid: string) => realAlertRepo.findAlertsForSource(t, et, eid),
+      findAlertById: (t: string, id: string) => realAlertRepo.findAlertById(t, id),
+      findCriticalAlertForSource: (t: string, et: string, eid: string, at: string) => realAlertRepo.findCriticalAlertForSource(t, et, eid, at),
+    };
+
+    const service = new SalesFailureResolutionService({
+      salesRepository, reservationRepository, alertRepository: failingAlertRepo as any,
+      inventoryLedger, audit, idempotency,
+      transactionRunner, txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createReservationRepository: () => reservationRepository,
+        createSalesRepository: () => salesRepository,
+        createAlertRepository: () => failingAlertRepo as any,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.resolveSaleFailure(ownerUser as any, ownerEff as any, {
+      saleId: sale.id,
+      reason: "missing_or_corrupted_reservation",
+      resolutionReason: "Corruption detected",
+      idempotencyKey: "rb-alert-1",
+    })).rejects.toThrow("SIMULATED_ALERT_INSERT_FAILURE");
+
+    const saleAfter = await salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfter!.saleStatus).toBe("pending_approval");
+
+    const reservationAfter = await reservationRepository.findReservationById(TEST_TENANT_ID, reservation.id);
+    expect(reservationAfter!.status).toBe("active");
+
+    const balanceAfter = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balanceAfter!.reservedQtyKg).toBe("300.000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 19. Rollback after reservation release failure.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-04 rollback after reservation release failure", () => {
+  it("reservation release failure rolls back: sale stays pending, reserved_qty unchanged", async () => {
+    const { salesRepository, reservationRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    if (balance) {
+      await ledgerRepo.updateReservedQty(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A, {
+        reservedQtyKg: "300.000", version: balance.version + 1,
+      });
+    }
+
+    const { sale } = await createPendingSaleWithReservation(salesRepository, reservationRepository, "300.000");
+
+    const failingResRepo = {
+      insertReservation: (row: any) => reservationRepository.insertReservation(row),
+      findReservationByIdempotencyKey: (t: string, k: string) => reservationRepository.findReservationByIdempotencyKey(t, k),
+      findActiveReservationBySource: (t: string, st: string, si: string, i: string, l: string) => reservationRepository.findActiveReservationBySource(t, st, si, i, l),
+      findReservationById: (t: string, id: string) => reservationRepository.findReservationById(t, id),
+      listActiveReservationsForSale: (t: string, s: string) => reservationRepository.listActiveReservationsForSale(t, s),
+      markReservationFailed: (t: string, id: string, r: string, a: string) => reservationRepository.markReservationFailed(t, id, r, a),
+      markReservationReleased: async () => { throw new Error("SIMULATED_RELEASE_FAILURE"); },
+    };
+
+    const service = new SalesFailureResolutionService({
+      salesRepository, reservationRepository: failingResRepo as any,
+      alertRepository: new InMemoryOperationalAlertRepository(),
+      inventoryLedger, audit, idempotency,
+      transactionRunner, txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createReservationRepository: () => failingResRepo as any,
+        createSalesRepository: () => salesRepository,
+        createAlertRepository: () => new InMemoryOperationalAlertRepository(),
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.resolveSaleFailure(ownerUser as any, ownerEff as any, {
+      saleId: sale.id,
+      reason: "human_rejection_cancellation",
+      resolutionReason: "Cancelled",
+      idempotencyKey: "rb-release-1",
+    })).rejects.toThrow("SIMULATED_RELEASE_FAILURE");
+
+    const saleAfter = await salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfter!.saleStatus).toBe("pending_approval");
+
+    const balanceAfter = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balanceAfter!.reservedQtyKg).toBe("300.000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20. Rollback after sale status update failure.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-04 rollback after sale status update failure", () => {
+  it("sale status update failure rolls back: reservation stays active, reserved_qty unchanged", async () => {
+    const { salesRepository, reservationRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    if (balance) {
+      await ledgerRepo.updateReservedQty(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A, {
+        reservedQtyKg: "300.000", version: balance.version + 1,
+      });
+    }
+
+    const { sale, reservation } = await createPendingSaleWithReservation(salesRepository, reservationRepository, "300.000");
+
+    const failingSalesRepo = {
+      findSaleById: (t: string, id: string) => salesRepository.findSaleById(t, id),
+      findSaleLines: (t: string, id: string) => salesRepository.findSaleLines(t, id),
+      updateSaleStatus: (t: string, id: string, p: any) => salesRepository.updateSaleStatus(t, id, p),
+      updateSaleStatusConditional: async () => { throw new Error("SIMULATED_STATUS_UPDATE_FAILURE"); },
+    };
+
+    const service = new SalesFailureResolutionService({
+      salesRepository: failingSalesRepo as any, reservationRepository,
+      alertRepository: new InMemoryOperationalAlertRepository(),
+      inventoryLedger, audit, idempotency,
+      transactionRunner, txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createReservationRepository: () => reservationRepository,
+        createSalesRepository: () => failingSalesRepo as any,
+        createAlertRepository: () => new InMemoryOperationalAlertRepository(),
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.resolveSaleFailure(ownerUser as any, ownerEff as any, {
+      saleId: sale.id,
+      reason: "human_rejection_cancellation",
+      resolutionReason: "Cancelled",
+      idempotencyKey: "rb-status-1",
+    })).rejects.toThrow("SIMULATED_STATUS_UPDATE_FAILURE");
+
+    const reservationAfter = await reservationRepository.findReservationById(TEST_TENANT_ID, reservation.id);
+    expect(reservationAfter!.status).toBe("active");
+
+    const balanceAfter = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balanceAfter!.reservedQtyKg).toBe("300.000");
+
+    const saleAfter = await salesRepository.findSaleById(TEST_TENANT_ID, sale.id);
+    expect(saleAfter!.saleStatus).toBe("pending_approval");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 21. Concurrent release exact reserved_qty result.
+// ---------------------------------------------------------------------------
+
+describe("WP-03-04 concurrent release exact reserved_qty", () => {
+  it("two concurrent human-rejection resolutions: exactly 1 releases, reserved_qty decreases exactly once", async () => {
+    const { service, salesRepository, reservationRepository, ledgerRepo, inventoryLedger } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+
+    const balance = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    if (balance) {
+      await ledgerRepo.updateReservedQty(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A, {
+        reservedQtyKg: "300.000", version: balance.version + 1,
+      });
+    }
+
+    const { sale, reservation } = await createPendingSaleWithReservation(salesRepository, reservationRepository, "300.000");
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    const results = await Promise.allSettled([
+      service.resolveSaleFailure(ownerUser as any, ownerEff as any, {
+        saleId: sale.id, reason: "human_rejection_cancellation",
+        resolutionReason: "Cancel A", idempotencyKey: "conc-exact-A",
+      }),
+      service.resolveSaleFailure(ownerUser as any, ownerEff as any, {
+        saleId: sale.id, reason: "human_rejection_cancellation",
+        resolutionReason: "Cancel B", idempotencyKey: "conc-exact-B",
+      }),
+    ]);
+
+    const fulfilled = results.filter(r => r.status === "fulfilled");
+    const rejected = results.filter(r => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const balanceAfter = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_LOC_A);
+    expect(balanceAfter!.reservedQtyKg).toBe("0.000");
+    expect(balanceAfter!.reservedQtyKg).not.toBe("-300.000");
+
+    const reservationAfter = await reservationRepository.findReservationById(TEST_TENANT_ID, reservation.id);
+    expect(reservationAfter!.status).toBe("released");
+  });
+});

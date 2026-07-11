@@ -258,7 +258,9 @@ export class SalesFailureResolutionService {
       // Special case: technical_system → NO business-state change.
       if (input.reason === "technical_system") {
         // Per Contract 06 §7.1: leave sale and reservation unchanged.
-        // Just audit the technical failure record (no business state change).
+        // Do NOT write a business audit log (it would imply resolution happened).
+        // The idempotency record (markSucceeded/markBusinessFailed) is sufficient
+        // for operational tracking of technical failure attempts.
         return {
           action: "resolved" as const,
           saleId: sale.id,
@@ -408,6 +410,28 @@ export class SalesFailureResolutionService {
         throw new SaleAlreadyResolvedError(sale.id, "resolved (concurrent)");
       }
 
+      // Audit INSIDE the transaction (Contract 06 §6: "Audit failure rolls
+      // back the entire transaction"). This ensures the audit record commits
+      // atomically with the business mutations — if audit fails, the sale
+      // status change, reservation release, reserved_qty decrease, and alert
+      // creation all roll back.
+      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+        entityType: SALE_ENTITY_TYPE,
+        entityId: sale.id,
+        actionType: "sales_failure_resolution.resolve",
+        newValuesJson: {
+          reason: input.reason,
+          saleStatus: updatedSale.saleStatus,
+          approvalStatus: updatedSale.approvalStatus,
+          reservationReleased,
+          reservationMarkedFailed,
+          criticalAlertIds,
+          balanceSnapshots,
+          resolutionReason: input.resolutionReason,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
       return {
         action: "resolved" as const,
         saleId: sale.id,
@@ -448,25 +472,9 @@ export class SalesFailureResolutionService {
       throw txError;
     }
 
-    // Audit (in-process).
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: SALE_ENTITY_TYPE,
-      entityId: sale.id,
-      actionType: "sales_failure_resolution.resolve",
-      newValuesJson: {
-        reason: input.reason,
-        saleStatus: result.saleStatus,
-        approvalStatus: result.approvalStatus,
-        reservationReleased: result.reservationReleased,
-        reservationMarkedFailed: result.reservationMarkedFailed,
-        criticalAlertIds: result.criticalAlertIds,
-        balanceSnapshots: result.balanceSnapshots,
-        resolutionReason: input.resolutionReason,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
-
-    // Mark idempotency succeeded.
+    // Mark idempotency succeeded (outside tx — operational record, not business state).
+    // Note: the audit is INSIDE the transaction (above). The idempotency success
+    // record is operational and does not need to be in the same transaction.
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200,
       responseBody: {
