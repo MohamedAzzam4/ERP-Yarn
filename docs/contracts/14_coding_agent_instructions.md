@@ -17,13 +17,26 @@ If sources conflict, stop the affected path and report exact clauses. Do not cho
 
 > Unresolved / requires owner decision
 
+### DEC-081 Pilot Usage
+
+Read the status declared in `docs/process/dec-081-engineering-constitution.md`.
+
+When its status is `Pilot`, read the DEC-081 files only when the owner explicitly names DEC-081, asks for blind audit, or asks for engineering-constitution/process-hardening work:
+
+- `docs/process/dec-081-engineering-constitution.md`;
+- `docs/process/dec-081-verification-matrix.md`.
+
+When its status is `Active`, both files become mandatory reading before every coding work package, whether or not the owner mentions DEC-081. Record their controlling rules in the mandatory-start report and apply the work-package risk class and verification matrix.
+
+While status is `Pilot`, these files are non-binding guidance. They may strengthen review prompts and evidence requests, but they do not retroactively change an active work package, expand scope, or authorize merge. Existing domain contracts and explicit owner decisions remain authoritative. A merge alone does not activate a file whose status still says `Pilot`.
+
 ## 2. Mandatory Start Protocol
 
 Before editing:
 
 1. identify the one active work package and its dependencies;
 2. inspect repository/user changes and preserve unrelated work;
-3. read the project context, decision log, Final Implementation Plan v4, contract index, execution index/plan, technical architecture, coding instructions, work package, testing plan, and every domain/UI/API/permission contract named by the package;
+3. read the project context, decision log, Final Implementation Plan v4, contract index, execution index/plan, technical architecture, coding instructions, work package, testing plan, every domain/UI/API/permission contract named by the package, and both DEC-081 process documents when their status is `Active`;
 4. list the exact required files read and controlling section/line references; missing mandatory reading blocks edits;
 5. state in-scope outputs, non-goals, expected tests, and unresolved blockers;
 6. confirm preceding package/gate evidence exists;

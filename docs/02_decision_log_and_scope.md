@@ -95,6 +95,12 @@ Execution documents may narrow order/scope but cannot alter decisions in this lo
 | DEC-073 | MVP uses private email/password sign-in through Supabase Auth. Public signup is not allowed. | Users are created/invited only through an Owner/Admin-controlled flow. Supabase Auth identity is authentication only; ERP tenant membership, role, permission, user status, and field visibility remain controlled by ERP database/application logic. Unmapped or inactive Supabase users must be denied ERP access. |
 | DEC-074 | The first Owner is created through a controlled one-time bootstrap mechanism. | For dev/demo, the bootstrap may be a one-time script or route guarded by a server-only bootstrap secret that must never be exposed to the browser or committed. After the first Owner exists, bootstrap must idempotently refuse further Owner creation. Bootstrap must be audited where schema/application support exists. For pilot/production, the bootstrap method must be replaced by manual admin provisioning or a stricter audited setup process. Dev/demo bootstrap does not authorize public signup or self-service role selection. |
 
+## Pilot Process Decisions (Non-Binding)
+
+| Candidate ID | Pilot decision | Activation consequence |
+| --- | --- | --- |
+| DEC-081 | The engineering constitution and verification matrix are drafted under `docs/process/dec-081-engineering-constitution.md` and `docs/process/dec-081-verification-matrix.md` with status `Pilot`. | Agents may use them as non-binding review guidance when explicitly requested. Activation requires the active WP-03-04 flow to be settled, the process branch to be recreated or rebased from then-current `main`, explicit owner authorization, all DEC-081 status references changed to `Active`, enforcement prerequisites satisfied, and the activation commit recorded. A pilot branch push or merge of files still marked `Pilot` does not make DEC-081 binding or authorize any work-package merge. |
+
 ## Integrated Design-System Decisions
 
 - Light theme only in MVP; dark mode deferred.

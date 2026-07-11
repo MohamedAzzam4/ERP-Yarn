@@ -23,6 +23,16 @@ Every coding agent must read:
 
 Contracts may clarify implementation detail but may not alter business rules, expand MVP scope, or resolve an owner decision silently. Any undefined material rule must be marked **“Unresolved / requires owner decision.”**
 
+## Process Governance Documents
+
+The following files use the lifecycle declared inside the DEC-081 constitution. They are process pilots, not domain contracts, while their status is `Pilot`:
+
+- `docs/process/dec-081-engineering-constitution.md` defines canonical engineering rules, risk classes, blind independent review, evidence standards, audit verification, and exception policy.
+- `docs/process/dec-081-verification-matrix.md` maps each DEC-081 rule to applicability triggers, required evidence, merge blockers, and exception authority.
+- `docs/process/pilots/wp-03-04-dec-081-review-focus.md` is a temporary package-specific checklist for the WP-03-04 pilot and does not become a permanent DEC-081 rule.
+
+While DEC-081 remains `Pilot`, agents may use the constitution and matrix as review guidance only when the owner names DEC-081 or requests blind audit/process-hardening. When the constitution status becomes `Active`, both permanent DEC-081 documents are mandatory reading before every coding work package. The package-specific pilot checklist remains historical guidance only. No process document alters domain behavior or active work-package scope by implication.
+
 ## Contract Files
 
 ### `01_technical_architecture_and_deployment_contract.md`
