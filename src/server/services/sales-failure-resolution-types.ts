@@ -114,8 +114,15 @@ export interface FailureResolutionOutcome {
   saleStatus: "pending_approval" | "approval_failed" | "needs_review" | "rejected" | "cancelled";
   /**
    * The approval status to set.
+   * Note: the approval_status enum only allows: draft, pending_approval,
+   * approved, rejected, cancelled, reversed. Values like approval_failed
+   * and needs_review are sale_status values, NOT approval_status values.
+   * For failure resolution, the approval_status stays pending_approval
+   * (the sale is still pending approval, just in a failed/review state).
+   * Only human rejection/cancellation transitions approval_status to
+   * rejected/cancelled.
    */
-  approvalStatus: "pending_approval" | "approval_failed" | "needs_review" | "rejected" | "cancelled";
+  approvalStatus: "pending_approval" | "rejected" | "cancelled";
 }
 
 /**
@@ -139,7 +146,7 @@ export const FAILURE_RESOLUTION_OUTCOMES: Record<SaleFailureReason, FailureResol
     markReservationFailed: true,
     createCriticalAlert: true,
     saleStatus: "approval_failed",
-    approvalStatus: "approval_failed",
+    approvalStatus: "pending_approval", // sale_status changes, approval_status stays pending
   },
   stock_shortfall: {
     reason: "stock_shortfall",
@@ -147,7 +154,7 @@ export const FAILURE_RESOLUTION_OUTCOMES: Record<SaleFailureReason, FailureResol
     markReservationFailed: false,
     createCriticalAlert: false,
     saleStatus: "needs_review",
-    approvalStatus: "needs_review",
+    approvalStatus: "pending_approval", // sale_status changes, approval_status stays pending
   },
   quality_block: {
     reason: "quality_block",
@@ -155,7 +162,7 @@ export const FAILURE_RESOLUTION_OUTCOMES: Record<SaleFailureReason, FailureResol
     markReservationFailed: false,
     createCriticalAlert: false,
     saleStatus: "needs_review",
-    approvalStatus: "needs_review",
+    approvalStatus: "pending_approval", // sale_status changes, approval_status stays pending
   },
   missing_commercial_data: {
     reason: "missing_commercial_data",
@@ -163,7 +170,7 @@ export const FAILURE_RESOLUTION_OUTCOMES: Record<SaleFailureReason, FailureResol
     markReservationFailed: false,
     createCriticalAlert: false,
     saleStatus: "needs_review",
-    approvalStatus: "needs_review",
+    approvalStatus: "pending_approval", // sale_status changes, approval_status stays pending
   },
   human_rejection_cancellation: {
     reason: "human_rejection_cancellation",
