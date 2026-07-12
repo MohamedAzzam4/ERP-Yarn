@@ -493,3 +493,200 @@ describe("WP-04-01 concurrent issue", () => {
     expect(bal2!.onHandQtyKg).toBe("300.000");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5. Rollback tests.
+// ---------------------------------------------------------------------------
+
+describe("WP-04-01 rollback proofs", () => {
+  it("WIP update failure rolls back stock issue (on-hand unchanged, no WIP)", async () => {
+    const { productionOrderRepository, wipBalanceRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const { order, inputs } = await createOrderWithInput(new ProductionIssueService({
+      productionOrderRepository, wipBalanceRepository, inventoryLedger, audit, idempotency, documentSequence,
+    }));
+
+    // Failing WIP repo
+    const failingWipRepo = {
+      findForUpdate: (t: string, o: string, i: string, l: string) => wipBalanceRepository.findForUpdate(t, o, i, l),
+      insertBalance: (row: any) => wipBalanceRepository.insertBalance(row),
+      updateWipQty: async () => { throw new Error("SIMULATED_WIP_UPDATE_FAILURE"); },
+    };
+
+    const service = new ProductionIssueService({
+      productionOrderRepository, wipBalanceRepository: failingWipRepo as any, inventoryLedger, audit, idempotency, documentSequence,
+      transactionRunner, txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createProductionOrderRepository: () => productionOrderRepository,
+        createWipBalanceRepository: () => failingWipRepo as any,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.issueToProduction(ownerUser as any, ownerEff as any, {
+      productionOrderId: order.id, inputId: inputs[0]!.id, quantityKg: "300.000", idempotencyKey: "rb-wip-1",
+    })).rejects.toThrow("SIMULATED_WIP_UPDATE_FAILURE");
+
+    // ROLLBACK PROOF: on-hand unchanged (still 1000)
+    const bal = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(bal!.onHandQtyKg).toBe("1000.000");
+
+    // ROLLBACK PROOF: no WIP balance created
+    const wip = await wipBalanceRepository.findForUpdate(TEST_TENANT_ID, order.id, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(wip).toBeNull();
+
+    // ROLLBACK PROOF: input issuedQty unchanged
+    const inputAfter = await productionOrderRepository.findInputById(TEST_TENANT_ID, inputs[0]!.id);
+    expect(inputAfter!.issuedQtyKg).toBe("0");
+
+    // ROLLBACK PROOF: order still draft
+    const orderAfter = await productionOrderRepository.findOrderById(TEST_TENANT_ID, order.id);
+    expect(orderAfter!.status).toBe("draft");
+  });
+
+  it("order status update failure rolls back stock issue + WIP", async () => {
+    const { productionOrderRepository, wipBalanceRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const { order, inputs } = await createOrderWithInput(new ProductionIssueService({
+      productionOrderRepository, wipBalanceRepository, inventoryLedger, audit, idempotency, documentSequence,
+    }));
+
+    // Failing order repo — updateOrderStatusConditional throws
+    const failingOrderRepo = {
+      insertOrder: (row: any) => productionOrderRepository.insertOrder(row),
+      insertInput: (row: any) => productionOrderRepository.insertInput(row),
+      findOrderById: (t: string, id: string) => productionOrderRepository.findOrderById(t, id),
+      findInputsByOrder: (t: string, id: string) => productionOrderRepository.findInputsByOrder(t, id),
+      findInputById: (t: string, id: string) => productionOrderRepository.findInputById(t, id),
+      updateOrderStatus: (t: string, id: string, p: any) => productionOrderRepository.updateOrderStatus(t, id, p),
+      updateInputIssuedQty: (t: string, id: string, p: any) => productionOrderRepository.updateInputIssuedQty(t, id, p),
+      updateOrderStatusConditional: async () => { throw new Error("SIMULATED_ORDER_STATUS_FAILURE"); },
+    };
+
+    const service = new ProductionIssueService({
+      productionOrderRepository: failingOrderRepo as any, wipBalanceRepository, inventoryLedger, audit, idempotency, documentSequence,
+      transactionRunner, txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createProductionOrderRepository: () => failingOrderRepo as any,
+        createWipBalanceRepository: () => wipBalanceRepository,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.issueToProduction(ownerUser as any, ownerEff as any, {
+      productionOrderId: order.id, inputId: inputs[0]!.id, quantityKg: "300.000", idempotencyKey: "rb-status-1",
+    })).rejects.toThrow("SIMULATED_ORDER_STATUS_FAILURE");
+
+    // ROLLBACK PROOF: on-hand unchanged
+    const bal = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(bal!.onHandQtyKg).toBe("1000.000");
+
+    // ROLLBACK PROOF: no WIP
+    const wip = await wipBalanceRepository.findForUpdate(TEST_TENANT_ID, order.id, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(wip).toBeNull();
+
+    // ROLLBACK PROOF: order still draft
+    const orderAfter = await productionOrderRepository.findOrderById(TEST_TENANT_ID, order.id);
+    expect(orderAfter!.status).toBe("draft");
+  });
+
+  it("audit failure rolls back stock issue + WIP + order status", async () => {
+    const { productionOrderRepository, wipBalanceRepository, ledgerRepo, idempotency, documentSequence, inventoryLedger, transactionRunner } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const { order, inputs } = await createOrderWithInput(new ProductionIssueService({
+      productionOrderRepository, wipBalanceRepository, inventoryLedger, audit: new InProcessAuditStore(), idempotency, documentSequence,
+    }));
+
+    const failingAudit = new InProcessAuditStore();
+    failingAudit.setShouldFail(true);
+
+    const service = new ProductionIssueService({
+      productionOrderRepository, wipBalanceRepository, inventoryLedger,
+      audit: failingAudit, idempotency, documentSequence,
+      transactionRunner, txFactories: {
+        createInventoryLedger: () => inventoryLedger,
+        createProductionOrderRepository: () => productionOrderRepository,
+        createWipBalanceRepository: () => wipBalanceRepository,
+      },
+    });
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    await expect(service.issueToProduction(ownerUser as any, ownerEff as any, {
+      productionOrderId: order.id, inputId: inputs[0]!.id, quantityKg: "300.000", idempotencyKey: "rb-audit-1",
+    })).rejects.toThrow();
+
+    // ROLLBACK PROOF: on-hand unchanged
+    const bal = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(bal!.onHandQtyKg).toBe("1000.000");
+
+    // ROLLBACK PROOF: no WIP
+    const wip = await wipBalanceRepository.findForUpdate(TEST_TENANT_ID, order.id, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(wip).toBeNull();
+
+    // ROLLBACK PROOF: order still draft
+    const orderAfter = await productionOrderRepository.findOrderById(TEST_TENANT_ID, order.id);
+    expect(orderAfter!.status).toBe("draft");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Idempotency / concurrency tests.
+// ---------------------------------------------------------------------------
+
+describe("WP-04-01 idempotency and concurrency", () => {
+  it("different key on already-issued order rejects", async () => {
+    const { service, productionOrderRepository, inventoryLedger } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const { order, inputs } = await createOrderWithInput(service);
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    // First issue succeeds
+    await service.issueToProduction(ownerUser as any, ownerEff as any, {
+      productionOrderId: order.id, inputId: inputs[0]!.id, quantityKg: "300.000", idempotencyKey: "diff-1",
+    });
+
+    // Different key on already-issued (material_issued) order — rejects
+    await expect(service.issueToProduction(ownerUser as any, ownerEff as any, {
+      productionOrderId: order.id, inputId: inputs[0]!.id, quantityKg: "100.000", idempotencyKey: "diff-2",
+    })).rejects.toThrow(ProductionOrderNotIssuableError);
+  });
+
+  it("concurrent issue for the SAME input: exactly 1 succeeds, on-hand decreases once", async () => {
+    const { service, ledgerRepo, wipBalanceRepository, inventoryLedger } = makeDepsWithTxRunner();
+    await seedStock(inventoryLedger, "1000.000");
+    const { order, inputs } = await createOrderWithInput(service);
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = getTestEffectivePermissions(TEST_USERS.owner.userId);
+
+    const results = await Promise.allSettled([
+      service.issueToProduction(ownerUser as any, ownerEff as any, {
+        productionOrderId: order.id, inputId: inputs[0]!.id, quantityKg: "300.000", idempotencyKey: "conc-same-A",
+      }),
+      service.issueToProduction(ownerUser as any, ownerEff as any, {
+        productionOrderId: order.id, inputId: inputs[0]!.id, quantityKg: "300.000", idempotencyKey: "conc-same-B",
+      }),
+    ]);
+
+    const fulfilled = results.filter(r => r.status === "fulfilled");
+    const rejected = results.filter(r => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    // On-hand decreased exactly once: 1000 - 300 = 700 (not 400)
+    const bal = await ledgerRepo.findBalanceForUpdate(TEST_TENANT_ID, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(bal!.onHandQtyKg).toBe("700.000");
+
+    // WIP increased exactly once: 300 (not 600)
+    const wip = await wipBalanceRepository.findForUpdate(TEST_TENANT_ID, order.id, TEST_ITEM_ID, TEST_FACTORY_LOC);
+    expect(wip!.wipQtyKg).toBe("300.000");
+  });
+});
