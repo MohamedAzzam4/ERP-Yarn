@@ -43,6 +43,7 @@ import {
 import { isWorkerRole } from "@/server/security/role-codes";
 import { getTestRoleAssignments, TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import { InProcessAuditStore } from "@/server/services/audit-service";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import {
   RawReceiptDraftService,
   type CreateDraftInput,
@@ -59,9 +60,11 @@ function getService() {
   // layer changes. No stock/payable logic runs in either path.
   if (db) {
     const repository = new RawReceiptDraftDbRepository(db);
-    const audit = new InProcessAuditStore();
+    const audit = new AuditDbRepository(db);
     return new RawReceiptDraftService({ repository, audit });
   }
+  // Dev/CI fallback without DATABASE_URL — in-memory repos, test-only audit.
+  // This path is explicitly non-production.
   const repository = new InMemoryRawReceiptDraftRepository();
   const audit = new InProcessAuditStore();
   return new RawReceiptDraftService({ repository, audit });

@@ -20,7 +20,7 @@ import { TransferWorkflowService } from "@/server/services/transfer-workflow-ser
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
-import { InProcessAuditStore } from "@/server/services/audit-service";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
@@ -41,7 +41,7 @@ export default async function TransfersPage() {
   let dbAvailable = false;
 
   if (db) {
-    const audit = new InProcessAuditStore();
+    const audit = new AuditDbRepository(db);
     const idempotency = new InProcessIdempotencyStore();
     const documentSequence = new InProcessDocumentSequenceStore();
     const inventoryLedger = new InventoryLedgerService({

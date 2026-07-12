@@ -29,7 +29,7 @@ import { RawReceiptApprovalsList } from "@/components/reference-screens/raw-rece
 import { db } from "@/server/db/client";
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
 import { RawReceiptDraftDbRepository } from "@/server/services/raw-receipt-draft-db-repository";
-import { InProcessAuditStore } from "@/server/services/audit-service";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
 import {
@@ -82,7 +82,7 @@ export default async function RawReceiptApprovalsPage() {
   if (db) {
     const approvalRepository = new RawReceiptApprovalDbRepository(db);
     const draftRepository = new RawReceiptDraftDbRepository(db);
-    const audit = new InProcessAuditStore();
+    const audit = new AuditDbRepository(db);
     const idempotency = new InProcessIdempotencyStore();
     const documentSequence = new InProcessDocumentSequenceStore();
     const inventoryLedger = new InventoryLedgerService({

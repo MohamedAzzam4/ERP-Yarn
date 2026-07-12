@@ -26,7 +26,7 @@ import type { RoleCode } from "@/server/security/role-codes";
 import { db } from "@/server/db/client";
 import { MasterDataDbRepository } from "@/server/services/master-data-db-repository";
 import { MasterDataService } from "@/server/services/master-data-service";
-import { InProcessAuditStore } from "@/server/services/audit-service";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
@@ -61,8 +61,9 @@ export default async function WorkerReceiptPage() {
     const repository = new MasterDataDbRepository(db);
     const service = new MasterDataService({
       repository,
-      // Audit store for read-only operations — no mutations happen here.
-      audit: new InProcessAuditStore(),
+      // Audit store for persistent audit_logs (read-only page — use
+      // AuditDbRepository for consistency with production wiring).
+      audit: new AuditDbRepository(db),
     });
     const effective: EffectivePermissions = resolveEffectivePermissions(
       authResult.roles,

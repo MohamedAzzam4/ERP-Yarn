@@ -20,7 +20,7 @@ import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
-import { InProcessAuditStore } from "@/server/services/audit-service";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
 import {
@@ -40,7 +40,7 @@ function getService() {
   if (!db) {
     throw new Error("Database not available. Raw receipt approval requires a live DB connection.");
   }
-  const audit = new InProcessAuditStore();
+  const audit = new AuditDbRepository(db);
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
 

@@ -27,7 +27,7 @@ import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { MasterDataDbRepository } from "@/server/services/master-data-db-repository";
 import { MasterDataService } from "@/server/services/master-data-service";
-import { InProcessAuditStore } from "@/server/services/audit-service";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import type { Supplier } from "@/server/db/schema/master-data";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
@@ -61,9 +61,10 @@ export default async function SuppliersPage() {
     const repository = new MasterDataDbRepository(db);
     const service = new MasterDataService({
       repository,
-      // Audit store for read-only operations — no mutations happen on a
-      // list page, so the audit store is a no-op placeholder.
-      audit: new InProcessAuditStore(),
+      // Audit store for persistent audit_logs (read-only page — audit is
+           // a no-op unless the service writes audit, but use AuditDbRepository
+      // for consistency with production wiring).
+      audit: new AuditDbRepository(db),
     });
     const effective: EffectivePermissions = resolveEffectivePermissions(
       authResult.roles,
