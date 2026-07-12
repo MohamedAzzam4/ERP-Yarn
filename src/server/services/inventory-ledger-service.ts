@@ -1010,6 +1010,109 @@ export class InventoryLedgerService {
   }
 
   /**
+   * Post an issue-to-production movement: factory on-hand -qty.
+   *
+   * Contract 04 §8: "Issue to production: factory -qty, issued stock must
+   * be available, WIP +qty."
+   * Contract 05 §12: "Issue to Production" preconditions + transaction.
+   *
+   * This method ONLY decreases factory on-hand. The WIP increase is handled
+   * by the ProductionIssueService via the WipBalanceRepository (WIP is a
+   * separate materialized balance, not part of inventory_balances).
+   *
+   * Permission: production.issue.approve (Owner/Accountant).
+   */
+  async postIssueToProduction(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      itemId: string;
+      fromLocationId: string;
+      quantityKg: string;
+      movementDate: string;
+      sourceDocumentType: string;
+      sourceDocumentId: string;
+      idempotencyKey: string;
+      notes?: string;
+    },
+  ): Promise<PostAdjustmentResult> {
+    requirePermission(effective, "production.issue.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!isPositiveKg(input.quantityKg)) {
+      throw new ValidationFailedLedgerError(`Quantity must be positive, got '${input.quantityKg}'.`);
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.quantityKg);
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId, operationScope: "inventory.issue_to_production.post",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: { itemId: input.itemId, fromLocationId: input.fromLocationId, quantityKg: normalizedQty, movementDate: input.movementDate, sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId } as Record<string, unknown>,
+      initiatedBy: user.userId, leaseDurationMs: 30000, now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        const bal = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.fromLocationId);
+        return { action: "replayed", movementId: existing.id, docNo: existing.docNo, balanceVersion: bal?.version ?? 0, onHandQtyKg: bal?.onHandQtyKg ?? "0.000" };
+      }
+    }
+    if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
+    if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
+
+    // Duplicate source guard
+    const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
+    if (existingBySource) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      throw new DuplicateSourceError(`Movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
+    }
+
+    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "production_issue", year, entityType: "stock_movement" });
+
+    // Lock + fetch/create balance
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.fromLocationId);
+    if (!balance) {
+      balance = await this.deps.ledger.insertBalance({ tenantId, itemId: input.itemId, locationId: input.fromLocationId, onHandQtyKg: "0.000", lastMovementId: null });
+    }
+    requireTenantMatch(user, balance.tenantId);
+
+    // Check sufficient stock
+    if (compareKg(balance.onHandQtyKg, normalizedQty) < 0) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, now);
+      throw new StockInsufficientError(`Insufficient stock at factory location: on_hand=${balance.onHandQtyKg}, requested=${normalizedQty}.`);
+    }
+
+    // Insert movement — issue_to_production uses fromLocationId (source -qty)
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId, docNo: docNoResult.docNo, movementType: "issue_to_production", movementStatus: "posted",
+      itemId: input.itemId, fromLocationId: input.fromLocationId, toLocationId: null,
+      quantityKg: normalizedQty, movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType, sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey, postedBy: user.userId, postedAt: now,
+    });
+
+    // Update balance: on_hand -= qty
+    const newOnHand = subtractKg(balance.onHandQtyKg, normalizedQty);
+    const updatedBalance = await this.deps.ledger.updateBalance(tenantId, input.itemId, input.fromLocationId, { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 });
+    if (!updatedBalance) throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during update.");
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement", entityId: movement.id, actionType: "inventory.issue_to_production.post",
+      newValuesJson: { docNo: movement.docNo, itemId: movement.itemId, fromLocationId: movement.fromLocationId, quantityKg: movement.quantityKg, newOnHandQtyKg: updatedBalance.onHandQtyKg, balanceVersion: updatedBalance.version },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+
+    return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg };
+  }
+
+  /**
    * Post a reversal: exact inverse of an original movement.
    *
    * Contract 04 §8: "Reversal: approved exact inverse, inverse contracted
