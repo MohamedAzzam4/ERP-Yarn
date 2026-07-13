@@ -1,46 +1,59 @@
 /**
- * Sales Repository — WP-03-03.
+ * Sales Repository — WP-03-03 + WP-05-01.
  *
- * Minimal repository for reading sales orders + lines and updating sale
- * status. WP-03-03 scope: submit (draft → pending_approval) only.
- * Full sale CRUD, approval, rejection, cancellation are deferred to
- * later packages.
- *
- * Contract: docs/contracts/04_inventory_posting_contract.md §9
- *   "Draft sale does not reserve. Submission locks sale/balances,
- *    validates available stock and state, inserts reservations per line,
- *    increases reserved quantity, sets pending approval, creates approval
- *    request and audit."
- *
- * Contract: docs/contracts/09_api_contracts.md §8
- *   "Submit Sale for Approval"
+ * WP-03-03: minimal read + status update for submission.
+ * WP-05-01: draft creation, line CRUD, commercial-totals persistence.
  */
 import "server-only";
 
 import type { SalesOrder, SalesOrderLine } from "@/server/db/schema/sales";
 
 // ---------------------------------------------------------------------------
+// WP-05-01: Draft creation inputs.
+// ---------------------------------------------------------------------------
+
+export interface NewSalesDraftInput {
+  tenantId: string;
+  docNo: string;
+  customerId: string;
+  saleDate: string;
+  createdBy: string;
+}
+
+export interface NewSalesLineInput {
+  tenantId: string;
+  salesOrderId: string;
+  lineNo: number;
+  itemId: string;
+  locationId: string;
+  quantityKg: string;
+  pricePerTon: string | null;
+}
+
+export interface CommercialTotalsPatch {
+  totalGrossRevenue: string;
+  orderDiscountTotal: string;
+  documentTotalPosted: string;
+}
+
+export interface LineCommercialTotalsPatch {
+  lineId: string;
+  lineGrossRevenue: string;
+  lineAllocatedDiscountPrecise: string;
+  lineAllocatedDiscountPosted: string;
+  lineNetRevenuePrecise: string;
+  lineNetRevenuePosted: string;
+  roundingAdjustment: string;
+}
+
+// ---------------------------------------------------------------------------
 // Repository interface.
 // ---------------------------------------------------------------------------
 
-/**
- * Persistence interface for sales orders + lines (WP-03-03 minimal scope).
- *
- * Every method is tenant-scoped: it MUST filter by `tenantId` and never
- * return/mutate rows from another tenant.
- */
 export interface SalesRepository {
-  /** Find a sale by id. Returns null if not found. */
+  // WP-03-03 methods (existing)
   findSaleById(tenantId: string, saleId: string): Promise<SalesOrder | null>;
-
-  /** Find all lines for a sale, ordered by lineNo. */
   findSaleLines(tenantId: string, saleId: string): Promise<SalesOrderLine[]>;
-
-  /**
-   * Update sale status (e.g. draft → pending_approval).
-   * Used by SalesSubmissionService.submitSale after reservations are created.
-   * Returns the updated sale, or null if not found.
-   */
   updateSaleStatus(
     tenantId: string,
     saleId: string,
@@ -50,18 +63,6 @@ export interface SalesRepository {
       reservationStatus: string | null;
     },
   ): Promise<SalesOrder | null>;
-
-  /**
-   * Conditionally update sale status ONLY IF the current sale_status is one
-   * of the `expectedCurrentStatuses` (WP-03-04).
-   *
-   * Used by SalesFailureResolutionService to prevent concurrent double-resolution:
-   * if two concurrent resolutions race, only the first one transitions the sale
-   * out of `pending_approval`/`approval_failed`/`needs_review`. The second one
-   * gets null and throws SaleAlreadyResolvedError.
-   *
-   * Returns the updated sale, or null if the current state doesn't match.
-   */
   updateSaleStatusConditional(
     tenantId: string,
     saleId: string,
@@ -72,4 +73,18 @@ export interface SalesRepository {
     },
     expectedCurrentStatuses: string[],
   ): Promise<SalesOrder | null>;
+
+  // WP-05-01 methods (new)
+  insertSaleDraft(row: NewSalesDraftInput): Promise<SalesOrder>;
+  insertSaleLine(row: NewSalesLineInput): Promise<SalesOrderLine>;
+  updateSaleCommercialTotals(
+    tenantId: string,
+    saleId: string,
+    patch: CommercialTotalsPatch,
+  ): Promise<SalesOrder | null>;
+  updateLineCommercialTotals(
+    tenantId: string,
+    lineId: string,
+    patch: Omit<LineCommercialTotalsPatch, "lineId">,
+  ): Promise<SalesOrderLine | null>;
 }

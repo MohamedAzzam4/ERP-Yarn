@@ -193,6 +193,116 @@ export function calculateFactoryPayable(
   return calculateSupplierPayable(basisInputQtyKg, factoryRatePerInputTon);
 }
 
+// =========================================================================
+// WP-05-01: Sales commercial-totals helpers.
+// =========================================================================
+
+/**
+ * Multiply a money value (NUMERIC(18,2)) by a ratio string (≥12 decimals)
+ * at high precision, returning a NUMERIC(24,8) result WITHOUT rounding.
+ *
+ * Contract 03 §11.1 + DEC-049:
+ *   line_allocated_discount_precise = order_discount_total × line_discount_share
+ *
+ * - money: NUMERIC(18,2) string (e.g., "150.00")
+ * - ratio: a decimal string with ≥12 decimal places (e.g., "0.333333333333")
+ * - Result: NUMERIC(24,8) string (e.g., "49.99999999")
+ *
+ * Uses BigInt internally: money is scaled to 10^2, ratio to 10^12,
+ * product is at scale 10^14, then divided to 10^8 (truncated, not rounded).
+ */
+export function multiplyMoneyByRatio(money: string, ratio: string): string {
+  const moneyScaled = parseToScaledInt(money, 2);       // × 10^2
+  const ratioScaled = parseToScaledInt(ratio, 12);       // × 10^12
+  // Product is at scale 10^14; we want 10^8, so divide by 10^6
+  const product = moneyScaled * ratioScaled;
+  const divisor = 1000000n; // 10^6
+  const result = product / divisor; // truncate to scale 8
+
+  const isNeg = result < 0n;
+  const absStr = (isNeg ? -result : result).toString().padStart(9, "0");
+  const intPart = absStr.slice(0, -8) || "0";
+  const fracPart = absStr.slice(-8);
+  return `${isNeg ? "-" : ""}${intPart}.${fracPart}`;
+}
+
+/**
+ * Round a high-precision decimal string to scale 2 using ROUND_HALF_UP.
+ *
+ * Contract 03 §11.1 + DEC-047:
+ *   line_gross_revenue = ROUND_HALF_UP(line_gross_revenue_precise, scale=2)
+ *   line_allocated_discount_posted = ROUND_HALF_UP(line_allocated_discount_precise, scale=2)
+ *
+ * - precise: a decimal string at any scale (e.g., "49.99999999" at scale 8)
+ * - Result: NUMERIC(18,2) string (e.g., "50.00")
+ */
+export function roundHalfUpMoney(precise: string): string {
+  const scaled = parseToScaledInt(precise, 8); // parse at scale 8
+  // We want scale 2; the difference is 10^6
+  const divisor = 1000000n; // 10^6
+  const quotient = scaled / divisor;
+  const remainder = scaled % divisor;
+  // ROUND_HALF_UP: if 2 * |remainder| >= divisor, round away from zero
+  const absRemainder = remainder < 0n ? -remainder : remainder;
+  let result = quotient;
+  if (absRemainder * 2n >= divisor) {
+    result = quotient + (quotient < 0n ? -1n : 1n);
+  }
+  return fromScaledInt(result);
+}
+
+/**
+ * Calculate line gross revenue: (quantity_kg / 1000) × price_per_ton,
+ * rounded to scale 2 with ROUND_HALF_UP.
+ *
+ * Same formula as calculateSupplierPayable but semantically named for sales.
+ * Contract 03 §11.1: line_gross_revenue = ROUND_HALF_UP((qty / 1000) × price, 2)
+ */
+export function calculateLineGrossRevenue(
+  quantityKg: string,
+  pricePerTon: string,
+): string {
+  return calculateSupplierPayable(quantityKg, pricePerTon);
+}
+
+/**
+ * Divide money by money, returning a ratio string at ≥12 decimal precision.
+ *
+ * Contract 03 §11.1: line_discount_share = line_gross_revenue / total_gross_revenue
+ *
+ * - numerator: NUMERIC(18,2) string
+ * - denominator: NUMERIC(18,2) string (must be non-zero)
+ * - Result: a string with ≥12 decimal places (e.g., "0.333333333333")
+ */
+export function divideMoney(numerator: string, denominator: string): string {
+  const numScaled = parseToScaledInt(numerator, 2);       // × 10^2
+  const denScaled = parseToScaledInt(denominator, 2);     // × 10^2
+  if (denScaled === 0n) return "0.000000000000";
+  // We want 12 decimal places: (num × 10^12) / den
+  const scaledUp = numScaled * 1000000000000n; // × 10^12
+  const ratio = scaledUp / denScaled;
+  const isNeg = ratio < 0n;
+  const absStr = (isNeg ? -ratio : ratio).toString().padStart(13, "0");
+  const intPart = absStr.slice(0, -12) || "0";
+  const fracPart = absStr.slice(-12);
+  return `${isNeg ? "-" : ""}${intPart}.${fracPart}`;
+}
+
+/**
+ * Subtract two high-precision (NUMERIC(24,8)) values.
+ * Returns a NUMERIC(24,8) string.
+ */
+export function subtractPrecise(a: string, b: string): string {
+  const aScaled = parseToScaledInt(a, 8);
+  const bScaled = parseToScaledInt(b, 8);
+  const result = aScaled - bScaled;
+  const isNeg = result < 0n;
+  const absStr = (isNeg ? -result : result).toString().padStart(9, "0");
+  const intPart = absStr.slice(0, -8) || "0";
+  const fracPart = absStr.slice(-8);
+  return `${isNeg ? "-" : ""}${intPart}.${fracPart}`;
+}
+
 // --- Internal helpers ---
 
 function toScaledInt(normalized: string): bigint {

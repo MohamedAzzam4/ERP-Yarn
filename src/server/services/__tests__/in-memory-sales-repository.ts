@@ -5,6 +5,9 @@
 import type { SalesOrder, SalesOrderLine } from "@/server/db/schema/sales";
 import type {
   SalesRepository,
+  NewSalesDraftInput,
+  NewSalesLineInput,
+  CommercialTotalsPatch,
 } from "../sales-repository";
 
 const NOW = () => new Date("2026-07-01T00:00:00Z");
@@ -51,7 +54,7 @@ export class InMemorySalesRepository implements SalesRepository {
 
   /**
    * Insert a sale (test helper). Returns the inserted sale.
-   * TEST-ONLY — production sales are created via a different path (future WP).
+   * TEST-ONLY — kept for backward compat with existing WP-03-03 tests.
    */
   async insertSale(row: {
     tenantId: string;
@@ -61,6 +64,28 @@ export class InMemorySalesRepository implements SalesRepository {
     saleStatus?: string;
     approvalStatus?: string;
   }): Promise<SalesOrder> {
+    return this.insertSaleDraft({
+      tenantId: row.tenantId,
+      docNo: row.docNo,
+      customerId: row.customerId,
+      saleDate: row.saleDate,
+      createdBy: "",
+    }).then((sale) => {
+      // Override status if provided (test helper allows non-draft initial state)
+      if (row.saleStatus || row.approvalStatus) {
+        const updated = { ...sale, saleStatus: (row.saleStatus ?? sale.saleStatus) as SalesOrder["saleStatus"], approvalStatus: (row.approvalStatus ?? sale.approvalStatus) as SalesOrder["approvalStatus"] };
+        this.sales.set(`${sale.tenantId}:${sale.id}`, updated);
+        return updated;
+      }
+      return sale;
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // WP-05-01 interface methods.
+  // -------------------------------------------------------------------------
+
+  async insertSaleDraft(row: NewSalesDraftInput): Promise<SalesOrder> {
     this.saleCounter++;
     const id = nid("sale", this.saleCounter);
     const sale: SalesOrder = {
@@ -68,8 +93,8 @@ export class InMemorySalesRepository implements SalesRepository {
       tenantId: row.tenantId,
       docNo: row.docNo,
       customerId: row.customerId,
-      saleStatus: (row.saleStatus ?? "draft") as SalesOrder["saleStatus"],
-      approvalStatus: (row.approvalStatus ?? "draft") as SalesOrder["approvalStatus"],
+      saleStatus: "draft",
+      approvalStatus: "draft",
       saleDate: row.saleDate,
       totalGrossRevenue: "0",
       orderDiscountTotal: "0",
@@ -99,18 +124,10 @@ export class InMemorySalesRepository implements SalesRepository {
   }
 
   /**
-   * Insert a sale line (test helper). Returns the inserted line.
-   * TEST-ONLY.
+   * Insert a sale line (test helper + WP-05-01 interface method).
+   * Returns the inserted line.
    */
-  async insertSaleLine(row: {
-    tenantId: string;
-    salesOrderId: string;
-    lineNo: number;
-    itemId: string;
-    locationId: string;
-    quantityKg: string;
-    pricePerTon?: string | null;
-  }): Promise<SalesOrderLine> {
+  async insertSaleLine(row: NewSalesLineInput): Promise<SalesOrderLine> {
     this.lineCounter++;
     const id = nid("line", this.lineCounter);
     const line: SalesOrderLine = {
@@ -199,5 +216,60 @@ export class InMemorySalesRepository implements SalesRepository {
     };
     this.sales.set(key, updated);
     return updated;
+  }
+
+  async updateSaleCommercialTotals(
+    tenantId: string,
+    saleId: string,
+    patch: CommercialTotalsPatch,
+  ): Promise<SalesOrder | null> {
+    const key = `${tenantId}:${saleId}`;
+    const sale = this.sales.get(key);
+    if (!sale) return null;
+    const updated: SalesOrder = {
+      ...sale,
+      totalGrossRevenue: patch.totalGrossRevenue,
+      orderDiscountTotal: patch.orderDiscountTotal,
+      documentTotalPosted: patch.documentTotalPosted,
+      updatedAt: NOW(),
+    };
+    this.sales.set(key, updated);
+    return updated;
+  }
+
+  async updateLineCommercialTotals(
+    tenantId: string,
+    lineId: string,
+    patch: {
+      lineGrossRevenue: string;
+      lineAllocatedDiscountPrecise: string;
+      lineAllocatedDiscountPosted: string;
+      lineNetRevenuePrecise: string;
+      lineNetRevenuePosted: string;
+      roundingAdjustment: string;
+    },
+  ): Promise<SalesOrderLine | null> {
+    // Find the line across all sales in this tenant
+    for (const [key, lines] of this.lines.entries()) {
+      if (!key.startsWith(`${tenantId}:`)) continue;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]!.id === lineId) {
+          const updated: SalesOrderLine = {
+            ...lines[i]!,
+            lineGrossRevenue: patch.lineGrossRevenue,
+            lineAllocatedDiscountPrecise: patch.lineAllocatedDiscountPrecise,
+            lineAllocatedDiscountPosted: patch.lineAllocatedDiscountPosted,
+            lineNetRevenuePrecise: patch.lineNetRevenuePrecise,
+            lineNetRevenuePosted: patch.lineNetRevenuePosted,
+            roundingAdjustment: patch.roundingAdjustment,
+            updatedAt: NOW(),
+          };
+          lines[i] = updated;
+          this.lines.set(key, lines);
+          return updated;
+        }
+      }
+    }
+    return null;
   }
 }
