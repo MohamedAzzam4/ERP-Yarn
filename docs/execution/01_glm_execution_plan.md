@@ -187,7 +187,7 @@ After a package or meaningful checkpoint: deliverables are reviewed against cont
 
 ### Phase 5 Package Execution Records
 
-- **WP-05-01 Sales Draft/Discount/Submit** — read 03,04,07,09–14; output multi-line exact calculator/screen/reservation submit; test tie/largest residual/zero/role/reservation; depends on WP-03-03, WP-01-08 and WP-00-03D; quality-risk stock follows DEC-065; no client totals/single-line backend; report exact fields.
+- **WP-05-01 Sales Draft/Discount/Submit** — read 03,04,07,09–14; output multi-line exact calculator/screen/reservation submit; test tie/largest residual/zero/role/reservation; depends on WP-03-03, WP-01-08 and WP-00-03D; quality-risk stock follows DEC-065; no client totals/single-line backend; report exact fields. Residual allocation follows DEC-048 + DEC-081 (bounded multi-line fallback).
 - **WP-05-02 Profitability Snapshot V1 Foundation** — read 03,06,07,12–14; output transaction-aware immutable snapshot service; test exact net/missing flags/version/rollback; depends on WP-05-01 and WP-02-03.
 - **WP-05-03 Sales Approval/Failure** — read 04,06–07,09–14; output atomic issue/receivable/snapshot/audit and separate failure resolution with review UI; test subject mutation/all failures/concurrency/idempotency/orphan; depends on WP-05-02, WP-03-04, WP-01-08 and DEC-080.
 - **WP-05-04 Payments/Settlement/Reversal** — read 06,07,09–14; output immutable posting/settlement/reversal and statement screens; test concurrent settlement/reversal; depends on WP-02-03, WP-04-03, WP-05-03, WP-01-08 and DEC-080; payment methods follow DEC-066.

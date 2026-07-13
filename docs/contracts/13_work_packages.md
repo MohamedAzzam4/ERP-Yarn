@@ -521,8 +521,8 @@ When the sandbox lacks a secure credential channel, GLM may use DEC-060 temporar
 - **Inputs:** Reservation foundation, masters, EGP arithmetic.
 - **Required reading:** Contracts 03, 04, 07, 09 §§8, 10 §8.4, 11, 12, 14.
 - **Expected outputs:** Draft/commercial completion/screen, allocation calculator, submit integration.
-- **Implementation notes:** Decimal only; posted lines/residual/document total contract.
-- **Tests:** zero/discount, tie/largest residual, precision, role fields, submission reservations.
+- **Implementation notes:** Decimal only; posted lines/residual/document total contract. Residual allocation follows DEC-048 (normal: largest gross line, tie: lowest line_no) with DEC-081 safety fallback (multi-line bounded distribution when single-line absorption would violate per-line invariants).
+- **Tests:** zero/discount, tie/largest residual, pathological many-line bounded residual (DEC-081), precision, role fields, submission reservations.
 - **Acceptance:** Exact totals and no worker price/submit authority.
 - **Dependencies:** WP-03-03, WP-01-08 and WP-00-03D. Quality-risk stock follows DEC-065.
 - **What not to change:** No client-authoritative totals or single-line-only backend.

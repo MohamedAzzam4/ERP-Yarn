@@ -73,6 +73,7 @@ Include advance, partial settlement, over-settlement attempt, reversed payment, 
 
 - Three equal gross lines and `order_discount_total = 0.01`: individually rounded allocations produce a residual; it goes to the lowest stable line number because gross lines tie.
 - Unequal gross lines with residual: adjustment goes to the largest gross line.
+- **Per DEC-081**: Pathological many-line case (e.g., 100 equal lines × 0.01 gross + discount=0.50) where a single line cannot absorb the accumulated residual without violating `line_allocated_discount_posted >= 0` or `<= line_gross_revenue`: residual must be distributed across multiple lines in deterministic priority order (largest gross, then lowest `line_no`), each capped to preserve per-line invariants. Multiple lines may have non-zero `rounding_adjustment` in this case. Verify all invariants hold.
 - Midpoint values exercise `ROUND_HALF_UP` at posting.
 - Zero total gross permits only zero discount.
 - Verify precise allocations `DECIMAL(24,8)`, ratios at least 12 decimals, posted money `DECIMAL(18,2)`, and exact line/document sums.
