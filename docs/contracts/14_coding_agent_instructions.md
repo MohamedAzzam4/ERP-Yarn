@@ -78,7 +78,7 @@ Do not start code while a blocking contract/decision/dependency is absent.
 - Respect contracted scales: posted money/rates `18,2`; kg `18,3`; unit cost `18,6`; precise allocation `24,8`; ratios at least 12 decimals.
 - Keep intermediates high precision; use `ROUND_HALF_UP` only at official posted monetary boundaries.
 - Multi-line total is the sum of stored posted net lines.
-- Discount residual goes to largest gross line, then lowest stable line number on tie, and is stored as `rounding_adjustment`. **Per DEC-081**: if one line cannot absorb the residual without violating per-line bounds (`0 <= discount <= gross`, `0 <= net <= gross`), the residual continues to the next deterministic line in the same priority order. Multiple lines may have non-zero `rounding_adjustment` only when required to preserve invariants.
+- Discount residual goes to largest gross line, then lowest stable line number on tie, and is stored as `rounding_adjustment`. **Per DEC-082**: if one line cannot absorb the residual without violating per-line bounds (`0 <= discount <= gross`, `0 <= net <= gross`), the residual continues to the next deterministic line in the same priority order. Multiple lines may have non-zero `rounding_adjustment` only when required to preserve invariants.
 - Never recompute authoritative financial results in a component.
 
 ## 6. Approval and Failure Rules
