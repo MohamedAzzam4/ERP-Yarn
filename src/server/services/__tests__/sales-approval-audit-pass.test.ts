@@ -12,6 +12,7 @@ import {
   SaleNotPendingError,
   RequesterCannotApproveOwnSaleError,
   SubjectHashMismatchError,
+  MissingSubjectHashError,
   ReservationMismatchError,
   CommercialTotalsNotPostedError,
   SalesApprovalError,
@@ -515,6 +516,7 @@ describe("WP-05-03 audit — idempotency/failure semantics", () => {
   it("technical failure inside transaction does not leave successful idempotency record", async () => {
     const deps = makeDeps();
     const saleId = await setupPendingSale(deps);
+    const stateBefore = captureFullSnapshot(deps);
 
     deps.audit.setShouldFail(true);
     await expect(deps.approvalService.approveSale(
@@ -523,15 +525,20 @@ describe("WP-05-03 audit — idempotency/failure semantics", () => {
     )).rejects.toThrow();
     deps.audit.setShouldFail(false);
 
-    // Idempotency record should be business_failed, not succeeded
+    // Simulate DB transaction rollback — in production this is automatic,
+    // but the in-memory repos don't support real transactions.
+    restoreFullSnapshot(deps, stateBefore);
+
+    // Idempotency record should be business_failed, not succeeded.
+    // Note: in-memory idempotency store records the business_failed state
+    // independently of the rollback simulation. The key assertion is that
+    // the technical failure path was correctly marked business_failed.
     const idemRecords = deps.idempotency.getAllRecords();
     const record = idemRecords.find(r => r.idempotencyKey === "tech-fail-1");
     expect(record).toBeTruthy();
     expect(record!.state).toBe("business_failed");
 
-    // Retry with same key should work (business_failed allows retry with same body)
-    // Actually, business_failed is DURABLE — same key returns same failure.
-    // So we need a NEW key to retry.
+    // Retry with a new key — should succeed now that reserved_qty is restored.
     const result = await deps.approvalService.approveSale(
       makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
       { saleId, idempotencyKey: "tech-fail-retry-1", snapshotCosts: { rawCost: "50.00" } },
@@ -563,23 +570,34 @@ describe("WP-05-03 audit — subject hash", () => {
     verifyNoBusinessStateChange(deps, saleId, stateBefore);
   });
 
-  it("null subjectHash does not block approval (backward compat)", async () => {
+  it("null subjectHash rejects before mutation (WP-05-03 blocker fix)", async () => {
+    const deps = makeDeps();
+    const saleId = await setupPendingSale(deps);
+    const stateBefore = captureFullSnapshot(deps);
+
+    // Force-clear subjectHash to simulate a sale that was submitted without
+    // the submit path storing the subject hash.
+    await deps.salesRepository.updateSaleSubjectHash(TEST_TENANT_ID, saleId, {
+      subjectHash: "", subjectVersion: 1,
+    });
+
+    await expect(deps.approvalService.approveSale(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { saleId, idempotencyKey: "hash-null-1", snapshotCosts: { rawCost: "50.00" } },
+    )).rejects.toThrow(MissingSubjectHashError);
+
+    verifyNoBusinessStateChange(deps, saleId, stateBefore);
+  });
+
+  it("submit path stores non-null subject_hash and subject_version=1", async () => {
     const deps = makeDeps();
     const saleId = await setupPendingSale(deps);
 
-    // Verify sale has subjectHash set (by submit flow)
     const sale = await deps.salesRepository.findSaleById(TEST_TENANT_ID, saleId);
-    // The submit flow doesn't currently set subjectHash — it's null
-    // This is acceptable for MVP since the approval service only checks
-    // if subjectHash is non-null. If null, it skips the check.
-    // For a stricter implementation, submit should set subjectHash.
-
-    // Approval should succeed even with null subjectHash
-    const result = await deps.approvalService.approveSale(
-      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
-      { saleId, idempotencyKey: "hash-null-1", snapshotCosts: { rawCost: "50.00" } },
-    );
-    expect(result.action).toBe("posted");
+    expect(sale).toBeTruthy();
+    expect(sale!.subjectHash).toBeTruthy();  // non-null, non-empty
+    expect(sale!.subjectHash!.length).toBe(64);  // sha256 hex digest
+    expect(sale!.subjectVersion).toBe(1);
   });
 });
 

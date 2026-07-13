@@ -1895,9 +1895,15 @@ export class InventoryLedgerService {
     }
     requireTenantMatch(user, balance.tenantId);
 
-    // Recheck: on_hand >= qty AND reserved >= qty
+    // Recheck: on_hand >= qty AND reserved >= qty (WP-05-03 blocker fix).
+    // Both checks enforced at the ledger boundary, not only by prior reservation lookup.
+    // This guarantees reserved_qty can never become negative even if the reservation
+    // was concurrently released or under-allocated.
     if (compareKg(balance.onHandQtyKg, normalizedQty) < 0) {
       throw new StockInsufficientError(`Insufficient on-hand stock: on_hand=${balance.onHandQtyKg}, requested=${normalizedQty}.`);
+    }
+    if (compareKg(balance.reservedQtyKg, normalizedQty) < 0) {
+      throw new StockInsufficientError(`Insufficient reserved stock: reserved_qty=${balance.reservedQtyKg}, requested=${normalizedQty}.`);
     }
 
     // Insert sale_issue movement

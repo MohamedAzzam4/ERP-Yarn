@@ -385,4 +385,26 @@ export class InMemorySalesRepository implements SalesRepository {
     }
     return null;
   }
+
+  /**
+   * TEST-ONLY: directly mutate a sale line's fields without going through the
+   * service layer. Used by subject-hash mismatch tests to simulate a line being
+   * edited after submission (which should cause subject-hash mismatch on approval).
+   */
+  async mutateLineForTest(
+    tenantId: string,
+    lineId: string,
+    patch: Partial<{ quantityKg: string; pricePerTon: string | null; lineNetRevenuePosted: string | null }>,
+  ): Promise<void> {
+    for (const [key, lines] of this.lines.entries()) {
+      if (!key.startsWith(`${tenantId}:`)) continue;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]!.id === lineId) {
+          lines[i] = { ...lines[i]!, ...patch, updatedAt: NOW() };
+          this.lines.set(key, lines);
+          return;
+        }
+      }
+    }
+  }
 }

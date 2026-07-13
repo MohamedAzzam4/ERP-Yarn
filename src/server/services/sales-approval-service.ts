@@ -97,6 +97,10 @@ export class SubjectHashMismatchError extends SalesApprovalError {
   constructor(id: string) { super("SUBJECT_CHANGED", `Subject hash mismatch for sale '${id}'. The sale facts changed after submission.`); this.name = "SubjectHashMismatchError"; }
 }
 
+export class MissingSubjectHashError extends SalesApprovalError {
+  constructor(id: string) { super("MISSING_SUBJECT_HASH", `Sale '${id}' has no subject_hash. Newly submitted sales must have a subject_hash set by the submit flow.`); this.name = "MissingSubjectHashError"; }
+}
+
 export class RequesterCannotApproveOwnSaleError extends SalesApprovalError {
   constructor(id: string, userId: string) { super("REQUESTER_CANNOT_APPROVE_OWN", `User '${userId}' cannot approve sale '${id}' — DEC-080.`); this.name = "RequesterCannotApproveOwnSaleError"; }
 }
@@ -158,6 +162,13 @@ function computeSaleSubjectHash(sale: SalesOrder, lines: SalesOrderLine[]): stri
   ];
   return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
 }
+
+/**
+ * Exported for use by the submit flow (SalesSubmissionService) so the same
+ * hash function is used at submit time (store) and at approval time (verify).
+ * WP-05-03 blocker fix: subject_hash must be non-null for newly submitted sales.
+ */
+export { computeSaleSubjectHash };
 
 // ---------------------------------------------------------------------------
 // SalesApprovalService.
@@ -255,27 +266,64 @@ export class SalesApprovalService {
       }
     }
 
-    // Subject hash verification
-    if (sale.subjectHash) {
-      const currentHash = computeSaleSubjectHash(sale, lines);
-      if (currentHash !== sale.subjectHash) {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 409, responseBody: { message: "Subject hash mismatch." },
-          lastErrorClass: "SubjectHashMismatchError",
-        }, now);
-        throw new SubjectHashMismatchError(sale.id);
-      }
+    // Subject hash verification (Contract 06 §6 step 4).
+    // Newly submitted sales MUST have a non-null subject_hash set by the submit flow.
+    // NULL subjectHash means the sale was never properly submitted — reject explicitly.
+    if (!sale.subjectHash) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409, responseBody: { message: "Missing subject_hash." },
+        lastErrorClass: "MissingSubjectHashError",
+      }, now);
+      throw new MissingSubjectHashError(sale.id);
+    }
+    // Recompute and reject stale/mismatched subject hash before any mutation.
+    const currentHash = computeSaleSubjectHash(sale, lines);
+    if (currentHash !== sale.subjectHash) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409, responseBody: { message: "Subject hash mismatch." },
+        lastErrorClass: "SubjectHashMismatchError",
+      }, now);
+      throw new SubjectHashMismatchError(sale.id);
     }
 
-    // Fetch reservations for all lines
+    // Fetch reservations for all lines (Contract 04 §9).
+    // For each line we verify: reservation exists, is active, matches item+location+tenant,
+    // has quantity at least equal to the line quantity. This is defense-in-depth —
+    // the submit flow already validated these, but the approval flow runs after
+    // potentially long delays and concurrent access.
     const reservations: StockReservation[] = [];
+    const seenReservationIds = new Set<string>();
     for (const line of lines) {
       const res = await this.deps.reservationRepository.findActiveReservationBySource(
         user.tenantId, SOURCE_DOC_TYPE_SALES_LINE, line.id, line.itemId, line.locationId,
       );
       if (!res) {
+        // Covers: missing reservation, item mismatch, location mismatch,
+        // tenant mismatch, status != active (findActiveReservationBySource
+        // filters by tenantId + status=active + item + location).
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Line '${line.id}' has no active reservation.` },
+          responseCode: 422, responseBody: { message: `Line '${line.id}' has no active reservation (missing/mismatch/inactive).` },
+          lastErrorClass: "ReservationMismatchError",
+        }, now);
+        throw new ReservationMismatchError(sale.id);
+      }
+      // Duplicate-active-reservation guard: a line must not have multiple
+      // active reservations. findActiveReservationBySource returns the first
+      // match; if we see the same reservation ID twice, that's a corruption.
+      if (seenReservationIds.has(res.id)) {
+        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 422, responseBody: { message: `Reservation '${res.id}' is duplicated across lines.` },
+          lastErrorClass: "ReservationMismatchError",
+        }, now);
+        throw new ReservationMismatchError(sale.id);
+      }
+      seenReservationIds.add(res.id);
+      // Quantity sufficiency: reservation quantity must cover the line quantity.
+      // The line.quantityKg is what we will issue from stock, so the reservation
+      // must have reserved at least that amount.
+      if (compareKg(res.quantityKg, normalizeKg(line.quantityKg)) < 0) {
+        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 422, responseBody: { message: `Reservation '${res.id}' quantity ${res.quantityKg} < line quantity ${line.quantityKg}.` },
           lastErrorClass: "ReservationMismatchError",
         }, now);
         throw new ReservationMismatchError(sale.id);

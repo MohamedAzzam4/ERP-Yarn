@@ -65,6 +65,7 @@ import type { SalesRepository } from "./sales-repository";
 import type { InventoryItem } from "@/server/db/schema/inventory-items";
 import type { Location } from "@/server/db/schema/master-data";
 import { addKg, compareKg, isPositiveKg, normalizeKg } from "./decimal-kg";
+import { computeSaleSubjectHash } from "./sales-approval-service";
 
 // ---------------------------------------------------------------------------
 // Domain types.
@@ -486,10 +487,27 @@ export class SalesSubmissionService {
         );
       }
 
+      // WP-05-03 blocker fix: compute and persist subject_hash + subject_version
+      // at submit time so approval can verify the sale's facts are unchanged.
+      // The hash uses the same fields the approval service recomputes —
+      // sale id, customer, date, totals, and per-line (id, qty, price, net revenue).
+      // Stored version = 1 (initial submission).
+      const subjectHash = computeSaleSubjectHash(updatedSale, sortedLines);
+      const saleWithHash = await salesRepo.updateSaleSubjectHash(
+        user.tenantId, sale.id,
+        { subjectHash, subjectVersion: 1 },
+      );
+      if (!saleWithHash) {
+        throw new SalesSubmissionError(
+          "INTERNAL_TRANSACTION_FAILED",
+          `Sale ${sale.id} not found during subject_hash update.`,
+        );
+      }
+
       return {
         action: "submitted" as const,
         saleId: sale.id,
-        saleStatus: updatedSale.saleStatus,
+        saleStatus: saleWithHash.saleStatus,
         reservations: createdReservations.map((r) => ({
           id: r.id,
           reservationNo: r.reservationNo,
