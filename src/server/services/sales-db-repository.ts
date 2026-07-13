@@ -230,6 +230,75 @@ export class SalesDbRepository implements SalesRepository {
 
     return saleResult;
   }
+
+  // --- WP-05-03 methods ---
+
+  async updateSaleSubjectHash(
+    tenantId: string,
+    saleId: string,
+    patch: { subjectHash: string; subjectVersion: number },
+  ): Promise<SalesOrder | null> {
+    const [result] = await this.db
+      .update(salesOrders)
+      .set({
+        subjectHash: patch.subjectHash,
+        subjectVersion: patch.subjectVersion,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(salesOrders.tenantId, tenantId), eq(salesOrders.id, saleId)))
+      .returning();
+    return result ?? null;
+  }
+
+  async markSaleApproved(
+    tenantId: string,
+    saleId: string,
+    patch: { approvedBy: string; approvedAt: Date },
+    expectedCurrentStatuses: string[],
+  ): Promise<SalesOrder | null> {
+    const [result] = await this.db
+      .update(salesOrders)
+      .set({
+        saleStatus: "approved",
+        approvalStatus: "approved",
+        isLocked: true,
+        reservationStatus: "consumed",
+        approvedBy: patch.approvedBy,
+        approvedAt: patch.approvedAt,
+        updatedBy: patch.approvedBy,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(salesOrders.tenantId, tenantId),
+          eq(salesOrders.id, saleId),
+          inArray(salesOrders.saleStatus, expectedCurrentStatuses as any[]),
+        ),
+      )
+      .returning();
+    return result ?? null;
+  }
+
+  async updateLineSaleIssueMovementId(
+    tenantId: string,
+    lineId: string,
+    saleIssueMovementId: string,
+  ): Promise<SalesOrderLine | null> {
+    const [result] = await this.db
+      .update(salesOrderLines)
+      .set({
+        saleIssueMovementId,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(salesOrderLines.tenantId, tenantId),
+          eq(salesOrderLines.id, lineId),
+        ),
+      )
+      .returning();
+    return result ?? null;
+  }
 }
 
 export function createSalesDbRepository(db: Db): SalesDbRepository {

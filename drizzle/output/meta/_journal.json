@@ -57,6 +57,13 @@
       "when": 1783917495130,
       "tag": "0007_ambiguous_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783976236836,
+      "tag": "0008_quick_supernaut",
+      "breakpoints": true
     }
   ]
 }

@@ -104,4 +104,37 @@ export interface SalesRepository {
     salePatch: CommercialTotalsPatch,
     linePatches: Array<Omit<LineCommercialTotalsPatch, "lineId"> & { lineId: string }>,
   ): Promise<SalesOrder | null>;
+
+  // WP-05-03 methods (new)
+
+  /**
+   * Update the sale's subject hash + version.
+   * Called when the sale is submitted (transitioning to pending_approval).
+   */
+  updateSaleSubjectHash(
+    tenantId: string,
+    saleId: string,
+    patch: { subjectHash: string; subjectVersion: number },
+  ): Promise<SalesOrder | null>;
+
+  /**
+   * Conditionally mark a sale as approved/locked.
+   * Only succeeds if current saleStatus is in expectedCurrentStatuses.
+   * Sets approvedBy, approvedAt, isLocked=true, reservationStatus="consumed".
+   */
+  markSaleApproved(
+    tenantId: string,
+    saleId: string,
+    patch: { approvedBy: string; approvedAt: Date },
+    expectedCurrentStatuses: string[],
+  ): Promise<SalesOrder | null>;
+
+  /**
+   * Update a sale line's saleIssueMovementId (links the line to its stock movement).
+   */
+  updateLineSaleIssueMovementId(
+    tenantId: string,
+    lineId: string,
+    saleIssueMovementId: string,
+  ): Promise<SalesOrderLine | null>;
 }

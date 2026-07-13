@@ -771,4 +771,77 @@ export class SubledgerService {
       return retried;
     }
   }
+
+  // =========================================================================
+  // WP-05-03: Customer sale receivable.
+  // =========================================================================
+
+  /**
+   * Insert a customer sale receivable entry.
+   *
+   * Contract 07 §8: Customer sale receivable = POSITIVE signed amount.
+   * Contract 07 §10: customer_receivable = +document_total_posted.
+   *
+   * This method is tx-scoped — it does NOT claim its own idempotency.
+   * The caller (SalesApprovalService) owns the idempotency claim.
+   */
+  async insertCustomerReceivableEntry(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      customerId: string;
+      saleId: string;
+      documentTotalPosted: string;
+      entryDate: string;
+      currency?: string;
+      docNo: string;
+      idempotencyKey: string;
+      notes?: string;
+    },
+  ): Promise<{ entryId: string; entryNo: string; amountSigned: string; accountId: string }> {
+    requirePermission(effective, "balances.view_supplier_factory");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    const currency = input.currency ?? "EGP";
+    const tenantId = user.tenantId;
+    const amountSigned = normalizeMoney(input.documentTotalPosted);
+
+    const account = await this.getOrCreateAccount(user, "customer", input.customerId, currency);
+
+    const entry = await this.deps.subledger.insertEntry({
+      tenantId,
+      accountId: account.id,
+      entryNo: input.docNo,
+      entryDate: input.entryDate,
+      amountSigned,
+      currency,
+      entryType: "customer_sale_receivable",
+      sourceDocumentType: "sales_order",
+      sourceDocumentId: input.saleId,
+      createdBy: user.userId,
+    });
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "account_entry",
+      entityId: entry.id,
+      actionType: "subledger.customer_receivable.post",
+      newValuesJson: {
+        entryNo: entry.entryNo,
+        entryType: entry.entryType,
+        accountId: entry.accountId,
+        amountSigned: entry.amountSigned,
+        customerId: input.customerId,
+        saleId: input.saleId,
+        documentTotalPosted: input.documentTotalPosted,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    return {
+      entryId: entry.id,
+      entryNo: entry.entryNo,
+      amountSigned: entry.amountSigned,
+      accountId: entry.accountId,
+    };
+  }
 }

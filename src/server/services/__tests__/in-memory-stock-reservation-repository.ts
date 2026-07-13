@@ -153,12 +153,28 @@ export class InMemoryStockReservationRepository implements StockReservationRepos
     const key = `${tenantId}:${reservationId}`;
     const existing = this.reservations.get(key);
     if (!existing) return null;
-    // Conditional: only succeed if current status is 'active'.
     if (existing.status !== "active") return null;
     const updated: StockReservation = {
       ...existing,
       status: "released",
       releasedAt: NOW(),
+    };
+    this.reservations.set(key, updated);
+    return updated;
+  }
+
+  async markReservationConsumed(
+    tenantId: string,
+    reservationId: string,
+  ): Promise<StockReservation | null> {
+    const key = `${tenantId}:${reservationId}`;
+    const existing = this.reservations.get(key);
+    if (!existing) return null;
+    if (existing.status !== "active") return null;
+    const updated: StockReservation = {
+      ...existing,
+      status: "approved_consumed",
+      consumedAt: NOW(),
     };
     this.reservations.set(key, updated);
     return updated;

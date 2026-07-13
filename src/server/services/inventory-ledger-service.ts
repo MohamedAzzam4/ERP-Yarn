@@ -1839,4 +1839,130 @@ export class InventoryLedgerService {
       onHandQtyKg: updatedBalance.onHandQtyKg,
     };
   }
+
+  // =========================================================================
+  // WP-05-03: Sale issue movement handler.
+  // =========================================================================
+
+  /**
+   * Post a sale_issue movement: source location -qty, decrease reserved_qty.
+   *
+   * Contract 04 §8: "Sale issue: source -qty, reserved -qty consume, no WIP."
+   * Contract 06 §8: sale approval posts sale_issue movements atomically.
+   *
+   * This handler is tx-scoped — it does NOT claim its own idempotency.
+   * The caller (SalesApprovalService) owns the idempotency claim.
+   * The caller passes a pre-allocated doc_no and idempotency key suffix.
+   *
+   * Effects:
+   * 1. Insert sale_issue movement (from_location = source, quantity = qty)
+   * 2. Decrease on_hand_qty_kg by qty
+   * 3. Decrease reserved_qty_kg by qty (reservation consumed)
+   * 4. Audit (inside caller tx)
+   *
+   * Permission: sales.approve (defense-in-depth; caller already checked).
+   */
+  async postSaleIssue(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      itemId: string;
+      fromLocationId: string;
+      quantityKg: string;
+      movementDate: string;
+      sourceDocumentType: string;
+      sourceDocumentId: string;
+      docNo: string;
+      idempotencyKey: string;
+      notes?: string;
+    },
+  ): Promise<{ movementId: string; docNo: string; balanceVersion: number; onHandQtyKg: string; reservedQtyKg: string }> {
+    requirePermission(effective, "sales.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!isPositiveKg(input.quantityKg)) {
+      throw new ValidationFailedLedgerError(`Quantity must be positive, got '${input.quantityKg}'.`);
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.quantityKg);
+    const now = new Date();
+
+    // Lock source balance
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.fromLocationId);
+    if (!balance) {
+      throw new StockInsufficientError(`No balance found for item '${input.itemId}' at location '${input.fromLocationId}'.`);
+    }
+    requireTenantMatch(user, balance.tenantId);
+
+    // Recheck: on_hand >= qty AND reserved >= qty
+    if (compareKg(balance.onHandQtyKg, normalizedQty) < 0) {
+      throw new StockInsufficientError(`Insufficient on-hand stock: on_hand=${balance.onHandQtyKg}, requested=${normalizedQty}.`);
+    }
+
+    // Insert sale_issue movement
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId,
+      docNo: input.docNo,
+      movementType: "sale_issue",
+      movementStatus: "posted",
+      itemId: input.itemId,
+      fromLocationId: input.fromLocationId,
+      toLocationId: null,
+      quantityKg: normalizedQty,
+      movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType,
+      sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey,
+      postedBy: user.userId,
+      postedAt: now,
+    });
+
+    // Decrease on_hand
+    const newOnHand = subtractKg(balance.onHandQtyKg, normalizedQty);
+    const newReserved = subtractKg(balance.reservedQtyKg, normalizedQty);
+    const updatedBalance = await this.deps.ledger.updateBalance(
+      tenantId, input.itemId, input.fromLocationId,
+      { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 },
+    );
+    if (!updatedBalance) {
+      throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during sale_issue update.");
+    }
+
+    // Also decrease reserved_qty (if the balance has reserved_qty)
+    if (compareKg(balance.reservedQtyKg, "0.000") > 0) {
+      const updatedReserved = await this.deps.ledger.updateReservedQty(
+        tenantId, input.itemId, input.fromLocationId,
+        { reservedQtyKg: newReserved, version: updatedBalance.version },
+      );
+      if (!updatedReserved) {
+        throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during reserved_qty update.");
+      }
+    }
+
+    // Audit
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement",
+      entityId: movement.id,
+      actionType: "inventory.sale_issue.post",
+      newValuesJson: {
+        docNo: movement.docNo,
+        itemId: movement.itemId,
+        fromLocationId: movement.fromLocationId,
+        quantityKg: normalizedQty,
+        balanceVersion: updatedBalance.version,
+        onHandQtyKg: updatedBalance.onHandQtyKg,
+        reservedQtyKg: newReserved,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    return {
+      movementId: movement.id,
+      docNo: movement.docNo,
+      balanceVersion: updatedBalance.version,
+      onHandQtyKg: updatedBalance.onHandQtyKg,
+      reservedQtyKg: newReserved,
+    };
+  }
 }

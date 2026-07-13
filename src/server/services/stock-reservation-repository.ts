@@ -112,4 +112,20 @@ export interface StockReservationRepository {
     tenantId: string,
     reservationId: string,
   ): Promise<StockReservation | null>;
+
+  /**
+   * WP-05-03: Mark a reservation as `approved_consumed` (status transition
+   * active → approved_consumed). Called during sale approval after the
+   * sale_issue movement is posted and the reserved_qty is decreased.
+   *
+   * Conditional on status='active' — only one concurrent caller can
+   * transition a reservation to approved_consumed. Returns null if the
+   * reservation is not found or not in 'active' state.
+   *
+   * Also records the consumed_at timestamp.
+   */
+  markReservationConsumed(
+    tenantId: string,
+    reservationId: string,
+  ): Promise<StockReservation | null>;
 }

@@ -54,6 +54,9 @@ export const salesOrders = pgTable("sales_orders", {
   correctionOfId: uuid("correction_of_id"),
   approvedBy: uuid("approved_by").references(() => users.id),
   approvedAt: timestamp("approved_at", { withTimezone: true, mode: "date" }),
+  // WP-05-03: Subject hash + version for invalidation detection (Contract 06 §6 step 4).
+  subjectHash: text("subject_hash"),
+  subjectVersion: integer("subject_version").default(1),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   uniqueIndex("sales_orders_tenant_doc_no_unique_idx").on(t.tenantId, t.docNo),

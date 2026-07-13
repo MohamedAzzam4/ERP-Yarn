@@ -167,6 +167,27 @@ export class StockReservationDbRepository implements StockReservationRepository 
       .returning();
     return result ?? null;
   }
+
+  async markReservationConsumed(
+    tenantId: string,
+    reservationId: string,
+  ): Promise<StockReservation | null> {
+    const [result] = await this.db
+      .update(stockReservations)
+      .set({
+        status: "approved_consumed",
+        consumedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(stockReservations.tenantId, tenantId),
+          eq(stockReservations.id, reservationId),
+          eq(stockReservations.status, "active"),
+        ),
+      )
+      .returning();
+    return result ?? null;
+  }
 }
 
 export function createStockReservationDbRepository(db: Db): StockReservationDbRepository {

@@ -113,7 +113,9 @@ export class InMemorySalesRepository implements SalesRepository {
       correctionOfId: null,
       approvedBy: null,
       approvedAt: null,
-      createdBy: null,
+      subjectHash: null,
+      subjectVersion: 1,
+      createdBy: row.createdBy,
       createdAt: NOW(),
       updatedBy: null,
       updatedAt: null,
@@ -321,5 +323,66 @@ export class InMemorySalesRepository implements SalesRepository {
       this.lines = linesSnapshot;
       throw e;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // WP-05-03 methods.
+  // -------------------------------------------------------------------------
+
+  async updateSaleSubjectHash(
+    tenantId: string,
+    saleId: string,
+    patch: { subjectHash: string; subjectVersion: number },
+  ): Promise<SalesOrder | null> {
+    const key = `${tenantId}:${saleId}`;
+    const sale = this.sales.get(key);
+    if (!sale) return null;
+    const updated = { ...sale, subjectHash: patch.subjectHash, subjectVersion: patch.subjectVersion, updatedAt: NOW() };
+    this.sales.set(key, updated);
+    return updated;
+  }
+
+  async markSaleApproved(
+    tenantId: string,
+    saleId: string,
+    patch: { approvedBy: string; approvedAt: Date },
+    expectedCurrentStatuses: string[],
+  ): Promise<SalesOrder | null> {
+    const key = `${tenantId}:${saleId}`;
+    const sale = this.sales.get(key);
+    if (!sale) return null;
+    if (!expectedCurrentStatuses.includes(sale.saleStatus)) return null;
+    const updated: SalesOrder = {
+      ...sale,
+      saleStatus: "approved" as SalesOrder["saleStatus"],
+      approvalStatus: "approved" as SalesOrder["approvalStatus"],
+      isLocked: true,
+      reservationStatus: "consumed",
+      approvedBy: patch.approvedBy,
+      approvedAt: patch.approvedAt,
+      updatedBy: patch.approvedBy,
+      updatedAt: NOW(),
+    };
+    this.sales.set(key, updated);
+    return updated;
+  }
+
+  async updateLineSaleIssueMovementId(
+    tenantId: string,
+    lineId: string,
+    saleIssueMovementId: string,
+  ): Promise<SalesOrderLine | null> {
+    for (const [key, lines] of this.lines.entries()) {
+      if (!key.startsWith(`${tenantId}:`)) continue;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]!.id === lineId) {
+          const updated = { ...lines[i]!, saleIssueMovementId, updatedAt: NOW() };
+          lines[i] = updated;
+          this.lines.set(key, lines);
+          return updated;
+        }
+      }
+    }
+    return null;
   }
 }
