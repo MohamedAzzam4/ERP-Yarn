@@ -329,7 +329,11 @@ export interface ProductionReceiptApprovalServiceDeps {
 const RECEIPT_ENTITY_TYPE = "production_receipt";
 const SOURCE_DOC_TYPE_PRODUCTION_RECEIPT = "production_receipt";
 const CALCULATION_VERSION = "v1";
-const APPROVABLE_RECEIPT_STATUSES = ["draft", "pending_approval"] as const;
+// Approvable receipt statuses (production_status enum values, Contract 03 §6).
+// A receipt is approvable only when status='draft' (the initial state set by
+// WP-04-02 draft creation). The 'pending_approval' value is an approval_status
+// enum value, NOT a production_status — it is NOT included here.
+const APPROVABLE_RECEIPT_STATUSES = ["draft"] as const;
 const APPROVABLE_ORDER_STATUSES = ["material_issued", "partially_received"] as const;
 
 // ---------------------------------------------------------------------------
@@ -678,7 +682,7 @@ export class ProductionReceiptApprovalService {
 
         // ----- Post waste movement (metadata-only) if waste > 0 -----
         if (isPositiveKg(waste)) {
-          // Each waste movement uses a per-allocation source suffix to
+          // Each waste movement uses a per-allocation source document ID to
           // avoid colliding with the receive_from_production movement's
           // source key (`(production_receipt, receipt.id)`) AND to avoid
           // colliding with other allocations' waste movements.
@@ -686,10 +690,16 @@ export class ProductionReceiptApprovalService {
           // The duplicate-source guard in InventoryLedgerService keys on
           // `(sourceDocumentType, sourceDocumentId)`. Since the receive
           // movement uses `sourceDocumentId = receipt.id`, every waste
-          // movement must use a distinct suffix: `${receipt.id}:waste:${inputId}`.
-          // This still lets reconciliation/traceability resolve the waste
-          // back to the receipt + input allocation (Contract 05 §22).
-          const wasteSourceDocId = `${receipt.id}:waste:${alloc.productionInputId}`;
+          // movement must use a distinct value.
+          //
+          // CONSTRAINT: `stock_movements.source_document_id` is a UUID column
+          // (Contract 03 §9.4). We use `alloc.id` (the
+          // production_receipt_input_allocations.id UUID) as the waste
+          // movement's sourceDocumentId. This satisfies the UUID constraint,
+          // provides unique-per-allocation lineage, and lets reconciliation/
+          // traceability resolve the waste back to the specific allocation
+          // (Contract 05 §22). The waste_entry's `movement_id` FK plus the
+          // allocation's `production_receipt_id` FK preserve the full chain.
           const wasteMovement = await invLedger.postProductionWaste(
             user,
             effective,
@@ -699,7 +709,7 @@ export class ProductionReceiptApprovalService {
               wasteQtyKg: waste,
               movementDate: receipt.receiptDate,
               sourceDocumentType: SOURCE_DOC_TYPE_PRODUCTION_RECEIPT,
-              sourceDocumentId: wasteSourceDocId,
+              sourceDocumentId: alloc.id,
               idempotencyKey: `${input.idempotencyKey}:waste:${alloc.productionInputId}`,
               notes: input.decisionNotes ?? undefined,
             },

@@ -1543,21 +1543,17 @@ export class InventoryLedgerService {
     }
 
     // Duplicate source guard — defense-in-depth against double waste posting
-    // for the same receipt. (The orchestrator's idempotency + the
-    // production_waste_entries unique constraints also prevent this, but the
-    // movement-level guard is independent.)
+    // for the same allocation. The orchestrator (ProductionReceiptApprovalService)
+    // passes `sourceDocumentId = alloc.id` (the production_receipt_input_allocations.id
+    // UUID) so each allocation's waste movement has a distinct source key while
+    // satisfying the UUID constraint on stock_movements.source_document_id.
+    // The orchestrator's idempotency + the production_waste_entries unique
+    // constraints also prevent this, but the movement-level guard is independent.
     const existingBySource = await this.deps.ledger.findMovementBySource(
       tenantId,
       input.sourceDocumentType,
       input.sourceDocumentId,
     );
-    // Note: a single receipt can post MULTIPLE waste movements (one per
-    // allocation with waste > 0), but each uses a different idempotency key
-    // AND a different sourceDocumentId-suffix. The orchestrator passes
-    // sourceDocumentId = receipt.id for the FIRST waste movement only;
-    // subsequent waste movements use a per-allocation suffix
-    // (`${receipt.id}:waste:${inputId}`) to avoid the duplicate-source guard
-    // firing on legitimately distinct waste movements.
     if (existingBySource) {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409,
