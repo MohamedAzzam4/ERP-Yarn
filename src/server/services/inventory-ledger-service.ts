@@ -1388,4 +1388,233 @@ export class InventoryLedgerService {
       matches,
     };
   }
+
+  // =========================================================================
+  // WP-04-03: Production receipt output + waste movement handlers.
+  // =========================================================================
+  //
+  // These handlers are composed by the ProductionReceiptApprovalService
+  // orchestrator inside a single outer DB transaction. They MUST NOT be
+  // called directly from routes/components (Contract 04 §13: only
+  // InventoryLedgerService may insert posted movements, and only the
+  // approval service may compose the atomic approval transaction).
+  //
+  // - postReceiveFromProduction: increases output on-hand at the output
+  //   location. Movement matrix (Contract 04 §8 row "Receive output"):
+  //   destination +qty, no input-item balance change. WIP decrease is
+  //   handled separately by the orchestrator via WipBalanceRepository.
+  //
+  // - postProductionWaste: METADATA-ONLY movement for lineage (Contract 04
+  //   §8 row "Production waste": "no sellable increase"). It does NOT
+  //   change inventory_balances.on_hand_qty_kg — only the WIP balance is
+  //   decreased, again by the orchestrator. The movement row exists so
+  //   that traceability (Contract 05 §22) can resolve the waste fact and
+  //   so production_waste_entries.movement_id has a valid FK.
+
+  /**
+   * Post a receive-from-production movement: output location +qty.
+   *
+   * Contract 04 §8 row "Receive output": destination +qty.
+   * Contract 05 §14 step 4: post receive_from_production movement and
+   *   increase output on-hand.
+   *
+   * Permission: production.approve (Owner/Accountant). The orchestrator
+   * (ProductionReceiptApprovalService) is the only legitimate caller, but
+   * we still enforce the permission here as defense-in-depth.
+   *
+   * Movement matrix: same shape as `postRawReceipt` (single-location +qty)
+   * but with movementType = "receive_from_production" and source document
+   * type = "production_receipt".
+   */
+  async postReceiveFromProduction(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      itemId: string;
+      toLocationId: string;
+      quantityKg: string;
+      movementDate: string;
+      sourceDocumentType: string;
+      sourceDocumentId: string;
+      idempotencyKey: string;
+      notes?: string;
+    },
+  ): Promise<PostRawReceiptResult> {
+    // Reuse the shared single-location movement helper, overriding the
+    // movement type / permission / doc-type / operation-scope.
+    return this.postSingleLocationMovement(user, effective, {
+      itemId: input.itemId,
+      toLocationId: input.toLocationId,
+      quantityKg: input.quantityKg,
+      movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType,
+      sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey,
+      notes: input.notes,
+      movementType: "receive_from_production",
+      permissionKey: "production.approve",
+      docType: "production_receive",
+      operationScope: "inventory.receive_from_production.post",
+    });
+  }
+
+  /**
+   * Post a production-waste metadata-only movement.
+   *
+   * Contract 04 §8 row "Production waste": "no sellable increase, none,
+   * WIP -waste_qty". This handler inserts a movement row for lineage and
+   * audit/reconciliation, but does NOT mutate `inventory_balances`.
+   *
+   * The WIP balance decrease (`production_wip_balances.wip_qty_kg -= waste`)
+   * is the orchestrator's responsibility, NOT this handler's. Splitting
+   * the WIP effect out of InventoryLedgerService preserves the boundary
+   * that only WipBalanceRepository writes to `production_wip_balances`.
+   *
+   * Movement shape: `fromLocationId = factoryLocationId` (the WIP factory
+   * location, for lineage traceability — Contract 05 §22), `toLocationId =
+   * null` (waste does not land anywhere sellable).
+   *
+   * Permission: production.approve (Owner/Accountant). Defense-in-depth:
+   * the orchestrator is the only legitimate caller.
+   */
+  async postProductionWaste(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      itemId: string;
+      factoryLocationId: string;
+      wasteQtyKg: string;
+      movementDate: string;
+      sourceDocumentType: string;
+      sourceDocumentId: string;
+      idempotencyKey: string;
+      notes?: string;
+    },
+  ): Promise<{ action: "posted" | "replayed"; movementId: string; docNo: string }> {
+    requirePermission(effective, "production.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!isPositiveKg(input.wasteQtyKg)) {
+      throw new ValidationFailedLedgerError(
+        `Waste quantity must be positive (NUMERIC(18,3)), got '${input.wasteQtyKg}'.`,
+      );
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.wasteQtyKg);
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    // Idempotency
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId,
+      operationScope: "inventory.production_waste.post",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        itemId: input.itemId,
+        factoryLocationId: input.factoryLocationId,
+        wasteQtyKg: normalizedQty,
+        movementDate: input.movementDate,
+        sourceDocumentType: input.sourceDocumentType,
+        sourceDocumentId: input.sourceDocumentId,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        return { action: "replayed", movementId: existing.id, docNo: existing.docNo };
+      }
+      // Fall through to execute if idempotency says replay but movement not found.
+    }
+    if (claim.action === "conflict") {
+      throw new IdempotencyConflictLedgerError(
+        `Idempotency key '${input.idempotencyKey}' was used with a different request body.`,
+      );
+    }
+    if (claim.action === "in_progress") {
+      throw new OperationInProgressLedgerError(
+        `Operation '${input.idempotencyKey}' is still in progress.`,
+      );
+    }
+
+    // Duplicate source guard — defense-in-depth against double waste posting
+    // for the same receipt. (The orchestrator's idempotency + the
+    // production_waste_entries unique constraints also prevent this, but the
+    // movement-level guard is independent.)
+    const existingBySource = await this.deps.ledger.findMovementBySource(
+      tenantId,
+      input.sourceDocumentType,
+      input.sourceDocumentId,
+    );
+    // Note: a single receipt can post MULTIPLE waste movements (one per
+    // allocation with waste > 0), but each uses a different idempotency key
+    // AND a different sourceDocumentId-suffix. The orchestrator passes
+    // sourceDocumentId = receipt.id for the FIRST waste movement only;
+    // subsequent waste movements use a per-allocation suffix
+    // (`${receipt.id}:waste:${inputId}`) to avoid the duplicate-source guard
+    // firing on legitimately distinct waste movements.
+    if (existingBySource) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409,
+        responseBody: { message: "Duplicate source document for waste movement" },
+        lastErrorClass: "DuplicateSourceError",
+      }, now);
+      throw new DuplicateSourceError(
+        `A waste movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
+      );
+    }
+
+    // Allocate doc_no (PW-YYYY-NNNNNN)
+    const docNoResult = await allocateDocumentNumber(
+      this.deps.documentSequence,
+      { tenantId, documentType: "production_waste", year, entityType: "stock_movement" },
+    );
+
+    // Insert movement — METADATA-ONLY. No balance lock, no balance update.
+    // The movement records the waste fact for traceability (Contract 05 §22)
+    // and gives production_waste_entries.movement_id a valid FK.
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId,
+      docNo: docNoResult.docNo,
+      movementType: "production_waste",
+      movementStatus: "posted",
+      itemId: input.itemId,
+      fromLocationId: input.factoryLocationId,
+      toLocationId: null,
+      quantityKg: normalizedQty,
+      movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType,
+      sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey,
+      postedBy: user.userId,
+      postedAt: now,
+    });
+
+    // Audit — note explicitly that no on-hand change occurred.
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement",
+      entityId: movement.id,
+      actionType: "inventory.production_waste.post",
+      newValuesJson: {
+        docNo: movement.docNo,
+        itemId: movement.itemId,
+        factoryLocationId: input.factoryLocationId,
+        wasteQtyKg: normalizedQty,
+        note: "metadata-only movement; no inventory_balances.on_hand change; WIP decrease handled by orchestrator via WipBalanceRepository",
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200,
+      responseBody: { movementId: movement.id },
+    }, now);
+
+    return { action: "posted", movementId: movement.id, docNo: movement.docNo };
+  }
 }

@@ -117,6 +117,14 @@ export const productionReceipts = pgTable(
     confirmedBy: uuid("confirmed_by").references(() => users.id),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true, mode: "date" }),
 
+    // WP-04-03: Subject hash + version for invalidation detection (Contract 06 §6 step 4).
+    // Computed at draft creation (WP-04-02) from receipt facts; verified at
+    // approval time (WP-04-03) to detect post-creation mutation of the draft.
+    // If the recomputed hash differs from the stored value, the approval is
+    // rejected with SUBJECT_CHANGED (409).
+    subjectHash: text("subject_hash"),
+    subjectVersion: integer("subject_version").default(1),
+
     // Origin/import metadata
     recordOrigin: recordOrigin("record_origin").notNull().default("manual_live"),
     recordPeriod: recordPeriod("record_period").notNull().default("live"),

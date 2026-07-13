@@ -50,6 +50,11 @@ const DEFAULT_PREFIXES: Record<string, string> = {
   reservation: "RES", // WP-03-03: stock reservation numbering
   production_order: "PO", production_issue: "PI",
   production_receipt: "PR", production_wip_return: "WR",
+  // WP-04-03: receive_from_production + production_waste movement doc_no prefixes.
+  // The receipt doc_no uses `production_receipt`; these are for the linked
+  // stock_movement rows posted by InventoryLedgerService during receipt approval.
+  production_receive: "PRC",
+  production_waste: "PW",
   payment: "PAY", return_request: "RR", return_approval: "RRA",
   quality_test: "QT", complaint: "CMP",
   migration_batch: "MIG", backup: "BAK",

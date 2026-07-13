@@ -95,30 +95,40 @@ export function isNegativeMoney(value: string): boolean {
 }
 
 /**
- * DEC-067: Calculate supplier payable from net accepted kg and price per ton.
+ * DEC-067 / DEC-013: Calculate payable from net/input kg and price/rate per ton.
  *
- * Formula: payable = (net_accepted_kg / 1000) × price_per_ton
+ * Supplier payable (DEC-067):
+ *   payable = net_accepted_kg / 1000 × price_per_ton
  *
- * - netAcceptedKg: NUMERIC(18,3) string (e.g., "1000.000")
- * - pricePerTon: NUMERIC(18,2) string (e.g., "80.00")
+ * Factory production payable (DEC-013, Contract 05 §17, Contract 07 §12):
+ *   factory_payable = factory_cost_basis_input_qty_kg / 1000 × factory_rate_per_input_ton
+ *   where factory_cost_basis_input_qty_kg = consumed_toward_output_qty + waste_qty
+ *   (waste does NOT reduce payable — DEC-013).
+ *
+ * Both formulas share the same shape: kg-quantity / 1000 × rate-per-ton, with
+ * ROUND_HALF_UP only at the final posting boundary (NUMERIC(18,2)).
+ *
+ * - kgOrBasis: NUMERIC(18,3) string (e.g., "1000.000")
+ * - ratePerTon: NUMERIC(18,2) string (e.g., "30000.00")
  * - Result: NUMERIC(18,2) string with ROUND_HALF_UP
  *
  * Uses high-precision BigInt intermediate arithmetic.
- * ROUND_HALF_UP is applied only at the final posting boundary.
  *
  * Examples:
  *   "1000.000" kg @ "80.00" EGP/ton → "80.00" EGP
  *   "1250.000" kg @ "80.00" EGP/ton → "100.00" EGP
  *   "999.500" kg @ "150.00" EGP/ton → "149.93" EGP (149.925 rounds up)
+ *   "5000.000" kg @ "30000.00" EGP/ton → "150000.00" EGP (factory full receipt, Contract 12 fixture)
+ *   "3500.000" kg @ "30000.00" EGP/ton → "105000.00" EGP (factory partial receipt)
  */
 export function calculateSupplierPayable(
-  netAcceptedKg: string,
-  pricePerTon: string,
+  kgOrBasis: string,
+  ratePerTon: string,
 ): string {
-  // Parse kg as scaled integer (× 10^3)
-  const kgScaled = parseToScaledInt(netAcceptedKg, 3);
-  // Parse price as scaled integer (× 10^2)
-  const priceScaled = parseToScaledInt(pricePerTon, 2);
+  // Parse kg/basis as scaled integer (× 10^3)
+  const kgScaled = parseToScaledInt(kgOrBasis, 3);
+  // Parse rate/price as scaled integer (× 10^2)
+  const priceScaled = parseToScaledInt(ratePerTon, 2);
 
   // product = kg × price, in scale 10^(3+2) = 10^5
   const product = kgScaled * priceScaled;
@@ -154,6 +164,33 @@ export function calculateSupplierPayable(
   const fracPart = absStr.slice(-2);
   const result = `${intPart}.${fracPart}`;
   return isNegative ? `-${result}` : result;
+}
+
+/**
+ * DEC-013 / Contract 05 §17 / Contract 07 §12: Calculate factory production
+ * payable from input-quantity basis and confirmed factory rate per input ton.
+ *
+ * Formula: factory_payable = factory_cost_basis_input_qty_kg / 1000 × factory_rate_per_input_ton
+ *   where factory_cost_basis_input_qty_kg = SUM(consumed_toward_output_qty + waste_qty)
+ *   across the receipt's allocations (waste does NOT reduce payable — DEC-013).
+ *
+ * This is a semantic alias of `calculateSupplierPayable` — both share the same
+ * (kg / 1000 × rate-per-ton) shape with ROUND_HALF_UP at posting boundary.
+ * Kept as a separate export for contract-readable call sites in the
+ * production-receipt-approval-service.
+ *
+ * - basisInputQtyKg: NUMERIC(18,3) string (e.g., "5000.000")
+ * - factoryRatePerInputTon: NUMERIC(18,2) string (e.g., "30000.00")
+ * - Result: NUMERIC(18,2) string with ROUND_HALF_UP
+ *
+ * Example (Contract 12 §3.2 fixture):
+ *   "5000.000" kg basis @ "30000.00" EGP/ton → "150000.00" EGP
+ */
+export function calculateFactoryPayable(
+  basisInputQtyKg: string,
+  factoryRatePerInputTon: string,
+): string {
+  return calculateSupplierPayable(basisInputQtyKg, factoryRatePerInputTon);
 }
 
 // --- Internal helpers ---

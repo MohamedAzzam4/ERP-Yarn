@@ -43,6 +43,13 @@
       "when": 1783233218160,
       "tag": "0005_dazzling_boomer",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783908362820,
+      "tag": "0006_mighty_dagger",
+      "breakpoints": true
     }
   ]
 }

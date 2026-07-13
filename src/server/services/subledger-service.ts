@@ -41,6 +41,7 @@ import {
 } from "./document-sequence-service";
 import {
   calculateSupplierPayable,
+  calculateFactoryPayable,
   normalizeMoney,
   isPositiveMoney,
   isZeroMoney,
@@ -208,6 +209,46 @@ export interface PostSupplierPayableResult {
   entryNo: string;
   amountSigned: string;
   accountId: string;
+  derivedBalance: string;
+}
+
+// ---------------------------------------------------------------------------
+// WP-04-03: Factory production payable input + result.
+// ---------------------------------------------------------------------------
+
+export interface PostFactoryPayableInput {
+  /** The external factory master record ID (production_order.factory_id). */
+  factoryId: string;
+  /** The production receipt ID this payable is for (for lineage). */
+  productionReceiptId: string;
+  /** Total input-quantity basis in kg = SUM(consumed_toward_output + waste)
+   * across the receipt's allocations. NUMERIC(18,3) string. */
+  factoryCostBasisInputQtyKg: string;
+  /** Confirmed factory rate per input ton (snapshotted at approval).
+   * NUMERIC(18,2) string (e.g., "30000.00"). */
+  factoryRatePerInputTon: string;
+  /** Entry date (ISO date string, e.g., the receipt date). */
+  entryDate: string;
+  /** Source document type — always "production_receipt" for WP-04-03. */
+  sourceDocumentType: string;
+  /** Source document ID — the production_receipts.id. */
+  sourceDocumentId: string;
+  /** Idempotency key (required). */
+  idempotencyKey: string;
+  /** Currency (default "EGP"). */
+  currency?: string;
+  /** Optional notes. */
+  notes?: string;
+}
+
+export interface PostFactoryPayableResult {
+  action: "posted" | "replayed";
+  entryId: string;
+  entryNo: string;
+  amountSigned: string; // NEGATIVE for payable
+  accountId: string;
+  /** The calculated payable amount (positive, pre-sign). */
+  payableAmount: string;
   derivedBalance: string;
 }
 
@@ -470,6 +511,216 @@ export class SubledgerService {
       accountId,
       balance: normalizeMoney(balance),
       entryCount: entries.length,
+    };
+  }
+
+  // =========================================================================
+  // WP-04-03: Factory production payable.
+  // =========================================================================
+
+  /**
+   * Post a factory production payable entry (DEC-013 formula).
+   *
+   * Contract 07 §8 sign table: "Factory production payable → factory →
+   *   negative." The entry's `amount_signed` is the NEGATIVE of the
+   * calculated payable amount.
+   * Contract 07 §9: entries immutable after posting; one unique payable
+   *   source entry per approved receipt.
+   * Contract 07 §12: payable recognized ONLY on approved output receipt.
+   *   `factory_payable = cost_basis_input_qty_kg / 1000 × confirmed_rate_per_input_ton`.
+   *   Waste does NOT reduce payable (DEC-013).
+   * Contract 05 §18: one unique payable source entry per approved receipt;
+   *   issue/transfer creates no payable.
+   *
+   * Permission: balances.view_supplier_factory (Owner + Accountant only).
+   *   Defense-in-depth: the orchestrator (ProductionReceiptApprovalService)
+   *   is the only legitimate caller, but we enforce the permission here
+   *   regardless.
+   *
+   * Concurrency: `lockSourceEntry(tenant, "production_receipt", receiptId)`
+   *   + `findEntryBySource` duplicate-source guard prevent two concurrent
+   *   approvals from posting two payables for the same receipt.
+   */
+  async postFactoryPayable(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: PostFactoryPayableInput,
+  ): Promise<PostFactoryPayableResult> {
+    // Permission: balances.view_supplier_factory (Owner/Accountant only).
+    // Workers are denied per DEC-063.
+    requirePermission(effective, "balances.view_supplier_factory");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    const currency = input.currency ?? "EGP";
+    if (!isPositiveMoney(input.factoryRatePerInputTon)) {
+      throw new ValidationFailedSubledgerError(
+        `Factory rate per input ton must be positive (NUMERIC(18,2)), got '${input.factoryRatePerInputTon}'.`,
+      );
+    }
+
+    const tenantId = user.tenantId;
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    // DEC-013 / Contract 07 §12: factory_payable = basis_input_qty / 1000 × rate.
+    // ROUND_HALF_UP only at posting boundary (Contract 14 §5).
+    const payableAmount = calculateFactoryPayable(
+      input.factoryCostBasisInputQtyKg,
+      input.factoryRatePerInputTon,
+    );
+
+    // Contract 07 §11 / DB CHECK constraint: amount_signed <> 0
+    if (isZeroMoney(payableAmount)) {
+      throw new ValidationFailedSubledgerError(
+        `Calculated factory payable is zero (basis='${input.factoryCostBasisInputQtyKg}', rate='${input.factoryRatePerInputTon}'). ` +
+        `Zero payable is not allowed — a receipt without a confirmed rate should not be approved.`,
+      );
+    }
+
+    // Contract 07 §8 sign table: factory production payable is NEGATIVE.
+    const amountSigned = normalizeMoney(`-${payableAmount}`);
+
+    // Idempotency
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId,
+      operationScope: "subledger.factory_payable.post",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        factoryId: input.factoryId,
+        productionReceiptId: input.productionReceiptId,
+        factoryCostBasisInputQtyKg: input.factoryCostBasisInputQtyKg,
+        factoryRatePerInputTon: input.factoryRatePerInputTon,
+        entryDate: input.entryDate,
+        sourceDocumentType: input.sourceDocumentType,
+        sourceDocumentId: input.sourceDocumentId,
+        currency,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+
+    if (claim.action === "replay") {
+      const responseBody = claim.record.responseBody as { entryId?: string; entryNo?: string; amountSigned?: string; accountId?: string } | null;
+      if (responseBody?.entryId) {
+        const existingEntry = await this.deps.subledger.findEntryById(tenantId, responseBody.entryId);
+        if (existingEntry) {
+          const balance = await this.deriveAccountBalance(user, existingEntry.accountId);
+          return {
+            action: "replayed",
+            entryId: existingEntry.id,
+            entryNo: existingEntry.entryNo,
+            amountSigned: existingEntry.amountSigned,
+            accountId: existingEntry.accountId,
+            payableAmount,
+            derivedBalance: balance.balance,
+          };
+        }
+      }
+      // Fall through to execute if idempotency says replay but entry not found.
+    }
+    if (claim.action === "conflict") {
+      throw new IdempotencyConflictSubledgerError(
+        `Idempotency key '${input.idempotencyKey}' was used with a different request body.`,
+      );
+    }
+    if (claim.action === "in_progress") {
+      throw new OperationInProgressSubledgerError(
+        `Operation '${input.idempotencyKey}' is still in progress.`,
+      );
+    }
+
+    // claim.action === "execute"
+
+    // Acquire transaction-scoped advisory lock on source document.
+    // Prevents two concurrent approvals from posting two payables for the
+    // same receipt. MUST be acquired BEFORE findEntryBySource.
+    await this.deps.subledger.lockSourceEntry(
+      tenantId,
+      input.sourceDocumentType,
+      input.sourceDocumentId,
+    );
+
+    // Duplicate source guard (now safe under the advisory lock)
+    const existingBySource = await this.deps.subledger.findEntryBySource(
+      tenantId,
+      input.sourceDocumentType,
+      input.sourceDocumentId,
+    );
+    if (existingBySource) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409,
+        responseBody: { message: "Duplicate source document for factory payable" },
+        lastErrorClass: "DuplicateSourceEntryError",
+      }, now);
+      throw new DuplicateSourceEntryError(
+        `A factory payable entry already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
+      );
+    }
+
+    // Get or create factory account
+    const account = await this.getOrCreateAccount(user, "factory", input.factoryId, currency);
+
+    // Allocate entry number (AE-YYYY-NNNNNN)
+    const entryNoResult = await allocateDocumentNumber(
+      this.deps.documentSequence,
+      { tenantId, documentType: "account_entry", year, entityType: "account_entry" },
+    );
+
+    // Insert immutable account entry
+    const entry = await this.deps.subledger.insertEntry({
+      tenantId,
+      accountId: account.id,
+      entryNo: entryNoResult.docNo,
+      entryDate: input.entryDate,
+      amountSigned,
+      currency,
+      entryType: "factory_production_payable",
+      sourceDocumentType: input.sourceDocumentType,
+      sourceDocumentId: input.sourceDocumentId,
+      createdBy: user.userId,
+    });
+
+    // Audit
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "account_entry",
+      entityId: entry.id,
+      actionType: "subledger.factory_payable.post",
+      newValuesJson: {
+        entryNo: entry.entryNo,
+        entryType: entry.entryType,
+        accountId: entry.accountId,
+        amountSigned: entry.amountSigned,
+        factoryId: input.factoryId,
+        productionReceiptId: input.productionReceiptId,
+        factoryCostBasisInputQtyKg: input.factoryCostBasisInputQtyKg,
+        factoryRatePerInputTon: input.factoryRatePerInputTon,
+        payableAmount,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200,
+      responseBody: {
+        entryId: entry.id,
+        entryNo: entry.entryNo,
+        amountSigned: entry.amountSigned,
+        accountId: entry.accountId,
+      },
+    }, now);
+
+    const balanceResult = await this.deriveAccountBalance(user, account.id);
+
+    return {
+      action: "posted",
+      entryId: entry.id,
+      entryNo: entry.entryNo,
+      amountSigned: entry.amountSigned,
+      accountId: entry.accountId,
+      payableAmount,
+      derivedBalance: balanceResult.balance,
     };
   }
 
