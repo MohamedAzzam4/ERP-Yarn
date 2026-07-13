@@ -29,7 +29,11 @@
  *   - Support missing-cost flags for unavailable cost components
  *   - Immutable once created (value columns never updated; only is_active + superseded_by)
  *   - Transaction-aware: participates in caller transaction, rolls back with caller
- *   - Idempotent: duplicate (tenant, sale, version) rejected by unique index
+ *   - Source/version-unique: duplicate (tenant, sale, version) rejected by unique index +
+ *     explicit pre-check. This is NOT independent idempotency replay — the caller
+ *     (WP-05-03 approval) owns the idempotency claim and ensures replay never reaches
+ *     this service. If the caller's idempotency returns "replay", the snapshot service
+ *     is never invoked a second time.
  *
  * WP-05-02 NON-SCOPE (deferred):
  *   - Sale approval (WP-05-03)

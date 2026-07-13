@@ -256,7 +256,7 @@ describe("WP-05-02 snapshot — versioning + idempotency", () => {
     expect(result.isActive).toBe(true);
   });
 
-  it("duplicate version 1 for same sale → STATE_CONFLICT", async () => {
+  it("duplicate version 1 for same sale → STATE_CONFLICT (source/version-unique, NOT idempotency replay)", async () => {
     const deps = makeDeps();
     const { saleId } = await setupCompletedSale(deps);
 
