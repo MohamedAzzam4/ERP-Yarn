@@ -87,4 +87,21 @@ export interface SalesRepository {
     lineId: string,
     patch: Omit<LineCommercialTotalsPatch, "lineId">,
   ): Promise<SalesOrderLine | null>;
+
+  /**
+   * WP-05-01 (audit pass): Atomically update sale header totals AND all line
+   * commercial totals in a single repository call. This ensures all-or-nothing
+   * semantics — if any line update fails, the entire batch rolls back.
+   *
+   * The implementation MUST be transaction-aware (either use a DB transaction
+   * internally or delegate to a tx-scoped repository).
+   *
+   * Returns the updated sale, or null if the sale was not found.
+   */
+  batchUpdateCommercialTotals(
+    tenantId: string,
+    saleId: string,
+    salePatch: CommercialTotalsPatch,
+    linePatches: Array<Omit<LineCommercialTotalsPatch, "lineId"> & { lineId: string }>,
+  ): Promise<SalesOrder | null>;
 }

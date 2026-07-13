@@ -185,6 +185,51 @@ export class SalesDbRepository implements SalesRepository {
       .returning();
     return result ?? null;
   }
+
+  /**
+   * WP-05-01 (audit pass): Atomically update sale header + all line totals.
+   * In the Drizzle implementation, all writes use the same `this.db` handle.
+   * If the caller wraps this in a `db.transaction()`, a failure in any
+   * write will roll back the entire transaction automatically.
+   *
+   * If called without an outer transaction, the individual writes are
+   * separate statements — but the caller SHOULD use a transaction runner.
+   */
+  async batchUpdateCommercialTotals(
+    tenantId: string,
+    saleId: string,
+    salePatch: CommercialTotalsPatch,
+    linePatches: Array<{
+      lineId: string;
+      lineGrossRevenue: string;
+      lineAllocatedDiscountPrecise: string;
+      lineAllocatedDiscountPosted: string;
+      lineNetRevenuePrecise: string;
+      lineNetRevenuePosted: string;
+      roundingAdjustment: string;
+    }>,
+  ): Promise<SalesOrder | null> {
+    // Update sale header
+    const saleResult = await this.updateSaleCommercialTotals(tenantId, saleId, salePatch);
+    if (!saleResult) return null;
+
+    // Update each line — if any fails, the outer transaction (if present) will roll back
+    for (const lp of linePatches) {
+      const lineResult = await this.updateLineCommercialTotals(tenantId, lp.lineId, {
+        lineGrossRevenue: lp.lineGrossRevenue,
+        lineAllocatedDiscountPrecise: lp.lineAllocatedDiscountPrecise,
+        lineAllocatedDiscountPosted: lp.lineAllocatedDiscountPosted,
+        lineNetRevenuePrecise: lp.lineNetRevenuePrecise,
+        lineNetRevenuePosted: lp.lineNetRevenuePosted,
+        roundingAdjustment: lp.roundingAdjustment,
+      });
+      if (!lineResult) {
+        throw new Error(`Line '${lp.lineId}' not found during batch commercial totals update`);
+      }
+    }
+
+    return saleResult;
+  }
 }
 
 export function createSalesDbRepository(db: Db): SalesDbRepository {

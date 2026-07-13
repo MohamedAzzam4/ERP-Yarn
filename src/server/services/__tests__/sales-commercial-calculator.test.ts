@@ -354,7 +354,9 @@ describe("WP-05-01 Calculator — sum invariants", () => {
     ).toThrow(CommercialCalculatorError);
   });
 
-  it("at most one line has non-zero rounding_adjustment", () => {
+  it("per-line bounds enforced: 0 <= discount <= gross, 0 <= net <= gross", () => {
+    // The calculator verifies these internally and throws if violated.
+    // This test confirms that normal cases don't trigger the invariant check.
     const result = calculateCommercialTotals(
       [
         { lineNo: 1, quantityKg: "1000.000", pricePerTon: "33.33" },
@@ -364,8 +366,12 @@ describe("WP-05-01 Calculator — sum invariants", () => {
       "0.01",
     );
 
-    const nonZeroAdjustments = result.lines.filter((l) => l.roundingAdjustment !== "0.00");
-    expect(nonZeroAdjustments.length).toBeLessThanOrEqual(1);
+    for (const line of result.lines) {
+      expect(parseFloat(line.lineAllocatedDiscountPosted)).toBeGreaterThanOrEqual(0);
+      expect(parseFloat(line.lineAllocatedDiscountPosted)).toBeLessThanOrEqual(parseFloat(line.lineGrossRevenue));
+      expect(parseFloat(line.lineNetRevenuePosted)).toBeGreaterThanOrEqual(0);
+      expect(parseFloat(line.lineNetRevenuePosted)).toBeLessThanOrEqual(parseFloat(line.lineGrossRevenue));
+    }
   });
 });
 

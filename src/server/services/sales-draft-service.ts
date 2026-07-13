@@ -360,8 +360,26 @@ export class SalesDraftService {
       normalizeMoney(input.orderDiscountTotal),
     );
 
-    // Persist order-level totals
-    await this.deps.salesRepository.updateSaleCommercialTotals(
+    // Build line patches (map calculator results to DB line IDs)
+    const linePatches = calculated.lines.map((calcLine) => {
+      const dbLine = lines.find((l) => l.lineNo === calcLine.lineNo)!;
+      return {
+        lineId: dbLine.id,
+        lineGrossRevenue: calcLine.lineGrossRevenue,
+        lineAllocatedDiscountPrecise: calcLine.lineAllocatedDiscountPrecise,
+        lineAllocatedDiscountPosted: calcLine.lineAllocatedDiscountPosted,
+        lineNetRevenuePrecise: calcLine.lineNetRevenuePrecise,
+        lineNetRevenuePosted: calcLine.lineNetRevenuePosted,
+        roundingAdjustment: calcLine.roundingAdjustment,
+      };
+    });
+
+    // Atomically persist sale header totals + all line totals in ONE batch call.
+    // The in-memory repository uses snapshot/restore for atomicity.
+    // The DB repository delegates to the outer transaction (if present).
+    // If any line update fails, the entire batch rolls back — no partially
+    // completed sale is possible.
+    const updatedSale = await this.deps.salesRepository.batchUpdateCommercialTotals(
       user.tenantId,
       sale.id,
       {
@@ -369,24 +387,11 @@ export class SalesDraftService {
         orderDiscountTotal: calculated.orderDiscountTotal,
         documentTotalPosted: calculated.documentTotalPosted,
       },
+      linePatches,
     );
 
-    // Persist per-line totals
-    for (const calcLine of calculated.lines) {
-      const dbLine = lines.find((l) => l.lineNo === calcLine.lineNo);
-      if (!dbLine) continue;
-      await this.deps.salesRepository.updateLineCommercialTotals(
-        user.tenantId,
-        dbLine.id,
-        {
-          lineGrossRevenue: calcLine.lineGrossRevenue,
-          lineAllocatedDiscountPrecise: calcLine.lineAllocatedDiscountPrecise,
-          lineAllocatedDiscountPosted: calcLine.lineAllocatedDiscountPosted,
-          lineNetRevenuePrecise: calcLine.lineNetRevenuePrecise,
-          lineNetRevenuePosted: calcLine.lineNetRevenuePosted,
-          roundingAdjustment: calcLine.roundingAdjustment,
-        },
-      );
+    if (!updatedSale) {
+      throw new SalesDraftError("INTERNAL_TRANSACTION_FAILED", `Sale '${sale.id}' not found during commercial totals update.`);
     }
 
     // Audit

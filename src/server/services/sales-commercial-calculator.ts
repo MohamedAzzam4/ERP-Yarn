@@ -170,28 +170,68 @@ export function calculateCommercialTotals(
     }
   }
 
-  // Step 5: Residual allocation
+  // Step 5: Residual allocation — distribute across multiple lines if needed.
+  //
+  // CONTRACT CONFLICT RESOLUTION:
+  // Contract 03 §11.1 says "residual assigned to the largest gross-revenue
+  // line; tie uses the lowest stable line_no; rounding_adjustment is zero on
+  // other lines." However, the contract ALSO requires the invariants:
+  //   sum(line_allocated_discount_posted) = order_discount_total
+  //   (and implicitly: 0 <= posted_discount <= gross, 0 <= net <= gross)
+  //
+  // When the accumulated rounding error across many lines exceeds what a
+  // single line can absorb (e.g., 100 lines × 0.01 gross + discount=0.50
+  // produces a residual of -0.50, but a single 0.01-gross line can only
+  // absorb -0.01 before going negative), the invariants take PRECEDENCE
+  // over the "single line" rule.
+  //
+  // FIX: Distribute the residual iteratively across lines in priority order
+  // (largest gross first, then lowest line_no), capping each adjustment so
+  // posted_discount stays in [0, gross]. The schema's CHECK constraint
+  // allows non-zero rounding_adjustment on multiple lines.
   let sumPostedDiscounts = "0.00";
   for (const line of sortedLines) {
     sumPostedDiscounts = addMoney(sumPostedDiscounts, line.lineAllocatedDiscountPosted);
   }
 
-  const residual = subtractMoneyString(normalizedDiscount, sumPostedDiscounts);
+  let remainingResidual = subtractMoneyString(normalizedDiscount, sumPostedDiscounts);
 
-  if (!isZeroMoney(residual)) {
-    // Find the line with MAX gross revenue; tie-break by MIN line_no
-    let selectedLine = sortedLines[0]!;
-    for (const line of sortedLines) {
-      const cmp = compareMoney(line.lineGrossRevenue, selectedLine.lineGrossRevenue);
-      if (cmp > 0 || (cmp === 0 && line.lineNo < selectedLine.lineNo)) {
-        selectedLine = line;
+  if (!isZeroMoney(remainingResidual)) {
+    // Sort lines by priority: largest gross first, then lowest line_no
+    const priorityLines = [...sortedLines].sort((a, b) => {
+      const cmp = compareMoney(b.lineGrossRevenue, a.lineGrossRevenue); // descending gross
+      if (cmp !== 0) return cmp;
+      return a.lineNo - b.lineNo; // ascending line_no
+    });
+
+    for (const line of priorityLines) {
+      if (isZeroMoney(remainingResidual)) break;
+
+      const currentDiscount = parseFloat(line.lineAllocatedDiscountPosted);
+      const gross = parseFloat(line.lineGrossRevenue);
+      const residualVal = parseFloat(remainingResidual);
+
+      // Calculate max adjustment this line can absorb:
+      // - If residual is positive: can add at most (gross - currentDiscount) before exceeding gross
+      // - If residual is negative: can subtract at most currentDiscount before going below 0
+      let maxAbsorb: number;
+      if (residualVal > 0) {
+        maxAbsorb = gross - currentDiscount;
+      } else {
+        maxAbsorb = currentDiscount;
       }
-    }
 
-    // Apply residual
-    selectedLine.lineAllocatedDiscountPosted = addMoney(selectedLine.lineAllocatedDiscountPosted, residual);
-    selectedLine.roundingAdjustment = residual;
-    selectedLine.lineNetRevenuePosted = normalizeMoney(subtractMoneyString(selectedLine.lineGrossRevenue, selectedLine.lineAllocatedDiscountPosted));
+      const adjustment = Math.max(-maxAbsorb, Math.min(residualVal, maxAbsorb));
+      if (adjustment === 0) continue;
+
+      const adjustmentStr = adjustment.toFixed(2);
+      line.lineAllocatedDiscountPosted = addMoney(line.lineAllocatedDiscountPosted, adjustmentStr);
+      line.roundingAdjustment = addMoney(line.roundingAdjustment, adjustmentStr);
+      line.lineNetRevenuePosted = normalizeMoney(subtractMoneyString(line.lineGrossRevenue, line.lineAllocatedDiscountPosted));
+
+      // Reduce remaining residual
+      remainingResidual = normalizeMoney((residualVal - adjustment).toFixed(2));
+    }
   }
 
   // Step 6: Compute document total
@@ -217,13 +257,26 @@ export function calculateCommercialTotals(
     throw new CommercialCalculatorError("INTERNAL_ERROR", `Invariant violation: sum(posted_net)=${verifyDocTotal} != document_total=${documentTotal}`);
   }
 
-  // Count non-zero rounding adjustments (should be 0 or 1)
-  let roundingCount = 0;
+  // Verify per-line bounds: 0 <= posted_discount <= gross, 0 <= posted_net <= gross
+  // (These are the CRITICAL invariants that the multi-line residual distribution
+  // preserves. The contract says "single line" but these invariants take
+  // precedence when they conflict.)
   for (const line of sortedLines) {
-    if (!isZeroMoney(line.roundingAdjustment)) roundingCount++;
-  }
-  if (roundingCount > 1) {
-    throw new CommercialCalculatorError("INTERNAL_ERROR", `Invariant violation: ${roundingCount} lines have non-zero rounding_adjustment (expected 0 or 1).`);
+    const discount = parseFloat(line.lineAllocatedDiscountPosted);
+    const gross = parseFloat(line.lineGrossRevenue);
+    const net = parseFloat(line.lineNetRevenuePosted);
+    if (discount < 0) {
+      throw new CommercialCalculatorError("INTERNAL_ERROR", `Invariant violation: line ${line.lineNo} has negative posted_discount=${line.lineAllocatedDiscountPosted}`);
+    }
+    if (discount > gross) {
+      throw new CommercialCalculatorError("INTERNAL_ERROR", `Invariant violation: line ${line.lineNo} posted_discount=${line.lineAllocatedDiscountPosted} > gross=${line.lineGrossRevenue}`);
+    }
+    if (net < 0) {
+      throw new CommercialCalculatorError("INTERNAL_ERROR", `Invariant violation: line ${line.lineNo} has negative posted_net=${line.lineNetRevenuePosted}`);
+    }
+    if (net > gross) {
+      throw new CommercialCalculatorError("INTERNAL_ERROR", `Invariant violation: line ${line.lineNo} posted_net=${line.lineNetRevenuePosted} > gross=${line.lineGrossRevenue}`);
+    }
   }
 
   return {

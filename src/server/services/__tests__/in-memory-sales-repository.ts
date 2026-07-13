@@ -272,4 +272,54 @@ export class InMemorySalesRepository implements SalesRepository {
     }
     return null;
   }
+
+  /**
+   * WP-05-01 (audit pass): Atomically update sale header + all line totals.
+   * Uses snapshot/restore for in-memory atomicity — if any update fails,
+   * all prior updates in the batch are rolled back.
+   */
+  async batchUpdateCommercialTotals(
+    tenantId: string,
+    saleId: string,
+    salePatch: CommercialTotalsPatch,
+    linePatches: Array<{
+      lineId: string;
+      lineGrossRevenue: string;
+      lineAllocatedDiscountPrecise: string;
+      lineAllocatedDiscountPosted: string;
+      lineNetRevenuePrecise: string;
+      lineNetRevenuePosted: string;
+      roundingAdjustment: string;
+    }>,
+  ): Promise<SalesOrder | null> {
+    // Take a snapshot for rollback
+    const salesSnapshot = new Map([...this.sales].map(([k, v]) => [k, { ...v }]));
+    const linesSnapshot = new Map([...this.lines].map(([k, v]) => [k, v.map((l) => ({ ...l }))]));
+
+    try {
+      // Update sale header
+      const saleResult = await this.updateSaleCommercialTotals(tenantId, saleId, salePatch);
+      if (!saleResult) throw new Error("Sale not found during batch update");
+
+      // Update each line
+      for (const lp of linePatches) {
+        const lineResult = await this.updateLineCommercialTotals(tenantId, lp.lineId, {
+          lineGrossRevenue: lp.lineGrossRevenue,
+          lineAllocatedDiscountPrecise: lp.lineAllocatedDiscountPrecise,
+          lineAllocatedDiscountPosted: lp.lineAllocatedDiscountPosted,
+          lineNetRevenuePrecise: lp.lineNetRevenuePrecise,
+          lineNetRevenuePosted: lp.lineNetRevenuePosted,
+          roundingAdjustment: lp.roundingAdjustment,
+        });
+        if (!lineResult) throw new Error(`Line '${lp.lineId}' not found during batch update`);
+      }
+
+      return saleResult;
+    } catch (e) {
+      // Rollback to snapshot
+      this.sales = salesSnapshot;
+      this.lines = linesSnapshot;
+      throw e;
+    }
+  }
 }
