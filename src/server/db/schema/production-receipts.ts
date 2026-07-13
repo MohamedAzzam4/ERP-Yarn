@@ -327,6 +327,17 @@ export const productionWipReturns = pgTable(
     // Financial review routing (Contract 05 §20)
     financialReviewStatus: text("financial_review_status").default("needs_accountant_review"),
 
+    // WP-04-04: Subject hash + version for invalidation detection (Contract 06 §6 step 4).
+    // Computed at request creation from return facts; verified at approval
+    // time to detect post-creation mutation. If the recomputed hash differs
+    // from the stored value, the approval is rejected with SUBJECT_CHANGED.
+    subjectHash: text("subject_hash"),
+    subjectVersion: integer("subject_version").default(1),
+
+    // WP-04-04: Confirmed by/at — set at approval time.
+    confirmedBy: uuid("confirmed_by").references(() => users.id),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true, mode: "date" }),
+
     // Origin/import metadata
     recordOrigin: recordOrigin("record_origin").notNull().default("manual_live"),
     recordPeriod: recordPeriod("record_period").notNull().default("live"),

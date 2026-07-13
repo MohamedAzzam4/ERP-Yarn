@@ -69,4 +69,26 @@ export class InMemoryWipBalanceRepository implements WipBalanceRepository {
     this.balances.set(k, updated);
     return updated;
   }
+
+  async decrementWipQtyConditional(
+    tenantId: string,
+    productionOrderId: string,
+    inputItemId: string,
+    factoryLocationId: string,
+    patch: { decrementQtyKg: string; expectedVersion: number },
+  ): Promise<ProductionWipBalance | null> {
+    const k = this.key(tenantId, productionOrderId, inputItemId, factoryLocationId);
+    const bal = this.balances.get(k);
+    if (!bal) return null;
+    // Version check (concurrent modification guard)
+    if (bal.version !== patch.expectedVersion) return null;
+    // Sufficiency check (WIP cannot go negative through ordinary posting)
+    const currentQty = parseFloat(bal.wipQtyKg);
+    const decrement = parseFloat(patch.decrementQtyKg);
+    if (currentQty < decrement) return null;
+    const newQty = (currentQty - decrement).toFixed(3);
+    const updated = { ...bal, wipQtyKg: newQty, version: bal.version + 1, updatedAt: NOW() };
+    this.balances.set(k, updated);
+    return updated;
+  }
 }

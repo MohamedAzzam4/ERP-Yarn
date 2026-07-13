@@ -1613,4 +1613,230 @@ export class InventoryLedgerService {
 
     return { action: "posted", movementId: movement.id, docNo: movement.docNo };
   }
+
+  // =========================================================================
+  // WP-04-04: Return-from-WIP movement handler.
+  // =========================================================================
+
+  /**
+   * Post a return-from-WIP movement: return location +qty.
+   *
+   * Contract 04 §8 row "Return from WIP": return location +qty, approved
+   * classification, WIP -qty.
+   * Contract 05 §20: Approval atomically reduces WIP, increases on-hand at
+   *   the return location, and writes audit.
+   *
+   * This handler ONLY increases on-hand at the return location. The WIP
+   * decrease is handled separately by the orchestrator via
+   * `WipBalanceRepository.decrementWipQtyConditional` — same separation as
+   * WP-04-03's `postProductionWaste` (WIP is in `production_wip_balances`,
+   * not `inventory_balances`).
+   *
+   * Movement shape: `fromLocationId = factoryLocationId` (the WIP factory
+   * location, for lineage per Contract 05 §22), `toLocationId =
+   * returnLocationId` (where stock lands). Only the destination balance
+   * is mutated (+qty); the factory location's on-hand is NOT touched
+   * (WIP is not in inventory_balances).
+   *
+   * Permission: production.return_from_wip.approve (Owner/Accountant).
+   * Defense-in-depth: the orchestrator (WipReturnApprovalService) is the
+   * only legitimate caller.
+   */
+  async postReturnFromWip(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      itemId: string;
+      factoryLocationId: string;
+      returnLocationId: string;
+      returnQtyKg: string;
+      movementDate: string;
+      sourceDocumentType: string;
+      sourceDocumentId: string;
+      idempotencyKey: string;
+      notes?: string;
+    },
+  ): Promise<PostRawReceiptResult> {
+    requirePermission(effective, "production.return_from_wip.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!isPositiveKg(input.returnQtyKg)) {
+      throw new ValidationFailedLedgerError(
+        `Return quantity must be positive (NUMERIC(18,3)), got '${input.returnQtyKg}'.`,
+      );
+    }
+
+    const tenantId = user.tenantId;
+    const normalizedQty = normalizeKg(input.returnQtyKg);
+    const now = new Date();
+    const year = now.getUTCFullYear();
+
+    // Idempotency
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId,
+      operationScope: "inventory.return_from_wip.post",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        itemId: input.itemId,
+        factoryLocationId: input.factoryLocationId,
+        returnLocationId: input.returnLocationId,
+        returnQtyKg: normalizedQty,
+        movementDate: input.movementDate,
+        sourceDocumentType: input.sourceDocumentType,
+        sourceDocumentId: input.sourceDocumentId,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+
+    if (claim.action === "replay") {
+      const existing = await this.deps.ledger.findMovementByIdempotencyKey(tenantId, input.idempotencyKey);
+      if (existing) {
+        const bal = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.returnLocationId);
+        return {
+          action: "replayed",
+          movementId: existing.id,
+          docNo: existing.docNo,
+          balanceVersion: bal?.version ?? 0,
+          onHandQtyKg: bal?.onHandQtyKg ?? "0.000",
+        };
+      }
+      // Fall through to execute if idempotency says replay but movement not found.
+    }
+    if (claim.action === "conflict") {
+      throw new IdempotencyConflictLedgerError(
+        `Idempotency key '${input.idempotencyKey}' was used with a different request body.`,
+      );
+    }
+    if (claim.action === "in_progress") {
+      throw new OperationInProgressLedgerError(
+        `Operation '${input.idempotencyKey}' is still in progress.`,
+      );
+    }
+
+    // Duplicate source guard — defense-in-depth against double return movement.
+    const existingBySource = await this.deps.ledger.findMovementBySource(
+      tenantId,
+      input.sourceDocumentType,
+      input.sourceDocumentId,
+    );
+    if (existingBySource) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409,
+        responseBody: { message: "Duplicate source document for return-from-WIP movement" },
+        lastErrorClass: "DuplicateSourceError",
+      }, now);
+      throw new DuplicateSourceError(
+        `A return-from-WIP movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
+      );
+    }
+
+    // Allocate doc_no (WR-YYYY-NNNNNN)
+    const docNoResult = await allocateDocumentNumber(
+      this.deps.documentSequence,
+      { tenantId, documentType: "production_wip_return", year, entityType: "stock_movement" },
+    );
+
+    // Lock + fetch/create destination balance (return location)
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.returnLocationId);
+    if (!balance) {
+      try {
+        balance = await this.deps.ledger.insertBalance({
+          tenantId,
+          itemId: input.itemId,
+          locationId: input.returnLocationId,
+          onHandQtyKg: "0.000",
+          lastMovementId: null,
+        });
+      } catch (e) {
+        if (e instanceof BalanceConcurrentInsertError) {
+          balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.returnLocationId);
+          if (!balance) {
+            throw new InventoryLedgerError(
+              "INTERNAL_TRANSACTION_FAILED",
+              "Balance row not found after concurrent-insert retry.",
+            );
+          }
+        } else {
+          throw e;
+        }
+      }
+    }
+    requireTenantMatch(user, balance.tenantId);
+
+    // Insert movement — fromLocationId = factory (lineage), toLocationId = return location (+qty)
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId,
+      docNo: docNoResult.docNo,
+      movementType: "return_from_wip",
+      movementStatus: "posted",
+      itemId: input.itemId,
+      fromLocationId: input.factoryLocationId,
+      toLocationId: input.returnLocationId,
+      quantityKg: normalizedQty,
+      movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType,
+      sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey,
+      postedBy: user.userId,
+      postedAt: now,
+    });
+
+    // Update destination balance: on_hand += return_qty
+    const newOnHand = addKg(balance.onHandQtyKg, normalizedQty);
+    const updatedBalance = await this.deps.ledger.updateBalance(
+      tenantId,
+      input.itemId,
+      input.returnLocationId,
+      {
+        onHandQtyKg: newOnHand,
+        lastMovementId: movement.id,
+        version: balance.version + 1,
+      },
+    );
+    if (!updatedBalance) {
+      throw new InventoryLedgerError(
+        "INTERNAL_TRANSACTION_FAILED",
+        "Balance row not found during update after return-from-WIP movement insert.",
+      );
+    }
+
+    // Audit
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "stock_movement",
+      entityId: movement.id,
+      actionType: "inventory.return_from_wip.post",
+      newValuesJson: {
+        docNo: movement.docNo,
+        itemId: movement.itemId,
+        factoryLocationId: input.factoryLocationId,
+        returnLocationId: input.returnLocationId,
+        returnQtyKg: normalizedQty,
+        balanceVersion: updatedBalance.version,
+        onHandQtyKg: updatedBalance.onHandQtyKg,
+        note: "return-from-WIP movement; destination on_hand increased; WIP decrease handled by orchestrator via WipBalanceRepository",
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200,
+      responseBody: {
+        movementId: movement.id,
+        docNo: movement.docNo,
+        balanceVersion: updatedBalance.version,
+        onHandQtyKg: updatedBalance.onHandQtyKg,
+      },
+    }, now);
+
+    return {
+      action: "posted",
+      movementId: movement.id,
+      docNo: movement.docNo,
+      balanceVersion: updatedBalance.version,
+      onHandQtyKg: updatedBalance.onHandQtyKg,
+    };
+  }
 }

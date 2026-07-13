@@ -132,4 +132,25 @@ export class InMemoryProductionOrderRepository implements ProductionOrderReposit
     this.orders.set(key, updated);
     return updated;
   }
+
+  async applyReturnFromWipToInput(
+    tenantId: string,
+    inputId: string,
+    patch: { returnQtyKg: string; cumulativeWasteQtyKg: string },
+  ): Promise<ProductionInput | null> {
+    const key = `${tenantId}:${inputId}`;
+    const input = this.inputs.get(key);
+    if (!input) return null;
+    const newReturned = (parseFloat(input.returnedFromWipQtyKg) + parseFloat(patch.returnQtyKg)).toFixed(3);
+    // remaining = issued - consumed - waste - returned
+    const remaining = (
+      parseFloat(input.issuedQtyKg)
+      - parseFloat(input.consumedQtyKg)
+      - parseFloat(patch.cumulativeWasteQtyKg)
+      - parseFloat(newReturned)
+    ).toFixed(3);
+    const updated = { ...input, returnedFromWipQtyKg: newReturned, remainingWipQtyKg: remaining, updatedAt: NOW() };
+    this.inputs.set(key, updated);
+    return updated;
+  }
 }

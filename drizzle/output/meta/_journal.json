@@ -50,6 +50,13 @@
       "when": 1783908362820,
       "tag": "0006_mighty_dagger",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783917495130,
+      "tag": "0007_ambiguous_maggott",
+      "breakpoints": true
     }
   ]
 }

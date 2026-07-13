@@ -133,6 +133,41 @@ export class ProductionOrderDbRepository implements ProductionOrderRepository {
       .returning();
     return result ?? null;
   }
+
+  async applyReturnFromWipToInput(
+    tenantId: string,
+    inputId: string,
+    patch: { returnQtyKg: string; cumulativeWasteQtyKg: string },
+  ): Promise<ProductionInput | null> {
+    // Atomically: returned_from_wip_qty_kg += returnQtyKg
+    //             remaining_wip_qty_kg = issued_qty_kg - consumed_qty_kg - cumulativeWasteQtyKg - returned_from_wip_qty_kg
+    // Use a CTE-like approach: fetch current, compute, update in one statement.
+    const [current] = await this.db
+      .select()
+      .from(productionInputs)
+      .where(and(eq(productionInputs.tenantId, tenantId), eq(productionInputs.id, inputId)))
+      .limit(1);
+    if (!current) return null;
+
+    const newReturned = (parseFloat(current.returnedFromWipQtyKg) + parseFloat(patch.returnQtyKg)).toFixed(3);
+    const remaining = (
+      parseFloat(current.issuedQtyKg)
+      - parseFloat(current.consumedQtyKg)
+      - parseFloat(patch.cumulativeWasteQtyKg)
+      - parseFloat(newReturned)
+    ).toFixed(3);
+
+    const [result] = await this.db
+      .update(productionInputs)
+      .set({
+        returnedFromWipQtyKg: newReturned,
+        remainingWipQtyKg: remaining,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(productionInputs.tenantId, tenantId), eq(productionInputs.id, inputId)))
+      .returning();
+    return result ?? null;
+  }
 }
 
 export function createProductionOrderDbRepository(db: Db): ProductionOrderDbRepository {
