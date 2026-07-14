@@ -517,4 +517,149 @@ export class ProfitabilitySnapshotService {
       profileVersion: input.profileVersion ?? `v${newVersion}-direct-cost`,
     };
   }
+
+  // =========================================================================
+  // WP-06-03: Return impact snapshot version.
+  // =========================================================================
+
+  /**
+   * WP-06-03: Create a new profitability snapshot version after an approved
+   * customer return. The return impact (return credit value) is included
+   * in the new snapshot's profit calculation.
+   *
+   * Contract 07 §20: "New version after approved return, correction or
+   * reviewed cost completion."
+   *
+   * The return impact is the total return credit value posted for this sale.
+   * It reduces profit: profit = revenue - costs - return_impact.
+   *
+   * The prior active snapshot is superseded (immutable; only is_active +
+   * superseded_by_snapshot_id updated). The new snapshot is active.
+   */
+  async createReturnImpactSnapshot(
+    user: ErpUserContext,
+    input: {
+      salesOrderId: string;
+      /** Total cumulative return credit value for this sale (all approved returns). */
+      returnImpact: string;
+      /** Optional profile version label. */
+      profileVersion?: string | null;
+      /** Optional calculation notes. */
+      calculationNotes?: string | null;
+    },
+  ): Promise<CreateSnapshotResult> {
+    const sale = await this.deps.salesRepository.findSaleById(user.tenantId, input.salesOrderId);
+    if (!sale) throw new SaleNotFoundForSnapshotError(input.salesOrderId);
+
+    const activeSnapshot = await this.deps.snapshotRepository.findActiveSnapshot(user.tenantId, sale.id);
+    if (!activeSnapshot) {
+      throw new ProfitabilitySnapshotError(
+        "NO_ACTIVE_SNAPSHOT",
+        `Cannot create return-impact snapshot for sale '${sale.id}' — no active snapshot exists.`,
+      );
+    }
+
+    const newVersion = activeSnapshot.version + 1;
+    const revenueSnapshot = activeSnapshot.revenueSnapshot ?? "0.00";
+    const discountSnapshot = activeSnapshot.discountSnapshot ?? "0.00";
+    // Return impact: use the new cumulative value (replaces prior value)
+    const returnImpact = normalizeMoney(input.returnImpact);
+
+    // Carry forward all cost components from prior snapshot (immutable)
+    const rawCost = activeSnapshot.rawCostSnapshot;
+    const singleProductionCost = activeSnapshot.singleProductionCostSnapshot;
+    const twistingCost = activeSnapshot.twistingCostSnapshot;
+    const transportCost = activeSnapshot.transportCostSnapshot;
+    // Direct costs: not a separate column in snapshots table — derived from calculation notes.
+    // For return impact snapshots, we carry forward the profit calculation from the prior snapshot
+    // and only adjust the return impact. The total costs remain the same.
+    // We compute totalCosts from the prior snapshot's profit + return impact:
+    // prior_profit = revenue - totalCosts - prior_return_impact
+    // totalCosts = revenue - prior_profit - prior_return_impact
+    const priorReturnImpact = activeSnapshot.returnImpactSnapshot ?? "0.00";
+    const priorProfit = activeSnapshot.profitAmount ?? "0.00";
+    // totalCosts = revenue - priorProfit - priorReturnImpact
+    // (This avoids needing to know individual cost components for the calculation)
+    // But we still carry forward individual components for the snapshot row.
+    const missingCostFlags: Record<string, boolean> = {
+      raw_material: rawCost === null,
+      single_yarn_production: singleProductionCost === null,
+      twisting: twistingCost === null,
+      transport: transportCost === null,
+      direct_costs: false, // Direct costs are embedded in the prior snapshot's calculation
+    };
+    const hasMissingCosts = Object.values(missingCostFlags).some(v => v === true);
+
+    // Compute profit: revenue - totalCosts - return_impact
+    // totalCosts is derived from the prior snapshot: revenue - priorProfit - priorReturnImpact
+    // This preserves all cost components exactly as they were.
+    const totalCosts = subtractMoney(subtractMoney(revenueSnapshot, priorProfit), priorReturnImpact);
+
+    const profitAmount = subtractMoney(revenueSnapshot, addMoney(totalCosts, returnImpact));
+    const profitMarginPercent = calculateMarginPercent(profitAmount, revenueSnapshot);
+
+    // Insert new snapshot
+    const newSnapshot = await this.deps.snapshotRepository.insertSnapshot({
+      tenantId: user.tenantId,
+      salesOrderId: sale.id,
+      version: newVersion,
+      profileVersion: input.profileVersion ?? `v${newVersion}-return-impact`,
+      rawCostSnapshot: rawCost,
+      singleProductionCostSnapshot: singleProductionCost,
+      twistingCostSnapshot: twistingCost,
+      transportCostSnapshot: transportCost,
+      discountSnapshot,
+      returnImpactSnapshot: returnImpact,
+      revenueSnapshot,
+      profitAmount,
+      profitMarginPercent,
+      missingCostFlagsJson: JSON.stringify(missingCostFlags),
+      calculationNotes: input.calculationNotes ?? `Version ${newVersion}: return impact ${returnImpact}.`,
+      calculatedBy: user.userId,
+    });
+
+    // Supersede prior
+    await this.deps.snapshotRepository.supersedeActiveSnapshot(
+      user.tenantId, activeSnapshot.id, newSnapshot.id,
+    );
+
+    // Audit
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: SNAPSHOT_ENTITY_TYPE,
+      entityId: newSnapshot.id,
+      actionType: "profitability_snapshot.create_return_impact",
+      newValuesJson: {
+        salesOrderId: sale.id,
+        version: newVersion,
+        priorSnapshotId: activeSnapshot.id,
+        priorVersion: activeSnapshot.version,
+        returnImpact,
+        revenueSnapshot,
+        profitAmount,
+        profitMarginPercent,
+        hasMissingCosts,
+        missingCostFlags,
+        profileVersion: input.profileVersion ?? `v${newVersion}-return-impact`,
+      },
+    });
+
+    return {
+      snapshotId: newSnapshot.id,
+      salesOrderId: sale.id,
+      version: newVersion,
+      isActive: true,
+      revenueSnapshot,
+      discountSnapshot,
+      rawCostSnapshot: rawCost,
+      singleProductionCostSnapshot: singleProductionCost,
+      twistingCostSnapshot: twistingCost,
+      transportCostSnapshot: transportCost,
+      returnImpactSnapshot: returnImpact,
+      profitAmount,
+      profitMarginPercent,
+      missingCostFlags,
+      hasMissingCosts,
+      profileVersion: input.profileVersion ?? `v${newVersion}-return-impact`,
+    };
+  }
 }

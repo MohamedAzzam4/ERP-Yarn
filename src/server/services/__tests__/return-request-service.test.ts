@@ -64,6 +64,8 @@ function makeWhEff() {
   } as any;
 }
 
+import { ProfitabilitySnapshotService } from "../profitability-snapshot-service";
+import { InMemoryProfitabilitySnapshotRepository } from "./in-memory-profitability-snapshot-repository";
 import { InventoryLedgerService } from "../inventory-ledger-service";
 import { SubledgerService } from "../subledger-service";
 import { InMemorySalesRepository } from "./in-memory-sales-repository";
@@ -75,17 +77,19 @@ function makeDeps() {
   const salesRepository = new InMemorySalesRepository();
   const ledgerRepo = new InMemoryInventoryLedgerRepository();
   const subledgerRepo = new InMemorySubledgerRepository();
+  const snapshotRepo = new InMemoryProfitabilitySnapshotRepository();
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
   const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
+  const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: snapshotRepo, salesRepository, audit });
   const returnService = new ReturnRequestService({
     returnRequestRepository: returnRepo,
     audit, idempotency, documentSequence,
-    inventoryLedger, subledger, salesRepository,
+    inventoryLedger, subledger, salesRepository, snapshotService,
   });
-  return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, returnService };
+  return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, snapshotRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, snapshotService, returnService };
 }
 
 const BASE_LINE = {
@@ -555,6 +559,12 @@ async function setupApprovedSaleWithStock(deps: ReturnType<typeof makeDeps>) {
     });
   }
 
+  // Create V1 profitability snapshot (required for return-impact versioning)
+  await deps.snapshotService.createVersion1Snapshot(
+    makeUser(TEST_USERS.owner.userId),
+    { salesOrderId: draft.id, rawCost: "30.00", singleProductionCost: "20.00" },
+  );
+
   return { saleId: draft.id, saleLineId: lines[0]?.id ?? TEST_SALE_LINE_ID };
 }
 
@@ -921,5 +931,94 @@ describe("WP-06-03 atomic approval with stock + credit effects", () => {
     // Return request still pending_approval
     const rr = await deps.returnRepo.findReturnRequestById(TEST_TENANT_ID, create.returnRequestId);
     expect(rr?.status).toBe("pending_approval");
+  });
+});
+
+// ===========================================================================
+// 11. Profitability snapshot versioning (WP-06-03 correction).
+// ===========================================================================
+
+describe("WP-06-03 profitability snapshot versioning", () => {
+  it("approved return creates new profitability snapshot version with return impact", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Quality issue", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",  // 80.00 / 1000 kg = 0.08/kg
+        }],
+        idempotencyKey: "rr-snapshot-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-snapshot-001:submit" },
+    );
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-snapshot-001:approve" },
+    );
+
+    // Snapshot created
+    expect(approve.snapshotId).not.toBeNull();
+
+    // Verify new snapshot is active and has return impact
+    const activeSnapshot = await deps.snapshotRepo.findActiveSnapshot(TEST_TENANT_ID, saleId);
+    expect(activeSnapshot).toBeTruthy();
+    expect(activeSnapshot!.version).toBe(2);  // V2 = return impact version
+    expect(activeSnapshot!.returnImpactSnapshot).toBe("8.00");  // 100 kg × 0.08/kg = 8.00
+    expect(activeSnapshot!.isActive).toBe("active");
+
+    // V1 is superseded
+    const v1 = await deps.snapshotRepo.findSnapshotByVersion(TEST_TENANT_ID, saleId, 1);
+    expect(v1!.isActive).toBe("superseded");
+
+    // V1 immutable: revenue/profit unchanged
+    expect(v1!.returnImpactSnapshot).toBe("0.00");  // V1 had no return impact
+    expect(v1!.profitAmount).toBe("30.00");  // 80 - 30 - 20 = 30 (V1 profit)
+
+    // V2 profit = 80 - 30 - 20 - 8 = 22
+    expect(activeSnapshot!.profitAmount).toBe("22.00");
+  });
+
+  it("approved return with no_financial_impact does NOT create snapshot", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "No financial impact", financialTreatment: "no_financial_impact",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+        }],
+        idempotencyKey: "rr-no-snapshot-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-no-snapshot-001:submit" },
+    );
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-no-snapshot-001:approve" },
+    );
+
+    // No snapshot created (no financial impact = no credit = no return impact)
+    expect(approve.snapshotId).toBeNull();
+
+    // V1 remains active
+    const activeSnapshot = await deps.snapshotRepo.findActiveSnapshot(TEST_TENANT_ID, saleId);
+    expect(activeSnapshot!.version).toBe(1);  // Still V1
   });
 });

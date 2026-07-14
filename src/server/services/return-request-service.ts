@@ -59,7 +59,8 @@ import type { ReturnRequest, ReturnLine } from "@/server/db/schema/returns";
 import type { InventoryLedgerService } from "./inventory-ledger-service";
 import type { SubledgerService } from "./subledger-service";
 import type { SalesRepository } from "./sales-repository";
-import { normalizeMoney, isPositiveMoney, addMoney, compareMoney, isZeroMoney } from "./decimal-money";
+import type { ProfitabilitySnapshotService } from "./profitability-snapshot-service";
+import { normalizeMoney, isPositiveMoney, addMoney, compareMoney, isZeroMoney, subtractMoney } from "./decimal-money";
 import { normalizeKg, isPositiveKg, addKg, compareKg } from "./decimal-kg";
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,8 @@ export interface ReturnRequestServiceDeps {
   subledger: SubledgerService;
   /** Required for approveReturnRequest: reads sale lines + updates sale return state. */
   salesRepository: SalesRepository;
+  /** Required for approveReturnRequest: creates return-impact profitability snapshot version. */
+  snapshotService: ProfitabilitySnapshotService;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,7 +402,7 @@ export class ReturnRequestService {
     user: ErpUserContext,
     effective: EffectivePermissions,
     input: ApproveReturnInput,
-  ): Promise<{ action: "approved" | "replayed"; returnRequestId: string; status: string; approvedBy: string; stockMovements: string[]; creditEntryId: string | null }> {
+  ): Promise<{ action: "approved" | "replayed"; returnRequestId: string; status: string; approvedBy: string; stockMovements: string[]; creditEntryId: string | null; snapshotId: string | null }> {
     requirePermission(effective, "returns.approve");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
@@ -567,6 +570,61 @@ export class ReturnRequestService {
       }
     }
 
+    // 2b. Create return-impact profitability snapshot version
+    // Contract 07 §20: "New version after approved return."
+    // Only create snapshot when financial treatment requires credit (customer_credit/refund_due).
+    // no_financial_impact returns do not affect profitability.
+    let snapshotId: string | null = null;
+    if (rr.financialTreatment && (rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due")) {
+    {
+      // Calculate cumulative return credit for this sale (prior + current)
+      let cumulativeCredit = "0.00";
+      // Prior approved returns
+      for (const [saleLineId] of saleLines) {
+        const priorReturns = await this.deps.returnRequestRepository.listApprovedReturnLinesForSaleLine(
+          user.tenantId, saleLineId,
+        );
+        for (const prior of priorReturns) {
+          // Compute credit for prior returns using the same formula
+          const sl = saleLines.get(prior.originalSaleLineId);
+          if (sl) {
+            const lineNet = parseFloat(sl.lineNetRevenuePosted);
+            const lineQty = parseFloat(sl.quantityKg);
+            if (lineQty > 0) {
+              const unitValue = lineNet / lineQty;
+              const credit = (parseFloat(prior.quantityKg) * unitValue).toFixed(2);
+              cumulativeCredit = addMoney(cumulativeCredit, normalizeMoney(credit));
+            }
+          }
+        }
+      }
+      // Current return credit (already calculated as totalCredit above, but that was scoped)
+      // Re-calculate for this return's lines
+      for (const line of lines) {
+        const sl = saleLines.get(line.originalSaleLineId);
+        let unitValue: string | null = null;
+        if (line.originalSaleLineNetUnitValue) {
+          unitValue = line.originalSaleLineNetUnitValue;
+        } else if (sl) {
+          const lineNet = parseFloat(sl.lineNetRevenuePosted);
+          const lineQty = parseFloat(sl.quantityKg);
+          if (lineQty > 0) unitValue = (lineNet / lineQty).toFixed(6);
+        }
+        if (unitValue) {
+          const credit = (parseFloat(line.quantityKg) * parseFloat(unitValue)).toFixed(2);
+          cumulativeCredit = addMoney(cumulativeCredit, normalizeMoney(credit));
+        }
+      }
+      if (!isZeroMoney(cumulativeCredit)) {
+        const snapshotResult = await this.deps.snapshotService.createReturnImpactSnapshot(user, {
+          salesOrderId: rr.salesOrderId,
+          returnImpact: cumulativeCredit,
+        });
+        snapshotId = snapshotResult.snapshotId;
+      }
+    }
+    }
+
     // 3. Update sale return state (approved → partially_returned or fully_returned)
     if (saleLines.size > 0) {
       // Check if all sale lines are fully returned
@@ -619,12 +677,13 @@ export class ReturnRequestService {
         decisionNotes: input.decisionNotes ?? null,
         stockMovementIds,
         creditEntryId,
+        snapshotId,
         financialTreatment: rr.financialTreatment,
       },
       idempotencyKey: input.idempotencyKey,
     });
 
-    const result = { action: "approved" as const, returnRequestId: rr.id, status: "approved", approvedBy: user.userId, stockMovements: stockMovementIds, creditEntryId };
+    const result = { action: "approved" as const, returnRequestId: rr.id, status: "approved", approvedBy: user.userId, stockMovements: stockMovementIds, creditEntryId, snapshotId };
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
