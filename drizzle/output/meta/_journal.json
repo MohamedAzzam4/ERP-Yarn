@@ -78,6 +78,13 @@
       "when": 1784003501979,
       "tag": "0010_clammy_viper",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784005758769,
+      "tag": "0011_smart_ghost_rider",
+      "breakpoints": true
     }
   ]
 }

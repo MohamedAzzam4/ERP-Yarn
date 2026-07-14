@@ -1,0 +1,2 @@
+ALTER TABLE "quality_holds" DROP CONSTRAINT "quality_holds_reason_check";--> statement-breakpoint
+ALTER TABLE "quality_holds" ADD CONSTRAINT "quality_holds_reason_check" CHECK (hold_reason IN ('needs_review', 'blocked', 'reprocess_required', 'sellable_with_discount'));

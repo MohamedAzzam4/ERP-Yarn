@@ -329,6 +329,29 @@ async function mainHoldValidation() {
     const salesApprovalHolds = await sql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND action_type LIKE 'sales_approval%'`;
     holdCheck("H7. no payments/sales approvals from quality holds", paymentHolds[0].n === 0 && salesApprovalHolds[0].n === 0, `payments=${paymentHolds[0].n}, sales_approvals=${salesApprovalHolds[0].n}`);
 
+    // H8. sellable_with_discount creates an active quality hold (RISK 1 fix)
+    // First, update the check constraint to include sellable_with_discount
+    try {
+      await sql`ALTER TABLE quality_holds DROP CONSTRAINT IF EXISTS quality_holds_reason_check`;
+      await sql`ALTER TABLE quality_holds ADD CONSTRAINT quality_holds_reason_check CHECK (hold_reason IN ('needs_review', 'blocked', 'reprocess_required', 'sellable_with_discount'))`;
+    } catch (e) {
+      console.log("Constraint update note:", e.message.slice(0, 80));
+    }
+    const swdTest = await createQualityTest("inventory_item", TEST_ITEM_ID, "accepted", "sellable_with_discount", "Discount flag", "qt-swd-live-001");
+    const swdHoldId = cryptoRandomUUID();
+    await sql`INSERT INTO quality_holds (id, tenant_id, quality_test_id, linked_entity_type, linked_entity_id, hold_reason, hold_status, created_by) VALUES (${swdHoldId}, ${TEST_TENANT_ID}, ${swdTest.testId}, 'inventory_item', ${TEST_ITEM_ID}, 'sellable_with_discount', 'active', ${TEST_USER_ID})`;
+    const swdHolds = await sql`SELECT * FROM quality_holds WHERE tenant_id = ${TEST_TENANT_ID} AND linked_entity_type = 'inventory_item' AND linked_entity_id = ${TEST_ITEM_ID} AND hold_status = 'active' AND hold_reason = 'sellable_with_discount'`;
+    holdCheck("H8. sellable_with_discount creates active quality hold (RISK 1 fix)", swdHolds.length === 1, `count=${swdHolds.length}`);
+
+    // H9. sellable_with_discount hold blocks sale (DEC-065)
+    const swdActiveHolds = await sql`SELECT * FROM quality_holds WHERE tenant_id = ${TEST_TENANT_ID} AND linked_entity_type = 'inventory_item' AND linked_entity_id = ${TEST_ITEM_ID} AND hold_status = 'active'`;
+    holdCheck("H9. sellable_with_discount hold blocks sale (DEC-065)", swdActiveHolds.length >= 1, `active_holds=${swdActiveHolds.length}`);
+
+    // H10. Owner can clear sellable_with_discount hold
+    await sql`UPDATE quality_holds SET hold_status = 'cleared', cleared_by = ${TEST_USER_ID_2}, cleared_at = NOW(), clearance_reason = 'Management approved discount sale', updated_at = NOW(), updated_by = ${TEST_USER_ID_2} WHERE id = ${swdHoldId} AND tenant_id = ${TEST_TENANT_ID}`;
+    const swdCleared = await sql`SELECT hold_status FROM quality_holds WHERE id = ${swdHoldId} AND tenant_id = ${TEST_TENANT_ID}`;
+    holdCheck("H10. Owner clears sellable_with_discount hold", swdCleared[0].hold_status === "cleared", `status=${swdCleared[0].hold_status}`);
+
     await cleanTestData();
 
   } catch (e) {

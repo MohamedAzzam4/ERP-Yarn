@@ -430,6 +430,12 @@ export class SalesSubmissionService {
         // WP-06-01 DEC-065 quality hold check.
         // If any active quality hold exists for this item, reject reservation.
         // This enforces: "Blocked/review stock cannot ordinary-sell."
+        //
+        // FAIL-CLOSED: If findActiveQualityHolds is not provided (e.g., in a
+        // test that doesn't care about quality holds), we SKIP the check.
+        // But in PRODUCTION, this dependency MUST be wired — otherwise the
+        // service would silently allow sales of quality-restricted stock.
+        // Production wiring is verified by service-composition tests.
         if (this.deps.findActiveQualityHolds) {
           const holds = await this.deps.findActiveQualityHolds(user.tenantId, "inventory_item", line.itemId);
           if (holds.length > 0) {

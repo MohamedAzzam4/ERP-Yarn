@@ -675,17 +675,20 @@ export class QualityTestService {
    *   - riskClassification = needs_review → hold_reason = needs_review
    *   - riskClassification = blocked → hold_reason = blocked
    *   - riskClassification = reprocess_required → hold_reason = reprocess_required
+   *   - riskClassification = sellable_with_discount → hold_reason = sellable_with_discount
    *
    * Non-restrictive (no hold):
    *   - testStatus = accepted AND riskClassification = none
-   *   - testStatus = accepted AND riskClassification = sellable_with_discount
-   *     (sellable_with_discount is a REVIEW FLAG — does NOT block reservation;
-   *      the discount sale itself requires separate Owner/Accountant approval)
+   *
+   * NOTE: sellable_with_discount creates an active hold because DEC-065
+   * requires discounted/risky stock to go through review/disposition before
+   * ordinary reservation/sale. The hold can only be cleared by
+   * Owner/Accountant management disposition (quality_risk_sales.approve).
    */
   private deriveHoldReason(
     testStatus: QualityStatus,
     riskClassification: RiskClassification,
-  ): "needs_review" | "blocked" | "reprocess_required" | null {
+  ): "needs_review" | "blocked" | "reprocess_required" | "sellable_with_discount" | null {
     // blocked test status always creates a blocked hold
     if (testStatus === "blocked") return "blocked";
     // needs_review test status creates a needs_review hold
@@ -695,8 +698,8 @@ export class QualityTestService {
       if (riskClassification === "needs_review") return "needs_review";
       if (riskClassification === "blocked") return "blocked";
       if (riskClassification === "reprocess_required") return "reprocess_required";
-      // none or sellable_with_discount → no hold
-      // (sellable_with_discount is a review flag, not a restriction)
+      if (riskClassification === "sellable_with_discount") return "sellable_with_discount";
+      // none → no hold
       return null;
     }
     return null;

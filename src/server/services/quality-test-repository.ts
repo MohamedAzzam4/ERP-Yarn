@@ -69,7 +69,7 @@ export interface NewQualityHoldInput {
   qualityTestId: string;
   linkedEntityType: string;
   linkedEntityId: string;
-  holdReason: "needs_review" | "blocked" | "reprocess_required";
+  holdReason: "needs_review" | "blocked" | "reprocess_required" | "sellable_with_discount";
   notes?: string | null;
   createdBy: string;
 }

@@ -180,7 +180,7 @@ export const qualityHolds = pgTable("quality_holds", {
   index("quality_holds_tenant_test_idx").on(t.tenantId, t.qualityTestId),
   index("quality_holds_tenant_status_idx").on(t.tenantId, t.holdStatus),
   check("quality_holds_reason_check",
-    sql`hold_reason IN ('needs_review', 'blocked', 'reprocess_required')`),
+    sql`hold_reason IN ('needs_review', 'blocked', 'reprocess_required', 'sellable_with_discount')`),
   check("quality_holds_status_check",
     sql`hold_status IN ('active', 'cleared')`),
 ]);

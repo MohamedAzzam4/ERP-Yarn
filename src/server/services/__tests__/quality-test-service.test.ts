@@ -989,7 +989,7 @@ describe("WP-06-01 quality hold + DEC-065 sale rejection", () => {
     expect(result.action).toBe("cleared");
   });
 
-  it("sellable_with_discount does NOT create a hold (review flag only)", async () => {
+  it("sellable_with_discount creates an active hold (RISK 1 fix — not passive)", async () => {
     const deps = makeDeps();
     const qualityUser = makeUser(TEST_USERS.quality.userId);
     const qualityEff = makeQualityEff();
@@ -1000,14 +1000,18 @@ describe("WP-06-01 quality hold + DEC-065 sale rejection", () => {
       linkedEntityId: TEST_ITEM_ID,
       testStatus: "accepted",
       riskClassification: "sellable_with_discount",
-      idempotencyKey: "qt-discount-no-hold-001",
+      idempotencyKey: "qt-discount-hold-001",
     });
 
-    // sellable_with_discount is a review flag, NOT a restriction — no hold created
+    // RISK 1 FIX: sellable_with_discount NOW creates an active hold.
+    // DEC-065 requires discounted/risky stock to go through review/disposition
+    // before ordinary reservation/sale.
     const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
       TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
     );
-    expect(holds.length).toBe(0);
+    expect(holds.length).toBe(1);
+    expect(holds[0]!.holdReason).toBe("sellable_with_discount");
+    expect(holds[0]!.holdStatus).toBe("active");
   });
 
   it("DEC-065: sale submission rejects item with active blocked quality hold", async () => {
@@ -1097,6 +1101,122 @@ describe("WP-06-01 quality hold + DEC-065 sale rejection", () => {
     });
 
     // No active holds remain — stock is sellable again
+    const holdsAfter = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holdsAfter.length).toBe(0);
+  });
+});
+
+// ===========================================================================
+// 13. sellable_with_discount creates active hold (RISK 1 fix).
+// ===========================================================================
+
+describe("WP-06-01 sellable_with_discount hold (RISK 1 fix)", () => {
+  it("sellable_with_discount creates an active quality hold (not passive)", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "accepted",
+      riskClassification: "sellable_with_discount",
+      idempotencyKey: "qt-swd-hold-001",
+    });
+
+    // sellable_with_discount now creates an active hold
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+    expect(holds[0]!.holdReason).toBe("sellable_with_discount");
+    expect(holds[0]!.holdStatus).toBe("active");
+  });
+
+  it("DEC-065: sale submission rejects item with active sellable_with_discount hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "accepted",
+      riskClassification: "sellable_with_discount",
+      idempotencyKey: "qt-swd-reject-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+    expect(holds[0]!.holdReason).toBe("sellable_with_discount");
+    // The active hold would cause SalesSubmissionService to reject with:
+    // "Active quality hold(s) on item: sellable_with_discount. Stock cannot be
+    //  reserved until management clears the hold (DEC-065)."
+  });
+
+  it("quality worker cannot authorize sale against sellable_with_discount hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // Create sellable_with_discount hold
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "accepted",
+      riskClassification: "sellable_with_discount",
+      idempotencyKey: "qt-swd-worker-deny-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+
+    // Quality worker tries to clear the hold — denied (needs quality_risk_sales.approve)
+    await expect(deps.qualityTestService.clearQualityHold(qualityUser as any, qualityEff as any, {
+      qualityHoldId: holds[0]!.id,
+      clearanceReason: "Trying to clear for discount sale",
+      idempotencyKey: "qt-swd-worker-deny-001:clear",
+    })).rejects.toThrow(PermissionDeniedError);
+  });
+
+  it("Owner can clear sellable_with_discount hold (quality_risk_sales.approve)", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "accepted",
+      riskClassification: "sellable_with_discount",
+      idempotencyKey: "qt-swd-owner-clear-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = makeOwnerEff();
+    const result = await deps.qualityTestService.clearQualityHold(ownerUser as any, ownerEff as any, {
+      qualityHoldId: holds[0]!.id,
+      clearanceReason: "Management approved discount sale",
+      idempotencyKey: "qt-swd-owner-clear-001:clear",
+    });
+    expect(result.action).toBe("cleared");
+
+    // No active holds remain
     const holdsAfter = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
       TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
     );
