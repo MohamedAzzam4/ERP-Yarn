@@ -167,4 +167,24 @@ export class InMemorySubledgerRepository implements SubledgerTransactionHandle {
   recordIdempotencyKey(tenantId: string, idempotencyKey: string, entryId: string): void {
     this.idempotencyKeyMap.set(`${tenantId}:${idempotencyKey}`, entryId);
   }
+
+  /**
+   * WP-06-04 test helper: find all entries for a tenant matching a source document type.
+   * Used by replacement workflow tests to verify return credit + replacement receivable.
+   */
+  async findEntriesBySourceDocType(tenantId: string, sourceDocumentType: string): Promise<AccountEntry[]> {
+    return [...this.entries.values()].filter(
+      (e) => e.tenantId === tenantId && e.sourceDocumentType === sourceDocumentType,
+    );
+  }
+
+  /**
+   * WP-06-04 test helper: find all entries for a tenant matching an entry type.
+   * Used by replacement workflow tests to verify no payment/refund entries exist.
+   */
+  async findEntriesByEntryType(tenantId: string, entryType: string): Promise<AccountEntry[]> {
+    return [...this.entries.values()].filter(
+      (e) => e.tenantId === tenantId && e.entryType === entryType,
+    );
+  }
 }

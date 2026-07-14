@@ -18,6 +18,16 @@ export interface NewSalesDraftInput {
   customerId: string;
   saleDate: string;
   createdBy: string;
+  /**
+   * WP-06-04: Replacement order link.
+   * When true, this sale is a replacement order linked to an approved return
+   * request. The replacement order follows the ordinary sales pipeline
+   * (draft → submit → reserve → approve → issue → receivable → profitability).
+   * Contract 06 §9 + Contract 07 §10.1: "The linked replacement order is a
+   * normal sales order: it stores return_request_id and original-sale links."
+   */
+  isReplacementOrder?: boolean;
+  originalReturnRequestId?: string | null;
 }
 
 export interface NewSalesLineInput {
@@ -44,6 +54,13 @@ export interface LineCommercialTotalsPatch {
   lineNetRevenuePrecise: string;
   lineNetRevenuePosted: string;
   roundingAdjustment: string;
+  /**
+   * WP-06-04: Optional pricePerTon to persist on the line.
+   * The completeCommercialTotals flow calculates revenue from the caller-provided
+   * price, but the price must also be persisted on the line so that
+   * SalesApprovalService can verify commercial totals are posted.
+   */
+  pricePerTon?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,4 +154,17 @@ export interface SalesRepository {
     lineId: string,
     saleIssueMovementId: string,
   ): Promise<SalesOrderLine | null>;
+
+  /**
+   * WP-06-04: Find a replacement sales order linked to a return request.
+   * Returns the replacement sales order if one exists for the given
+   * originalReturnRequestId, or null otherwise.
+   *
+   * Used by ReplacementWorkflowService to enforce idempotency: only one
+   * replacement order may be created per approved return request.
+   */
+  findReplacementOrderByReturnRequestId(
+    tenantId: string,
+    returnRequestId: string,
+  ): Promise<SalesOrder | null>;
 }

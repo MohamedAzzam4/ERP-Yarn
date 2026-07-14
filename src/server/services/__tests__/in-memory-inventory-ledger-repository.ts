@@ -203,4 +203,12 @@ export class InMemoryInventoryLedgerRepository implements InventoryLedgerTransac
   async listAllBalances(tenantId: string): Promise<InventoryBalance[]> {
     return [...this.balances.values()].filter((b) => b.tenantId === tenantId);
   }
+
+  /**
+   * WP-06-04 test helper: list all movements for a tenant.
+   * Used by replacement workflow tests to verify no manual stock difference movements exist.
+   */
+  async findAllMovementsForTenant(tenantId: string): Promise<StockMovement[]> {
+    return [...this.movements.values()].filter((m) => m.tenantId === tenantId);
+  }
 }

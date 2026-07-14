@@ -361,6 +361,8 @@ export class SalesDraftService {
     );
 
     // Build line patches (map calculator results to DB line IDs)
+    // WP-06-04: Include pricePerTon so it's persisted on the line — required
+    // by SalesApprovalService to verify commercial totals are posted.
     const linePatches = calculated.lines.map((calcLine) => {
       const dbLine = lines.find((l) => l.lineNo === calcLine.lineNo)!;
       return {
@@ -371,6 +373,7 @@ export class SalesDraftService {
         lineNetRevenuePrecise: calcLine.lineNetRevenuePrecise,
         lineNetRevenuePosted: calcLine.lineNetRevenuePosted,
         roundingAdjustment: calcLine.roundingAdjustment,
+        pricePerTon: priceMap.get(dbLine.id)!,
       };
     });
 

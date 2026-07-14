@@ -103,8 +103,9 @@ export class InMemorySalesRepository implements SalesRepository {
       reservationStatus: null,
       paymentStatus: null,
       deliveryStatus: null,
-      isReplacementOrder: false,
-      originalReturnRequestId: null,
+      // WP-06-04: Replacement order link fields.
+      isReplacementOrder: row.isReplacementOrder ?? false,
+      originalReturnRequestId: row.originalReturnRequestId ?? null,
       recordOrigin: "manual_live",
       recordPeriod: "live",
       isLocked: false,
@@ -249,6 +250,7 @@ export class InMemorySalesRepository implements SalesRepository {
       lineNetRevenuePrecise: string;
       lineNetRevenuePosted: string;
       roundingAdjustment: string;
+      pricePerTon?: string | null;
     },
   ): Promise<SalesOrderLine | null> {
     // Find the line across all sales in this tenant
@@ -264,6 +266,8 @@ export class InMemorySalesRepository implements SalesRepository {
             lineNetRevenuePrecise: patch.lineNetRevenuePrecise,
             lineNetRevenuePosted: patch.lineNetRevenuePosted,
             roundingAdjustment: patch.roundingAdjustment,
+            // WP-06-04: persist pricePerTon if provided.
+            ...(patch.pricePerTon !== undefined ? { pricePerTon: patch.pricePerTon } : {}),
             updatedAt: NOW(),
           };
           lines[i] = updated;
@@ -292,6 +296,7 @@ export class InMemorySalesRepository implements SalesRepository {
       lineNetRevenuePrecise: string;
       lineNetRevenuePosted: string;
       roundingAdjustment: string;
+      pricePerTon?: string | null;
     }>,
   ): Promise<SalesOrder | null> {
     // Take a snapshot for rollback
@@ -312,6 +317,8 @@ export class InMemorySalesRepository implements SalesRepository {
           lineNetRevenuePrecise: lp.lineNetRevenuePrecise,
           lineNetRevenuePosted: lp.lineNetRevenuePosted,
           roundingAdjustment: lp.roundingAdjustment,
+          // WP-06-04: pass pricePerTon through if provided.
+          ...(lp.pricePerTon !== undefined ? { pricePerTon: lp.pricePerTon } : {}),
         });
         if (!lineResult) throw new Error(`Line '${lp.lineId}' not found during batch update`);
       }
@@ -381,6 +388,24 @@ export class InMemorySalesRepository implements SalesRepository {
           this.lines.set(key, lines);
           return updated;
         }
+      }
+    }
+    return null;
+  }
+
+  // --- WP-06-04 methods ---
+
+  async findReplacementOrderByReturnRequestId(
+    tenantId: string,
+    returnRequestId: string,
+  ): Promise<SalesOrder | null> {
+    for (const sale of this.sales.values()) {
+      if (
+        sale.tenantId === tenantId &&
+        sale.isReplacementOrder &&
+        sale.originalReturnRequestId === returnRequestId
+      ) {
+        return sale;
       }
     }
     return null;

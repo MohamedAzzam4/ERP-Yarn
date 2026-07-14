@@ -112,6 +112,9 @@ export class SalesDbRepository implements SalesRepository {
         totalGrossRevenue: "0",
         orderDiscountTotal: "0",
         documentTotalPosted: "0",
+        // WP-06-04: Replacement order link fields.
+        isReplacementOrder: row.isReplacementOrder ?? false,
+        originalReturnRequestId: row.originalReturnRequestId ?? null,
         createdBy: row.createdBy,
       })
       .returning();
@@ -163,6 +166,7 @@ export class SalesDbRepository implements SalesRepository {
       lineNetRevenuePrecise: string;
       lineNetRevenuePosted: string;
       roundingAdjustment: string;
+      pricePerTon?: string | null;
     },
   ): Promise<SalesOrderLine | null> {
     const [result] = await this.db
@@ -174,6 +178,10 @@ export class SalesDbRepository implements SalesRepository {
         lineNetRevenuePrecise: patch.lineNetRevenuePrecise,
         lineNetRevenuePosted: patch.lineNetRevenuePosted,
         roundingAdjustment: patch.roundingAdjustment,
+        // WP-06-04: persist pricePerTon if provided (for replacement orders
+        // where the line was created with pricePerTon=null and the price is
+        // set later via completeCommercialTotals).
+        ...(patch.pricePerTon !== undefined ? { pricePerTon: patch.pricePerTon } : {}),
         updatedAt: new Date(),
       })
       .where(
@@ -207,6 +215,7 @@ export class SalesDbRepository implements SalesRepository {
       lineNetRevenuePrecise: string;
       lineNetRevenuePosted: string;
       roundingAdjustment: string;
+      pricePerTon?: string | null;
     }>,
   ): Promise<SalesOrder | null> {
     // Update sale header
@@ -222,6 +231,8 @@ export class SalesDbRepository implements SalesRepository {
         lineNetRevenuePrecise: lp.lineNetRevenuePrecise,
         lineNetRevenuePosted: lp.lineNetRevenuePosted,
         roundingAdjustment: lp.roundingAdjustment,
+        // WP-06-04: pass pricePerTon through if provided.
+        ...(lp.pricePerTon !== undefined ? { pricePerTon: lp.pricePerTon } : {}),
       });
       if (!lineResult) {
         throw new Error(`Line '${lp.lineId}' not found during batch commercial totals update`);
@@ -297,6 +308,26 @@ export class SalesDbRepository implements SalesRepository {
         ),
       )
       .returning();
+    return result ?? null;
+  }
+
+  // --- WP-06-04 methods ---
+
+  async findReplacementOrderByReturnRequestId(
+    tenantId: string,
+    returnRequestId: string,
+  ): Promise<SalesOrder | null> {
+    const [result] = await this.db
+      .select()
+      .from(salesOrders)
+      .where(
+        and(
+          eq(salesOrders.tenantId, tenantId),
+          eq(salesOrders.isReplacementOrder, true),
+          eq(salesOrders.originalReturnRequestId, returnRequestId),
+        ),
+      )
+      .limit(1);
     return result ?? null;
   }
 }

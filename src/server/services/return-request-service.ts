@@ -653,11 +653,16 @@ export class ReturnRequestService {
 
       // 2. Post customer return credit entry (NEGATIVE customer entry)
       // Contract 07 §10.1: "An approved customer return credit is a negative customer entry."
+      // Contract 06 §9 line 151: "for replacement, create the return credit from
+      // returned quantity × original approved sale line net unit value after
+      // allocated discount, capped by the remaining original line value after prior returns."
+      // So replacement treatment ALSO creates a return credit — the replacement
+      // sale then creates a positive receivable, and the difference arises naturally.
       // return_credit_value = returned_quantity × original_sale_line_net_unit_value
       // The credit value is ALWAYS computed server-side from the sale line data.
       // DEC-068: Final effective return applies residual so cumulative = original net value exactly.
       if (rr.financialTreatment) {
-        const needsCredit = rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due";
+        const needsCredit = rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due" || rr.financialTreatment === "replacement";
         if (needsCredit) {
           // Calculate per-line credit with DEC-068 residual + store on return lines
           let totalCredit = "0.00";
@@ -733,10 +738,10 @@ export class ReturnRequestService {
 
       // 2b. Create return-impact profitability snapshot version
       // Contract 07 §20: "New version after approved return."
-      // Only create snapshot when financial treatment requires credit (customer_credit/refund_due).
+      // Only create snapshot when financial treatment requires credit (customer_credit/refund_due/replacement).
       // no_financial_impact returns do not affect profitability.
       let snapshotId: string | null = null;
-      if (rr.financialTreatment && (rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due")) {
+      if (rr.financialTreatment && (rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due" || rr.financialTreatment === "replacement")) {
       {
         // Calculate cumulative return credit for this sale (prior + current)
         let cumulativeCredit = "0.00";
