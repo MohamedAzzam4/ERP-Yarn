@@ -485,6 +485,44 @@ export class ReturnRequestService {
           throw new ReturnExceedsSaleLineCapError(line.id, totalQty, originalQty);
         }
       }
+
+      // DEC-068 value cap: cumulative credit cannot exceed original sale-line net value
+      if (saleLine) {
+        const originalNetValue = normalizeMoney(saleLine.lineNetRevenuePosted);
+        const priorCredit = priorReturns.reduce(
+          (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
+        );
+        // Compute current line credit (server-side)
+        let unitValue: string | null = null;
+        if (line.originalSaleLineNetUnitValue) {
+          unitValue = line.originalSaleLineNetUnitValue;
+        } else {
+          const lineNet = parseFloat(saleLine.lineNetRevenuePosted);
+          const lineQty = parseFloat(saleLine.quantityKg);
+          if (lineQty > 0) unitValue = (lineNet / lineQty).toFixed(6);
+        }
+        let currentCredit = "0.00";
+        if (unitValue) {
+          const credit = (parseFloat(line.quantityKg) * parseFloat(unitValue)).toFixed(2);
+          currentCredit = normalizeMoney(credit);
+        }
+        // Check if this is the final effective return (totalQty == originalQty)
+        const originalQty = normalizeKg(saleLine.quantityKg);
+        const isFinalReturn = compareKg(totalQty, originalQty) === 0;
+        if (isFinalReturn) {
+          // Final residual: adjust so cumulative = original net value exactly
+          const residual = subtractMoney(subtractMoney(originalNetValue, priorCredit), currentCredit);
+          currentCredit = addMoney(currentCredit, residual);
+        }
+        const totalCredit = addMoney(priorCredit, currentCredit);
+        if (compareMoney(totalCredit, originalNetValue) > 0) {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 422, responseBody: { message: `Cumulative return credit ${totalCredit} exceeds sale line net value ${originalNetValue} (DEC-068).` },
+            lastErrorClass: "ReturnExceedsSaleLineCapError",
+          }, now);
+          throw new ReturnExceedsSaleLineCapError(line.id, totalCredit, originalNetValue);
+        }
+      }
     }
 
     // === ATOMIC APPROVAL EFFECTS ===
@@ -522,36 +560,64 @@ export class ReturnRequestService {
     // Contract 07 §10.1: "An approved customer return credit is a negative customer entry."
     // return_credit_value = returned_quantity × original_sale_line_net_unit_value
     // The credit value is ALWAYS computed server-side from the sale line data.
-    // Caller/worker input must NOT provide return credit value.
+    // DEC-068: Final effective return applies residual so cumulative = original net value exactly.
     if (rr.financialTreatment) {
       const needsCredit = rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due";
       if (needsCredit) {
-        // Calculate total return credit value server-side
+        // Calculate per-line credit with DEC-068 residual + store on return lines
         let totalCredit = "0.00";
         for (const line of lines) {
-          // Fetch original sale line to get net unit value after allocated discount
           const saleLine = saleLines.get(line.originalSaleLineId);
           let unitValue: string | null = null;
-
-          // Use the line's snapshotted value if provided at creation time
           if (line.originalSaleLineNetUnitValue) {
             unitValue = line.originalSaleLineNetUnitValue;
           } else if (saleLine) {
-            // Derive from sale line: lineNetRevenuePosted / quantityKg
             const lineNet = parseFloat(saleLine.lineNetRevenuePosted);
             const lineQty = parseFloat(saleLine.quantityKg);
-            if (lineQty > 0) {
-              unitValue = (lineNet / lineQty).toFixed(6);
-            }
+            if (lineQty > 0) unitValue = (lineNet / lineQty).toFixed(6);
           }
 
+          let lineCredit = "0.00";
+          let residualAdjustment = "0.00";
           if (unitValue) {
-            // return_credit_value = returned_quantity × unit_value (ROUND_HALF_UP at 2 decimals)
-            const qty = parseFloat(line.quantityKg);
-            const uv = parseFloat(unitValue);
-            const credit = (qty * uv).toFixed(2);
-            totalCredit = addMoney(totalCredit, normalizeMoney(credit));
+            lineCredit = normalizeMoney((parseFloat(line.quantityKg) * parseFloat(unitValue)).toFixed(2));
           }
+
+          // DEC-068: Check if this is the final effective return
+          if (saleLine) {
+            const priorReturns = await this.deps.returnRequestRepository.listApprovedReturnLinesForSaleLine(
+              user.tenantId, line.originalSaleLineId,
+            );
+            const priorQty = priorReturns.reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
+            const newQty = normalizeKg(line.quantityKg);
+            const totalQty = addKg(priorQty, newQty);
+            const originalQty = normalizeKg(saleLine.quantityKg);
+            const isFinalReturn = compareKg(totalQty, originalQty) === 0;
+
+            if (isFinalReturn) {
+              const originalNetValue = normalizeMoney(saleLine.lineNetRevenuePosted);
+              const priorCredit = priorReturns.reduce(
+                (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
+              );
+              residualAdjustment = subtractMoney(subtractMoney(originalNetValue, priorCredit), lineCredit);
+              lineCredit = addMoney(lineCredit, residualAdjustment);
+            }
+
+            // Store computed credit + residual on return line
+            await this.deps.returnRequestRepository.updateReturnLineCreditAndResidual(
+              user.tenantId, line.id, {
+                returnCreditValue: lineCredit,
+                residualAdjustment,
+                cumulativePriorReturnQty: priorQty,
+                cumulativePriorReturnCredit: priorReturns.reduce(
+                  (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
+                ),
+                updatedBy: user.userId,
+              },
+            );
+          }
+
+          totalCredit = addMoney(totalCredit, lineCredit);
         }
         if (!isZeroMoney(totalCredit)) {
           const entryDocNo = await allocateDocumentNumber(this.deps.documentSequence, {

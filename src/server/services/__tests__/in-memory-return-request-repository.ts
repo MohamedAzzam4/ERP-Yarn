@@ -142,6 +142,26 @@ export class InMemoryReturnRequestRepository implements ReturnRequestRepository 
     return updated;
   }
 
+  async updateReturnLineCreditAndResidual(
+    tenantId: string, returnLineId: string,
+    patch: { returnCreditValue: string; residualAdjustment: string; cumulativePriorReturnQty: string; cumulativePriorReturnCredit: string; updatedBy: string },
+  ): Promise<ReturnLine | null> {
+    const key = `${tenantId}:${returnLineId}`;
+    const rl = this.returnLines.get(key);
+    if (!rl) return null;
+    const updated = {
+      ...rl,
+      returnCreditValue: patch.returnCreditValue,
+      residualAdjustment: patch.residualAdjustment,
+      cumulativePriorReturnQty: patch.cumulativePriorReturnQty,
+      cumulativePriorReturnCredit: patch.cumulativePriorReturnCredit,
+      updatedAt: NOW(),
+      updatedBy: patch.updatedBy,
+    } as any;
+    this.returnLines.set(key, updated);
+    return updated;
+  }
+
   async listApprovedReturnLinesForSaleLine(tenantId: string, originalSaleLineId: string): Promise<ReturnLine[]> {
     // Get all return lines for this sale line, then filter by approved return requests
     const lines = [...this.returnLines.values()].filter(l => l.tenantId === tenantId && l.originalSaleLineId === originalSaleLineId);

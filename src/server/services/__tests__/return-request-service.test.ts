@@ -31,6 +31,7 @@ import { InProcessIdempotencyStore } from "../idempotency-service";
 import { InProcessDocumentSequenceStore } from "../document-sequence-service";
 import { TEST_USERS } from "@/server/security/role-fixtures";
 import { PermissionDeniedError } from "@/server/security/guards";
+import { addMoney } from "../decimal-money";
 
 const TEST_TENANT_ID = "00000000-0000-0000-0000-000000060003";
 const TEST_CUSTOMER_ID = "00000000-0000-4000-8000-cccc00060003";
@@ -1020,5 +1021,254 @@ describe("WP-06-03 profitability snapshot versioning", () => {
     // V1 remains active
     const activeSnapshot = await deps.snapshotRepo.findActiveSnapshot(TEST_TENANT_ID, saleId);
     expect(activeSnapshot!.version).toBe(1);  // Still V1
+  });
+});
+
+// ===========================================================================
+// 12. DEC-068 value cap + final residual (WP-06-03 correction).
+// ===========================================================================
+
+describe("WP-06-03 DEC-068 value cap + final residual", () => {
+  it("normal partial return: credit = qty × unit_value (no residual)", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+    // Sale line: 1000 kg, net revenue 80.00 → unit value = 0.080000
+    // Return 500 kg → credit = 500 × 0.08 = 40.00
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Partial return", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "500.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-dec068-partial-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-partial-001:submit" },
+    );
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-partial-001:approve" },
+    );
+
+    // Credit entry created with exact value
+    expect(approve.creditEntryId).not.toBeNull();
+    const entries = [...((deps.subledgerRepo as any).entries as Map<string, any>).values()].filter(
+      (e: any) => e.sourceDocumentType === "return_request",
+    );
+    expect(entries[0]!.amountSigned).toBe("-40.00");  // 500 × 0.08 = 40.00
+
+    // Return line has credit stored + zero residual (not final)
+    const lines = await deps.returnRepo.findReturnLines(TEST_TENANT_ID, create.returnRequestId);
+    expect(lines[0]!.returnCreditValue).toBe("40.00");
+    expect(lines[0]!.residualAdjustment).toBe("0.00");
+  });
+
+  it("final effective return: residual adjusts so cumulative = original net value exactly", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+    // Sale line: 1000 kg, net revenue 80.00 → unit value = 0.080000
+    // First return: 500 kg → credit = 40.00
+    // Final return: 500 kg → credit = 40.00, residual = 80.00 - 40.00 - 40.00 = 0.00
+    // Cumulative = 80.00 = original net value exactly
+
+    // First partial return
+    const create1 = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "First partial", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "500.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-dec068-final-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create1.returnRequestId, idempotencyKey: "rr-dec068-final-001:submit" },
+    );
+    await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create1.returnRequestId, idempotencyKey: "rr-dec068-final-001:approve" },
+    );
+
+    // Final return (remaining 500 kg)
+    const create2 = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Final return", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "500.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-dec068-final-002",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create2.returnRequestId, idempotencyKey: "rr-dec068-final-002:submit" },
+    );
+    const approve2 = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create2.returnRequestId, idempotencyKey: "rr-dec068-final-002:approve" },
+    );
+
+    // Second return line: credit = 40.00, residual = 0.00 (80 - 40 - 40 = 0)
+    const lines2 = await deps.returnRepo.findReturnLines(TEST_TENANT_ID, create2.returnRequestId);
+    expect(lines2[0]!.returnCreditValue).toBe("40.00");
+    expect(lines2[0]!.residualAdjustment).toBe("0.00");
+
+    // Verify cumulative = original (80.00)
+    const allApproved = await deps.returnRepo.listApprovedReturnLinesForSaleLine(TEST_TENANT_ID, saleLineId);
+    const cumulativeCredit = allApproved.reduce(
+      (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
+    );
+    expect(cumulativeCredit).toBe("80.00");  // = original sale line net value exactly
+  });
+
+  it("rejected prior return does not count toward cumulative cap", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    // Create + reject a return
+    const create1 = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Will be rejected", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "500.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-dec068-rejected-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create1.returnRequestId, idempotencyKey: "rr-dec068-rejected-001:submit" },
+    );
+    await deps.returnService.rejectReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create1.returnRequestId, rejectionReason: "Invalid", idempotencyKey: "rr-dec068-rejected-001:reject" },
+    );
+
+    // Now create a new return for the full quantity (should succeed because rejected return doesn't count)
+    const create2 = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Full return after rejection", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "1000.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-dec068-rejected-002",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create2.returnRequestId, idempotencyKey: "rr-dec068-rejected-002:submit" },
+    );
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create2.returnRequestId, idempotencyKey: "rr-dec068-rejected-002:approve" },
+    );
+    expect(approve.status).toBe("approved");
+  });
+
+  it("idempotency replay does not recalculate residual or double-post credit", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Idem residual test", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "1000.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-dec068-idem-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-idem-001:submit" },
+    );
+    const r1 = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-idem-001:approve" },
+    );
+    const r2 = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-idem-001:approve" },
+    );
+    expect(r2.action).toBe("replayed");
+
+    // Only 1 credit entry (not 2)
+    const entries = [...((deps.subledgerRepo as any).entries as Map<string, any>).values()].filter(
+      (e: any) => e.sourceDocumentType === "return_request",
+    );
+    expect(entries.length).toBe(1);
+
+    // Only 1 stock movement (not 2)
+    const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
+      (m: any) => m.sourceDocumentType === "return_request",
+    );
+    expect(movements.length).toBe(1);
+  });
+
+  it("different idempotency key cannot approve same return twice", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Double approve test", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-dec068-double-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-double-001:submit" },
+    );
+    await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-double-001:approve" },
+    );
+    // Different key on already-approved return → rejected (STATE_CONFLICT)
+    await expect(deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-double-001:approve-2" },
+    )).rejects.toThrow(ReturnRequestNotApprovableError);
   });
 });

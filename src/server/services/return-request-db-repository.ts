@@ -118,6 +118,23 @@ export class ReturnRequestDbRepository implements ReturnRequestRepository {
     return result ?? null;
   }
 
+  async updateReturnLineCreditAndResidual(
+    tenantId: string, returnLineId: string,
+    patch: { returnCreditValue: string; residualAdjustment: string; cumulativePriorReturnQty: string; cumulativePriorReturnCredit: string; updatedBy: string },
+  ): Promise<ReturnLine | null> {
+    const [result] = await this.db.update(returnLines).set({
+      returnCreditValue: patch.returnCreditValue,
+      residualAdjustment: patch.residualAdjustment,
+      cumulativePriorReturnQty: patch.cumulativePriorReturnQty,
+      cumulativePriorReturnCredit: patch.cumulativePriorReturnCredit,
+      updatedAt: new Date(),
+      updatedBy: patch.updatedBy,
+    } as any)
+      .where(and(eq(returnLines.tenantId, tenantId), eq(returnLines.id, returnLineId)))
+      .returning();
+    return result ?? null;
+  }
+
   async listApprovedReturnLinesForSaleLine(tenantId: string, originalSaleLineId: string): Promise<ReturnLine[]> {
     // Join with return_requests to filter by approved status
     const lines = await this.db.select().from(returnLines)

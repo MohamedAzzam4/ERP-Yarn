@@ -84,6 +84,22 @@ export interface ReturnRequestRepository {
   updateReturnLineMovement(tenantId: string, returnLineId: string, returnMovementId: string): Promise<ReturnLine | null>;
 
   /**
+   * Update return line's computed credit value + residual adjustment.
+   * Called during approval after server-side credit calculation.
+   */
+  updateReturnLineCreditAndResidual(
+    tenantId: string,
+    returnLineId: string,
+    patch: {
+      returnCreditValue: string;
+      residualAdjustment: string;
+      cumulativePriorReturnQty: string;
+      cumulativePriorReturnCredit: string;
+      updatedBy: string;
+    },
+  ): Promise<ReturnLine | null>;
+
+  /**
    * List approved return lines for a specific original sale line.
    * Used to compute cumulative prior returns for DEC-068 cap enforcement.
    */
