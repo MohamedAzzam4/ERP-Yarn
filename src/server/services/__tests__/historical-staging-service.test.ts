@@ -620,3 +620,161 @@ describe("WP-07-01 batch listing + detail", () => {
     expect(detail.files[0]?.fileHash).toBe("sha256:detail");
   });
 });
+
+// ===========================================================================
+// WP-07-01 Task 3: Private file metadata validation
+// ===========================================================================
+
+describe("WP-07-01 Task 3: private file metadata validation", () => {
+  it("16. rejects public URL as storagePath", async () => {
+    const deps = makeDeps();
+    const user = makeUser();
+    const eff = makeOwnerEff();
+
+    const batch = await deps.service.createBatch(user as any, eff, {
+      sourceDescription: "File validation test",
+      templateName: null, templateVersion: null,
+      cutoverImportMode: "opening_balance",
+      idempotencyKey: "batch-fileval-001",
+    });
+
+    await expect(deps.service.registerFile(user as any, eff, {
+      importBatchId: batch.batchId,
+      originalFileName: "data.xlsx",
+      storagePath: "https://example.com/public/data.xlsx",
+      fileHash: "sha256:abc",
+      fileSizeBytes: 100,
+      contentType: null,
+      fileType: "source",
+      idempotencyKey: "file-public-url-001",
+    })).rejects.toThrow("private storage reference");
+
+    await expect(deps.service.registerFile(user as any, eff, {
+      importBatchId: batch.batchId,
+      originalFileName: "data.xlsx",
+      storagePath: "http://example.com/data.xlsx",
+      fileHash: "sha256:abc",
+      fileSizeBytes: 100,
+      contentType: null,
+      fileType: "source",
+      idempotencyKey: "file-public-url-002",
+    })).rejects.toThrow("private storage reference");
+  });
+
+  it("17. rejects secret-looking values in storagePath", async () => {
+    const deps = makeDeps();
+    const user = makeUser();
+    const eff = makeOwnerEff();
+
+    const batch = await deps.service.createBatch(user as any, eff, {
+      sourceDescription: "Secret validation test",
+      templateName: null, templateVersion: null,
+      cutoverImportMode: "opening_balance",
+      idempotencyKey: "batch-secret-001",
+    });
+
+    await expect(deps.service.registerFile(user as any, eff, {
+      importBatchId: batch.batchId,
+      originalFileName: "data.xlsx",
+      storagePath: "private://bucket?token=abc123secret",
+      fileHash: "sha256:abc",
+      fileSizeBytes: 100,
+      contentType: null,
+      fileType: "source",
+      idempotencyKey: "file-secret-001",
+    })).rejects.toThrow("must not contain tokens");
+
+    await expect(deps.service.registerFile(user as any, eff, {
+      importBatchId: batch.batchId,
+      originalFileName: "data.xlsx",
+      storagePath: "private://bucket?api_key=xyz",
+      fileHash: "sha256:abc",
+      fileSizeBytes: 100,
+      contentType: null,
+      fileType: "source",
+      idempotencyKey: "file-secret-002",
+    })).rejects.toThrow("must not contain tokens");
+  });
+
+  it("18. accepts private:// storage reference", async () => {
+    const deps = makeDeps();
+    const user = makeUser();
+    const eff = makeOwnerEff();
+
+    const batch = await deps.service.createBatch(user as any, eff, {
+      sourceDescription: "Private path test",
+      templateName: null, templateVersion: null,
+      cutoverImportMode: "opening_balance",
+      idempotencyKey: "batch-private-001",
+    });
+
+    const result = await deps.service.registerFile(user as any, eff, {
+      importBatchId: batch.batchId,
+      originalFileName: "data.xlsx",
+      storagePath: "private://tenant-001/batch-001/data.xlsx",
+      fileHash: "sha256:valid",
+      fileSizeBytes: 1024,
+      contentType: "application/octet-stream",
+      fileType: "source",
+      idempotencyKey: "file-private-001",
+    });
+    expect(result.action).toBe("created");
+  });
+
+  it("19. requires checksum (fileHash)", async () => {
+    const deps = makeDeps();
+    const user = makeUser();
+    const eff = makeOwnerEff();
+
+    const batch = await deps.service.createBatch(user as any, eff, {
+      sourceDescription: "Checksum test",
+      templateName: null, templateVersion: null,
+      cutoverImportMode: "opening_balance",
+      idempotencyKey: "batch-checksum-001",
+    });
+
+    await expect(deps.service.registerFile(user as any, eff, {
+      importBatchId: batch.batchId,
+      originalFileName: "data.xlsx",
+      storagePath: "private://data.xlsx",
+      fileHash: "",
+      fileSizeBytes: 100,
+      contentType: null,
+      fileType: "source",
+      idempotencyKey: "file-nochecksum-001",
+    })).rejects.toThrow("fileHash is required");
+  });
+
+  it("20. persists file size, content type, original filename, provenance", async () => {
+    const deps = makeDeps();
+    const user = makeUser();
+    const eff = makeOwnerEff();
+
+    const batch = await deps.service.createBatch(user as any, eff, {
+      sourceDescription: "Metadata persistence test",
+      templateName: null, templateVersion: null,
+      cutoverImportMode: "opening_balance",
+      idempotencyKey: "batch-metadata-001",
+    });
+
+    const result = await deps.service.registerFile(user as any, eff, {
+      importBatchId: batch.batchId,
+      originalFileName: "customers.xlsx",
+      storagePath: "private://tenant/batch/customers.xlsx",
+      fileHash: "sha256:metadata-test",
+      fileSizeBytes: 4096,
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      fileType: "source",
+      idempotencyKey: "file-metadata-001",
+    });
+
+    const file = await deps.repository.findImportFileById(TEST_TENANT_ID, result.fileId);
+    expect(file?.originalFileName).toBe("customers.xlsx");
+    expect(file?.fileHash).toBe("sha256:metadata-test");
+    expect(file?.fileSizeBytes).toBe(4096);
+    expect(file?.contentType).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    expect(file?.storagePath).toBe("private://tenant/batch/customers.xlsx");
+    expect(file?.fileType).toBe("source");
+    expect(file?.createdBy).toBe(TEST_USER_ID);
+  });
+});

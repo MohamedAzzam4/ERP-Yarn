@@ -292,6 +292,19 @@ export class HistoricalStagingService {
     if (!input.importBatchId?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "importBatchId is required.");
     if (!input.fileHash?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "fileHash is required.");
     if (!input.idempotencyKey?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "idempotencyKey is required.");
+    if (!input.storagePath?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "storagePath is required.");
+    if (!input.originalFileName?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "originalFileName is required.");
+
+    // WP-07-01 Task 3: Private file metadata validation.
+    // Reject public URLs — files must use private storage references only.
+    const path = input.storagePath.trim().toLowerCase();
+    if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("ftp://") || path.startsWith("www.")) {
+      throw new HistoricalStagingError("VALIDATION_FAILED", "storagePath must be a private storage reference, not a public URL.");
+    }
+    // Reject secret-looking values in storage path (tokens, passwords, API keys).
+    if (/(?:token|password|secret|api[_-]?key|bearer|authorization)[=:]/i.test(input.storagePath)) {
+      throw new HistoricalStagingError("VALIDATION_FAILED", "storagePath must not contain tokens, passwords, or secret values.");
+    }
 
     // Verify batch exists + tenant match
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
