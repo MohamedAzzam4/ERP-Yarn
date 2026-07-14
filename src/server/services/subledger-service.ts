@@ -1143,4 +1143,81 @@ export class SubledgerService {
       accountId: entry.accountId,
     };
   }
+
+  // =========================================================================
+  // WP-06-03: Customer return credit entry.
+  // =========================================================================
+
+  /**
+   * WP-06-03: Post a customer return credit entry (NEGATIVE customer entry).
+   *
+   * Contract 07 §10.1: "An approved customer return credit is a negative
+   * customer entry."
+   *
+   * This method is tx-scoped — the caller (ReturnRequestService.approveReturnRequest)
+   * owns the idempotency claim.
+   *
+   * The entry has entryType='customer_return_credit' and a NEGATIVE signed amount
+   * (= -return_credit_value). This reduces the customer's balance (they owe less).
+   */
+  async postReturnCreditEntry(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      customerId: string;
+      returnRequestId: string;
+      returnCreditValue: string;
+      entryDate: string;
+      docNo: string;
+      idempotencyKey: string;
+      currency?: string;
+      notes?: string;
+    },
+  ): Promise<{ entryId: string; entryNo: string; amountSigned: string; accountId: string }> {
+    requirePermission(effective, "returns.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    const currency = input.currency ?? "EGP";
+    const tenantId = user.tenantId;
+    // NEGATIVE = -returnCreditValue (customer gets credit)
+    const amountSigned = negateMoney(normalizeMoney(input.returnCreditValue));
+
+    const account = await this.getOrCreateAccount(user, "customer", input.customerId, currency);
+
+    const entry = await this.deps.subledger.insertEntry({
+      tenantId,
+      accountId: account.id,
+      entryNo: input.docNo,
+      entryDate: input.entryDate,
+      amountSigned,
+      currency,
+      entryType: "customer_return_credit",
+      sourceDocumentType: "return_request",
+      sourceDocumentId: input.returnRequestId,
+      createdBy: user.userId,
+    });
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "account_entry",
+      entityId: entry.id,
+      actionType: "subledger.return_credit_entry.post",
+      newValuesJson: {
+        entryNo: entry.entryNo,
+        entryType: "customer_return_credit",
+        accountId: entry.accountId,
+        amountSigned: entry.amountSigned,
+        returnRequestId: input.returnRequestId,
+        customerId: input.customerId,
+        returnCreditValue: input.returnCreditValue,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    return {
+      entryId: entry.id,
+      entryNo: entry.entryNo,
+      amountSigned: entry.amountSigned,
+      accountId: entry.accountId,
+    };
+  }
 }

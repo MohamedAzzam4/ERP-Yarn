@@ -56,7 +56,10 @@ import {
 } from "./document-sequence-service";
 import type { ReturnRequestRepository } from "./return-request-repository";
 import type { ReturnRequest, ReturnLine } from "@/server/db/schema/returns";
-import { normalizeMoney, isPositiveMoney, addMoney, compareMoney } from "./decimal-money";
+import type { InventoryLedgerService } from "./inventory-ledger-service";
+import type { SubledgerService } from "./subledger-service";
+import type { SalesRepository } from "./sales-repository";
+import { normalizeMoney, isPositiveMoney, addMoney, compareMoney, isZeroMoney } from "./decimal-money";
 import { normalizeKg, isPositiveKg, addKg, compareKg } from "./decimal-kg";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +81,7 @@ export interface ReturnLineInput {
   returnLocationId: string;
   returnedStockStatus: ReturnedStockStatus;
   originalSaleLineNetUnitValue?: string | null;
+  returnCreditValue?: string | null;
 }
 
 export interface CreateReturnRequestInput {
@@ -150,6 +154,12 @@ export interface ReturnRequestServiceDeps {
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
+  /** Optional: InventoryLedgerService for posting return_receipt stock movements on approval. */
+  inventoryLedger?: InventoryLedgerService;
+  /** Optional: SubledgerService for posting customer return credit entries on approval. */
+  subledger?: SubledgerService;
+  /** Optional: SalesRepository for updating sale return state on approval. */
+  salesRepository?: SalesRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +268,7 @@ export class ReturnRequestService {
         returnLocationId: line.returnLocationId,
         returnedStockStatus: line.returnedStockStatus,
         originalSaleLineNetUnitValue: line.originalSaleLineNetUnitValue ?? null,
+        returnCreditValue: line.returnCreditValue ?? null,
         createdBy: user.userId,
       } as any);
     }
@@ -369,22 +380,23 @@ export class ReturnRequestService {
    * Permission: returns.approve (Owner/Accountant).
    * DEC-080: Requester cannot approve own request.
    *
-   * On approval:
-   *   - Validate DEC-068 cap (cumulative returns ≤ original sale line qty/value)
-   *   - Set status to 'approved', lock the return
-   *   - Audit
+   * On approval (atomic — all effects or none):
+   *   1. Validate DEC-068 cap (cumulative returns ≤ original sale line qty/value)
+   *   2. Post return_receipt stock movement (increase on_hand at return location)
+   *   3. Post customer return credit entry (NEGATIVE customer entry) when
+   *      financialTreatment is customer_credit or refund_due
+   *   4. Update sale return state (approved → partially_returned or fully_returned)
+   *   5. Set return request status to 'approved', lock it
+   *   6. Audit
    *
-   * NOTE: The actual stock movement + subledger entry posting is deferred to
-   * a separate atomic approval transaction method (approveReturnWithEffects)
-   * that can be composed with InventoryLedgerService + SubledgerService.
-   * This method only handles the approval state transition + cap validation.
-   * The stock/account effects are posted by the caller in the same transaction.
+   * No payment/refund row is created (that's a separate WP-05-04 action).
+   * No replacement order/issue is created (that's WP-06-04).
    */
   async approveReturnRequest(
     user: ErpUserContext,
     effective: EffectivePermissions,
     input: ApproveReturnInput,
-  ): Promise<{ action: "approved" | "replayed"; returnRequestId: string; status: string; approvedBy: string }> {
+  ): Promise<{ action: "approved" | "replayed"; returnRequestId: string; status: string; approvedBy: string; stockMovements: string[]; creditEntryId: string | null }> {
     requirePermission(effective, "returns.approve");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
@@ -434,22 +446,139 @@ export class ReturnRequestService {
       throw new ReturnRequestNotApprovableError(rr.id, rr.status);
     }
 
-    // DEC-068: Validate cumulative return cap for each line
+    // Fetch return lines
     const lines = await this.deps.returnRequestRepository.findReturnLines(user.tenantId, rr.id);
+
+    // DEC-068: Validate cumulative return cap for each line
+    // Fetch original sale lines if salesRepository is available
+    let saleLines: Map<string, { quantityKg: string; lineNetRevenuePosted: string }> = new Map();
+    if (this.deps.salesRepository) {
+      const originalSaleLines = await this.deps.salesRepository.findSaleLines(user.tenantId, rr.salesOrderId);
+      for (const sl of originalSaleLines) {
+        saleLines.set(sl.id, { quantityKg: sl.quantityKg, lineNetRevenuePosted: sl.lineNetRevenuePosted ?? "0" });
+      }
+    }
+
     for (const line of lines) {
       const priorReturns = await this.deps.returnRequestRepository.listApprovedReturnLinesForSaleLine(
         user.tenantId, line.originalSaleLineId,
       );
       const priorQty = priorReturns.reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
-      // We need the original sale line quantity to compute the cap.
-      // For now, we validate that prior + new doesn't exceed a provided cap.
-      // The actual cap validation requires reading the sale line, which is
-      // passed by the caller or fetched via SalesRepository.
-      // This is a defense-in-depth check — the caller should also validate.
-      // We store the cumulative prior return data on the line.
+      const newQty = normalizeKg(line.quantityKg);
+      const totalQty = addKg(priorQty, newQty);
+
+      // Check against original sale line quantity if available
+      const saleLine = saleLines.get(line.originalSaleLineId);
+      if (saleLine) {
+        const originalQty = normalizeKg(saleLine.quantityKg);
+        if (compareKg(totalQty, originalQty) > 0) {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 422, responseBody: { message: `Return qty ${totalQty} exceeds sale line qty ${originalQty} (DEC-068).` },
+            lastErrorClass: "ReturnExceedsSaleLineCapError",
+          }, now);
+          throw new ReturnExceedsSaleLineCapError(line.id, totalQty, originalQty);
+        }
+      }
     }
 
-    // Update status to approved
+    // === ATOMIC APPROVAL EFFECTS ===
+
+    const stockMovementIds: string[] = [];
+    let creditEntryId: string | null = null;
+    const year = now.getUTCFullYear();
+
+    // 1. Post return_receipt stock movement for each line
+    if (this.deps.inventoryLedger) {
+      for (const line of lines) {
+        const mvDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
+          tenantId: user.tenantId, documentType: "return_receipt", year, entityType: "stock_movement",
+        });
+
+        const mvResult = await this.deps.inventoryLedger.postReturnReceipt(user, effective, {
+          itemId: line.itemId,
+          toLocationId: line.returnLocationId,
+          quantityKg: line.quantityKg,
+          movementDate: rr.returnDate,
+          sourceDocumentType: "return_request",
+          sourceDocumentId: rr.id,
+          idempotencyKey: `${input.idempotencyKey}:mv:${line.id}`,
+          notes: input.decisionNotes ?? undefined,
+        });
+
+        stockMovementIds.push(mvResult.movementId);
+
+        // Link movement to return line
+        await this.deps.returnRequestRepository.updateReturnLineMovement(
+          user.tenantId, line.id, mvResult.movementId,
+        );
+      }
+    }
+
+    // 2. Post customer return credit entry (NEGATIVE customer entry)
+    // Contract 07 §10.1: "An approved customer return credit is a negative customer entry."
+    if (this.deps.subledger && rr.financialTreatment) {
+      const needsCredit = rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due";
+      if (needsCredit) {
+        // Calculate total return credit value
+        // return_credit_value = returned_quantity × original_sale_line_net_unit_value
+        // (Contract 07 §10.1)
+        let totalCredit = "0.00";
+        for (const line of lines) {
+          // If returnCreditValue is already set on the line, use it
+          if (line.returnCreditValue) {
+            totalCredit = addMoney(totalCredit, normalizeMoney(line.returnCreditValue));
+          } else if (line.originalSaleLineNetUnitValue) {
+            // Compute: quantity × unit_value
+            const qty = parseFloat(line.quantityKg);
+            const unitValue = parseFloat(line.originalSaleLineNetUnitValue);
+            const credit = (qty * unitValue).toFixed(2);
+            totalCredit = addMoney(totalCredit, normalizeMoney(credit));
+          }
+        }
+        if (!isZeroMoney(totalCredit)) {
+          const entryDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
+            tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
+          });
+          const creditResult = await this.deps.subledger.postReturnCreditEntry(user, effective, {
+            customerId: rr.customerId,
+            returnRequestId: rr.id,
+            returnCreditValue: totalCredit,
+            entryDate: rr.returnDate,
+            docNo: entryDocNo.docNo,
+            idempotencyKey: `${input.idempotencyKey}:credit`,
+          });
+          creditEntryId = creditResult.entryId;
+        }
+      }
+    }
+
+    // 3. Update sale return state (approved → partially_returned or fully_returned)
+    if (this.deps.salesRepository && saleLines.size > 0) {
+      // Check if all sale lines are fully returned
+      let allFullyReturned = true;
+      for (const [saleLineId, saleLine] of saleLines) {
+        const priorReturns = await this.deps.returnRequestRepository.listApprovedReturnLinesForSaleLine(
+          user.tenantId, saleLineId,
+        );
+        const totalReturned = priorReturns.reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
+        // Include current return lines for this sale line
+        const currentReturn = lines.filter(l => l.originalSaleLineId === saleLineId)
+          .reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
+        const totalWithCurrent = addKg(totalReturned, currentReturn);
+        if (compareKg(totalWithCurrent, normalizeKg(saleLine.quantityKg)) < 0) {
+          allFullyReturned = false;
+          break;
+        }
+      }
+      const newSaleStatus = allFullyReturned ? "fully_returned" : "partially_returned";
+      await this.deps.salesRepository.updateSaleStatusConditional(
+        user.tenantId, rr.salesOrderId,
+        { saleStatus: newSaleStatus, approvalStatus: "approved", reservationStatus: "consumed" },
+        ["approved", "partially_returned"],
+      );
+    }
+
+    // 4. Update return request status to approved
     const updated = await this.deps.returnRequestRepository.updateReturnRequestStatus(
       user.tenantId, rr.id,
       {
@@ -464,7 +593,7 @@ export class ReturnRequestService {
     );
     if (!updated) throw new ReturnRequestError("INTERNAL_TRANSACTION_FAILED", `Could not approve return '${rr.id}'.`);
 
-    // Audit
+    // 5. Audit
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
       entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
       actionType: "return_request.approve",
@@ -473,11 +602,14 @@ export class ReturnRequestService {
         status: "approved",
         approvedBy: user.userId,
         decisionNotes: input.decisionNotes ?? null,
+        stockMovementIds,
+        creditEntryId,
+        financialTreatment: rr.financialTreatment,
       },
       idempotencyKey: input.idempotencyKey,
     });
 
-    const result = { action: "approved" as const, returnRequestId: rr.id, status: "approved", approvedBy: user.userId };
+    const result = { action: "approved" as const, returnRequestId: rr.id, status: "approved", approvedBy: user.userId, stockMovements: stockMovementIds, creditEntryId };
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: RETURN_ENTITY_TYPE, entityId: rr.id,

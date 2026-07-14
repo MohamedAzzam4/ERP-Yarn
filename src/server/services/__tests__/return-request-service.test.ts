@@ -45,14 +45,14 @@ function makeUser(userId: string, tenantId: string = TEST_TENANT_ID) {
 function makeOwnerEff() {
   return {
     assignedRoleCodes: ["owner"],
-    permissionKeys: new Set(["returns.create","returns.approve","sales.approve","quality_tests.create","complaints.investigate"]),
+    permissionKeys: new Set(["returns.create","returns.approve","sales.approve","sales.submit","sales.create","quality_tests.create","complaints.investigate","inventory.receive.approve","inventory.receive.create","balances.view_customer","balances.view_supplier_factory"]),
     deniedFieldKeys: new Set(), workerFinancialDeny: false,
   } as any;
 }
 function makeAcctEff() {
   return {
     assignedRoleCodes: ["accountant"],
-    permissionKeys: new Set(["returns.create","returns.approve","sales.approve","quality_tests.create","complaints.investigate"]),
+    permissionKeys: new Set(["returns.create","returns.approve","sales.approve","sales.submit","sales.create","quality_tests.create","complaints.investigate","inventory.receive.approve","balances.view_customer","balances.view_supplier_factory"]),
     deniedFieldKeys: new Set(), workerFinancialDeny: false,
   } as any;
 }
@@ -492,5 +492,442 @@ describe("WP-06-03 rollback", () => {
     deps.returnRepo.restore(snap);
     const rrs = [...((deps.returnRepo as any).returnRequests as Map<string, any>).values()];
     expect(rrs.length).toBe(0);
+  });
+});
+
+// ===========================================================================
+// 10. Atomic approval with stock movement + credit entry (WP-06-03 correction).
+// ===========================================================================
+
+import { InventoryLedgerService } from "../inventory-ledger-service";
+import { SubledgerService } from "../subledger-service";
+import { InMemorySalesRepository } from "./in-memory-sales-repository";
+import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-repository";
+import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
+
+function makeFullDeps() {
+  const returnRepo = new InMemoryReturnRequestRepository();
+  const salesRepository = new InMemorySalesRepository();
+  const ledgerRepo = new InMemoryInventoryLedgerRepository();
+  const subledgerRepo = new InMemorySubledgerRepository();
+  const audit = new InProcessAuditStore();
+  const idempotency = new InProcessIdempotencyStore();
+  const documentSequence = new InProcessDocumentSequenceStore();
+  const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
+  const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
+  const returnService = new ReturnRequestService({
+    returnRequestRepository: returnRepo,
+    audit, idempotency, documentSequence,
+    inventoryLedger, subledger, salesRepository,
+  });
+  return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, returnService };
+}
+
+async function setupApprovedSaleWithStock(deps: ReturnType<typeof makeFullDeps>) {
+  const ownerUser = makeUser(TEST_USERS.owner.userId);
+  const ownerEff = makeOwnerEff();
+
+  // Seed stock
+  await deps.inventoryLedger.postRawReceipt(ownerUser as any, ownerEff as any, {
+    itemId: TEST_ITEM_ID, toLocationId: TEST_LOCATION_ID, quantityKg: "10000.000",
+    movementDate: "2026-07-06", sourceDocumentType: "test_seed", sourceDocumentId: "seed-0603",
+    idempotencyKey: "seed-0603-001",
+  });
+
+  // Create approved sale with commercial totals
+  const draft = await deps.salesRepository.insertSaleDraft({
+    tenantId: TEST_TENANT_ID, docNo: "SO-0603-001", customerId: TEST_CUSTOMER_ID,
+    saleDate: "2026-07-10", createdBy: TEST_USERS.owner.userId,
+  } as any);
+  await deps.salesRepository.insertSaleLine({
+    tenantId: TEST_TENANT_ID, salesOrderId: draft.id, lineNo: 1,
+    itemId: TEST_ITEM_ID, locationId: TEST_LOCATION_ID,
+    quantityKg: "1000.000", pricePerTon: "80.00",
+  } as any);
+  await deps.salesRepository.updateSaleCommercialTotals(TEST_TENANT_ID, draft.id, {
+    totalGrossRevenue: "80.00", orderDiscountTotal: "0.00", documentTotalPosted: "80.00",
+  });
+  await deps.salesRepository.markSaleApproved(TEST_TENANT_ID, draft.id, {
+    approvedBy: TEST_USERS.owner.userId, approvedAt: new Date(),
+  }, ["draft"]);
+
+  // Update line with commercial totals
+  const lines = await deps.salesRepository.findSaleLines(TEST_TENANT_ID, draft.id);
+  if (lines.length > 0) {
+    await deps.salesRepository.updateLineCommercialTotals(TEST_TENANT_ID, lines[0]!.id, {
+      lineGrossRevenue: "80.00", lineAllocatedDiscountPrecise: "0.00",
+      lineAllocatedDiscountPosted: "0.00", lineNetRevenuePrecise: "80.00",
+      lineNetRevenuePosted: "80.00", roundingAdjustment: "0.00",
+    });
+  }
+
+  return { saleId: draft.id, saleLineId: lines[0]?.id ?? TEST_SALE_LINE_ID };
+}
+
+describe("WP-06-03 atomic approval with stock + credit effects", () => {
+  it("draft return creates NO stock movement, NO account entry", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const result = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Quality issue", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        }],
+        idempotencyKey: "rr-draft-noside-001",
+      },
+    );
+
+    // No stock movements
+    const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
+      (m: any) => m.sourceDocumentType === "return_request",
+    );
+    expect(movements.length).toBe(0);
+
+    // No account entries
+    const entries = [...((deps.subledgerRepo as any).entries as Map<string, any>).values()].filter(
+      (e: any) => e.sourceDocumentType === "return_request",
+    );
+    expect(entries.length).toBe(0);
+  });
+
+  it("approved return creates return_receipt stock movement", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Quality issue", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+        }],
+        idempotencyKey: "rr-approve-stock-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-approve-stock-001:submit" },
+    );
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-approve-stock-001:approve" },
+    );
+
+    // Stock movement created
+    expect(approve.stockMovements.length).toBe(1);
+    const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
+      (m: any) => m.sourceDocumentType === "return_request",
+    );
+    expect(movements.length).toBe(1);
+    expect(movements[0]!.movementType).toBe("return_receipt");
+    expect(movements[0]!.quantityKg).toBe("100.000");
+  });
+
+  it("approved return with customer_credit creates NEGATIVE customer account entry", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Quality issue", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+          returnCreditValue: "8.00",  // 100 kg × 0.08/kg = 8.00
+        }],
+        idempotencyKey: "rr-approve-credit-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-approve-credit-001:submit" },
+    );
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-approve-credit-001:approve" },
+    );
+
+    // Credit entry created (NEGATIVE)
+    expect(approve.creditEntryId).not.toBeNull();
+    const entries = [...((deps.subledgerRepo as any).entries as Map<string, any>).values()].filter(
+      (e: any) => e.sourceDocumentType === "return_request",
+    );
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.entryType).toBe("customer_return_credit");
+    expect(parseFloat(entries[0]!.amountSigned)).toBeLessThan(0);  // NEGATIVE
+    expect(entries[0]!.amountSigned).toBe("-8.00");
+  });
+
+  it("approved return with no_financial_impact creates NO account entry", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "No financial impact", financialTreatment: "no_financial_impact",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+        }],
+        idempotencyKey: "rr-no-fin-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-no-fin-001:submit" },
+    );
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-no-fin-001:approve" },
+    );
+
+    // No credit entry
+    expect(approve.creditEntryId).toBeNull();
+    const entries = [...((deps.subledgerRepo as any).entries as Map<string, any>).values()].filter(
+      (e: any) => e.sourceDocumentType === "return_request",
+    );
+    expect(entries.length).toBe(0);
+  });
+
+  it("approved return updates sale state to partially_returned", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Partial return", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+        }],
+        idempotencyKey: "rr-partial-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-partial-001:submit" },
+    );
+    await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-partial-001:approve" },
+    );
+
+    const sale = await deps.salesRepository.findSaleById(TEST_TENANT_ID, saleId);
+    expect(sale?.saleStatus).toBe("partially_returned");  // 100 of 1000 returned
+  });
+
+  it("approved return with full quantity updates sale to fully_returned", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Full return", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "1000.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+        }],
+        idempotencyKey: "rr-full-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-full-001:submit" },
+    );
+    await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-full-001:approve" },
+    );
+
+    const sale = await deps.salesRepository.findSaleById(TEST_TENANT_ID, saleId);
+    expect(sale?.saleStatus).toBe("fully_returned");
+  });
+
+  it("DEC-068: return exceeding sale line quantity rejected", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Over-return", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "1500.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",  // 1500 > 1000 sale line qty
+        }],
+        idempotencyKey: "rr-dec068-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-001:submit" },
+    );
+    await expect(deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-001:approve" },
+    )).rejects.toThrow();  // ReturnExceedsSaleLineCapError
+  });
+
+  it("no payment row created by return approval", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Test", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+        }],
+        idempotencyKey: "rr-no-pay-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-no-pay-001:submit" },
+    );
+    await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-no-pay-001:approve" },
+    );
+
+    // Audit should not contain payment actions
+    const auditRows = deps.audit.getRows();
+    for (const row of auditRows) {
+      expect(row.actionType).not.toContain("payment");
+      expect(row.actionType).not.toContain("refund");
+      expect(row.actionType).not.toContain("replacement");
+    }
+  });
+
+  it("idempotency replay does not double-post stock or credit", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Idem test", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+          returnCreditValue: "8.00",
+        }],
+        idempotencyKey: "rr-idem-approve-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-idem-approve-001:submit" },
+    );
+    const r1 = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-idem-approve-001:approve" },
+    );
+    const r2 = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-idem-approve-001:approve" },
+    );
+    expect(r2.action).toBe("replayed");
+
+    // Only 1 stock movement
+    const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
+      (m: any) => m.sourceDocumentType === "return_request",
+    );
+    expect(movements.length).toBe(1);
+
+    // Only 1 credit entry
+    const entries = [...((deps.subledgerRepo as any).entries as Map<string, any>).values()].filter(
+      (e: any) => e.sourceDocumentType === "return_request",
+    );
+    expect(entries.length).toBe(1);
+  });
+
+  it("rollback: audit failure after stock movement rolls back all effects", async () => {
+    const deps = makeFullDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Rollback test", financialTreatment: "customer_credit",
+        lines: [{
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+        }],
+        idempotencyKey: "rr-rollback-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-rollback-001:submit" },
+    );
+
+    // Capture state before
+    const ledgerSnap = deps.ledgerRepo.snapshot();
+    const subledgerSnap = deps.subledgerRepo.snapshot();
+    const returnSnap = deps.returnRepo.snapshot();
+
+    // Force audit failure during approval
+    deps.audit.setShouldFail(true);
+    await expect(deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-rollback-001:approve" },
+    )).rejects.toThrow();
+    deps.audit.setShouldFail(false);
+
+    // Restore in-memory state (simulates DB tx rollback)
+    deps.ledgerRepo.restore(ledgerSnap);
+    deps.subledgerRepo.restore(subledgerSnap);
+    deps.returnRepo.restore(returnSnap);
+
+    // Verify no stock movements persisted
+    const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
+      (m: any) => m.sourceDocumentType === "return_request",
+    );
+    expect(movements.length).toBe(0);
+
+    // Verify no credit entries persisted
+    const entries = [...((deps.subledgerRepo as any).entries as Map<string, any>).values()].filter(
+      (e: any) => e.sourceDocumentType === "return_request",
+    );
+    expect(entries.length).toBe(0);
+
+    // Return request still pending_approval
+    const rr = await deps.returnRepo.findReturnRequestById(TEST_TENANT_ID, create.returnRequestId);
+    expect(rr?.status).toBe("pending_approval");
   });
 });
