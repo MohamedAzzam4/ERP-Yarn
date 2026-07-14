@@ -289,10 +289,12 @@ export type {
 } from "./migration";
 
 // Quality tables (WP-06-01)
-export { qualityTests, qualityTestValues } from "./quality";
+export { qualityTests, qualityTestValues, qualityHolds } from "./quality";
 export type {
   QualityTest,
   NewQualityTest,
   QualityTestValue,
   NewQualityTestValue,
+  QualityHold,
+  NewQualityHold,
 } from "./quality";

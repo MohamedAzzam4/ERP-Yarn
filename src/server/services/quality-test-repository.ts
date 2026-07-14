@@ -14,7 +14,7 @@
  */
 import "server-only";
 
-import type { QualityTest, QualityTestValue } from "@/server/db/schema/quality";
+import type { QualityTest, QualityTestValue, QualityHold } from "@/server/db/schema/quality";
 
 // ---------------------------------------------------------------------------
 // Input types.
@@ -64,6 +64,22 @@ export interface NewQualityTestValueInput {
   createdBy: string;
 }
 
+export interface NewQualityHoldInput {
+  tenantId: string;
+  qualityTestId: string;
+  linkedEntityType: string;
+  linkedEntityId: string;
+  holdReason: "needs_review" | "blocked" | "reprocess_required";
+  notes?: string | null;
+  createdBy: string;
+}
+
+export interface ClearQualityHoldInput {
+  clearedBy: string;
+  clearanceReason: string;
+  updatedBy: string;
+}
+
 // ---------------------------------------------------------------------------
 // Repository interface.
 // ---------------------------------------------------------------------------
@@ -111,6 +127,35 @@ export interface QualityTestRepository {
    */
   lockQualityTest(tenantId: string, testId: string): Promise<void>;
 
+  // --- quality holds ---
+
+  /** Insert a new quality hold row. */
+  insertQualityHold(row: NewQualityHoldInput): Promise<QualityHold>;
+
+  /** Find a quality hold by id. */
+  findQualityHoldById(tenantId: string, holdId: string): Promise<QualityHold | null>;
+
+  /**
+   * List ACTIVE quality holds for a linked entity (item/batch/lot).
+   * Used by SalesSubmissionService to check DEC-065 eligibility.
+   */
+  listActiveQualityHoldsForEntity(
+    tenantId: string,
+    linkedEntityType: string,
+    linkedEntityId: string,
+  ): Promise<QualityHold[]>;
+
+  /**
+   * Clear a quality hold (management disposition).
+   * Only succeeds if holdStatus = 'active'.
+   * Returns the updated hold, or null if not found or already cleared.
+   */
+  clearQualityHold(
+    tenantId: string,
+    holdId: string,
+    patch: ClearQualityHoldInput,
+  ): Promise<QualityHold | null>;
+
   /**
    * Test helper: associate idempotency key with a quality test ID.
    * Optional — in-memory repos implement this; DB repos use the idempotency_records table.
@@ -122,4 +167,4 @@ export interface QualityTestRepository {
 // Re-export domain types.
 // ---------------------------------------------------------------------------
 
-export type { QualityTest, QualityTestValue } from "@/server/db/schema/quality";
+export type { QualityTest, QualityTestValue, QualityHold } from "@/server/db/schema/quality";

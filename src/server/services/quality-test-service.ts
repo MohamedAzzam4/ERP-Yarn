@@ -286,6 +286,28 @@ export class QualityTestService {
     // Record idempotency key for replay
     this.deps.qualityTestRepository.recordIdempotencyKey?.(user.tenantId, input.idempotencyKey, qualityTest.id);
 
+    // Step 4b: If the test status is restrictive (needs_review/blocked), create a
+    // quality hold that SalesSubmissionService will check before reservation.
+    // This enforces DEC-065: "Blocked/review stock cannot ordinary-sell."
+    //
+    // The hold is created automatically by the quality test — quality workers
+    // CAN restrict stock (create holds) but CANNOT clear them (requires
+    // quality_risk_sales.approve permission — Owner/Accountant only).
+    const holdReason = this.deriveHoldReason(testStatus, riskClassification);
+    let qualityHoldId: string | null = null;
+    if (holdReason) {
+      const hold = await this.deps.qualityTestRepository.insertQualityHold({
+        tenantId: user.tenantId,
+        qualityTestId: qualityTest.id,
+        linkedEntityType: qualityTest.linkedEntityType,
+        linkedEntityId: qualityTest.linkedEntityId,
+        holdReason,
+        notes: `Auto-created from quality test ${qualityTest.testNo}`,
+        createdBy: user.userId,
+      });
+      qualityHoldId = hold.id;
+    }
+
     // Step 5: audit
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
       entityType: QUALITY_TEST_ENTITY_TYPE,
@@ -301,6 +323,7 @@ export class QualityTestService {
         testStatus: qualityTest.testStatus,
         riskClassification: qualityTest.riskClassification,
         testedBy: user.userId,
+        qualityHoldId,  // null if no hold created
       },
       idempotencyKey: input.idempotencyKey,
     });
@@ -460,6 +483,26 @@ export class QualityTestService {
       throw new QualityTestError("INTERNAL_TRANSACTION_FAILED", `Quality test '${test.id}' could not be updated.`);
     }
 
+    // If the NEW status is restrictive, create a quality hold.
+    // This ensures that even if a test was initially accepted and then
+    // reviewed to blocked/needs_review, the hold is created.
+    // NOTE: An accepted test does NOT clear existing holds — only the
+    // clearQualityHold method (Owner/Accountant) can do that.
+    const newHoldReason = this.deriveHoldReason(input.testStatus, input.riskClassification);
+    let newQualityHoldId: string | null = null;
+    if (newHoldReason) {
+      const hold = await this.deps.qualityTestRepository.insertQualityHold({
+        tenantId: user.tenantId,
+        qualityTestId: test.id,
+        linkedEntityType: test.linkedEntityType,
+        linkedEntityId: test.linkedEntityId,
+        holdReason: newHoldReason,
+        notes: `Auto-created from quality test review ${test.testNo}`,
+        createdBy: user.userId,
+      });
+      newQualityHoldId = hold.id;
+    }
+
     // Audit
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
       entityType: QUALITY_TEST_ENTITY_TYPE,
@@ -473,6 +516,7 @@ export class QualityTestService {
         newRiskClassification: input.riskClassification,
         reviewedBy: user.userId,
         reviewNotes: input.reviewNotes ?? null,
+        newQualityHoldId,  // null if no hold created
       },
       idempotencyKey: input.idempotencyKey,
     });
@@ -506,5 +550,155 @@ export class QualityTestService {
   ): Promise<QualityTest[]> {
     requirePermission(effective, "quality_tests.create");
     return this.deps.qualityTestRepository.listQualityTestsNeedingReview(user.tenantId);
+  }
+
+  /**
+   * Clear a quality hold (management disposition).
+   *
+   * Permission: quality_risk_sales.approve (Owner/Accountant ONLY).
+   * Quality workers CANNOT clear holds — they can only create them.
+   *
+   * This is the ONLY way to unblock stock that has a quality hold.
+   * An accepted quality test does NOT clear existing holds — only this
+   * explicit management disposition can.
+   *
+   * DEC-080: Not applicable here — this is a management disposition, not
+   * an approval of a request the user created. The management user clearing
+   * the hold is authorizing the stock to be sellable again.
+   */
+  async clearQualityHold(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      qualityHoldId: string;
+      clearanceReason: string;
+      idempotencyKey: string;
+    },
+  ): Promise<{ action: "cleared" | "replayed"; qualityHoldId: string; holdStatus: string }> {
+    // Permission: quality_risk_sales.approve — Owner/Accountant ONLY
+    requirePermission(effective, "quality_risk_sales.approve");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!input.qualityHoldId?.trim()) throw new QualityTestError("VALIDATION_FAILED", "qualityHoldId is required.");
+    if (!input.clearanceReason?.trim()) throw new QualityTestError("VALIDATION_FAILED", "clearanceReason is required.");
+    if (!input.idempotencyKey?.trim()) throw new QualityTestError("VALIDATION_FAILED", "idempotencyKey is required.");
+
+    // Fetch hold
+    const hold = await this.deps.qualityTestRepository.findQualityHoldById(user.tenantId, input.qualityHoldId);
+    if (!hold) throw new QualityTestError("QUALITY_HOLD_NOT_FOUND", `Quality hold '${input.qualityHoldId}' not found.`);
+    requireTenantMatch(user, hold.tenantId);
+
+    // Claim idempotency
+    const now = new Date();
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId: user.tenantId,
+      operationScope: "quality_hold.clear",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        qualityHoldId: input.qualityHoldId,
+        clearanceReason: input.clearanceReason,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+
+    if (claim.action === "replay") {
+      const responseBody = claim.record.responseBody as { qualityHoldId?: string; holdStatus?: string } | null;
+      if (responseBody?.qualityHoldId) {
+        return { action: "replayed", qualityHoldId: responseBody.qualityHoldId, holdStatus: responseBody.holdStatus! };
+      }
+    }
+    if (claim.action === "conflict") {
+      throw new QualityTestError("IDEMPOTENCY_CONFLICT", `Idempotency key '${input.idempotencyKey}' was used with a different request body.`);
+    }
+    if (claim.action === "in_progress") {
+      throw new QualityTestError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
+    }
+
+    // Clear the hold
+    const cleared = await this.deps.qualityTestRepository.clearQualityHold(
+      user.tenantId, input.qualityHoldId,
+      {
+        clearedBy: user.userId,
+        clearanceReason: input.clearanceReason,
+        updatedBy: user.userId,
+      },
+    );
+    if (!cleared) {
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409, responseBody: { message: "Hold already cleared or not found." },
+        lastErrorClass: "QualityTestError",
+      }, now);
+      throw new QualityTestError("STATE_CONFLICT", `Quality hold '${input.qualityHoldId}' is already cleared or not found.`);
+    }
+
+    // Audit
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: "quality_hold",
+      entityId: hold.id,
+      actionType: "quality_hold.clear",
+      newValuesJson: {
+        qualityTestId: hold.qualityTestId,
+        linkedEntityType: hold.linkedEntityType,
+        linkedEntityId: hold.linkedEntityId,
+        previousHoldReason: hold.holdReason,
+        clearanceReason: input.clearanceReason,
+        clearedBy: user.userId,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    const result = { action: "cleared" as const, qualityHoldId: hold.id, holdStatus: "cleared" as const };
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200,
+      responseBody: result,
+      entityType: "quality_hold",
+      entityId: hold.id,
+    }, now);
+
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // Helpers.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Derive the hold reason from a quality test's status + risk classification.
+   * Returns null if no hold is needed (accepted + none/none).
+   *
+   * Restrictive statuses that create holds:
+   *   - testStatus = needs_review → hold_reason = needs_review
+   *   - testStatus = blocked → hold_reason = blocked
+   *   - riskClassification = needs_review → hold_reason = needs_review
+   *   - riskClassification = blocked → hold_reason = blocked
+   *   - riskClassification = reprocess_required → hold_reason = reprocess_required
+   *
+   * Non-restrictive (no hold):
+   *   - testStatus = accepted AND riskClassification = none
+   *   - testStatus = accepted AND riskClassification = sellable_with_discount
+   *     (sellable_with_discount is a REVIEW FLAG — does NOT block reservation;
+   *      the discount sale itself requires separate Owner/Accountant approval)
+   */
+  private deriveHoldReason(
+    testStatus: QualityStatus,
+    riskClassification: RiskClassification,
+  ): "needs_review" | "blocked" | "reprocess_required" | null {
+    // blocked test status always creates a blocked hold
+    if (testStatus === "blocked") return "blocked";
+    // needs_review test status creates a needs_review hold
+    if (testStatus === "needs_review") return "needs_review";
+    // accepted test status: check risk classification
+    if (testStatus === "accepted") {
+      if (riskClassification === "needs_review") return "needs_review";
+      if (riskClassification === "blocked") return "blocked";
+      if (riskClassification === "reprocess_required") return "reprocess_required";
+      // none or sellable_with_discount → no hold
+      // (sellable_with_discount is a review flag, not a restriction)
+      return null;
+    }
+    return null;
   }
 }

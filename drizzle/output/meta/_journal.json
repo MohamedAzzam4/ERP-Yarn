@@ -71,6 +71,13 @@
       "when": 1784002205759,
       "tag": "0009_parched_stone_men",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784003501979,
+      "tag": "0010_clammy_viper",
+      "breakpoints": true
     }
   ]
 }

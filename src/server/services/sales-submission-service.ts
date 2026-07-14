@@ -209,6 +209,19 @@ export interface SalesSubmissionServiceDeps {
    * Location lookup function (for validation).
    */
   findLocation?: (tenantId: string, locationId: string) => Promise<Location | null>;
+  /**
+   * WP-06-01: Quality hold lookup function (for DEC-065 eligibility check).
+   * Returns active quality holds for a linked entity (item/batch/lot).
+   * If any active hold exists, the item is NOT eligible for sale reservation.
+   *
+   * In production, this reads from quality_holds table.
+   * In tests, this can be a simple lookup against the in-memory quality test repo.
+   */
+  findActiveQualityHolds?: (
+    tenantId: string,
+    linkedEntityType: string,
+    linkedEntityId: string,
+  ) => Promise<Array<{ holdReason: string; holdStatus: string }>>;
 }
 
 const SALE_SOURCE_TYPE = "sales_order_line";
@@ -411,6 +424,20 @@ export class SalesSubmissionService {
             if (!eligibility.eligible) {
               throw new ReservationEligibilityError(line.itemId, line.locationId, eligibility.reason);
             }
+          }
+        }
+
+        // WP-06-01 DEC-065 quality hold check.
+        // If any active quality hold exists for this item, reject reservation.
+        // This enforces: "Blocked/review stock cannot ordinary-sell."
+        if (this.deps.findActiveQualityHolds) {
+          const holds = await this.deps.findActiveQualityHolds(user.tenantId, "inventory_item", line.itemId);
+          if (holds.length > 0) {
+            const holdReasons = holds.map(h => h.holdReason).join(", ");
+            throw new ReservationEligibilityError(
+              line.itemId, line.locationId,
+              `Active quality hold(s) on item: ${holdReasons}. Stock cannot be reserved until management clears the hold (DEC-065).`,
+            );
           }
         }
 

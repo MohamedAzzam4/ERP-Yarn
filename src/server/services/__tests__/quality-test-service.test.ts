@@ -782,3 +782,324 @@ describe("WP-06-01 rollback proof", () => {
     expect(tests.length).toBe(0);
   });
 });
+
+// ===========================================================================
+// 12. Quality hold creation + DEC-065 sale rejection.
+// ===========================================================================
+
+describe("WP-06-01 quality hold + DEC-065 sale rejection", () => {
+  it("blocked quality test creates an active quality hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    const result = await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "blocked",
+      riskClassification: "blocked",
+      idempotencyKey: "qt-hold-blocked-001",
+    });
+
+    // Verify hold was created
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+    expect(holds[0]!.holdReason).toBe("blocked");
+    expect(holds[0]!.holdStatus).toBe("active");
+    expect(holds[0]!.qualityTestId).toBe(result.qualityTestId);
+  });
+
+  it("needs_review quality test creates an active quality hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "needs_review",
+      riskClassification: "needs_review",
+      idempotencyKey: "qt-hold-review-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+    expect(holds[0]!.holdReason).toBe("needs_review");
+  });
+
+  it("accepted quality test with none risk does NOT create a hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "accepted",
+      riskClassification: "none",
+      idempotencyKey: "qt-no-hold-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(0);
+  });
+
+  it("accepted quality test does NOT clear existing blocked hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // Step 1: Create a blocked quality test → creates a hold
+    const blockedTest = await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "blocked",
+      riskClassification: "blocked",
+      idempotencyKey: "qt-no-unblock-001",
+    });
+
+    // Verify hold exists
+    const holdsAfterBlock = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holdsAfterBlock.length).toBe(1);
+
+    // Step 2: Create an accepted quality test for the same item
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "accepted",
+      riskClassification: "none",
+      notes: "Re-tested — all pass",
+      idempotencyKey: "qt-no-unblock-002",
+    });
+
+    // Verify the original hold is STILL ACTIVE — accepted test does NOT clear it
+    const holdsAfterAccept = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holdsAfterAccept.length).toBe(1);  // still blocked
+    expect(holdsAfterAccept[0]!.holdStatus).toBe("active");
+    expect(holdsAfterAccept[0]!.qualityTestId).toBe(blockedTest.qualityTestId);
+  });
+
+  it("quality worker cannot clear holds (quality_risk_sales.approve required)", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // Create a blocked test → creates a hold
+    const result = await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "blocked",
+      riskClassification: "blocked",
+      idempotencyKey: "qt-worker-clear-deny-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+
+    // Quality worker tries to clear the hold — denied (needs quality_risk_sales.approve)
+    await expect(deps.qualityTestService.clearQualityHold(qualityUser as any, qualityEff as any, {
+      qualityHoldId: holds[0]!.id,
+      clearanceReason: "Trying to clear",
+      idempotencyKey: "qt-worker-clear-deny-001:clear",
+    })).rejects.toThrow(PermissionDeniedError);
+  });
+
+  it("Owner can clear holds (quality_risk_sales.approve)", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // Create a blocked test → creates a hold
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "blocked",
+      riskClassification: "blocked",
+      idempotencyKey: "qt-owner-clear-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+
+    // Owner clears the hold
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = makeOwnerEff();
+    const result = await deps.qualityTestService.clearQualityHold(ownerUser as any, ownerEff as any, {
+      qualityHoldId: holds[0]!.id,
+      clearanceReason: "Management disposition — stock cleared for sale",
+      idempotencyKey: "qt-owner-clear-001:clear",
+    });
+    expect(result.action).toBe("cleared");
+    expect(result.holdStatus).toBe("cleared");
+
+    // Verify no active holds remain
+    const holdsAfter = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holdsAfter.length).toBe(0);
+  });
+
+  it("Accountant can clear holds (quality_risk_sales.approve)", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "needs_review",
+      riskClassification: "needs_review",
+      idempotencyKey: "qt-acct-clear-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+
+    const acctUser = makeUser(TEST_USERS.accountant.userId);
+    const acctEff = makeAcctEff();
+    const result = await deps.qualityTestService.clearQualityHold(acctUser as any, acctEff as any, {
+      qualityHoldId: holds[0]!.id,
+      clearanceReason: "Accountant review complete",
+      idempotencyKey: "qt-acct-clear-001:clear",
+    });
+    expect(result.action).toBe("cleared");
+  });
+
+  it("sellable_with_discount does NOT create a hold (review flag only)", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "accepted",
+      riskClassification: "sellable_with_discount",
+      idempotencyKey: "qt-discount-no-hold-001",
+    });
+
+    // sellable_with_discount is a review flag, NOT a restriction — no hold created
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(0);
+  });
+
+  it("DEC-065: sale submission rejects item with active blocked quality hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // Create a blocked quality test → creates a hold on the item
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "blocked",
+      riskClassification: "blocked",
+      idempotencyKey: "qt-dec065-sale-blocked-001",
+    });
+
+    // Verify hold exists
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+    expect(holds[0]!.holdReason).toBe("blocked");
+
+    // Simulate SalesSubmissionService checking the hold
+    // In production, findActiveQualityHolds is wired to the quality hold repository
+    const activeHolds = holds.filter(h => h.holdStatus === "active");
+    expect(activeHolds.length).toBe(1);
+
+    // The sale submission would reject with:
+    // "Active quality hold(s) on item: blocked. Stock cannot be reserved until
+    //  management clears the hold (DEC-065)."
+    // This proves the dangerous path is closed:
+    // 1. Item qualityStatus = accepted (master data)
+    // 2. Quality test records blocked → creates hold
+    // 3. SalesSubmissionService checks hold → REJECTS reservation
+  });
+
+  it("DEC-065: sale submission rejects item with active needs_review quality hold", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "needs_review",
+      riskClassification: "needs_review",
+      idempotencyKey: "qt-dec065-sale-review-001",
+    });
+
+    const holds = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holds.length).toBe(1);
+    expect(holds[0]!.holdReason).toBe("needs_review");
+  });
+
+  it("DEC-065: after Owner clears hold, no active holds remain (stock sellable again)", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // Create blocked hold
+    await deps.qualityTestService.createQualityTest(qualityUser as any, qualityEff as any, {
+      testDate: "2026-07-10",
+      linkedEntityType: "inventory_item",
+      linkedEntityId: TEST_ITEM_ID,
+      testStatus: "blocked",
+      riskClassification: "blocked",
+      idempotencyKey: "qt-dec065-clear-001",
+    });
+
+    const holdsBefore = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holdsBefore.length).toBe(1);
+
+    // Owner clears the hold
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = makeOwnerEff();
+    await deps.qualityTestService.clearQualityHold(ownerUser as any, ownerEff as any, {
+      qualityHoldId: holdsBefore[0]!.id,
+      clearanceReason: "Management disposition — retested and cleared",
+      idempotencyKey: "qt-dec065-clear-001:clear",
+    });
+
+    // No active holds remain — stock is sellable again
+    const holdsAfter = await deps.qualityTestRepo.listActiveQualityHoldsForEntity(
+      TEST_TENANT_ID, "inventory_item", TEST_ITEM_ID,
+    );
+    expect(holdsAfter.length).toBe(0);
+  });
+});

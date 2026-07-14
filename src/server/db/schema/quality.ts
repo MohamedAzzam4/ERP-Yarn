@@ -127,3 +127,63 @@ export const qualityTestValues = pgTable("quality_test_values", {
 
 export type QualityTestValue = typeof qualityTestValues.$inferSelect;
 export type NewQualityTestValue = typeof qualityTestValues.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// quality_holds
+// ---------------------------------------------------------------------------
+
+/**
+ * Quality holds — durable restrictive state created when a quality test
+ * records `blocked` or `needs_review` status.
+ *
+ * Contract 04 §11: "Blocked/review stock cannot ordinary-sell."
+ * DEC-065: Sale reservation/submission is allowed only for accepted/sellable
+ * stock. needs_review, blocked, or other quality-risk stock must go through
+ * review/disposition before reservation.
+ *
+ * A quality hold is a DURABLE record that the SalesSubmissionService checks
+ * before reservation. It is separate from the item's master-data qualityStatus
+ * to preserve the separation of facts (quality test) from authoritative
+ * availability gating (hold + item qualityStatus).
+ *
+ * Lifecycle:
+ *   - Created automatically when a quality test records blocked/needs_review
+ *   - Cleared only by Owner/Accountant management disposition
+ *     (quality_risk_sales.approve permission)
+ *   - Quality workers CANNOT clear holds or authorize risky sale
+ *
+ * Permission model:
+ *   - quality_tests.create: can create tests that create holds (restrictive)
+ *   - quality_risk_sales.approve: Owner/Accountant only — can clear holds
+ *   - A cleared hold remains in the table with status='cleared' for audit trail
+ */
+export const qualityHolds = pgTable("quality_holds", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: tenantIdColumn(),
+  // The quality test that triggered this hold
+  qualityTestId: uuid("quality_test_id").notNull().references(() => qualityTests.id),
+  // The linked entity (item/batch/lot) under hold
+  linkedEntityType: text("linked_entity_type").notNull(),
+  linkedEntityId: uuid("linked_entity_id").notNull(),
+  // Hold reason (from the quality test's risk classification)
+  holdReason: text("hold_reason").notNull(), // needs_review | blocked | reprocess_required
+  // Hold status: active (restricting) or cleared (by management disposition)
+  holdStatus: text("hold_status").notNull().default("active"), // active | cleared
+  // Clearance info (if cleared by management)
+  clearedBy: uuid("cleared_by").references(() => users.id),
+  clearedAt: timestamp("cleared_at", { withTimezone: true, mode: "date" }),
+  clearanceReason: text("clearance_reason"),
+  notes: text("notes"),
+  ...makeTenantOwnedRow(usersId),
+}, (t) => [
+  index("quality_holds_tenant_entity_idx").on(t.tenantId, t.linkedEntityType, t.linkedEntityId),
+  index("quality_holds_tenant_test_idx").on(t.tenantId, t.qualityTestId),
+  index("quality_holds_tenant_status_idx").on(t.tenantId, t.holdStatus),
+  check("quality_holds_reason_check",
+    sql`hold_reason IN ('needs_review', 'blocked', 'reprocess_required')`),
+  check("quality_holds_status_check",
+    sql`hold_status IN ('active', 'cleared')`),
+]);
+
+export type QualityHold = typeof qualityHolds.$inferSelect;
+export type NewQualityHold = typeof qualityHolds.$inferInsert;

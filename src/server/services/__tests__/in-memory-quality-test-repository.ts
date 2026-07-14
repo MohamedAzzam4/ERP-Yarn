@@ -4,12 +4,14 @@
  *
  * Supports snapshot/restore for rollback simulation in atomicity tests.
  */
-import type { QualityTest, QualityTestValue } from "@/server/db/schema/quality";
+import type { QualityTest, QualityTestValue, QualityHold } from "@/server/db/schema/quality";
 import type {
   QualityTestRepository,
   NewQualityTestInput,
   UpdateQualityTestStatusInput,
   NewQualityTestValueInput,
+  NewQualityHoldInput,
+  ClearQualityHoldInput,
 } from "../quality-test-repository";
 
 const NOW = () => new Date("2026-07-01T00:00:00Z");
@@ -18,38 +20,48 @@ const nid = (p: string, n: number) => `${p}-${n.toString().padStart(6, "0")}`;
 export class InMemoryQualityTestRepository implements QualityTestRepository {
   private qualityTests = new Map<string, QualityTest>();
   private qualityTestValues = new Map<string, QualityTestValue>();
+  private qualityHolds = new Map<string, QualityHold>();
   private idempotencyKeyMap = new Map<string, string>();
   private testCounter = 0;
   private valueCounter = 0;
+  private holdCounter = 0;
 
   snapshot(): {
     qualityTests: Map<string, QualityTest>;
     qualityTestValues: Map<string, QualityTestValue>;
+    qualityHolds: Map<string, QualityHold>;
     idempotencyKeyMap: Map<string, string>;
     testCounter: number;
     valueCounter: number;
+    holdCounter: number;
   } {
     return {
       qualityTests: new Map([...this.qualityTests].map(([k, v]) => [k, { ...v }])),
       qualityTestValues: new Map([...this.qualityTestValues].map(([k, v]) => [k, { ...v }])),
+      qualityHolds: new Map([...this.qualityHolds].map(([k, v]) => [k, { ...v }])),
       idempotencyKeyMap: new Map(this.idempotencyKeyMap),
       testCounter: this.testCounter,
       valueCounter: this.valueCounter,
+      holdCounter: this.holdCounter,
     };
   }
 
   restore(snap: {
     qualityTests: Map<string, QualityTest>;
     qualityTestValues: Map<string, QualityTestValue>;
+    qualityHolds: Map<string, QualityHold>;
     idempotencyKeyMap: Map<string, string>;
     testCounter: number;
     valueCounter: number;
+    holdCounter: number;
   }): void {
     this.qualityTests = new Map([...snap.qualityTests].map(([k, v]) => [k, { ...v }]));
     this.qualityTestValues = new Map([...snap.qualityTestValues].map(([k, v]) => [k, { ...v }]));
+    this.qualityHolds = new Map([...snap.qualityHolds].map(([k, v]) => [k, { ...v }]));
     this.idempotencyKeyMap = new Map(snap.idempotencyKeyMap);
     this.testCounter = snap.testCounter;
     this.valueCounter = snap.valueCounter;
+    this.holdCounter = snap.holdCounter;
   }
 
   async insertQualityTest(row: NewQualityTestInput): Promise<QualityTest> {
@@ -164,5 +176,73 @@ export class InMemoryQualityTestRepository implements QualityTestRepository {
 
   async lockQualityTest(_tenantId: string, _testId: string): Promise<void> {
     // No-op in single-threaded in-memory store
+  }
+
+  // -------------------------------------------------------------------------
+  // quality holds
+  // -------------------------------------------------------------------------
+
+  async insertQualityHold(row: NewQualityHoldInput): Promise<QualityHold> {
+    this.holdCounter++;
+    const id = nid("qh", this.holdCounter);
+    const hold: QualityHold = {
+      id,
+      tenantId: row.tenantId,
+      qualityTestId: row.qualityTestId,
+      linkedEntityType: row.linkedEntityType,
+      linkedEntityId: row.linkedEntityId,
+      holdReason: row.holdReason,
+      holdStatus: "active",
+      clearedBy: null,
+      clearedAt: null,
+      clearanceReason: null,
+      notes: row.notes ?? null,
+      createdAt: NOW(),
+      createdBy: row.createdBy,
+      updatedAt: NOW(),
+      updatedBy: row.createdBy,
+    };
+    this.qualityHolds.set(`${row.tenantId}:${id}`, hold);
+    return hold;
+  }
+
+  async findQualityHoldById(tenantId: string, holdId: string): Promise<QualityHold | null> {
+    return this.qualityHolds.get(`${tenantId}:${holdId}`) ?? null;
+  }
+
+  async listActiveQualityHoldsForEntity(
+    tenantId: string,
+    linkedEntityType: string,
+    linkedEntityId: string,
+  ): Promise<QualityHold[]> {
+    return [...this.qualityHolds.values()].filter(
+      (h) =>
+        h.tenantId === tenantId &&
+        h.linkedEntityType === linkedEntityType &&
+        h.linkedEntityId === linkedEntityId &&
+        h.holdStatus === "active",
+    );
+  }
+
+  async clearQualityHold(
+    tenantId: string,
+    holdId: string,
+    patch: ClearQualityHoldInput,
+  ): Promise<QualityHold | null> {
+    const key = `${tenantId}:${holdId}`;
+    const hold = this.qualityHolds.get(key);
+    if (!hold) return null;
+    if (hold.holdStatus !== "active") return null;  // already cleared
+    const updated: QualityHold = {
+      ...hold,
+      holdStatus: "cleared",
+      clearedBy: patch.clearedBy,
+      clearedAt: NOW(),
+      clearanceReason: patch.clearanceReason,
+      updatedAt: NOW(),
+      updatedBy: patch.updatedBy,
+    };
+    this.qualityHolds.set(key, updated);
+    return updated;
   }
 }
