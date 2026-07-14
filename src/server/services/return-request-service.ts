@@ -151,6 +151,50 @@ export class RequesterCannotApproveOwnReturnError extends ReturnRequestError {
 const RETURN_ENTITY_TYPE = "return_request";
 
 // ---------------------------------------------------------------------------
+// Transaction runner + factories (DB transaction support for atomic approval).
+// ---------------------------------------------------------------------------
+
+/**
+ * A transaction runner that wraps work in a single DB transaction.
+ *
+ * When provided, `approveReturnRequest` wraps ALL DB writes (stock movements,
+ * inventory balances, account entries, return_lines updates, profitability
+ * snapshots, sales_orders state, return_requests status, audit_logs) in this
+ * transaction. If any write fails, the entire transaction rolls back — no
+ * partial stock post, no partial credit entry, no partial snapshot.
+ *
+ * The `work` callback receives a transaction-scoped `tx` object that has the
+ * same type as the base `db`. The factory functions
+ * (`createInventoryLedger`, `createSubledger`, `createSnapshotService`,
+ * `createSalesRepository`, `createReturnRequestRepository`, `createAudit`)
+ * use this `tx` to construct transaction-scoped repositories + services.
+ *
+ * When NOT provided (unit tests with in-memory repos), the services run
+ * without a DB transaction boundary — in-memory repos don't persist partial
+ * state across processes.
+ */
+export type ReturnRequestTransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+/**
+ * Factory functions for creating transaction-scoped services/repos.
+ * These are called inside the transaction runner with the `tx` object.
+ */
+export interface ReturnRequestTransactionScopedFactories {
+  /** Create an InventoryLedgerService that uses the transaction-scoped `tx`. */
+  createInventoryLedger: (tx: unknown) => InventoryLedgerService;
+  /** Create a SubledgerService that uses the transaction-scoped `tx`. */
+  createSubledger: (tx: unknown) => SubledgerService;
+  /** Create a ProfitabilitySnapshotService that uses the transaction-scoped `tx`. */
+  createSnapshotService: (tx: unknown) => ProfitabilitySnapshotService;
+  /** Create a SalesRepository that uses the transaction-scoped `tx`. */
+  createSalesRepository: (tx: unknown) => SalesRepository;
+  /** Create a ReturnRequestRepository that uses the transaction-scoped `tx`. */
+  createReturnRequestRepository: (tx: unknown) => ReturnRequestRepository;
+  /** Create an AuditTransactionHandle that uses the transaction-scoped `tx`. */
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+}
+
+// ---------------------------------------------------------------------------
 // Service deps.
 // ---------------------------------------------------------------------------
 
@@ -167,6 +211,17 @@ export interface ReturnRequestServiceDeps {
   salesRepository: SalesRepository;
   /** Required for approveReturnRequest: creates return-impact profitability snapshot version. */
   snapshotService: ProfitabilitySnapshotService;
+  /**
+   * Optional transaction runner. When provided, all DB writes in
+   * approveReturnRequest are wrapped in a single DB transaction. When absent
+   * (unit tests), services run without a DB transaction boundary.
+   */
+  transactionRunner?: ReturnRequestTransactionRunner;
+  /**
+   * Factory functions for creating transaction-scoped services/repos.
+   * Required when `transactionRunner` is provided.
+   */
+  txFactories?: ReturnRequestTransactionScopedFactories;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +450,15 @@ export class ReturnRequestService {
    *   5. Set return request status to 'approved', lock it
    *   6. Audit
    *
+   * When `transactionRunner` + `txFactories` are provided (production path),
+   * steps 2-6 are wrapped in a single DB transaction. Any failure rolls back
+   * ALL writes — no partial stock post, no partial credit entry, no partial
+   * snapshot, no partial approval. This satisfies Contract 06 §6, §12 + DEC-024.
+   *
+   * When `transactionRunner` is NOT provided (unit tests with in-memory repos),
+   * the writes run without a DB transaction boundary — in-memory repos don't
+   * persist partial state across processes.
+   *
    * No payment/refund row is created (that's a separate WP-05-04 action).
    * No replacement order/issue is created (that's WP-06-04).
    */
@@ -525,229 +589,302 @@ export class ReturnRequestService {
       }
     }
 
-    // === ATOMIC APPROVAL EFFECTS ===
+    // =====================================================================
+    // ATOMIC POSTING TRANSACTION (Contract 06 §6, §12; DEC-024; WP-06-03)
+    // =====================================================================
+    // All DB writes (stock_movement, inventory_balance, account_entry,
+    // return_lines credit/movement link, sales_profitability_snapshot,
+    // sales_orders state, return_requests status, audit_logs) MUST commit
+    // or roll back together. If transactionRunner is provided, we wrap all
+    // DB writes in a single db.transaction(). If any write fails, the entire
+    // transaction rolls back — no partial stock post, no partial credit
+    // entry, no partial snapshot, no partial approval.
+    //
+    // If transactionRunner is NOT provided (unit tests with in-memory repos),
+    // we run without a DB transaction boundary — in-memory repos don't
+    // persist partial state across processes.
+    // =====================================================================
 
-    const stockMovementIds: string[] = [];
-    let creditEntryId: string | null = null;
-    const year = now.getUTCFullYear();
+    const executePosting = async (
+      txScoped: {
+        inventoryLedger: InventoryLedgerService;
+        subledger: SubledgerService;
+        snapshotService: ProfitabilitySnapshotService;
+        salesRepository: SalesRepository;
+        returnRequestRepository: ReturnRequestRepository;
+        audit: AuditTransactionHandle;
+      } | null,
+    ): Promise<{ stockMovementIds: string[]; creditEntryId: string | null; snapshotId: string | null }> => {
+      const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
+      const subledger = txScoped?.subledger ?? this.deps.subledger;
+      const snapshotService = txScoped?.snapshotService ?? this.deps.snapshotService;
+      const salesRepository = txScoped?.salesRepository ?? this.deps.salesRepository;
+      const returnRequestRepository = txScoped?.returnRequestRepository ?? this.deps.returnRequestRepository;
+      const audit = txScoped?.audit ?? this.deps.audit;
 
-    // 1. Post return_receipt stock movement for each line
-    for (const line of lines) {
-      const mvDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
-        tenantId: user.tenantId, documentType: "return_receipt", year, entityType: "stock_movement",
-      });
+      const stockMovementIds: string[] = [];
+      let creditEntryId: string | null = null;
+      const year = now.getUTCFullYear();
 
-      const mvResult = await this.deps.inventoryLedger.postReturnReceipt(user, effective, {
-        itemId: line.itemId,
-        toLocationId: line.returnLocationId,
-        quantityKg: line.quantityKg,
-        movementDate: rr.returnDate,
-        sourceDocumentType: "return_request",
-        sourceDocumentId: rr.id,
-        idempotencyKey: `${input.idempotencyKey}:mv:${line.id}`,
-        notes: input.decisionNotes ?? undefined,
-      });
+      // 1. Post return_receipt stock movement for each line
+      for (const line of lines) {
+        const mvDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
+          tenantId: user.tenantId, documentType: "return_receipt", year, entityType: "stock_movement",
+        });
 
-      stockMovementIds.push(mvResult.movementId);
+        const mvResult = await invLedger.postReturnReceipt(user, effective, {
+          itemId: line.itemId,
+          toLocationId: line.returnLocationId,
+          quantityKg: line.quantityKg,
+          movementDate: rr.returnDate,
+          sourceDocumentType: "return_request",
+          sourceDocumentId: rr.id,
+          idempotencyKey: `${input.idempotencyKey}:mv:${line.id}`,
+          notes: input.decisionNotes ?? undefined,
+        });
 
-      // Link movement to return line
-      await this.deps.returnRequestRepository.updateReturnLineMovement(
-        user.tenantId, line.id, mvResult.movementId,
-      );
-    }
+        stockMovementIds.push(mvResult.movementId);
 
-    // 2. Post customer return credit entry (NEGATIVE customer entry)
-    // Contract 07 §10.1: "An approved customer return credit is a negative customer entry."
-    // return_credit_value = returned_quantity × original_sale_line_net_unit_value
-    // The credit value is ALWAYS computed server-side from the sale line data.
-    // DEC-068: Final effective return applies residual so cumulative = original net value exactly.
-    if (rr.financialTreatment) {
-      const needsCredit = rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due";
-      if (needsCredit) {
-        // Calculate per-line credit with DEC-068 residual + store on return lines
-        let totalCredit = "0.00";
+        // Link movement to return line
+        await returnRequestRepository.updateReturnLineMovement(
+          user.tenantId, line.id, mvResult.movementId,
+        );
+      }
+
+      // 2. Post customer return credit entry (NEGATIVE customer entry)
+      // Contract 07 §10.1: "An approved customer return credit is a negative customer entry."
+      // return_credit_value = returned_quantity × original_sale_line_net_unit_value
+      // The credit value is ALWAYS computed server-side from the sale line data.
+      // DEC-068: Final effective return applies residual so cumulative = original net value exactly.
+      if (rr.financialTreatment) {
+        const needsCredit = rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due";
+        if (needsCredit) {
+          // Calculate per-line credit with DEC-068 residual + store on return lines
+          let totalCredit = "0.00";
+          for (const line of lines) {
+            const saleLine = saleLines.get(line.originalSaleLineId);
+            let unitValue: string | null = null;
+            if (line.originalSaleLineNetUnitValue) {
+              unitValue = line.originalSaleLineNetUnitValue;
+            } else if (saleLine) {
+              const lineNet = parseFloat(saleLine.lineNetRevenuePosted);
+              const lineQty = parseFloat(saleLine.quantityKg);
+              if (lineQty > 0) unitValue = (lineNet / lineQty).toFixed(6);
+            }
+
+            let lineCredit = "0.00";
+            let residualAdjustment = "0.00";
+            if (unitValue) {
+              lineCredit = normalizeMoney((parseFloat(line.quantityKg) * parseFloat(unitValue)).toFixed(2));
+            }
+
+            // DEC-068: Check if this is the final effective return
+            if (saleLine) {
+              const priorReturns = await returnRequestRepository.listApprovedReturnLinesForSaleLine(
+                user.tenantId, line.originalSaleLineId,
+              );
+              const priorQty = priorReturns.reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
+              const newQty = normalizeKg(line.quantityKg);
+              const totalQty = addKg(priorQty, newQty);
+              const originalQty = normalizeKg(saleLine.quantityKg);
+              const isFinalReturn = compareKg(totalQty, originalQty) === 0;
+
+              if (isFinalReturn) {
+                const originalNetValue = normalizeMoney(saleLine.lineNetRevenuePosted);
+                const priorCredit = priorReturns.reduce(
+                  (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
+                );
+                residualAdjustment = subtractMoney(subtractMoney(originalNetValue, priorCredit), lineCredit);
+                lineCredit = addMoney(lineCredit, residualAdjustment);
+              }
+
+              // Store computed credit + residual on return line
+              await returnRequestRepository.updateReturnLineCreditAndResidual(
+                user.tenantId, line.id, {
+                  returnCreditValue: lineCredit,
+                  residualAdjustment,
+                  cumulativePriorReturnQty: priorQty,
+                  cumulativePriorReturnCredit: priorReturns.reduce(
+                    (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
+                  ),
+                  updatedBy: user.userId,
+                },
+              );
+            }
+
+            totalCredit = addMoney(totalCredit, lineCredit);
+          }
+          if (!isZeroMoney(totalCredit)) {
+            const entryDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
+              tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
+            });
+            const creditResult = await subledger.postReturnCreditEntry(user, effective, {
+              customerId: rr.customerId,
+              returnRequestId: rr.id,
+              returnCreditValue: totalCredit,
+              entryDate: rr.returnDate,
+              docNo: entryDocNo.docNo,
+              idempotencyKey: `${input.idempotencyKey}:credit`,
+            });
+            creditEntryId = creditResult.entryId;
+          }
+        }
+      }
+
+      // 2b. Create return-impact profitability snapshot version
+      // Contract 07 §20: "New version after approved return."
+      // Only create snapshot when financial treatment requires credit (customer_credit/refund_due).
+      // no_financial_impact returns do not affect profitability.
+      let snapshotId: string | null = null;
+      if (rr.financialTreatment && (rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due")) {
+      {
+        // Calculate cumulative return credit for this sale (prior + current)
+        let cumulativeCredit = "0.00";
+        // Prior approved returns
+        for (const [saleLineId] of saleLines) {
+          const priorReturns = await returnRequestRepository.listApprovedReturnLinesForSaleLine(
+            user.tenantId, saleLineId,
+          );
+          for (const prior of priorReturns) {
+            // Compute credit for prior returns using the same formula
+            const sl = saleLines.get(prior.originalSaleLineId);
+            if (sl) {
+              const lineNet = parseFloat(sl.lineNetRevenuePosted);
+              const lineQty = parseFloat(sl.quantityKg);
+              if (lineQty > 0) {
+                const unitValue = lineNet / lineQty;
+                const credit = (parseFloat(prior.quantityKg) * unitValue).toFixed(2);
+                cumulativeCredit = addMoney(cumulativeCredit, normalizeMoney(credit));
+              }
+            }
+          }
+        }
+        // Current return credit (already calculated as totalCredit above, but that was scoped)
+        // Re-calculate for this return's lines
         for (const line of lines) {
-          const saleLine = saleLines.get(line.originalSaleLineId);
+          const sl = saleLines.get(line.originalSaleLineId);
           let unitValue: string | null = null;
           if (line.originalSaleLineNetUnitValue) {
             unitValue = line.originalSaleLineNetUnitValue;
-          } else if (saleLine) {
-            const lineNet = parseFloat(saleLine.lineNetRevenuePosted);
-            const lineQty = parseFloat(saleLine.quantityKg);
-            if (lineQty > 0) unitValue = (lineNet / lineQty).toFixed(6);
-          }
-
-          let lineCredit = "0.00";
-          let residualAdjustment = "0.00";
-          if (unitValue) {
-            lineCredit = normalizeMoney((parseFloat(line.quantityKg) * parseFloat(unitValue)).toFixed(2));
-          }
-
-          // DEC-068: Check if this is the final effective return
-          if (saleLine) {
-            const priorReturns = await this.deps.returnRequestRepository.listApprovedReturnLinesForSaleLine(
-              user.tenantId, line.originalSaleLineId,
-            );
-            const priorQty = priorReturns.reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
-            const newQty = normalizeKg(line.quantityKg);
-            const totalQty = addKg(priorQty, newQty);
-            const originalQty = normalizeKg(saleLine.quantityKg);
-            const isFinalReturn = compareKg(totalQty, originalQty) === 0;
-
-            if (isFinalReturn) {
-              const originalNetValue = normalizeMoney(saleLine.lineNetRevenuePosted);
-              const priorCredit = priorReturns.reduce(
-                (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
-              );
-              residualAdjustment = subtractMoney(subtractMoney(originalNetValue, priorCredit), lineCredit);
-              lineCredit = addMoney(lineCredit, residualAdjustment);
-            }
-
-            // Store computed credit + residual on return line
-            await this.deps.returnRequestRepository.updateReturnLineCreditAndResidual(
-              user.tenantId, line.id, {
-                returnCreditValue: lineCredit,
-                residualAdjustment,
-                cumulativePriorReturnQty: priorQty,
-                cumulativePriorReturnCredit: priorReturns.reduce(
-                  (sum, l) => addMoney(sum, l.returnCreditValue ?? "0.00"), "0.00",
-                ),
-                updatedBy: user.userId,
-              },
-            );
-          }
-
-          totalCredit = addMoney(totalCredit, lineCredit);
-        }
-        if (!isZeroMoney(totalCredit)) {
-          const entryDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
-            tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
-          });
-          const creditResult = await this.deps.subledger.postReturnCreditEntry(user, effective, {
-            customerId: rr.customerId,
-            returnRequestId: rr.id,
-            returnCreditValue: totalCredit,
-            entryDate: rr.returnDate,
-            docNo: entryDocNo.docNo,
-            idempotencyKey: `${input.idempotencyKey}:credit`,
-          });
-          creditEntryId = creditResult.entryId;
-        }
-      }
-    }
-
-    // 2b. Create return-impact profitability snapshot version
-    // Contract 07 §20: "New version after approved return."
-    // Only create snapshot when financial treatment requires credit (customer_credit/refund_due).
-    // no_financial_impact returns do not affect profitability.
-    let snapshotId: string | null = null;
-    if (rr.financialTreatment && (rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due")) {
-    {
-      // Calculate cumulative return credit for this sale (prior + current)
-      let cumulativeCredit = "0.00";
-      // Prior approved returns
-      for (const [saleLineId] of saleLines) {
-        const priorReturns = await this.deps.returnRequestRepository.listApprovedReturnLinesForSaleLine(
-          user.tenantId, saleLineId,
-        );
-        for (const prior of priorReturns) {
-          // Compute credit for prior returns using the same formula
-          const sl = saleLines.get(prior.originalSaleLineId);
-          if (sl) {
+          } else if (sl) {
             const lineNet = parseFloat(sl.lineNetRevenuePosted);
             const lineQty = parseFloat(sl.quantityKg);
-            if (lineQty > 0) {
-              const unitValue = lineNet / lineQty;
-              const credit = (parseFloat(prior.quantityKg) * unitValue).toFixed(2);
-              cumulativeCredit = addMoney(cumulativeCredit, normalizeMoney(credit));
-            }
+            if (lineQty > 0) unitValue = (lineNet / lineQty).toFixed(6);
+          }
+          if (unitValue) {
+            const credit = (parseFloat(line.quantityKg) * parseFloat(unitValue)).toFixed(2);
+            cumulativeCredit = addMoney(cumulativeCredit, normalizeMoney(credit));
           }
         }
-      }
-      // Current return credit (already calculated as totalCredit above, but that was scoped)
-      // Re-calculate for this return's lines
-      for (const line of lines) {
-        const sl = saleLines.get(line.originalSaleLineId);
-        let unitValue: string | null = null;
-        if (line.originalSaleLineNetUnitValue) {
-          unitValue = line.originalSaleLineNetUnitValue;
-        } else if (sl) {
-          const lineNet = parseFloat(sl.lineNetRevenuePosted);
-          const lineQty = parseFloat(sl.quantityKg);
-          if (lineQty > 0) unitValue = (lineNet / lineQty).toFixed(6);
-        }
-        if (unitValue) {
-          const credit = (parseFloat(line.quantityKg) * parseFloat(unitValue)).toFixed(2);
-          cumulativeCredit = addMoney(cumulativeCredit, normalizeMoney(credit));
+        if (!isZeroMoney(cumulativeCredit)) {
+          const snapshotResult = await snapshotService.createReturnImpactSnapshot(user, {
+            salesOrderId: rr.salesOrderId,
+            returnImpact: cumulativeCredit,
+          });
+          snapshotId = snapshotResult.snapshotId;
         }
       }
-      if (!isZeroMoney(cumulativeCredit)) {
-        const snapshotResult = await this.deps.snapshotService.createReturnImpactSnapshot(user, {
-          salesOrderId: rr.salesOrderId,
-          returnImpact: cumulativeCredit,
-        });
-        snapshotId = snapshotResult.snapshotId;
       }
-    }
-    }
 
-    // 3. Update sale return state (approved → partially_returned or fully_returned)
-    if (saleLines.size > 0) {
-      // Check if all sale lines are fully returned
-      let allFullyReturned = true;
-      for (const [saleLineId, saleLine] of saleLines) {
-        const priorReturns = await this.deps.returnRequestRepository.listApprovedReturnLinesForSaleLine(
-          user.tenantId, saleLineId,
+      // 3. Update sale return state (approved → partially_returned or fully_returned)
+      if (saleLines.size > 0) {
+        // Check if all sale lines are fully returned
+        let allFullyReturned = true;
+        for (const [saleLineId, saleLine] of saleLines) {
+          const priorReturns = await returnRequestRepository.listApprovedReturnLinesForSaleLine(
+            user.tenantId, saleLineId,
+          );
+          const totalReturned = priorReturns.reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
+          // Include current return lines for this sale line
+          const currentReturn = lines.filter(l => l.originalSaleLineId === saleLineId)
+            .reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
+          const totalWithCurrent = addKg(totalReturned, currentReturn);
+          if (compareKg(totalWithCurrent, normalizeKg(saleLine.quantityKg)) < 0) {
+            allFullyReturned = false;
+            break;
+          }
+        }
+        const newSaleStatus = allFullyReturned ? "fully_returned" : "partially_returned";
+        await salesRepository.updateSaleStatusConditional(
+          user.tenantId, rr.salesOrderId,
+          { saleStatus: newSaleStatus, approvalStatus: "approved", reservationStatus: "consumed" },
+          ["approved", "partially_returned"],
         );
-        const totalReturned = priorReturns.reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
-        // Include current return lines for this sale line
-        const currentReturn = lines.filter(l => l.originalSaleLineId === saleLineId)
-          .reduce((sum, l) => addKg(sum, l.quantityKg), "0.000");
-        const totalWithCurrent = addKg(totalReturned, currentReturn);
-        if (compareKg(totalWithCurrent, normalizeKg(saleLine.quantityKg)) < 0) {
-          allFullyReturned = false;
-          break;
-        }
       }
-      const newSaleStatus = allFullyReturned ? "fully_returned" : "partially_returned";
-      await this.deps.salesRepository.updateSaleStatusConditional(
-        user.tenantId, rr.salesOrderId,
-        { saleStatus: newSaleStatus, approvalStatus: "approved", reservationStatus: "consumed" },
-        ["approved", "partially_returned"],
+
+      // 4. Update return request status to approved
+      const updated = await returnRequestRepository.updateReturnRequestStatus(
+        user.tenantId, rr.id,
+        {
+          status: "approved",
+          approvalStatus: "approved",
+          approvedBy: user.userId,
+          approvedAt: now,
+          isLocked: true,
+          updatedBy: user.userId,
+        },
+        ["pending_approval"],
       );
+      if (!updated) throw new ReturnRequestError("INTERNAL_TRANSACTION_FAILED", `Could not approve return '${rr.id}'.`);
+
+      // 5. Audit (inside the same transaction — DEC-024)
+      await appendAuditLog(audit, user.tenantId, user.userId, {
+        entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
+        actionType: "return_request.approve",
+        newValuesJson: {
+          docNo: rr.docNo,
+          status: "approved",
+          approvedBy: user.userId,
+          decisionNotes: input.decisionNotes ?? null,
+          stockMovementIds,
+          creditEntryId,
+          snapshotId,
+          financialTreatment: rr.financialTreatment,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      return { stockMovementIds, creditEntryId, snapshotId };
+    };
+
+    let postingResult: { stockMovementIds: string[]; creditEntryId: string | null; snapshotId: string | null };
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        // Wrap all DB writes in a single outer transaction.
+        postingResult = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txInvLedger = this.deps.txFactories!.createInventoryLedger(tx);
+          const txSubledger = this.deps.txFactories!.createSubledger(tx);
+          const txSnapshotService = this.deps.txFactories!.createSnapshotService(tx);
+          const txSalesRepo = this.deps.txFactories!.createSalesRepository(tx);
+          const txReturnRepo = this.deps.txFactories!.createReturnRequestRepository(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          return executePosting({
+            inventoryLedger: txInvLedger,
+            subledger: txSubledger,
+            snapshotService: txSnapshotService,
+            salesRepository: txSalesRepo,
+            returnRequestRepository: txReturnRepo,
+            audit: txAudit,
+          });
+        });
+      } else {
+        // No transaction runner (unit tests with in-memory repos).
+        postingResult = await executePosting(null);
+      }
+    } catch (txError) {
+      // The DB transaction rolled back. Mark idempotency as failed and re-throw.
+      // No partial DB state persists — stock_movement, inventory_balance,
+      // account_entry, return_lines, sales_profitability_snapshot,
+      // sales_orders, return_requests, audit_logs are all rolled back.
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 500,
+        responseBody: { message: "Return approval transaction failed and rolled back." },
+        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+      }, now);
+      throw txError;
     }
 
-    // 4. Update return request status to approved
-    const updated = await this.deps.returnRequestRepository.updateReturnRequestStatus(
-      user.tenantId, rr.id,
-      {
-        status: "approved",
-        approvalStatus: "approved",
-        approvedBy: user.userId,
-        approvedAt: now,
-        isLocked: true,
-        updatedBy: user.userId,
-      },
-      ["pending_approval"],
-    );
-    if (!updated) throw new ReturnRequestError("INTERNAL_TRANSACTION_FAILED", `Could not approve return '${rr.id}'.`);
-
-    // 5. Audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-      actionType: "return_request.approve",
-      newValuesJson: {
-        docNo: rr.docNo,
-        status: "approved",
-        approvedBy: user.userId,
-        decisionNotes: input.decisionNotes ?? null,
-        stockMovementIds,
-        creditEntryId,
-        snapshotId,
-        financialTreatment: rr.financialTreatment,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+    const { stockMovementIds, creditEntryId, snapshotId } = postingResult;
 
     const result = { action: "approved" as const, returnRequestId: rr.id, status: "approved", approvedBy: user.userId, stockMovements: stockMovementIds, creditEntryId, snapshotId };
     await markSucceeded(this.deps.idempotency, claim.record.id, {
