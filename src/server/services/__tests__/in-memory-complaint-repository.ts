@@ -52,6 +52,8 @@ export class InMemoryComplaintRepository implements ComplaintRepository {
       saleLineId: row.saleLineId ?? null,
       itemId: row.itemId ?? null,
       qualityTestId: row.qualityTestId ?? null,
+      rawMaterialBatchId: row.rawMaterialBatchId ?? null,
+      yarnLotId: row.yarnLotId ?? null,
       subject: row.subject,
       description: row.description ?? null,
       status: row.status,

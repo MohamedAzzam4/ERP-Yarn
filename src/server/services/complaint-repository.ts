@@ -31,6 +31,8 @@ export interface NewComplaintInput {
   saleLineId?: string | null;
   itemId?: string | null;
   qualityTestId?: string | null;
+  rawMaterialBatchId?: string | null;
+  yarnLotId?: string | null;
   subject: string;
   description?: string | null;
   status: ComplaintStatus;

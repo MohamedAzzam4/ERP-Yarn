@@ -224,6 +224,9 @@ export const complaints = pgTable("complaints", {
   saleLineId: uuid("sale_line_id"), // no FK — sales_order_lines may not be exported
   itemId: uuid("item_id").references(() => inventoryItems.id),
   qualityTestId: uuid("quality_test_id").references(() => qualityTests.id),
+  // Batch/lot links for full traceability (Contract 03 §13)
+  rawMaterialBatchId: uuid("raw_material_batch_id"), // no FK to avoid circular dep
+  yarnLotId: uuid("yarn_lot_id"), // no FK to avoid circular dep
   // Complaint details
   subject: text("subject").notNull(),
   description: text("description"),

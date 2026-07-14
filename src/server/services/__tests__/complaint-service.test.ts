@@ -448,3 +448,342 @@ describe("WP-06-02 no side effects", () => {
     expect(complaintAudit.length).toBe(1);
   });
 });
+
+// ===========================================================================
+// 8. Audit proof (WP-06-02 final audit).
+// ===========================================================================
+
+describe("WP-06-02 audit proof", () => {
+  it("complaint.create writes audit row with correct entity/action", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    const result = await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10",
+      customerId: TEST_CUSTOMER_ID,
+      subject: "Audit create test",
+      idempotencyKey: "cmp-audit-create-001",
+    });
+
+    const auditRows = deps.audit.getRows();
+    const createAudit = auditRows.find(r => r.actionType === "complaint.create" && r.entityId === result.complaintId);
+    expect(createAudit).toBeTruthy();
+    expect(createAudit!.entityType).toBe("complaint");
+    expect(createAudit!.newValuesJson).toHaveProperty("complaintNo");
+    expect(createAudit!.newValuesJson).toHaveProperty("status", "open");
+    expect(createAudit!.newValuesJson).toHaveProperty("customerId", TEST_CUSTOMER_ID);
+  });
+
+  it("complaint.investigation.update writes audit row with previous/new status", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    const result = await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10",
+      customerId: TEST_CUSTOMER_ID,
+      subject: "Audit investigation test",
+      idempotencyKey: "cmp-audit-invest-001",
+    });
+    await deps.complaintService.updateComplaint(qualityUser as any, qualityEff as any, {
+      complaintId: result.complaintId,
+      status: "investigating",
+      investigationNotes: "Investigation started — contacting customer",
+      idempotencyKey: "cmp-audit-invest-001:update",
+    });
+
+    const auditRows = deps.audit.getRows();
+    const updateAudit = auditRows.find(r => r.actionType === "complaint.update");
+    expect(updateAudit).toBeTruthy();
+    expect(updateAudit!.newValuesJson).toHaveProperty("previousStatus", "open");
+    expect(updateAudit!.newValuesJson).toHaveProperty("newStatus", "investigating");
+    expect(updateAudit!.newValuesJson).toHaveProperty("investigationNotes");
+  });
+
+  it("complaint.status.transition (resolve → close) writes audit row", async () => {
+    const deps = makeDeps();
+    const ownerUser = makeUser(TEST_USERS.owner.userId);
+    const ownerEff = makeOwnerEff();
+
+    const result = await deps.complaintService.createComplaint(ownerUser as any, ownerEff as any, {
+      complaintDate: "2026-07-10",
+      customerId: TEST_CUSTOMER_ID,
+      subject: "Audit transition test",
+      idempotencyKey: "cmp-audit-trans-001",
+    });
+    // Resolve
+    await deps.complaintService.updateComplaint(ownerUser as any, ownerEff as any, {
+      complaintId: result.complaintId,
+      status: "resolved",
+      resolutionNotes: "Resolved — credit issued",
+      resolutionType: "credit_issued",
+      idempotencyKey: "cmp-audit-trans-001:resolve",
+    });
+    // Close
+    await deps.complaintService.updateComplaint(ownerUser as any, ownerEff as any, {
+      complaintId: result.complaintId,
+      status: "closed",
+      idempotencyKey: "cmp-audit-trans-001:close",
+    });
+
+    const auditRows = deps.audit.getRows();
+    const updateAudits = auditRows.filter(r => r.actionType === "complaint.update");
+    expect(updateAudits.length).toBe(2); // resolve + close
+
+    const closeAudit = updateAudits[1]!;
+    expect(closeAudit.newValuesJson).toHaveProperty("previousStatus", "resolved");
+    expect(closeAudit.newValuesJson).toHaveProperty("newStatus", "closed");
+  });
+});
+
+// ===========================================================================
+// 9. Role permission proof (WP-06-02 final audit).
+// ===========================================================================
+
+describe("WP-06-02 role permission proof", () => {
+  it("production worker is denied complaint creation", async () => {
+    const deps = makeDeps();
+    const prodUser = makeUser(TEST_USERS.production.userId);
+    const prodEff = {
+      assignedRoleCodes: ["production_employee"],
+      permissionKeys: new Set(["inventory.receive.approve","inventory.receive.create"]),
+      deniedFieldKeys: new Set(),
+      workerFinancialDeny: true,
+    } as any;
+
+    await expect(deps.complaintService.createComplaint(prodUser as any, prodEff as any, {
+      complaintDate: "2026-07-10",
+      customerId: TEST_CUSTOMER_ID,
+      subject: "Production attempt",
+      idempotencyKey: "cmp-prod-deny-001",
+    })).rejects.toThrow(PermissionDeniedError);
+  });
+
+  it("production worker is denied listing complaints", async () => {
+    const deps = makeDeps();
+    const prodUser = makeUser(TEST_USERS.production.userId);
+    const prodEff = {
+      assignedRoleCodes: ["production_employee"],
+      permissionKeys: new Set(["inventory.receive.approve","inventory.receive.create"]),
+      deniedFieldKeys: new Set(),
+      workerFinancialDeny: true,
+    } as any;
+
+    await expect(deps.complaintService.listOpenComplaints(prodUser as any, prodEff as any)).rejects.toThrow(PermissionDeniedError);
+  });
+
+  it("quality can investigate/comment but cannot perform return or financial treatment", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // Quality can create + investigate + comment
+    const result = await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10",
+      customerId: TEST_CUSTOMER_ID,
+      subject: "Quality investigation",
+      idempotencyKey: "cmp-quality-fin-001",
+    });
+    await deps.complaintService.updateComplaint(qualityUser as any, qualityEff as any, {
+      complaintId: result.complaintId,
+      status: "investigating",
+      investigationNotes: "Found quality defect — customer notified",
+      idempotencyKey: "cmp-quality-fin-001:investigate",
+    });
+
+    // Quality CAN resolve with resolutionType (this is a FACT, not financial authorization)
+    const resolved = await deps.complaintService.updateComplaint(qualityUser as any, qualityEff as any, {
+      complaintId: result.complaintId,
+      status: "resolved",
+      resolutionNotes: "Quality investigation complete — recommends return",
+      resolutionType: "return_initiated",  // this is a FLAG, not an actual return
+      idempotencyKey: "cmp-quality-fin-001:resolve",
+    });
+    expect(resolved.status).toBe("resolved");
+
+    // Verify NO return_requests, NO stock movements, NO payments were created
+    // (the resolutionType is informational — it does NOT create a return request)
+    const auditRows = deps.audit.getRows();
+    for (const row of auditRows) {
+      expect(row.actionType).not.toContain("return");
+      expect(row.actionType).not.toContain("stock_movement");
+      expect(row.actionType).not.toContain("payment");
+    }
+  });
+
+  it("complaint service does not expose or accept financial treatment fields", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    // The CreateComplaintInput and UpdateComplaintInput types do NOT include:
+    // - financialTreatment (that's return_status, not complaint)
+    // - amount / creditAmount (no financial values)
+    // - paymentId / settlementId
+    // - returnRequestId
+    // - replacementOrderId
+    // - stockMovementId
+    // - reservationId
+    // The only "financial-adjacent" field is resolutionType, which is a
+    // TEXT label (no_action | return_initiated | replacement_initiated |
+    // credit_issued | other) — it does NOT create any financial record.
+
+    const result = await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10",
+      customerId: TEST_CUSTOMER_ID,
+      subject: "No financial fields test",
+      idempotencyKey: "cmp-no-fin-001",
+    });
+    // Verify complaint has no financial fields
+    const complaint = await deps.complaintRepo.findComplaintById(TEST_TENANT_ID, result.complaintId);
+    expect(complaint).toBeTruthy();
+    // These fields do NOT exist on the Complaint type
+    expect((complaint as any).amount).toBeUndefined();
+    expect((complaint as any).creditAmount).toBeUndefined();
+    expect((complaint as any).paymentId).toBeUndefined();
+    expect((complaint as any).returnRequestId).toBeUndefined();
+    expect((complaint as any).replacementOrderId).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// 10. No-side-effect proof (WP-06-02 final audit).
+// ===========================================================================
+
+describe("WP-06-02 no-side-effect proof", () => {
+  it("complaint creates NO return_requests, NO replacement orders, NO reservation changes", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    const result = await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10",
+      customerId: TEST_CUSTOMER_ID,
+      saleId: TEST_SALE_ID,
+      itemId: TEST_ITEM_ID,
+      qualityTestId: TEST_QUALITY_TEST_ID,
+      subject: "No side effects comprehensive test",
+      idempotencyKey: "cmp-noside-full-001",
+    });
+
+    // Update through all status transitions
+    await deps.complaintService.updateComplaint(qualityUser as any, qualityEff as any, {
+      complaintId: result.complaintId,
+      status: "investigating",
+      investigationNotes: "Investigating",
+      idempotencyKey: "cmp-noside-full-001:investigate",
+    });
+    await deps.complaintService.updateComplaint(qualityUser as any, qualityEff as any, {
+      complaintId: result.complaintId,
+      status: "resolved",
+      resolutionNotes: "Resolved",
+      resolutionType: "return_initiated",  // FLAG only — does NOT create return
+      idempotencyKey: "cmp-noside-full-001:resolve",
+    });
+    await deps.complaintService.updateComplaint(qualityUser as any, qualityEff as any, {
+      complaintId: result.complaintId,
+      status: "closed",
+      idempotencyKey: "cmp-noside-full-001:close",
+    });
+
+    // Audit should NOT contain any of these action types
+    const auditRows = deps.audit.getRows();
+    const forbiddenActions = [
+      "stock_movement", "inventory.", "sales_approval", "payment",
+      "settlement", "account_entry", "return", "replacement",
+      "reservation", "quality_hold.clear", "direct_cost",
+    ];
+    for (const row of auditRows) {
+      for (const forbidden of forbiddenActions) {
+        expect(row.actionType).not.toContain(forbidden);
+      }
+    }
+
+    // Only complaint audit actions should exist
+    const complaintAudit = auditRows.filter(r => r.actionType.startsWith("complaint"));
+    expect(complaintAudit.length).toBe(4);  // create + investigate + resolve + close
+  });
+});
+
+// ===========================================================================
+// 11. Link completeness (WP-06-02 final audit).
+// ===========================================================================
+
+describe("WP-06-02 link completeness", () => {
+  it("complaint supports trace by customer", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10", customerId: TEST_CUSTOMER_ID, subject: "C1", idempotencyKey: "cmp-link-cust-001",
+    });
+    await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10", customerId: TEST_CUSTOMER_ID, subject: "C2", idempotencyKey: "cmp-link-cust-002",
+    });
+
+    const complaints = await deps.complaintService.listComplaintsForCustomer(qualityUser as any, qualityEff as any, TEST_CUSTOMER_ID);
+    expect(complaints.length).toBe(2);
+  });
+
+  it("complaint supports trace by sale", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10", saleId: TEST_SALE_ID, subject: "S1", idempotencyKey: "cmp-link-sale-001",
+    });
+
+    const complaints = await deps.complaintService.listComplaintsForSale(qualityUser as any, qualityEff as any, TEST_SALE_ID);
+    expect(complaints.length).toBe(1);
+  });
+
+  it("complaint supports trace by item", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10", itemId: TEST_ITEM_ID, subject: "I1", idempotencyKey: "cmp-link-item-001",
+    });
+    await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10", itemId: TEST_ITEM_ID, subject: "I2", idempotencyKey: "cmp-link-item-002",
+    });
+
+    const complaints = await deps.complaintService.listComplaintsForItem(qualityUser as any, qualityEff as any, TEST_ITEM_ID);
+    expect(complaints.length).toBe(2);
+  });
+
+  it("complaint supports trace by quality test", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10", qualityTestId: TEST_QUALITY_TEST_ID, subject: "QT1", idempotencyKey: "cmp-link-qt-001",
+    });
+
+    const complaints = await deps.complaintService.listComplaintsForQualityTest(qualityUser as any, qualityEff as any, TEST_QUALITY_TEST_ID);
+    expect(complaints.length).toBe(1);
+  });
+
+  it("complaint supports sale_line_id link field", async () => {
+    const deps = makeDeps();
+    const qualityUser = makeUser(TEST_USERS.quality.userId);
+    const qualityEff = makeQualityEff();
+
+    const SALE_LINE_ID = "00000000-0000-4000-8000-000000060099";
+    const result = await deps.complaintService.createComplaint(qualityUser as any, qualityEff as any, {
+      complaintDate: "2026-07-10",
+      saleId: TEST_SALE_ID,
+      saleLineId: SALE_LINE_ID,
+      subject: "Sale line complaint",
+      idempotencyKey: "cmp-link-sale-line-001",
+    });
+
+    const complaint = await deps.complaintRepo.findComplaintById(TEST_TENANT_ID, result.complaintId);
+    expect(complaint!.saleLineId).toBe(SALE_LINE_ID);
+  });
+});

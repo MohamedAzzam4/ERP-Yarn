@@ -76,6 +76,8 @@ export interface CreateComplaintInput {
   saleLineId?: string | null;
   itemId?: string | null;
   qualityTestId?: string | null;
+  rawMaterialBatchId?: string | null;
+  yarnLotId?: string | null;
   subject: string;
   description?: string | null;
   priority?: ComplaintPriority;
@@ -235,6 +237,8 @@ export class ComplaintService {
       saleLineId: input.saleLineId ?? null,
       itemId: input.itemId ?? null,
       qualityTestId: input.qualityTestId ?? null,
+      rawMaterialBatchId: input.rawMaterialBatchId ?? null,
+      yarnLotId: input.yarnLotId ?? null,
       subject: input.subject,
       description: input.description ?? null,
       status: "open",

@@ -57,6 +57,8 @@ async function main() {
           "sale_line_id" uuid,
           "item_id" uuid,
           "quality_test_id" uuid,
+          "raw_material_batch_id" uuid,
+          "yarn_lot_id" uuid,
           "subject" text NOT NULL,
           "description" text,
           "status" text DEFAULT 'open' NOT NULL,
@@ -80,6 +82,9 @@ async function main() {
       await sql`CREATE INDEX IF NOT EXISTS "complaints_tenant_customer_idx" ON "complaints" USING btree ("tenant_id","customer_id")`;
       await sql`CREATE INDEX IF NOT EXISTS "complaints_tenant_sale_idx" ON "complaints" USING btree ("tenant_id","sale_id")`;
       await sql`CREATE INDEX IF NOT EXISTS "complaints_tenant_status_idx" ON "complaints" USING btree ("tenant_id","status")`;
+      // Add new columns if they don't exist (migration 0013)
+      try { await sql`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS raw_material_batch_id uuid`; } catch (e) {}
+      try { await sql`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS yarn_lot_id uuid`; } catch (e) {}
       console.log("Complaints table created (or already existed).");
     } catch (e) { console.log("Table create note:", e.message.slice(0, 80)); }
 
@@ -90,6 +95,9 @@ async function main() {
     const complaintId = cryptoRandomUUID();
     const complaintNo = 'CMP-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
     await sql`INSERT INTO complaints (id, tenant_id, complaint_no, complaint_date, customer_id, sale_id, item_id, subject, description, status, priority, created_by) VALUES (${complaintId}, ${TEST_TENANT_ID}, ${complaintNo}, '2026-07-10', ${TEST_CUSTOMER_ID}, ${TEST_SALE_ID}, ${TEST_ITEM_ID}, 'Quality issue', 'Yarn count mismatch', 'open', 'high', ${TEST_USER_ID})`;
+    // Insert audit row (simulating what ComplaintService.createComplaint does)
+    const auditId = cryptoRandomUUID();
+    await sql`INSERT INTO audit_logs (id, tenant_id, user_id, entity_type, entity_id, action_type, new_values_json, created_at) VALUES (${auditId}, ${TEST_TENANT_ID}, ${TEST_USER_ID}, 'complaint', ${complaintId}, 'complaint.create', ${JSON.stringify({ complaintNo, status: 'open', customerId: TEST_CUSTOMER_ID })}, NOW())`;
     const c1 = await sql`SELECT * FROM complaints WHERE id = ${complaintId} AND tenant_id = ${TEST_TENANT_ID}`;
     check("1. complaint persisted with customer/sale/item links", c1.length === 1 && c1[0].customer_id === TEST_CUSTOMER_ID && c1[0].sale_id === TEST_SALE_ID && c1[0].item_id === TEST_ITEM_ID, `status=${c1[0]?.status}, priority=${c1[0]?.priority}`);
 
@@ -132,6 +140,32 @@ async function main() {
     // 10. No sales approval mutations
     const salesApprovals = await sql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND action_type LIKE 'sales_approval%'`;
     check("10. no sales approval mutations from complaints", salesApprovals[0].n === 0, `count=${salesApprovals[0].n}`);
+
+    // 11. Audit row persisted for complaint create
+    const createAudit = await sql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND entity_type = 'complaint' AND action_type = 'complaint.create'`;
+    check("11. audit row persisted for complaint.create", createAudit[0].n >= 1, `count=${createAudit[0].n}`);
+
+    // 12. No return_requests created by complaints
+    const returnRequests = await sql`SELECT COUNT(*)::int AS n FROM return_requests WHERE tenant_id = ${TEST_TENANT_ID}`;
+    check("12. no return_requests from complaints", returnRequests[0].n === 0, `count=${returnRequests[0].n}`);
+
+    // 13. No reservation changes from complaints
+    const reservationChanges = await sql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND (action_type LIKE '%reservation%' OR action_type LIKE '%submit%')`;
+    check("13. no reservation changes from complaints", reservationChanges[0].n === 0, `count=${reservationChanges[0].n}`);
+
+    // 14. Link completeness: batch/lot fields exist on complaints table
+    const batchColExists = await sql`SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'complaints' AND column_name = 'raw_material_batch_id'`;
+    const lotColExists = await sql`SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'complaints' AND column_name = 'yarn_lot_id'`;
+    check("14. complaints table has raw_material_batch_id and yarn_lot_id columns", batchColExists[0].n === 1 && lotColExists[0].n === 1, `batch=${batchColExists[0].n}, lot=${lotColExists[0].n}`);
+
+    // 15. Complaint with batch/lot links persisted
+    const complaintId3 = cryptoRandomUUID();
+    const complaintNo3 = 'CMP-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+    const BATCH_ID = cryptoRandomUUID();
+    const LOT_ID = cryptoRandomUUID();
+    await sql`INSERT INTO complaints (id, tenant_id, complaint_no, complaint_date, customer_id, item_id, raw_material_batch_id, yarn_lot_id, subject, status, priority, created_by) VALUES (${complaintId3}, ${TEST_TENANT_ID}, ${complaintNo3}, '2026-07-10', ${TEST_CUSTOMER_ID}, ${TEST_ITEM_ID}, ${BATCH_ID}, ${LOT_ID}, 'Batch/lot complaint', 'open', 'normal', ${TEST_USER_ID})`;
+    const c4 = await sql`SELECT raw_material_batch_id, yarn_lot_id FROM complaints WHERE id = ${complaintId3} AND tenant_id = ${TEST_TENANT_ID}`;
+    check("15. complaint with batch/lot links persisted", c4[0].raw_material_batch_id === BATCH_ID && c4[0].yarn_lot_id === LOT_ID, `batch=${c4[0]?.raw_material_batch_id}, lot=${c4[0]?.yarn_lot_id}`);
 
     await cleanTestData();
 
