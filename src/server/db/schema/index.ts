@@ -287,3 +287,12 @@ export type {
   ImportCutoverManifest, NewImportCutoverManifest,
   HistoricalCorrectionRequest, NewHistoricalCorrectionRequest,
 } from "./migration";
+
+// Quality tables (WP-06-01)
+export { qualityTests, qualityTestValues } from "./quality";
+export type {
+  QualityTest,
+  NewQualityTest,
+  QualityTestValue,
+  NewQualityTestValue,
+} from "./quality";

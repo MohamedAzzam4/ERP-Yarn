@@ -64,6 +64,13 @@
       "when": 1783976236836,
       "tag": "0008_quick_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784002205759,
+      "tag": "0009_parched_stone_men",
+      "breakpoints": true
     }
   ]
 }
