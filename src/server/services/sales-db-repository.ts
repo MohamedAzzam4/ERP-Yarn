@@ -132,6 +132,8 @@ export class SalesDbRepository implements SalesRepository {
         locationId: row.locationId,
         quantityKg: row.quantityKg,
         pricePerTon: row.pricePerTon,
+        // WP-06-04: line-level traceability for replacement orders.
+        originalReturnLineId: row.originalReturnLineId ?? null,
         createdBy: null,
       })
       .returning();

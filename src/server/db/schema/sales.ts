@@ -63,6 +63,14 @@ export const salesOrders = pgTable("sales_orders", {
   index("sales_orders_tenant_customer_idx").on(t.tenantId, t.customerId),
   index("sales_orders_tenant_status_idx").on(t.tenantId, t.saleStatus),
   index("sales_orders_tenant_date_idx").on(t.tenantId, t.saleDate),
+  // WP-06-04: Only one replacement order per return request.
+  // DB-level enforcement prevents duplicate replacement orders even under
+  // concurrent requests with different idempotency keys. The partial index
+  // only applies when is_replacement_order = true AND original_return_request_id
+  // IS NOT NULL, so ordinary sales orders are unaffected.
+  uniqueIndex("sales_orders_replacement_return_unique_idx")
+    .on(t.tenantId, t.originalReturnRequestId)
+    .where(sql`is_replacement_order = true AND original_return_request_id IS NOT NULL`),
   check("sales_orders_total_gross_check", sql`total_gross_revenue >= 0`),
   check("sales_orders_discount_check", sql`order_discount_total >= 0`),
   check("sales_orders_doc_total_check", sql`document_total_posted >= 0`),
@@ -97,11 +105,19 @@ export const salesOrderLines = pgTable("sales_order_lines", {
   reservationId: uuid("reservation_id").references(() => stockReservations.id),
   saleIssueMovementId: uuid("sale_issue_movement_id").references(() => stockMovements.id),
   qualityWarningSnapshotJson: text("quality_warning_snapshot_json"),
+  // WP-06-04: Line-level traceability for replacement orders.
+  // When this sale line is part of a replacement order, this column stores
+  // the ID of the return line that triggered the replacement. This allows
+  // the complete chain: replacement sale line → return line → original sale
+  // line → original sale. NULL for ordinary (non-replacement) sale lines.
+  originalReturnLineId: uuid("original_return_line_id"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   uniqueIndex("sales_order_lines_tenant_order_line_unique_idx").on(t.tenantId, t.salesOrderId, t.lineNo),
   index("sales_order_lines_tenant_order_idx").on(t.tenantId, t.salesOrderId),
   index("sales_order_lines_tenant_item_idx").on(t.tenantId, t.itemId),
+  // WP-06-04: Index for line-level traceability queries.
+  index("sales_order_lines_tenant_return_line_idx").on(t.tenantId, t.originalReturnLineId),
   check("sales_order_lines_qty_check", sql`quantity_kg > 0`),
   check("sales_order_lines_price_check", sql`price_per_ton IS NULL OR price_per_ton >= 0`),
   check("sales_order_lines_rounding_check", sql`rounding_adjustment = 0 OR (line_gross_revenue IS NOT NULL AND line_allocated_discount_posted IS NOT NULL)`),

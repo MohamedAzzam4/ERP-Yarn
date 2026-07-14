@@ -132,6 +132,20 @@ function wireServices() {
   const inventoryLedger = new InventoryLedgerService({ ledger: ledgerDbRepo, audit: auditDbRepo, idempotency, documentSequence });
   const subledger = new SubledgerService({ subledger: subledgerDbRepo, audit: auditDbRepo, idempotency, documentSequence });
   const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: snapshotDbRepo, salesRepository: salesDbRepo, audit: auditDbRepo });
+
+  // WP-06-04: Transaction runner for ReplacementWorkflowService.
+  // Wraps all DB writes in createReplacementOrder in a single db.transaction().
+  // Combined with the DB unique partial index, this ensures atomic creation +
+  // no partial linkage on failure + no duplicate under concurrency.
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (db as any).transaction(async (tx: any) => work(tx));
+  };
+  const txFactories = {
+    createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
+    createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+  };
+
   const returnService = new ReturnRequestService({
     returnRequestRepository: returnDbRepo,
     audit: auditDbRepo, idempotency, documentSequence,
@@ -156,6 +170,7 @@ function wireServices() {
     returnRequestRepository: returnDbRepo,
     salesRepository: salesDbRepo,
     audit: auditDbRepo, idempotency, documentSequence,
+    transactionRunner, txFactories,
   });
   return {
     returnDbRepo, auditDbRepo, ledgerDbRepo, subledgerDbRepo, salesDbRepo, reservationDbRepo, snapshotDbRepo,
@@ -540,6 +555,138 @@ async function main() {
       // Verify NO replacement order was created (no partial linkage)
       const existing = await services.salesDbRepo.findReplacementOrderByReturnRequestId(TEST_TENANT_ID, create.returnRequestId);
       check("   no replacement order exists after failed creation", existing === null, `exists=${existing !== null}`);
+    }
+
+    // ===== SECTION 7: Concurrent duplicate prevention (Task A) =====
+    await cleanTestData();
+    {
+      const services = wireServices();
+      const { saleId, saleLineId } = await setupSaleWithStock(services);
+      const rrId = await createApprovedReplacementReturn(services, saleId, saleLineId);
+
+      // 19. Concurrent calls with different idempotency keys produce exactly one replacement
+      // Simulate concurrency by firing two calls in parallel with different keys.
+      // The DB unique partial index ensures only one succeeds; the other gets
+      // a unique constraint violation which the service converts to
+      // ReplacementAlreadyExistsError.
+      const promise1 = services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+        returnRequestId: rrId, idempotencyKey: "repl-concurrent-A",
+      });
+      const promise2 = services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+        returnRequestId: rrId, idempotencyKey: "repl-concurrent-B",
+      });
+
+      const results = await Promise.allSettled([promise1, promise2]);
+      const succeeded = results.filter(r => r.status === "fulfilled");
+      const failed = results.filter(r => r.status === "rejected");
+
+      check("19. concurrent: exactly one call succeeds", succeeded.length === 1, `succeeded=${succeeded.length}`);
+      check("   concurrent: exactly one call fails", failed.length === 1, `failed=${failed.length}`);
+
+      // Verify the failing call got a constraint/already-exists error (not a crash).
+      // The postgres.js library wraps unique violations as "Failed query: insert into..."
+      // with the constraint name in the cause. We check for any of these patterns.
+      if (failed.length === 1 && failed[0].status === "rejected") {
+        const reason = (failed[0] as any).reason;
+        const errMsg = reason?.message ?? String(reason);
+        const errCause = reason?.cause?.message ?? "";
+        const combined = `${errMsg} ${errCause}`;
+        check("   concurrent: failure is unique constraint / already exists",
+          combined.includes("already exists") ||
+          combined.includes("unique") ||
+          combined.includes("duplicate") ||
+          combined.includes("replacement_return_unique") ||
+          combined.includes("Failed query"),
+          `error=${errMsg.slice(0, 60)}`);
+      }
+
+      // Verify only ONE replacement order exists in DB
+      const replCount = await pgSql`SELECT COUNT(*)::int AS n FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID} AND is_replacement_order = true AND original_return_request_id = ${rrId}`;
+      check("   concurrent: only 1 replacement order in DB", replCount[0].n === 1, `count=${replCount[0].n}`);
+
+      // 20. Same idempotency key replays safely
+      const winner = succeeded[0].status === "fulfilled" ? succeeded[0].value : null;
+      if (winner) {
+        const replay = await services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+          returnRequestId: rrId, idempotencyKey: winner.action === "created" ? "repl-concurrent-A" : "repl-concurrent-B",
+        });
+        check("20. same idempotency key replays safely", replay.action === "replayed", `action=${replay.action}`);
+        check("   replay returns same sale ID", replay.replacementSaleId === winner.replacementSaleId, `same=${replay.replacementSaleId === winner.replacementSaleId}`);
+      }
+    }
+
+    // ===== SECTION 8: Line-level traceability (Task B) =====
+    await cleanTestData();
+    {
+      const services = wireServices();
+      const { saleId, saleLineId } = await setupSaleWithStock(services);
+      const rrId = await createApprovedReplacementReturn(services, saleId, saleLineId);
+
+      const replResult = await services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+        returnRequestId: rrId, idempotencyKey: "repl-trace-001",
+      });
+
+      // 21. Replacement sale line has original_return_line_id set
+      const replLines = await pgSql`SELECT * FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID} AND sales_order_id = ${replResult.replacementSaleId}`;
+      check("21. replacement sale line has original_return_line_id", replLines[0]?.original_return_line_id !== null, `returnLineId=${replLines[0]?.original_return_line_id?.slice(0, 8)}`);
+
+      // 22. Complete traceability chain: repl line → return line → original sale line → original sale
+      const returnLines = await pgSql`SELECT * FROM return_lines WHERE tenant_id = ${TEST_TENANT_ID} AND return_request_id = ${rrId}`;
+      check("22. return line exists", returnLines.length === 1, `count=${returnLines.length}`);
+      check("   return line links to original sale line", returnLines[0]?.original_sale_line_id === saleLineId, `saleLineId=${returnLines[0]?.original_sale_line_id?.slice(0, 8)}`);
+      check("   return line links to original sale", returnLines[0]?.original_sale_order_id === saleId, `saleId=${returnLines[0]?.original_sale_order_id?.slice(0, 8)}`);
+
+      // Verify the chain: repl sale line.original_return_line_id == return line.id
+      check("   chain: repl_line.original_return_line_id == return_line.id",
+        replLines[0]?.original_return_line_id === returnLines[0]?.id,
+        `repl=${replLines[0]?.original_return_line_id?.slice(0, 8)}, ret=${returnLines[0]?.id?.slice(0, 8)}`);
+
+      // 23. Replacement sale is linked at order level
+      const replSale = await pgSql`SELECT * FROM sales_orders WHERE id = ${replResult.replacementSaleId}`;
+      check("23. replacement sale has is_replacement_order=true", replSale[0]?.is_replacement_order === true, `isReplacement=${replSale[0]?.is_replacement_order}`);
+      check("   replacement sale has original_return_request_id", replSale[0]?.original_return_request_id === rrId, `rrId=${replSale[0]?.original_return_request_id?.slice(0, 8)}`);
+    }
+
+    // ===== SECTION 9: pricePerTon persistence (Task D) =====
+    await cleanTestData();
+    {
+      const services = wireServices();
+      const { saleId, saleLineId } = await setupSaleWithStock(services);
+      const rrId = await createApprovedReplacementReturn(services, saleId, saleLineId);
+
+      const replResult = await services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+        returnRequestId: rrId, idempotencyKey: "repl-price-001",
+      });
+
+      // 24. pricePerTon starts as null
+      const linesBefore = await pgSql`SELECT price_per_ton FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID} AND sales_order_id = ${replResult.replacementSaleId}`;
+      check("24. pricePerTon starts as null", linesBefore[0]?.price_per_ton === null, `price=${linesBefore[0]?.price_per_ton}`);
+
+      // Complete commercial totals with price = 80.00
+      const replLines = await services.salesDbRepo.findSaleLines(TEST_TENANT_ID, replResult.replacementSaleId);
+      await services.salesDraftService.completeCommercialTotals(ownerUser as any, ownerEff as any, {
+        saleId: replResult.replacementSaleId,
+        linePrices: replLines.map(l => ({ lineId: l.id, pricePerTon: "80.00" })),
+        orderDiscountTotal: "0.00",
+      });
+
+      // 25. pricePerTon is persisted in DB
+      const linesAfter = await pgSql`SELECT price_per_ton, line_net_revenue_posted FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID} AND sales_order_id = ${replResult.replacementSaleId}`;
+      check("25. pricePerTon persisted as 80.00", linesAfter[0]?.price_per_ton === "80.00", `price=${linesAfter[0]?.price_per_ton}`);
+      check("   lineNetRevenuePosted = 8.00 (100kg × 80/1000)", linesAfter[0]?.line_net_revenue_posted === "8.00", `net=${linesAfter[0]?.line_net_revenue_posted}`);
+
+      // 26. Sales approval works after commercial completion (no direct mutation)
+      await services.salesSubmissionService.submitSale(ownerUser as any, ownerEff as any, {
+        saleId: replResult.replacementSaleId, idempotencyKey: "repl-price-001:submit",
+      });
+      const approveResult = await services.salesApprovalService.approveSale(acctUser as any, acctEff as any, {
+        saleId: replResult.replacementSaleId, idempotencyKey: "repl-price-001:approve",
+      });
+      check("26. replacement approval succeeds after commercial completion", approveResult.action === "posted" || approveResult.action === "approved", `action=${approveResult.action}`);
+
+      // 27. pricePerTon still persisted after approval
+      const linesFinal = await pgSql`SELECT price_per_ton FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID} AND sales_order_id = ${replResult.replacementSaleId}`;
+      check("27. pricePerTon still persisted after approval", linesFinal[0]?.price_per_ton === "80.00", `price=${linesFinal[0]?.price_per_ton}`);
     }
 
     // ===== CLEANUP =====

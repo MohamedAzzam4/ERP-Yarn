@@ -151,6 +151,8 @@ export class InMemorySalesRepository implements SalesRepository {
       reservationId: null,
       saleIssueMovementId: null,
       qualityWarningSnapshotJson: null,
+      // WP-06-04: line-level traceability for replacement orders.
+      originalReturnLineId: row.originalReturnLineId ?? null,
       createdBy: null,
       createdAt: NOW(),
       updatedBy: null,

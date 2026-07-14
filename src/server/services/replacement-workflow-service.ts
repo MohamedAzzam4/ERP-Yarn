@@ -167,12 +167,43 @@ export class ReturnHasNoLinesError extends ReplacementWorkflowError {
 // Service deps.
 // ---------------------------------------------------------------------------
 
+/**
+ * WP-06-04: Transaction runner for atomic replacement order creation.
+ * When provided, all DB writes (sales_orders insert, sales_order_lines inserts,
+ * audit_logs insert) are wrapped in a single DB transaction. If any write fails,
+ * the entire transaction rolls back — no partial replacement order remains.
+ *
+ * The DB-level unique partial index (sales_orders_replacement_return_unique_idx)
+ * provides the final concurrency safety net: even if two concurrent transactions
+ * pass the application-level check, only one INSERT succeeds; the other gets a
+ * unique constraint violation which the service catches and converts to
+ * ReplacementAlreadyExistsError.
+ */
+export type ReplacementWorkflowTransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+export interface ReplacementWorkflowTransactionScopedFactories {
+  /** Create a SalesRepository that uses the transaction-scoped `tx`. */
+  createSalesRepository: (tx: unknown) => SalesRepository;
+  /** Create a ReturnRequestRepository that uses the transaction-scoped `tx`. */
+  createReturnRequestRepository: (tx: unknown) => ReturnRequestRepository;
+  /** Create an AuditTransactionHandle that uses the transaction-scoped `tx`. */
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+}
+
 export interface ReplacementWorkflowServiceDeps {
   returnRequestRepository: ReturnRequestRepository;
   salesRepository: SalesRepository;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
+  /**
+   * Optional transaction runner. When provided, all DB writes in
+   * createReplacementOrder are wrapped in a single DB transaction.
+   * When absent (unit tests), services run without a DB transaction boundary.
+   */
+  transactionRunner?: ReplacementWorkflowTransactionRunner;
+  /** Factory functions for creating transaction-scoped services/repos. */
+  txFactories?: ReplacementWorkflowTransactionScopedFactories;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +362,8 @@ export class ReplacementWorkflowService {
       throw new ReturnHasNoLinesError(rr.id);
     }
 
-    // Allocate doc_no for the replacement sales order
+    // Allocate doc_no for the replacement sales order (outside transaction —
+    // document sequence is in-process and doesn't need tx participation)
     const year = now.getUTCFullYear();
     const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, {
       tenantId: user.tenantId,
@@ -343,58 +375,162 @@ export class ReplacementWorkflowService {
     // Determine sale date (default to today if not provided)
     const saleDate = input.saleDate ?? now.toISOString().slice(0, 10);
 
-    // Create the replacement sales order (normal sales order with replacement link fields)
-    const replacementSale = await this.deps.salesRepository.insertSaleDraft({
-      tenantId: user.tenantId,
-      docNo: docNoResult.docNo,
-      customerId: rr.customerId,
-      saleDate,
-      createdBy: user.userId,
-      isReplacementOrder: true,
-      originalReturnRequestId: rr.id,
-    });
+    // =====================================================================
+    // ATOMIC REPLACEMENT ORDER CREATION (Contract 06 §6, §12; WP-06-04)
+    // =====================================================================
+    // All DB writes (sales_orders insert, sales_order_lines inserts, audit_logs
+    // insert) MUST commit or roll back together. If transactionRunner is
+    // provided, we wrap all writes in a single db.transaction(). If any write
+    // fails, the entire transaction rolls back — no partial replacement order.
+    //
+    // The DB-level unique partial index (sales_orders_replacement_return_unique_idx)
+    // provides the final concurrency safety net: if two concurrent transactions
+    // pass the application-level check, only one INSERT succeeds; the other
+    // gets a unique constraint violation which we catch and convert to
+    // ReplacementAlreadyExistsError.
+    // =====================================================================
 
-    // Create sale lines mirroring the return lines.
-    // Price is NULL — set later by completeCommercialTotals (Owner/Accountant).
-    // Quantity, item, and location come from the return lines (operational facts).
-    let lineNo = 1;
-    for (const rl of returnLines) {
-      await this.deps.salesRepository.insertSaleLine({
+    const executePosting = async (
+      txScoped: {
+        salesRepository: SalesRepository;
+        returnRequestRepository: ReturnRequestRepository;
+        audit: AuditTransactionHandle;
+      } | null,
+    ): Promise<{ replacementSaleId: string; docNo: string; saleStatus: string }> => {
+      const salesRepo = txScoped?.salesRepository ?? this.deps.salesRepository;
+      const returnRepo = txScoped?.returnRequestRepository ?? this.deps.returnRequestRepository;
+      const audit = txScoped?.audit ?? this.deps.audit;
+
+      // Re-check for existing replacement order INSIDE the transaction.
+      // This narrows the race window: the unique index is the final arbiter,
+      // but this check gives a cleaner error for the common case.
+      const existingInTx = await salesRepo.findReplacementOrderByReturnRequestId(
+        user.tenantId,
+        rr.id,
+      );
+      if (existingInTx) {
+        throw new ReplacementAlreadyExistsError(rr.id, existingInTx.id);
+      }
+
+      // Fetch return lines (inside tx for consistency)
+      const returnLinesInTx = await returnRepo.findReturnLines(user.tenantId, rr.id);
+      if (returnLinesInTx.length === 0) {
+        throw new ReturnHasNoLinesError(rr.id);
+      }
+
+      // Create the replacement sales order (normal sales order with replacement link fields)
+      const replacementSale = await salesRepo.insertSaleDraft({
         tenantId: user.tenantId,
-        salesOrderId: replacementSale.id,
-        lineNo,
-        itemId: rl.itemId,
-        locationId: rl.returnLocationId,
-        quantityKg: normalizeKg(rl.quantityKg),
-        pricePerTon: null, // Set by Owner/Accountant via completeCommercialTotals
-      });
-      lineNo++;
-    }
-
-    // Audit the replacement order creation + linkage
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: REPLACEMENT_AUDIT_ENTITY,
-      entityId: replacementSale.id,
-      actionType: "replacement_workflow.create",
-      newValuesJson: {
-        docNo: replacementSale.docNo,
-        replacementSaleId: replacementSale.id,
-        returnRequestId: rr.id,
-        originalSaleId: rr.salesOrderId,
+        docNo: docNoResult.docNo,
         customerId: rr.customerId,
-        lineCount: returnLines.length,
         saleDate,
-        decisionNotes: input.decisionNotes ?? null,
+        createdBy: user.userId,
         isReplacementOrder: true,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+        originalReturnRequestId: rr.id,
+      });
+
+      // Create sale lines mirroring the return lines.
+      // Price is NULL — set later by completeCommercialTotals (Owner/Accountant).
+      // Quantity, item, and location come from the return lines (operational facts).
+      // WP-06-04: Set originalReturnLineId for line-level traceability:
+      //   replacement sale line → return line → original sale line → original sale
+      let lineNo = 1;
+      for (const rl of returnLinesInTx) {
+        await salesRepo.insertSaleLine({
+          tenantId: user.tenantId,
+          salesOrderId: replacementSale.id,
+          lineNo,
+          itemId: rl.itemId,
+          locationId: rl.returnLocationId,
+          quantityKg: normalizeKg(rl.quantityKg),
+          pricePerTon: null, // Set by Owner/Accountant via completeCommercialTotals
+          originalReturnLineId: rl.id, // WP-06-04: line-level traceability
+        });
+        lineNo++;
+      }
+
+      // Audit the replacement order creation + linkage
+      await appendAuditLog(audit, user.tenantId, user.userId, {
+        entityType: REPLACEMENT_AUDIT_ENTITY,
+        entityId: replacementSale.id,
+        actionType: "replacement_workflow.create",
+        newValuesJson: {
+          docNo: replacementSale.docNo,
+          replacementSaleId: replacementSale.id,
+          returnRequestId: rr.id,
+          originalSaleId: rr.salesOrderId,
+          customerId: rr.customerId,
+          lineCount: returnLinesInTx.length,
+          saleDate,
+          decisionNotes: input.decisionNotes ?? null,
+          isReplacementOrder: true,
+          // WP-06-04: include line-level links in audit for traceability
+          replacementLineLinks: returnLinesInTx.map(rl => ({
+            returnLineId: rl.id,
+            originalSaleLineId: rl.originalSaleLineId,
+          })),
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      return {
+        replacementSaleId: replacementSale.id,
+        docNo: replacementSale.docNo,
+        saleStatus: replacementSale.saleStatus,
+      };
+    };
+
+    let postingResult: { replacementSaleId: string; docNo: string; saleStatus: string };
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        postingResult = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txSalesRepo = this.deps.txFactories!.createSalesRepository(tx);
+          const txReturnRepo = this.deps.txFactories!.createReturnRequestRepository(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          return executePosting({
+            salesRepository: txSalesRepo,
+            returnRequestRepository: txReturnRepo,
+            audit: txAudit,
+          });
+        });
+      } else {
+        postingResult = await executePosting(null);
+      }
+    } catch (txError) {
+      // Check if this is a unique constraint violation (concurrent duplicate).
+      // The DB-level unique partial index enforces one replacement per return request.
+      const errMsg = txError instanceof Error ? txError.message : String(txError);
+      const isUniqueViolation =
+        errMsg.includes("sales_orders_replacement_return_unique_idx") ||
+        errMsg.includes("unique constraint") ||
+        errMsg.includes("duplicate key");
+      if (isUniqueViolation) {
+        // A concurrent transaction won — fetch the winning replacement order.
+        const winner = await this.deps.salesRepository.findReplacementOrderByReturnRequestId(
+          user.tenantId,
+          rr.id,
+        );
+        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 409,
+          responseBody: { message: `Concurrent replacement creation won by '${winner?.id ?? "unknown"}'.` },
+          lastErrorClass: "ReplacementAlreadyExistsError",
+        }, now);
+        throw new ReplacementAlreadyExistsError(rr.id, winner?.id ?? "unknown");
+      }
+      // Other error — mark idempotency as failed and re-throw.
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 500,
+        responseBody: { message: "Replacement order creation failed and rolled back." },
+        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+      }, now);
+      throw txError;
+    }
 
     const result: CreateReplacementOrderResult = {
       action: "created",
-      replacementSaleId: replacementSale.id,
-      docNo: replacementSale.docNo,
-      saleStatus: replacementSale.saleStatus,
+      replacementSaleId: postingResult.replacementSaleId,
+      docNo: postingResult.docNo,
+      saleStatus: postingResult.saleStatus,
       returnRequestId: rr.id,
       originalSaleId: rr.salesOrderId,
       lineCount: returnLines.length,
@@ -404,7 +540,7 @@ export class ReplacementWorkflowService {
       responseCode: 200,
       responseBody: result,
       entityType: REPLACEMENT_ENTITY_TYPE,
-      entityId: replacementSale.id,
+      entityId: postingResult.replacementSaleId,
     }, now);
 
     return result;

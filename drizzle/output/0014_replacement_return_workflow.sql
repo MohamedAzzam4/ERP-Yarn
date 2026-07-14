@@ -1,0 +1,3 @@
+ALTER TABLE "sales_order_lines" ADD COLUMN "original_return_line_id" uuid;--> statement-breakpoint
+CREATE INDEX "sales_order_lines_tenant_return_line_idx" ON "sales_order_lines" USING btree ("tenant_id","original_return_line_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "sales_orders_replacement_return_unique_idx" ON "sales_orders" USING btree ("tenant_id","original_return_request_id") WHERE is_replacement_order = true AND original_return_request_id IS NOT NULL;

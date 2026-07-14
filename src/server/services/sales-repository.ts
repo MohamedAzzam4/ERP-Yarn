@@ -38,6 +38,13 @@ export interface NewSalesLineInput {
   locationId: string;
   quantityKg: string;
   pricePerTon: string | null;
+  /**
+   * WP-06-04: Line-level traceability for replacement orders.
+   * When this sale line is part of a replacement order, this stores the ID
+   * of the return line that triggered the replacement. NULL for ordinary
+   * (non-replacement) sale lines.
+   */
+  originalReturnLineId?: string | null;
 }
 
 export interface CommercialTotalsPatch {
