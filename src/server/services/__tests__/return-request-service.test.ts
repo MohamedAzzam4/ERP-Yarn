@@ -64,15 +64,28 @@ function makeWhEff() {
   } as any;
 }
 
+import { InventoryLedgerService } from "../inventory-ledger-service";
+import { SubledgerService } from "../subledger-service";
+import { InMemorySalesRepository } from "./in-memory-sales-repository";
+import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-repository";
+import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
+
 function makeDeps() {
   const returnRepo = new InMemoryReturnRequestRepository();
+  const salesRepository = new InMemorySalesRepository();
+  const ledgerRepo = new InMemoryInventoryLedgerRepository();
+  const subledgerRepo = new InMemorySubledgerRepository();
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
+  const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
   const returnService = new ReturnRequestService({
-    returnRequestRepository: returnRepo, audit, idempotency, documentSequence,
+    returnRequestRepository: returnRepo,
+    audit, idempotency, documentSequence,
+    inventoryLedger, subledger, salesRepository,
   });
-  return { returnRepo, audit, idempotency, documentSequence, returnService };
+  return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, returnService };
 }
 
 const BASE_LINE = {
@@ -499,31 +512,12 @@ describe("WP-06-03 rollback", () => {
 // 10. Atomic approval with stock movement + credit entry (WP-06-03 correction).
 // ===========================================================================
 
-import { InventoryLedgerService } from "../inventory-ledger-service";
-import { SubledgerService } from "../subledger-service";
-import { InMemorySalesRepository } from "./in-memory-sales-repository";
-import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-repository";
-import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
-
+// makeFullDeps is now the same as makeDeps (all deps are required)
 function makeFullDeps() {
-  const returnRepo = new InMemoryReturnRequestRepository();
-  const salesRepository = new InMemorySalesRepository();
-  const ledgerRepo = new InMemoryInventoryLedgerRepository();
-  const subledgerRepo = new InMemorySubledgerRepository();
-  const audit = new InProcessAuditStore();
-  const idempotency = new InProcessIdempotencyStore();
-  const documentSequence = new InProcessDocumentSequenceStore();
-  const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
-  const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
-  const returnService = new ReturnRequestService({
-    returnRequestRepository: returnRepo,
-    audit, idempotency, documentSequence,
-    inventoryLedger, subledger, salesRepository,
-  });
-  return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, returnService };
+  return makeDeps();
 }
 
-async function setupApprovedSaleWithStock(deps: ReturnType<typeof makeFullDeps>) {
+async function setupApprovedSaleWithStock(deps: ReturnType<typeof makeDeps>) {
   const ownerUser = makeUser(TEST_USERS.owner.userId);
   const ownerEff = makeOwnerEff();
 
@@ -647,7 +641,6 @@ describe("WP-06-03 atomic approval with stock + credit effects", () => {
           itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
           returnedStockStatus: "return_received",
           originalSaleLineNetUnitValue: "0.080000",
-          returnCreditValue: "8.00",  // 100 kg × 0.08/kg = 8.00
         }],
         idempotencyKey: "rr-approve-credit-001",
       },
@@ -842,7 +835,6 @@ describe("WP-06-03 atomic approval with stock + credit effects", () => {
           itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
           returnedStockStatus: "return_received",
           originalSaleLineNetUnitValue: "0.080000",
-          returnCreditValue: "8.00",
         }],
         idempotencyKey: "rr-idem-approve-001",
       },

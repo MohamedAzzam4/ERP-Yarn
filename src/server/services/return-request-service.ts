@@ -80,8 +80,12 @@ export interface ReturnLineInput {
   quantityKg: string;
   returnLocationId: string;
   returnedStockStatus: ReturnedStockStatus;
+  /**
+   * Original approved sale-line net unit value after allocated discount.
+   * Optional at input — if not provided, the service fetches it from the sale line
+   * at approval time. This field is NOT a caller-supplied credit value.
+   */
   originalSaleLineNetUnitValue?: string | null;
-  returnCreditValue?: string | null;
 }
 
 export interface CreateReturnRequestInput {
@@ -154,12 +158,12 @@ export interface ReturnRequestServiceDeps {
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
-  /** Optional: InventoryLedgerService for posting return_receipt stock movements on approval. */
-  inventoryLedger?: InventoryLedgerService;
-  /** Optional: SubledgerService for posting customer return credit entries on approval. */
-  subledger?: SubledgerService;
-  /** Optional: SalesRepository for updating sale return state on approval. */
-  salesRepository?: SalesRepository;
+  /** Required for approveReturnRequest: posts return_receipt stock movement. */
+  inventoryLedger: InventoryLedgerService;
+  /** Required for approveReturnRequest: posts customer return credit entry. */
+  subledger: SubledgerService;
+  /** Required for approveReturnRequest: reads sale lines + updates sale return state. */
+  salesRepository: SalesRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +272,6 @@ export class ReturnRequestService {
         returnLocationId: line.returnLocationId,
         returnedStockStatus: line.returnedStockStatus,
         originalSaleLineNetUnitValue: line.originalSaleLineNetUnitValue ?? null,
-        returnCreditValue: line.returnCreditValue ?? null,
         createdBy: user.userId,
       } as any);
     }
@@ -450,9 +453,9 @@ export class ReturnRequestService {
     const lines = await this.deps.returnRequestRepository.findReturnLines(user.tenantId, rr.id);
 
     // DEC-068: Validate cumulative return cap for each line
-    // Fetch original sale lines if salesRepository is available
-    let saleLines: Map<string, { quantityKg: string; lineNetRevenuePosted: string }> = new Map();
-    if (this.deps.salesRepository) {
+    // Fetch original sale lines (required for cap validation + credit calculation)
+    const saleLines: Map<string, { quantityKg: string; lineNetRevenuePosted: string }> = new Map();
+    {
       const originalSaleLines = await this.deps.salesRepository.findSaleLines(user.tenantId, rr.salesOrderId);
       for (const sl of originalSaleLines) {
         saleLines.set(sl.id, { quantityKg: sl.quantityKg, lineNetRevenuePosted: sl.lineNetRevenuePosted ?? "0" });
@@ -488,50 +491,62 @@ export class ReturnRequestService {
     const year = now.getUTCFullYear();
 
     // 1. Post return_receipt stock movement for each line
-    if (this.deps.inventoryLedger) {
-      for (const line of lines) {
-        const mvDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
-          tenantId: user.tenantId, documentType: "return_receipt", year, entityType: "stock_movement",
-        });
+    for (const line of lines) {
+      const mvDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
+        tenantId: user.tenantId, documentType: "return_receipt", year, entityType: "stock_movement",
+      });
 
-        const mvResult = await this.deps.inventoryLedger.postReturnReceipt(user, effective, {
-          itemId: line.itemId,
-          toLocationId: line.returnLocationId,
-          quantityKg: line.quantityKg,
-          movementDate: rr.returnDate,
-          sourceDocumentType: "return_request",
-          sourceDocumentId: rr.id,
-          idempotencyKey: `${input.idempotencyKey}:mv:${line.id}`,
-          notes: input.decisionNotes ?? undefined,
-        });
+      const mvResult = await this.deps.inventoryLedger.postReturnReceipt(user, effective, {
+        itemId: line.itemId,
+        toLocationId: line.returnLocationId,
+        quantityKg: line.quantityKg,
+        movementDate: rr.returnDate,
+        sourceDocumentType: "return_request",
+        sourceDocumentId: rr.id,
+        idempotencyKey: `${input.idempotencyKey}:mv:${line.id}`,
+        notes: input.decisionNotes ?? undefined,
+      });
 
-        stockMovementIds.push(mvResult.movementId);
+      stockMovementIds.push(mvResult.movementId);
 
-        // Link movement to return line
-        await this.deps.returnRequestRepository.updateReturnLineMovement(
-          user.tenantId, line.id, mvResult.movementId,
-        );
-      }
+      // Link movement to return line
+      await this.deps.returnRequestRepository.updateReturnLineMovement(
+        user.tenantId, line.id, mvResult.movementId,
+      );
     }
 
     // 2. Post customer return credit entry (NEGATIVE customer entry)
     // Contract 07 §10.1: "An approved customer return credit is a negative customer entry."
-    if (this.deps.subledger && rr.financialTreatment) {
+    // return_credit_value = returned_quantity × original_sale_line_net_unit_value
+    // The credit value is ALWAYS computed server-side from the sale line data.
+    // Caller/worker input must NOT provide return credit value.
+    if (rr.financialTreatment) {
       const needsCredit = rr.financialTreatment === "customer_credit" || rr.financialTreatment === "refund_due";
       if (needsCredit) {
-        // Calculate total return credit value
-        // return_credit_value = returned_quantity × original_sale_line_net_unit_value
-        // (Contract 07 §10.1)
+        // Calculate total return credit value server-side
         let totalCredit = "0.00";
         for (const line of lines) {
-          // If returnCreditValue is already set on the line, use it
-          if (line.returnCreditValue) {
-            totalCredit = addMoney(totalCredit, normalizeMoney(line.returnCreditValue));
-          } else if (line.originalSaleLineNetUnitValue) {
-            // Compute: quantity × unit_value
+          // Fetch original sale line to get net unit value after allocated discount
+          const saleLine = saleLines.get(line.originalSaleLineId);
+          let unitValue: string | null = null;
+
+          // Use the line's snapshotted value if provided at creation time
+          if (line.originalSaleLineNetUnitValue) {
+            unitValue = line.originalSaleLineNetUnitValue;
+          } else if (saleLine) {
+            // Derive from sale line: lineNetRevenuePosted / quantityKg
+            const lineNet = parseFloat(saleLine.lineNetRevenuePosted);
+            const lineQty = parseFloat(saleLine.quantityKg);
+            if (lineQty > 0) {
+              unitValue = (lineNet / lineQty).toFixed(6);
+            }
+          }
+
+          if (unitValue) {
+            // return_credit_value = returned_quantity × unit_value (ROUND_HALF_UP at 2 decimals)
             const qty = parseFloat(line.quantityKg);
-            const unitValue = parseFloat(line.originalSaleLineNetUnitValue);
-            const credit = (qty * unitValue).toFixed(2);
+            const uv = parseFloat(unitValue);
+            const credit = (qty * uv).toFixed(2);
             totalCredit = addMoney(totalCredit, normalizeMoney(credit));
           }
         }
@@ -553,7 +568,7 @@ export class ReturnRequestService {
     }
 
     // 3. Update sale return state (approved → partially_returned or fully_returned)
-    if (this.deps.salesRepository && saleLines.size > 0) {
+    if (saleLines.size > 0) {
       // Check if all sale lines are fully returned
       let allFullyReturned = true;
       for (const [saleLineId, saleLine] of saleLines) {
