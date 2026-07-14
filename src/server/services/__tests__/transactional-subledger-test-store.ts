@@ -107,6 +107,12 @@ export class TransactionalSubledgerTestStore {
     findAccount: async (tenantId, ownerType, ownerId, currency) => {
       return this.activeAccounts.get(`${tenantId}:${ownerType}:${ownerId}:${currency}`) ?? null;
     },
+    findAccountById: async (tenantId, accountId) => {
+      for (const a of this.activeAccounts.values()) {
+        if (a.tenantId === tenantId && a.id === accountId) return a;
+      }
+      return null;
+    },
     insertAccount: async (row) => {
       this.accountCounter++;
       const id = nid("acc", this.accountCounter);
@@ -145,6 +151,14 @@ export class TransactionalSubledgerTestStore {
     },
     listEntriesForAccount: async (tenantId, accountId) => {
       return [...this.activeEntries.values()].filter(e => e.tenantId === tenantId && e.accountId === accountId);
+    },
+    updateEntrySettlementStatus: async (tenantId, entryId, settlementStatus) => {
+      const key = `${tenantId}:${entryId}`;
+      const entry = this.activeEntries.get(key);
+      if (!entry) return null;
+      const updated: AccountEntry = { ...entry, settlementStatus };
+      this.activeEntries.set(key, updated);
+      return updated;
     },
     lockSourceEntry: async (_tenantId, _sourceDocumentType, _sourceDocumentId) => {
       // No-op in single-threaded test store

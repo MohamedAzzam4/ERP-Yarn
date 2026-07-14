@@ -18,9 +18,46 @@ export class InMemorySubledgerRepository implements SubledgerTransactionHandle {
   private accountCounter = 0;
   private entryCounter = 0;
 
+  // -------------------------------------------------------------------------
+  // Snapshot/restore for transactional test rollback.
+  // -------------------------------------------------------------------------
+
+  snapshot(): {
+    accounts: Map<string, Account>;
+    entries: Map<string, AccountEntry>;
+    accountCounter: number;
+    entryCounter: number;
+  } {
+    return {
+      accounts: new Map([...this.accounts].map(([k, v]) => [k, { ...v }])),
+      entries: new Map([...this.entries].map(([k, v]) => [k, { ...v }])),
+      accountCounter: this.accountCounter,
+      entryCounter: this.entryCounter,
+    };
+  }
+
+  restore(snap: {
+    accounts: Map<string, Account>;
+    entries: Map<string, AccountEntry>;
+    accountCounter: number;
+    entryCounter: number;
+  }): void {
+    this.accounts = new Map([...snap.accounts].map(([k, v]) => [k, { ...v }]));
+    this.entries = new Map([...snap.entries].map(([k, v]) => [k, { ...v }]));
+    this.accountCounter = snap.accountCounter;
+    this.entryCounter = snap.entryCounter;
+  }
+
   async findAccount(tenantId: string, ownerType: string, ownerId: string, currency: string): Promise<Account | null> {
     const key = `${tenantId}:${ownerType}:${ownerId}:${currency}`;
     return this.accounts.get(key) ?? null;
+  }
+
+  async findAccountById(tenantId: string, accountId: string): Promise<Account | null> {
+    for (const a of this.accounts.values()) {
+      if (a.tenantId === tenantId && a.id === accountId) return a;
+    }
+    return null;
   }
 
   async insertAccount(row: NewAccountInput): Promise<Account> {
@@ -99,6 +136,20 @@ export class InMemorySubledgerRepository implements SubledgerTransactionHandle {
     return [...this.entries.values()].filter(
       (e) => e.tenantId === tenantId && e.accountId === accountId,
     );
+  }
+
+  async updateEntrySettlementStatus(
+    tenantId: string,
+    entryId: string,
+    settlementStatus: "unsettled" | "partially_settled" | "settled" | "reversed",
+  ): Promise<AccountEntry | null> {
+    const key = `${tenantId}:${entryId}`;
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    // Only settlement_status is mutable; amount_signed and all other fields immutable.
+    const updated: AccountEntry = { ...entry, settlementStatus };
+    this.entries.set(key, updated);
+    return updated;
   }
 
   /** No-op in single-threaded in-memory store. Tracks calls for tests. */

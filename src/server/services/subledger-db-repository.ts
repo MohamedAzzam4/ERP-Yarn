@@ -56,6 +56,19 @@ export class SubledgerDbRepository implements SubledgerTransactionHandle {
     return result ?? null;
   }
 
+  /** WP-05-04: Find an account by id. */
+  async findAccountById(tenantId: string, accountId: string): Promise<Account | null> {
+    const [result] = await this.db
+      .select()
+      .from(accounts)
+      .where(and(
+        eq(accounts.tenantId, tenantId),
+        eq(accounts.id, accountId),
+      ))
+      .limit(1);
+    return result ?? null;
+  }
+
   /**
    * Insert a new account with concurrent-insert safety.
    * Uses ON CONFLICT DO NOTHING on the unique
@@ -141,6 +154,26 @@ export class SubledgerDbRepository implements SubledgerTransactionHandle {
       .select()
       .from(accountEntries)
       .where(and(eq(accountEntries.tenantId, tenantId), eq(accountEntries.accountId, accountId)));
+  }
+
+  /**
+   * WP-05-04: Update an entry's settlement status.
+   * Entries are immutable EXCEPT for settlement_status (Contract 07 §16).
+   */
+  async updateEntrySettlementStatus(
+    tenantId: string,
+    entryId: string,
+    settlementStatus: "unsettled" | "partially_settled" | "settled" | "reversed",
+  ): Promise<AccountEntry | null> {
+    const [result] = await this.db
+      .update(accountEntries)
+      .set({ settlementStatus })
+      .where(and(
+        eq(accountEntries.tenantId, tenantId),
+        eq(accountEntries.id, entryId),
+      ))
+      .returning();
+    return result ?? null;
   }
 
   /**

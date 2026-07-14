@@ -154,8 +154,10 @@ class MockSubledgerTransactionHandle implements SubledgerTransactionHandle {
   accounts = new Map<string, any>();
 
   async findAccount(): Promise<any | null> { return null; }
+  async findAccountById(): Promise<any | null> { return null; }
   async findAccountByOwner(): Promise<any | null> { return null; }
   async listEntriesForAccount(): Promise<any[]> { return []; }
+  async updateEntrySettlementStatus(): Promise<any | null> { return null; }
   async lockSourceEntry(): Promise<void> {}
   async insertAccount(row: NewAccountInput): Promise<any> {
     this.insertAccountCalls.push(row);
