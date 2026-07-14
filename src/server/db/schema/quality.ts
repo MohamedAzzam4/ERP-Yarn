@@ -187,3 +187,74 @@ export const qualityHolds = pgTable("quality_holds", {
 
 export type QualityHold = typeof qualityHolds.$inferSelect;
 export type NewQualityHold = typeof qualityHolds.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// complaints
+// ---------------------------------------------------------------------------
+
+/**
+ * Complaints — investigation records linked to customer/sale/item/quality.
+ *
+ * Contract 03 §13: "complaints reference item/batch/lot/customer/sale as
+ * applicable and store dates, statuses, values, investigation and actors.
+ * Index item/date/status and customer/sale/open complaint."
+ *
+ * Contract 13 WP-06-02: "Complaint alone posts no stock/account effect."
+ * "No automatic return/credit." "Complaint status mutates sale" is a
+ * common failure — complaints must NOT change sale_status or any other
+ * domain entity's state.
+ *
+ * Lifecycle: open → investigating → resolved | closed
+ * A complaint is a trace/investigation record only — it does NOT:
+ *   - Create stock movements
+ *   - Create account entries / payments / settlements
+ *   - Approve sales or returns
+ *   - Auto-return stock
+ *   - Release reservations
+ *   - Clear quality holds
+ */
+export const complaints = pgTable("complaints", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: tenantIdColumn(),
+  complaintNo: text("complaint_no").notNull(),
+  complaintDate: date("complaint_date").notNull(),
+  // Linked entities (all optional — at least one should be provided)
+  customerId: uuid("customer_id").references(() => customers.id),
+  saleId: uuid("sale_id").references(() => salesOrders.id),
+  saleLineId: uuid("sale_line_id"), // no FK — sales_order_lines may not be exported
+  itemId: uuid("item_id").references(() => inventoryItems.id),
+  qualityTestId: uuid("quality_test_id").references(() => qualityTests.id),
+  // Complaint details
+  subject: text("subject").notNull(),
+  description: text("description"),
+  // Investigation status
+  status: text("status").notNull().default("open"), // open | investigating | resolved | closed
+  priority: text("priority").notNull().default("normal"), // low | normal | high | urgent
+  // Investigation
+  investigatedBy: uuid("investigated_by").references(() => users.id),
+  investigatedAt: timestamp("investigated_at", { withTimezone: true, mode: "date" }),
+  investigationNotes: text("investigation_notes"),
+  // Resolution
+  resolvedBy: uuid("resolved_by").references(() => users.id),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true, mode: "date" }),
+  resolutionNotes: text("resolution_notes"),
+  resolutionType: text("resolution_type"), // no_action | return_initiated | replacement_initiated | credit_issued | other
+  // General notes
+  notes: text("notes"),
+  ...makeTenantOwnedRow(usersId),
+}, (t) => [
+  uniqueIndex("complaints_tenant_complaint_no_unique_idx").on(t.tenantId, t.complaintNo),
+  index("complaints_tenant_customer_idx").on(t.tenantId, t.customerId),
+  index("complaints_tenant_sale_idx").on(t.tenantId, t.saleId),
+  index("complaints_tenant_item_idx").on(t.tenantId, t.itemId),
+  index("complaints_tenant_quality_test_idx").on(t.tenantId, t.qualityTestId),
+  index("complaints_tenant_date_idx").on(t.tenantId, t.complaintDate),
+  index("complaints_tenant_status_idx").on(t.tenantId, t.status),
+  check("complaints_status_check",
+    sql`status IN ('open', 'investigating', 'resolved', 'closed')`),
+  check("complaints_priority_check",
+    sql`priority IN ('low', 'normal', 'high', 'urgent')`),
+]);
+
+export type Complaint = typeof complaints.$inferSelect;
+export type NewComplaint = typeof complaints.$inferInsert;

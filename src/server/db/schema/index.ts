@@ -288,8 +288,8 @@ export type {
   HistoricalCorrectionRequest, NewHistoricalCorrectionRequest,
 } from "./migration";
 
-// Quality tables (WP-06-01)
-export { qualityTests, qualityTestValues, qualityHolds } from "./quality";
+// Quality tables (WP-06-01 + WP-06-02)
+export { qualityTests, qualityTestValues, qualityHolds, complaints } from "./quality";
 export type {
   QualityTest,
   NewQualityTest,
@@ -297,4 +297,6 @@ export type {
   NewQualityTestValue,
   QualityHold,
   NewQualityHold,
+  Complaint,
+  NewComplaint,
 } from "./quality";
