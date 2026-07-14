@@ -362,4 +362,159 @@ export class ProfitabilitySnapshotService {
 
     return this.deps.snapshotRepository.findActiveSnapshot(user.tenantId, salesOrderId);
   }
+
+  // =========================================================================
+  // WP-05-05: Later snapshot versions (V2+) after approved direct cost.
+  // =========================================================================
+
+  /**
+   * WP-05-05: Create a later profitability snapshot version (V2+) after an
+   * approved direct cost is included.
+   *
+   * Contract 07 §20:
+   *   - New version after approved return, correction or reviewed cost completion.
+   *   - Old active version becomes superseded; row remains immutable.
+   *   - At most one active version.
+   *   - Historical approved snapshots never silently recalculate.
+   *
+   * This method:
+   *   1. Finds the current active snapshot (must exist — V1 from sale approval).
+   *   2. Computes the new version number = active.version + 1.
+   *   3. Recalculates profit using the prior snapshot's cost components + the
+   *      newly included direct costs.
+   *   4. Inserts the new immutable snapshot row (is_active = true).
+   *   5. Supersedes the prior active snapshot (is_active = 'superseded',
+   *      superseded_by_snapshot_id = new snapshot id).
+   *
+   * Permission: this service is invoked by the DirectCostService approval flow
+   * which already checks `direct_costs.review`. The service itself does NOT
+   * re-check permission — it trusts the caller (same pattern as V1).
+   *
+   * The prior snapshot's value columns (raw_cost, single_production_cost, etc.)
+   * remain IMMUTABLE — only is_active + superseded_by_snapshot_id are updated.
+   */
+  async createLaterSnapshot(
+    user: ErpUserContext,
+    input: {
+      salesOrderId: string;
+      /** Total reviewed+included direct costs to include in this version. */
+      reviewedDirectCosts: string;
+      /** Optional profile version label. */
+      profileVersion?: string | null;
+      /** Optional calculation notes. */
+      calculationNotes?: string | null;
+    },
+  ): Promise<CreateSnapshotResult> {
+    // Fetch sale
+    const sale = await this.deps.salesRepository.findSaleById(user.tenantId, input.salesOrderId);
+    if (!sale) throw new SaleNotFoundForSnapshotError(input.salesOrderId);
+
+    // Find the current active snapshot (must exist — V1 from sale approval)
+    const activeSnapshot = await this.deps.snapshotRepository.findActiveSnapshot(user.tenantId, sale.id);
+    if (!activeSnapshot) {
+      throw new ProfitabilitySnapshotError(
+        "NO_ACTIVE_SNAPSHOT",
+        `Cannot create later snapshot for sale '${sale.id}' — no active V1 snapshot exists.`,
+      );
+    }
+
+    // Compute new version number
+    const newVersion = activeSnapshot.version + 1;
+
+    // Reuse revenue/discount/return from the prior snapshot (immutable values)
+    const revenueSnapshot = activeSnapshot.revenueSnapshot ?? "0.00";
+    const discountSnapshot = activeSnapshot.discountSnapshot ?? "0.00";
+    const returnImpact = activeSnapshot.returnImpactSnapshot ?? "0.00";
+
+    // Cost components — carry forward from prior snapshot + update direct costs
+    const rawCost = activeSnapshot.rawCostSnapshot;
+    const singleProductionCost = activeSnapshot.singleProductionCostSnapshot;
+    const twistingCost = activeSnapshot.twistingCostSnapshot;
+    const transportCost = activeSnapshot.transportCostSnapshot;
+    const reviewedDirectCosts = normalizeMoney(input.reviewedDirectCosts);
+
+    // Build missing-cost flags (same logic as V1)
+    const missingCostFlags: Record<string, boolean> = {
+      raw_material: rawCost === null,
+      single_yarn_production: singleProductionCost === null,
+      twisting: twistingCost === null,
+      transport: transportCost === null,
+      direct_costs: false, // We have reviewed direct costs in this version
+    };
+    const hasMissingCosts = Object.values(missingCostFlags).some(v => v === true);
+
+    // Compute profit: revenue - sum(available costs) - return_impact
+    let totalCosts = "0.00";
+    if (rawCost !== null) totalCosts = addMoney(totalCosts, normalizeMoney(rawCost));
+    if (singleProductionCost !== null) totalCosts = addMoney(totalCosts, normalizeMoney(singleProductionCost));
+    if (twistingCost !== null) totalCosts = addMoney(totalCosts, normalizeMoney(twistingCost));
+    if (transportCost !== null) totalCosts = addMoney(totalCosts, normalizeMoney(transportCost));
+    totalCosts = addMoney(totalCosts, reviewedDirectCosts);
+
+    const profitAmount = subtractMoney(revenueSnapshot, addMoney(totalCosts, returnImpact));
+    const profitMarginPercent = calculateMarginPercent(profitAmount, revenueSnapshot);
+
+    // Insert the new snapshot row (is_active = true)
+    const newSnapshot = await this.deps.snapshotRepository.insertSnapshot({
+      tenantId: user.tenantId,
+      salesOrderId: sale.id,
+      version: newVersion,
+      profileVersion: input.profileVersion ?? `v${newVersion}-direct-cost`,
+      rawCostSnapshot: rawCost,
+      singleProductionCostSnapshot: singleProductionCost,
+      twistingCostSnapshot: twistingCost,
+      transportCostSnapshot: transportCost,
+      discountSnapshot,
+      returnImpactSnapshot: returnImpact,
+      revenueSnapshot,
+      profitAmount,
+      profitMarginPercent,
+      missingCostFlagsJson: JSON.stringify(missingCostFlags),
+      calculationNotes: input.calculationNotes ?? `Version ${newVersion}: includes ${reviewedDirectCosts} reviewed direct costs.`,
+      calculatedBy: user.userId,
+    });
+    // Supersede the prior active snapshot (immutable values, only is_active + superseded_by updated)
+    await this.deps.snapshotRepository.supersedeActiveSnapshot(
+      user.tenantId, activeSnapshot.id, newSnapshot.id,
+    );
+
+    // Audit
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: SNAPSHOT_ENTITY_TYPE,
+      entityId: newSnapshot.id,
+      actionType: "profitability_snapshot.create_later_version",
+      newValuesJson: {
+        salesOrderId: sale.id,
+        version: newVersion,
+        priorSnapshotId: activeSnapshot.id,
+        priorVersion: activeSnapshot.version,
+        reviewedDirectCosts,
+        revenueSnapshot,
+        profitAmount,
+        profitMarginPercent,
+        hasMissingCosts,
+        missingCostFlags,
+        profileVersion: input.profileVersion ?? `v${newVersion}-direct-cost`,
+      },
+    });
+
+    return {
+      snapshotId: newSnapshot.id,
+      salesOrderId: sale.id,
+      version: newVersion,
+      isActive: true,
+      revenueSnapshot,
+      discountSnapshot,
+      rawCostSnapshot: rawCost,
+      singleProductionCostSnapshot: singleProductionCost,
+      twistingCostSnapshot: twistingCost,
+      transportCostSnapshot: transportCost,
+      returnImpactSnapshot: returnImpact,
+      profitAmount,
+      profitMarginPercent,
+      missingCostFlags,
+      hasMissingCosts,
+      profileVersion: input.profileVersion ?? `v${newVersion}-direct-cost`,
+    };
+  }
 }

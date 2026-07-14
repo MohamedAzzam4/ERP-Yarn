@@ -1062,4 +1062,85 @@ export class SubledgerService {
       accountId: entry.accountId,
     };
   }
+
+  // =========================================================================
+  // WP-05-05: Direct cost subledger entries.
+  // =========================================================================
+
+  /**
+   * WP-05-05: Post a direct cost subledger entry.
+   *
+   * Contract 07 §18 posting scenarios:
+   *   - Customer-borne: confirmed amount creates POSITIVE customer_direct_cost_receivable
+   *     (added to customer's balance — customer owes the company for the cost).
+   *   - Factory-borne: confirmed amount creates POSITIVE factory_direct_cost_recovery
+   *     (factory owes the company — recovery/deduction from factory payable).
+   *   - Company-borne: no party receivable (expense-like) — no subledger entry in MVP.
+   *   - Unknown/included_elsewhere: no subledger entry.
+   *
+   * This method is tx-scoped — the caller (DirectCostService) owns the idempotency claim.
+   * Only called after review/approval (no entry before required review per §18).
+   */
+  async postDirectCostEntry(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: {
+      ownerType: "customer" | "factory";
+      ownerId: string;
+      amount: string;  // POSITIVE absolute amount
+      entryDate: string;
+      entryType: "customer_direct_cost_receivable" | "factory_direct_cost_recovery";
+      directCostId: string;
+      docNo: string;
+      idempotencyKey: string;
+      currency?: string;
+      notes?: string;
+    },
+  ): Promise<{ entryId: string; entryNo: string; amountSigned: string; accountId: string }> {
+    requirePermission(effective, "direct_costs.review");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    const currency = input.currency ?? "EGP";
+    const tenantId = user.tenantId;
+    const amountSigned = normalizeMoney(input.amount);  // POSITIVE for both customer + factory
+
+    // Get-or-create account
+    const account = await this.getOrCreateAccount(user, input.ownerType, input.ownerId, currency);
+
+    const entry = await this.deps.subledger.insertEntry({
+      tenantId,
+      accountId: account.id,
+      entryNo: input.docNo,
+      entryDate: input.entryDate,
+      amountSigned,
+      currency,
+      entryType: input.entryType,
+      sourceDocumentType: "direct_cost",
+      sourceDocumentId: input.directCostId,
+      createdBy: user.userId,
+    });
+
+    await appendAuditLog(this.deps.audit, tenantId, user.userId, {
+      entityType: "account_entry",
+      entityId: entry.id,
+      actionType: "subledger.direct_cost_entry.post",
+      newValuesJson: {
+        entryNo: entry.entryNo,
+        entryType: entry.entryType,
+        accountId: entry.accountId,
+        amountSigned: entry.amountSigned,
+        directCostId: input.directCostId,
+        ownerType: input.ownerType,
+        ownerId: input.ownerId,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    return {
+      entryId: entry.id,
+      entryNo: entry.entryNo,
+      amountSigned: entry.amountSigned,
+      accountId: entry.accountId,
+    };
+  }
 }
