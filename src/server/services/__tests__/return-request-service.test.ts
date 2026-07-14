@@ -591,7 +591,7 @@ describe("WP-06-03 atomic approval with stock + credit effects", () => {
 
     // No stock movements
     const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
-      (m: any) => m.sourceDocumentType === "return_request",
+      (m: any) => m.sourceDocumentType === "return_line",
     );
     expect(movements.length).toBe(0);
 
@@ -631,7 +631,7 @@ describe("WP-06-03 atomic approval with stock + credit effects", () => {
     // Stock movement created
     expect(approve.stockMovements.length).toBe(1);
     const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
-      (m: any) => m.sourceDocumentType === "return_request",
+      (m: any) => m.sourceDocumentType === "return_line",
     );
     expect(movements.length).toBe(1);
     expect(movements[0]!.movementType).toBe("return_receipt");
@@ -866,7 +866,7 @@ describe("WP-06-03 atomic approval with stock + credit effects", () => {
 
     // Only 1 stock movement
     const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
-      (m: any) => m.sourceDocumentType === "return_request",
+      (m: any) => m.sourceDocumentType === "return_line",
     );
     expect(movements.length).toBe(1);
 
@@ -919,7 +919,7 @@ describe("WP-06-03 atomic approval with stock + credit effects", () => {
 
     // Verify no stock movements persisted
     const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
-      (m: any) => m.sourceDocumentType === "return_request",
+      (m: any) => m.sourceDocumentType === "return_line",
     );
     expect(movements.length).toBe(0);
 
@@ -1234,7 +1234,7 @@ describe("WP-06-03 DEC-068 value cap + final residual", () => {
 
     // Only 1 stock movement (not 2)
     const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
-      (m: any) => m.sourceDocumentType === "return_request",
+      (m: any) => m.sourceDocumentType === "return_line",
     );
     expect(movements.length).toBe(1);
   });
@@ -1270,5 +1270,149 @@ describe("WP-06-03 DEC-068 value cap + final residual", () => {
       makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
       { returnRequestId: create.returnRequestId, idempotencyKey: "rr-dec068-double-001:approve-2" },
     )).rejects.toThrow(ReturnRequestNotApprovableError);
+  });
+});
+
+// ===========================================================================
+// WP-06-04 correction: Multi-line return approval (source-id fix)
+// ===========================================================================
+
+describe("WP-06-04 correction: multi-line return approval", () => {
+  it("multi-line approved return posts one return_receipt per return line", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    // Add a second sale line
+    await deps.salesRepository.insertSaleLine({
+      tenantId: TEST_TENANT_ID, salesOrderId: saleId, lineNo: 2,
+      itemId: TEST_ITEM_ID, locationId: TEST_LOCATION_ID,
+      quantityKg: "500.000", pricePerTon: "80.00",
+    } as any);
+    await deps.salesRepository.updateSaleCommercialTotals(TEST_TENANT_ID, saleId, {
+      totalGrossRevenue: "120.00", orderDiscountTotal: "0.00", documentTotalPosted: "120.00",
+    });
+    const originalLines = await deps.salesRepository.findSaleLines(TEST_TENANT_ID, saleId);
+    const saleLineId2 = originalLines[1]!.id;
+    await deps.salesRepository.updateLineCommercialTotals(TEST_TENANT_ID, saleLineId2, {
+      lineGrossRevenue: "40.00", lineAllocatedDiscountPrecise: "0.00",
+      lineAllocatedDiscountPosted: "0.00", lineNetRevenuePrecise: "40.00",
+      lineNetRevenuePosted: "40.00", roundingAdjustment: "0.00",
+    });
+
+    // Create a 2-line return request
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Multi-line test", financialTreatment: "customer_credit",
+        lines: [
+          {
+            originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+            itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+            returnedStockStatus: "return_received",
+            originalSaleLineNetUnitValue: "0.080000",
+          },
+          {
+            originalSaleOrderId: saleId, originalSaleLineId: saleLineId2,
+            itemId: TEST_ITEM_ID, quantityKg: "50.000", returnLocationId: TEST_LOCATION_ID,
+            returnedStockStatus: "return_received",
+            originalSaleLineNetUnitValue: "0.080000",
+          },
+        ],
+        idempotencyKey: "rr-multiline-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-multiline-001:submit" },
+    );
+
+    // Approve — this should succeed and post 2 stock movements (one per line)
+    const approve = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-multiline-001:approve" },
+    );
+    expect(approve.status).toBe("approved");
+    expect(approve.stockMovements.length).toBe(2);
+
+    // Verify 2 stock movements with sourceDocumentType = "return_line"
+    const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
+      (m: any) => m.sourceDocumentType === "return_line",
+    );
+    expect(movements.length).toBe(2);
+
+    // Each movement should have a unique sourceDocumentId (the return line ID)
+    const sourceIds = movements.map((m: any) => m.sourceDocumentId);
+    expect(new Set(sourceIds).size).toBe(2); // all unique
+
+    // Verify each movement has movementType = "return_receipt"
+    expect(movements.every((m: any) => m.movementType === "return_receipt")).toBe(true);
+  });
+
+  it("idempotency replay does not double-post multi-line return movements", async () => {
+    const deps = makeDeps();
+    const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
+
+    // Add a second sale line
+    await deps.salesRepository.insertSaleLine({
+      tenantId: TEST_TENANT_ID, salesOrderId: saleId, lineNo: 2,
+      itemId: TEST_ITEM_ID, locationId: TEST_LOCATION_ID,
+      quantityKg: "500.000", pricePerTon: "80.00",
+    } as any);
+    await deps.salesRepository.updateSaleCommercialTotals(TEST_TENANT_ID, saleId, {
+      totalGrossRevenue: "120.00", orderDiscountTotal: "0.00", documentTotalPosted: "120.00",
+    });
+    const originalLines = await deps.salesRepository.findSaleLines(TEST_TENANT_ID, saleId);
+    const saleLineId2 = originalLines[1]!.id;
+    await deps.salesRepository.updateLineCommercialTotals(TEST_TENANT_ID, saleLineId2, {
+      lineGrossRevenue: "40.00", lineAllocatedDiscountPrecise: "0.00",
+      lineAllocatedDiscountPosted: "0.00", lineNetRevenuePrecise: "40.00",
+      lineNetRevenuePosted: "40.00", roundingAdjustment: "0.00",
+    });
+
+    // Create + submit + approve a 2-line return
+    const create = await deps.returnService.createReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Multi-line replay test", financialTreatment: "customer_credit",
+        lines: [
+          {
+            originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+            itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+            returnedStockStatus: "return_received",
+            originalSaleLineNetUnitValue: "0.080000",
+          },
+          {
+            originalSaleOrderId: saleId, originalSaleLineId: saleLineId2,
+            itemId: TEST_ITEM_ID, quantityKg: "50.000", returnLocationId: TEST_LOCATION_ID,
+            returnedStockStatus: "return_received",
+            originalSaleLineNetUnitValue: "0.080000",
+          },
+        ],
+        idempotencyKey: "rr-multiline-replay-001",
+      },
+    );
+    await deps.returnService.submitReturnRequest(
+      makeUser(TEST_USERS.owner.userId) as any, makeOwnerEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-multiline-replay-001:submit" },
+    );
+    await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-multiline-replay-001:approve" },
+    );
+
+    // Replay with same idempotency key
+    const replay = await deps.returnService.approveReturnRequest(
+      makeUser(TEST_USERS.accountant.userId) as any, makeAcctEff() as any,
+      { returnRequestId: create.returnRequestId, idempotencyKey: "rr-multiline-replay-001:approve" },
+    );
+    expect(replay.action).toBe("replayed");
+
+    // Verify still only 2 stock movements (no double-post)
+    const movements = [...((deps.ledgerRepo as any).movements as Map<string, any>).values()].filter(
+      (m: any) => m.sourceDocumentType === "return_line",
+    );
+    expect(movements.length).toBe(2);
   });
 });

@@ -179,6 +179,188 @@ function wireServices() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// WP-06-04 Blocker A: Fault injection for live rollback proof.
+// ---------------------------------------------------------------------------
+
+type ReplacementFaultPoint =
+  | "none"
+  // A1: throw AFTER insertSaleDraft but BEFORE insertSaleLine.
+  // The sale draft has been written to the DB; the fault causes the outer
+  // transaction to roll back — no sale draft should remain.
+  | "after-insertSaleDraft-before-insertSaleLine"
+  // A2: throw AFTER all insertSaleLine calls but BEFORE audit insert.
+  // The sale draft + all lines have been written; the fault rolls back all.
+  | "after-insertSaleLine-before-audit"
+  // A3: throw AFTER audit insert (simulating commit failure).
+  // All writes have happened; the fault rolls back the entire transaction.
+  | "after-audit-before-commit";
+
+/**
+ * Create a fault-injecting Proxy wrapper around SalesDbRepository.
+ * The wrapper throws AFTER the named method is invoked, so the real DB write
+ * has already happened inside the transaction. When the wrapper throws, the
+ * outer Drizzle transaction rolls back all prior writes.
+ */
+function makeFaultInjectingSalesRepo(real: SalesDbRepository, fault: ReplacementFaultPoint): SalesDbRepository {
+  let saleDraftInserted = false;
+  let allLinesInserted = false;
+  return new Proxy(real, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      return async function (...args: any[]) {
+        const result = await (value as Function).apply(target, args);
+        if (prop === "insertSaleDraft") {
+          saleDraftInserted = true;
+          if (fault === "after-insertSaleDraft-before-insertSaleLine") {
+            throw new Error("INJECTED FAULT (A1): after insertSaleDraft, before insertSaleLine");
+          }
+        }
+        if (prop === "insertSaleLine") {
+          // Check if this is the last line (hard to know, so we inject after any insertSaleLine
+          // if the fault is A2 and we've seen at least one insertSaleLine call)
+          if (fault === "after-insertSaleDraft-before-insertSaleLine") {
+            // Already thrown at insertSaleDraft — shouldn't reach here
+          }
+        }
+        return result;
+      };
+    },
+  }) as SalesDbRepository;
+}
+
+/**
+ * Wire services with a fault injection point for the replacement workflow.
+ * The fault is injected via the txFactories — the tx-scoped SalesDbRepository
+ * is wrapped with a Proxy that throws after the named method.
+ */
+function wireServicesWithReplacementFault(fault: ReplacementFaultPoint): Services {
+  const returnDbRepo = new ReturnRequestDbRepository(db);
+  const auditDbRepo = new AuditDbRepository(db);
+  const ledgerDbRepo = new InventoryLedgerDbRepository(db);
+  const subledgerDbRepo = new SubledgerDbRepository(db);
+  const salesDbRepo = new SalesDbRepository(db);
+  const reservationDbRepo = new StockReservationDbRepository(db);
+  const snapshotDbRepo = new ProfitabilitySnapshotDbRepository(db);
+  const idempotency = new InProcessIdempotencyStore();
+  const documentSequence = new InProcessDocumentSequenceStore();
+  const inventoryLedger = new InventoryLedgerService({ ledger: ledgerDbRepo, audit: auditDbRepo, idempotency, documentSequence });
+  const subledger = new SubledgerService({ subledger: subledgerDbRepo, audit: auditDbRepo, idempotency, documentSequence });
+  const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: snapshotDbRepo, salesRepository: salesDbRepo, audit: auditDbRepo });
+
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (db as any).transaction(async (tx: any) => work(tx));
+  };
+
+  // Line counter to track when all lines are inserted (for A2 fault)
+  let lineInsertCount = 0;
+  let expectedLineCount = 0;
+
+  const txFactories = {
+    createSalesRepository: (tx: unknown) => {
+      const real = new SalesDbRepository(tx as any);
+      if (fault === "none") return real;
+      // Wrap with fault injection
+      return new Proxy(real, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (typeof value !== "function") return value;
+          return async function (...args: any[]) {
+            // Call the real method first — the DB write happens inside the tx
+            const result = await (value as Function).apply(target, args);
+            // Inject fault AFTER the write
+            if (prop === "insertSaleDraft" && fault === "after-insertSaleDraft-before-insertSaleLine") {
+              throw new Error("INJECTED FAULT (A1): after insertSaleDraft, before insertSaleLine");
+            }
+            if (prop === "insertSaleLine") {
+              lineInsertCount++;
+              if (fault === "after-insertSaleLine-before-audit" && lineInsertCount >= expectedLineCount) {
+                throw new Error("INJECTED FAULT (A2): after all insertSaleLine, before audit");
+              }
+            }
+            return result;
+          };
+        },
+      }) as any;
+    },
+    createReturnRequestRepository: (tx: unknown) => {
+      const real = new ReturnRequestDbRepository(tx as any);
+      // We need to intercept findReturnLines to count expected lines for A2 fault
+      if (fault === "after-insertSaleLine-before-audit") {
+        return new Proxy(real, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver);
+            if (typeof value !== "function") return value;
+            return async function (...args: any[]) {
+              const result = await (value as Function).apply(target, args);
+              if (prop === "findReturnLines" && Array.isArray(result)) {
+                expectedLineCount = result.length;
+              }
+              return result;
+            };
+          },
+        }) as any;
+      }
+      return real as any;
+    },
+    createAudit: (tx: unknown) => {
+      const real = new AuditDbRepository(tx as any);
+      if (fault === "after-audit-before-commit") {
+        // A3: The audit insert succeeds (real DB write), but we throw AFTER it
+        // to simulate a commit failure. The transaction rolls back everything.
+        return new Proxy(real, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver);
+            if (typeof value !== "function") return value;
+            return async function (...args: any[]) {
+              const result = await (value as Function).apply(target, args);
+              if (prop === "insertAuditLog") {
+                // Audit was written, but throw to force rollback
+                throw new Error("INJECTED FAULT (A3): after audit insert, before commit");
+              }
+              return result;
+            };
+          },
+        }) as any;
+      }
+      return real as any;
+    },
+  };
+
+  const returnService = new ReturnRequestService({
+    returnRequestRepository: returnDbRepo,
+    audit: auditDbRepo, idempotency, documentSequence,
+    inventoryLedger, subledger, salesRepository: salesDbRepo, snapshotService,
+  });
+  const salesSubmissionService = new SalesSubmissionService({
+    salesRepository: salesDbRepo,
+    reservationRepository: reservationDbRepo,
+    inventoryLedger, audit: auditDbRepo, idempotency, documentSequence,
+  });
+  const salesDraftService = new SalesDraftService({
+    salesRepository: salesDbRepo, audit: auditDbRepo, documentSequence,
+    submissionService: salesSubmissionService,
+  });
+  const salesApprovalService = new SalesApprovalService({
+    salesRepository: salesDbRepo,
+    reservationRepository: reservationDbRepo,
+    inventoryLedger, subledger, snapshotService,
+    audit: auditDbRepo, idempotency, documentSequence,
+  });
+  const replacementService = new ReplacementWorkflowService({
+    returnRequestRepository: returnDbRepo,
+    salesRepository: salesDbRepo,
+    audit: auditDbRepo, idempotency, documentSequence,
+    transactionRunner, txFactories,
+  });
+  return {
+    returnDbRepo, auditDbRepo, ledgerDbRepo, subledgerDbRepo, salesDbRepo, reservationDbRepo, snapshotDbRepo,
+    idempotency, documentSequence, inventoryLedger, subledger, snapshotService,
+    returnService, salesDraftService, salesSubmissionService, salesApprovalService, replacementService,
+  };
+}
+
 type Services = ReturnType<typeof wireServices>;
 
 async function ensureMasterData() {
@@ -203,7 +385,7 @@ async function cleanTestData() {
     await tx`DELETE FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM inventory_balances WHERE tenant_id = ${TEST_TENANT_ID} AND item_id = ${TEST_ITEM_ID}`;
-    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type IN ('return_request', 'test_seed', 'sales_order_line')`;
+    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type IN ('return_line', 'return_request', 'test_seed', 'sales_order_line')`;
     await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TEST_TENANT_ID} AND (operation_scope LIKE 'return_request_%' OR operation_scope LIKE 'replacement_workflow_%' OR operation_scope LIKE 'sales_%')`;
     await tx`DELETE FROM document_sequences WHERE tenant_id = ${TEST_TENANT_ID} AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order', 'raw_receipt')`;
   });
@@ -687,6 +869,221 @@ async function main() {
       // 27. pricePerTon still persisted after approval
       const linesFinal = await pgSql`SELECT price_per_ton FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID} AND sales_order_id = ${replResult.replacementSaleId}`;
       check("27. pricePerTon still persisted after approval", linesFinal[0]?.price_per_ton === "80.00", `price=${linesFinal[0]?.price_per_ton}`);
+    }
+
+    // ===== SECTION 10: Multi-line return + replacement (Blocker B/C) =====
+    await cleanTestData();
+    {
+      const services = wireServices();
+      const { saleId, saleLineId } = await setupSaleWithStock(services);
+
+      // Add a second sale line with proper commercial totals
+      await services.salesDbRepo.insertSaleLine({
+        tenantId: TEST_TENANT_ID, salesOrderId: saleId, lineNo: 2,
+        itemId: TEST_ITEM_ID, locationId: TEST_LOCATION_ID,
+        quantityKg: "500.000", pricePerTon: "80.00",
+      } as any);
+      await services.salesDbRepo.updateSaleCommercialTotals(TEST_TENANT_ID, saleId, {
+        totalGrossRevenue: "120.00", orderDiscountTotal: "0.00", documentTotalPosted: "120.00",
+      });
+      const originalLines = await services.salesDbRepo.findSaleLines(TEST_TENANT_ID, saleId);
+      const saleLineId2 = originalLines[1]!.id;
+      await services.salesDbRepo.updateLineCommercialTotals(TEST_TENANT_ID, saleLineId2, {
+        lineGrossRevenue: "40.00", lineAllocatedDiscountPrecise: "0.00",
+        lineAllocatedDiscountPosted: "0.00", lineNetRevenuePrecise: "40.00",
+        lineNetRevenuePosted: "40.00", roundingAdjustment: "0.00",
+      });
+
+      // Create a TRUE 2-line replacement return
+      const create = await services.returnService.createReturnRequest(ownerUser as any, ownerEff as any, {
+        salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
+        returnReason: "Multi-line replacement live", financialTreatment: "replacement",
+        lines: [
+          {
+            originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+            itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+            returnedStockStatus: "return_received",
+            originalSaleLineNetUnitValue: "0.080000",
+          },
+          {
+            originalSaleOrderId: saleId, originalSaleLineId: saleLineId2,
+            itemId: TEST_ITEM_ID, quantityKg: "50.000", returnLocationId: TEST_LOCATION_ID,
+            returnedStockStatus: "return_received",
+            originalSaleLineNetUnitValue: "0.080000",
+          },
+        ],
+        idempotencyKey: "rr-live-multi-001",
+      });
+      await services.returnService.submitReturnRequest(ownerUser as any, ownerEff as any, {
+        returnRequestId: create.returnRequestId, idempotencyKey: "rr-live-multi-001:submit",
+      });
+
+      // 28. Multi-line return approval succeeds (source-id fix)
+      const approve = await services.returnService.approveReturnRequest(acctUser as any, acctEff as any, {
+        returnRequestId: create.returnRequestId, idempotencyKey: "rr-live-multi-001:approve",
+      });
+      check("28. multi-line return approval succeeds", approve.status === "approved", `status=${approve.status}`);
+
+      // 29. Exact number of return_receipt movements (one per line)
+      const returnMvts = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line' AND movement_type = 'return_receipt'`;
+      check("29. multi-line return posts 2 return_receipt movements", returnMvts[0].n === 2, `count=${returnMvts[0].n}`);
+
+      // 30. Each movement has unique sourceDocumentId (return line ID)
+      const sources = await pgSql`SELECT DISTINCT source_document_id FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line'`;
+      check("30. each return movement has unique sourceDocumentId", sources.length === 2, `unique=${sources.length}`);
+
+      // 31. Create replacement order from multi-line return
+      const replResult = await services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+        returnRequestId: create.returnRequestId, idempotencyKey: "repl-live-multi-001",
+      });
+      check("31. replacement order created from multi-line return", replResult.action === "created", `action=${replResult.action}`);
+      check("   replacement has 2 lines", replResult.lineCount === 2, `lines=${replResult.lineCount}`);
+
+      // 32. Each replacement line traces: repl sale line → return line → original sale line → original sale
+      const replLines = await pgSql`SELECT * FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID} AND sales_order_id = ${replResult.replacementSaleId} ORDER BY line_no`;
+      check("32. replacement has 2 lines in DB", replLines.length === 2, `count=${replLines.length}`);
+
+      const returnLines = await pgSql`SELECT * FROM return_lines WHERE tenant_id = ${TEST_TENANT_ID} AND return_request_id = ${create.returnRequestId}`;
+      check("   return has 2 lines in DB", returnLines.length === 2, `count=${returnLines.length}`);
+
+      // Verify each replacement line has original_return_line_id set
+      check("   repl line 1 has original_return_line_id", replLines[0]?.original_return_line_id !== null, `id=${replLines[0]?.original_return_line_id?.slice(0, 8)}`);
+      check("   repl line 2 has original_return_line_id", replLines[1]?.original_return_line_id !== null, `id=${replLines[1]?.original_return_line_id?.slice(0, 8)}`);
+
+      // Verify each replacement line maps to a distinct return line
+      const replReturnLineIds = [replLines[0]?.original_return_line_id, replLines[1]?.original_return_line_id].sort();
+      const returnLineIds = [returnLines[0]?.id, returnLines[1]?.id].sort();
+      check("   repl lines map to distinct return lines", replReturnLineIds[0] === returnLineIds[0] && replReturnLineIds[1] === returnLineIds[1], `match=${replReturnLineIds[0] === returnLineIds[0] && replReturnLineIds[1] === returnLineIds[1]}`);
+
+      // 33. Complete traceability chain for each replacement line
+      for (let i = 0; i < 2; i++) {
+        const replLine = replLines[i];
+        const returnLine = returnLines.find((rl: any) => rl.id === replLine.original_return_line_id);
+        check(`33.${i+1} chain: repl_line${i+1} → return_line${i+1} → original_sale_line${i+1} → original_sale`,
+          returnLine !== undefined &&
+          returnLine.original_sale_order_id === saleId &&
+          (returnLine.original_sale_line_id === saleLineId || returnLine.original_sale_line_id === saleLineId2),
+          `returnLine=${returnLine?.id?.slice(0, 8)}, saleLine=${returnLine?.original_sale_line_id?.slice(0, 8)}`);
+      }
+    }
+
+    // ===== SECTION 11: Live rollback proof (Blocker A) =====
+    // A1. Failure after insertSaleDraft but before insertSaleLine
+    await cleanTestData();
+    {
+      // Use normal services for setup (sale + return approval)
+      const setupServices = wireServices();
+      const { saleId, saleLineId } = await setupSaleWithStock(setupServices);
+      const rrId = await createApprovedReplacementReturn(setupServices, saleId, saleLineId);
+
+      // Now use fault-injecting services for the replacement creation
+      const services = wireServicesWithReplacementFault("after-insertSaleDraft-before-insertSaleLine");
+
+      // Capture pre-creation state
+      const replCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID} AND is_replacement_order = true`;
+      const lineCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID}`;
+      const auditCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND entity_type = 'replacement_workflow'`;
+
+      // Attempt replacement creation with A1 fault
+      try {
+        await services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+          returnRequestId: rrId, idempotencyKey: "repl-rollback-A1",
+        });
+        check("A1. fault after insertSaleDraft throws", false, "should have thrown");
+      } catch (e) {
+        check("A1. fault after insertSaleDraft throws", true, `error=${(e as Error).message.slice(0, 60)}`);
+      }
+
+      // A1.1 No replacement order remains
+      const replCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID} AND is_replacement_order = true`;
+      check("A1.1 no replacement order remains after rollback", replCountAfter[0].n === replCountBefore[0].n, `before=${replCountBefore[0].n}, after=${replCountAfter[0].n}`);
+
+      // A1.2 No replacement lines remain
+      const lineCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID}`;
+      check("A1.2 no replacement lines remain after rollback", lineCountAfter[0].n === lineCountBefore[0].n, `before=${lineCountBefore[0].n}, after=${lineCountAfter[0].n}`);
+
+      // A1.3 No audit row remains
+      const auditCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND entity_type = 'replacement_workflow'`;
+      check("A1.3 no audit row remains after rollback", auditCountAfter[0].n === auditCountBefore[0].n, `before=${auditCountBefore[0].n}, after=${auditCountAfter[0].n}`);
+
+      // A1.4 Idempotency state is safe (can retry with non-faulting service)
+      const retryServices = wireServices();
+      const retryResult = await retryServices.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+        returnRequestId: rrId, idempotencyKey: "repl-rollback-A1-retry",
+      });
+      check("A1.4 idempotency safe — retry with new key succeeds", retryResult.action === "created", `action=${retryResult.action}`);
+    }
+
+    // A2. Failure after all insertSaleLine but before audit
+    await cleanTestData();
+    {
+      const setupServices = wireServices();
+      const { saleId, saleLineId } = await setupSaleWithStock(setupServices);
+      const rrId = await createApprovedReplacementReturn(setupServices, saleId, saleLineId);
+
+      const services = wireServicesWithReplacementFault("after-insertSaleLine-before-audit");
+
+      const replCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID} AND is_replacement_order = true`;
+      const lineCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID}`;
+      const auditCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND entity_type = 'replacement_workflow' AND action_type = 'replacement_workflow.create'`;
+
+      try {
+        await services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+          returnRequestId: rrId, idempotencyKey: "repl-rollback-A2",
+        });
+        check("A2. fault after insertSaleLine throws", false, "should have thrown");
+      } catch (e) {
+        check("A2. fault after insertSaleLine throws", true, `error=${(e as Error).message.slice(0, 60)}`);
+      }
+
+      // A2.1 No replacement order remains
+      const replCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID} AND is_replacement_order = true`;
+      check("A2.1 no replacement order remains after rollback", replCountAfter[0].n === replCountBefore[0].n, `before=${replCountBefore[0].n}, after=${replCountAfter[0].n}`);
+
+      // A2.2 No replacement lines remain
+      const lineCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID}`;
+      check("A2.2 no replacement lines remain after rollback", lineCountAfter[0].n === lineCountBefore[0].n, `before=${lineCountBefore[0].n}, after=${lineCountAfter[0].n}`);
+
+      // A2.3 No NEW audit row remains (compare before/after — audit_logs is append-only)
+      const auditCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND entity_type = 'replacement_workflow' AND action_type = 'replacement_workflow.create'`;
+      check("A2.3 no new audit row remains after rollback", auditCountAfter[0].n === auditCountBefore[0].n, `before=${auditCountBefore[0].n}, after=${auditCountAfter[0].n}`);
+
+      // A2.4 No partial linkage remains
+      const checkServices = wireServices();
+      const existing = await checkServices.salesDbRepo.findReplacementOrderByReturnRequestId(TEST_TENANT_ID, rrId);
+      check("A2.4 no partial linkage remains", existing === null, `exists=${existing !== null}`);
+    }
+
+    // A3. Failure after audit insert but before commit
+    await cleanTestData();
+    {
+      const setupServices = wireServices();
+      const { saleId, saleLineId } = await setupSaleWithStock(setupServices);
+      const rrId = await createApprovedReplacementReturn(setupServices, saleId, saleLineId);
+
+      const services = wireServicesWithReplacementFault("after-audit-before-commit");
+
+      const replCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID} AND is_replacement_order = true`;
+      const auditCountBefore = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND entity_type = 'replacement_workflow' AND action_type = 'replacement_workflow.create'`;
+
+      try {
+        await services.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+          returnRequestId: rrId, idempotencyKey: "repl-rollback-A3",
+        });
+        check("A3. fault after audit throws", false, "should have thrown");
+      } catch (e) {
+        check("A3. fault after audit throws", true, `error=${(e as Error).message.slice(0, 60)}`);
+      }
+
+      // A3.1 No replacement order/lines/audit partial state remains
+      const replCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID} AND is_replacement_order = true`;
+      check("A3.1 no replacement order remains after rollback", replCountAfter[0].n === replCountBefore[0].n, `before=${replCountBefore[0].n}, after=${replCountAfter[0].n}`);
+
+      const lineCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID} AND original_return_line_id IS NOT NULL`;
+      check("A3.2 no replacement lines with original_return_line_id remain", lineCountAfter[0].n === 0, `count=${lineCountAfter[0].n}`);
+
+      const auditCountAfter = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${TEST_TENANT_ID} AND entity_type = 'replacement_workflow' AND action_type = 'replacement_workflow.create'`;
+      check("A3.3 no new audit row remains after rollback", auditCountAfter[0].n === auditCountBefore[0].n, `before=${auditCountBefore[0].n}, after=${auditCountAfter[0].n}`);
     }
 
     // ===== CLEANUP =====

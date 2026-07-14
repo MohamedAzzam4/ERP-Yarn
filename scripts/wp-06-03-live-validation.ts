@@ -272,7 +272,7 @@ async function cleanTestData() {
     await tx`DELETE FROM sales_order_lines WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM sales_orders WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM inventory_balances WHERE tenant_id = ${TEST_TENANT_ID} AND item_id = ${TEST_ITEM_ID}`;
-    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type IN ('return_request', 'test_seed')`;
+    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type IN ('return_line', 'return_request', 'test_seed')`;
     await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TEST_TENANT_ID} AND operation_scope LIKE 'return_request_%'`;
     await tx`DELETE FROM document_sequences WHERE tenant_id = ${TEST_TENANT_ID} AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order')`;
   });
@@ -354,7 +354,7 @@ async function main() {
         }],
         idempotencyKey: "rr-basic-001",
       });
-      const stockMvBefore = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_request'`;
+      const stockMvBefore = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line'`;
       check("1. draft creates no stock movement", stockMvBefore[0].n === 0, `count=${stockMvBefore[0].n}`);
 
       // 2. Draft creates no account entry
@@ -373,7 +373,7 @@ async function main() {
       const approve = await services.returnService.approveReturnRequest(acctUser as any, acctEff as any, {
         returnRequestId: create.returnRequestId, idempotencyKey: "rr-basic-001:approve",
       });
-      const stockMvAfter = await pgSql`SELECT * FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_request'`;
+      const stockMvAfter = await pgSql`SELECT * FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line'`;
       check("4. approve creates exactly one return_receipt stock movement", stockMvAfter.length === 1 && stockMvAfter[0].movement_type === "return_receipt", `count=${stockMvAfter.length}, type=${stockMvAfter[0]?.movement_type}`);
 
       // 5. Approve updates inventory balance (classification = return_received)
@@ -402,7 +402,7 @@ async function main() {
         returnRequestId: create.returnRequestId, idempotencyKey: "rr-basic-001:approve",
       });
       check("15. idempotency replay does not double-post", replay.action === "replayed", `action=${replay.action}`);
-      const stockMvReplay = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_request'`;
+      const stockMvReplay = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line'`;
       const acctReplay = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_request'`;
       const snapsReplay = await pgSql`SELECT COUNT(*)::int AS n FROM sales_profitability_snapshots WHERE tenant_id = ${TEST_TENANT_ID} AND sales_order_id = ${saleId}`;
       check("   still 1 stock movement", stockMvReplay[0].n === 1, `count=${stockMvReplay[0].n}`);
@@ -589,7 +589,7 @@ async function main() {
       }
 
       // R1.1 No stock movement remains
-      const r1Stock = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_request'`;
+      const r1Stock = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line'`;
       check("R1.1 no stock movement remains after rollback", r1Stock[0].n === 0, `count=${r1Stock[0].n}`);
 
       // R1.2 No inventory balance change remains
@@ -641,7 +641,7 @@ async function main() {
       }
 
       // R2.1 No stock movement remains
-      const r2Stock = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_request'`;
+      const r2Stock = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line'`;
       check("R2.1 no stock movement remains after rollback", r2Stock[0].n === 0, `count=${r2Stock[0].n}`);
 
       // R2.2 No inventory balance change remains
@@ -695,7 +695,7 @@ async function main() {
       }
 
       // R3.1 No stock movement remains
-      const r3Stock = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_request'`;
+      const r3Stock = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'return_line'`;
       check("R3.1 no stock movement remains after rollback", r3Stock[0].n === 0, `count=${r3Stock[0].n}`);
 
       // R3.2 No inventory balance change remains

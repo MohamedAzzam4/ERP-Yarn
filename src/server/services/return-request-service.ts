@@ -627,6 +627,12 @@ export class ReturnRequestService {
       const year = now.getUTCFullYear();
 
       // 1. Post return_receipt stock movement for each line
+      // WP-06-04 correction: Each return line's stock movement uses a unique
+      // source identity (sourceDocumentType = "return_line", sourceDocumentId =
+      // line.id) instead of the return request ID. This prevents the duplicate
+      // source guard from blocking multi-line returns — each line gets its own
+      // movement. Return request level traceability is preserved through the
+      // return_lines.return_request_id FK + the return request's own audit row.
       for (const line of lines) {
         const mvDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
           tenantId: user.tenantId, documentType: "return_receipt", year, entityType: "stock_movement",
@@ -637,8 +643,8 @@ export class ReturnRequestService {
           toLocationId: line.returnLocationId,
           quantityKg: line.quantityKg,
           movementDate: rr.returnDate,
-          sourceDocumentType: "return_request",
-          sourceDocumentId: rr.id,
+          sourceDocumentType: "return_line",
+          sourceDocumentId: line.id,
           idempotencyKey: `${input.idempotencyKey}:mv:${line.id}`,
           notes: input.decisionNotes ?? undefined,
         });

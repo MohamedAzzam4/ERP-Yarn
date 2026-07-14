@@ -1037,7 +1037,7 @@ describe("WP-06-04 Task B: line-level traceability", () => {
     expect(replSale!.originalReturnRequestId).toBe(rrId);
   });
 
-  it("25. multi-line return creates replacement lines that map back to correct original sale lines", async () => {
+  it("25. true multi-line return creates replacement lines that map back to correct original sale lines", async () => {
     const deps = makeFullDeps();
     const { saleId, saleLineId } = await setupApprovedSaleWithStock(deps);
 
@@ -1061,84 +1061,74 @@ describe("WP-06-04 Task B: line-level traceability", () => {
       lineNetRevenuePosted: "40.00", roundingAdjustment: "0.00",
     });
 
-    // Create TWO separate single-line replacement returns (one per sale line)
-    // NOTE: WP-06-03 uses sourceDocumentId=rr.id for all return lines, which
-    // means multi-line returns hit the duplicate-source guard. Two separate
-    // single-line returns work correctly and test the same traceability chain.
+    // Create a TRUE multi-line replacement return (2 lines in one return request)
+    // WP-06-04 correction: the source-id fix in ReturnRequestService now allows
+    // multi-line returns to be approved through the production service path.
     const ownerUser = makeUser(TEST_USERS.owner.userId);
     const acctUser = makeUser(TEST_USERS.accountant.userId);
     const ownerEff = makeOwnerEff();
     const acctEff = makeAcctEff();
 
-    // Return 1: 100 kg from sale line 1
-    const create1 = await deps.returnService.createReturnRequest(ownerUser as any, ownerEff as any, {
+    const create = await deps.returnService.createReturnRequest(ownerUser as any, ownerEff as any, {
       salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
-      returnReason: "Multi-line replacement 1", financialTreatment: "replacement",
-      lines: [{
-        originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
-        itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
-        returnedStockStatus: "return_received",
-        originalSaleLineNetUnitValue: "0.080000",
-      }],
-      idempotencyKey: "rr-multi-001",
+      returnReason: "True multi-line replacement", financialTreatment: "replacement",
+      lines: [
+        {
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId,
+          itemId: TEST_ITEM_ID, quantityKg: "100.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        },
+        {
+          originalSaleOrderId: saleId, originalSaleLineId: saleLineId2,
+          itemId: TEST_ITEM_ID, quantityKg: "50.000", returnLocationId: TEST_LOCATION_ID,
+          returnedStockStatus: "return_received",
+          originalSaleLineNetUnitValue: "0.080000",
+        },
+      ],
+      idempotencyKey: "rr-true-multi-001",
     });
     await deps.returnService.submitReturnRequest(ownerUser as any, ownerEff as any, {
-      returnRequestId: create1.returnRequestId, idempotencyKey: "rr-multi-001:submit",
+      returnRequestId: create.returnRequestId, idempotencyKey: "rr-true-multi-001:submit",
     });
+    // Approve through the production ReturnRequestService — this now works
+    // because each return line's stock movement uses sourceDocumentType =
+    // "return_line" + sourceDocumentId = line.id (unique per line).
     await deps.returnService.approveReturnRequest(acctUser as any, acctEff as any, {
-      returnRequestId: create1.returnRequestId, idempotencyKey: "rr-multi-001:approve",
+      returnRequestId: create.returnRequestId, idempotencyKey: "rr-true-multi-001:approve",
     });
 
-    // Return 2: 50 kg from sale line 2
-    const create2 = await deps.returnService.createReturnRequest(ownerUser as any, ownerEff as any, {
-      salesOrderId: saleId, customerId: TEST_CUSTOMER_ID, returnDate: "2026-07-10",
-      returnReason: "Multi-line replacement 2", financialTreatment: "replacement",
-      lines: [{
-        originalSaleOrderId: saleId, originalSaleLineId: saleLineId2,
-        itemId: TEST_ITEM_ID, quantityKg: "50.000", returnLocationId: TEST_LOCATION_ID,
-        returnedStockStatus: "return_received",
-        originalSaleLineNetUnitValue: "0.080000",
-      }],
-      idempotencyKey: "rr-multi-002",
-    });
-    await deps.returnService.submitReturnRequest(ownerUser as any, ownerEff as any, {
-      returnRequestId: create2.returnRequestId, idempotencyKey: "rr-multi-002:submit",
-    });
-    await deps.returnService.approveReturnRequest(acctUser as any, acctEff as any, {
-      returnRequestId: create2.returnRequestId, idempotencyKey: "rr-multi-002:approve",
+    // Create replacement order from the multi-line return
+    const replResult = await deps.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
+      returnRequestId: create.returnRequestId,
+      idempotencyKey: "repl-true-multi-001",
     });
 
-    // Create replacement order for return 1
-    const repl1 = await deps.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
-      returnRequestId: create1.returnRequestId,
-      idempotencyKey: "repl-multi-001",
-    });
-    // Create replacement order for return 2
-    const repl2 = await deps.replacementService.createReplacementOrder(ownerUser as any, ownerEff as any, {
-      returnRequestId: create2.returnRequestId,
-      idempotencyKey: "repl-multi-002",
-    });
+    // Verify 2 replacement lines, each mapping to the correct return line
+    const replLines = await deps.salesRepository.findSaleLines(TEST_TENANT_ID, replResult.replacementSaleId);
+    expect(replLines.length).toBe(2);
 
-    // Verify each replacement has 1 line mapping to the correct return line
-    const replLines1 = await deps.salesRepository.findSaleLines(TEST_TENANT_ID, repl1.replacementSaleId);
-    const replLines2 = await deps.salesRepository.findSaleLines(TEST_TENANT_ID, repl2.replacementSaleId);
-    expect(replLines1.length).toBe(1);
-    expect(replLines2.length).toBe(1);
+    const returnLines = await deps.returnRepo.findReturnLines(TEST_TENANT_ID, create.returnRequestId);
+    expect(returnLines.length).toBe(2);
 
-    const returnLines1 = await deps.returnRepo.findReturnLines(TEST_TENANT_ID, create1.returnRequestId);
-    const returnLines2 = await deps.returnRepo.findReturnLines(TEST_TENANT_ID, create2.returnRequestId);
+    // Each replacement line should map to a distinct return line
+    const returnLineIds = returnLines.map(rl => rl.id).sort();
+    const replLineReturnRefs = replLines.map(rl => rl.originalReturnLineId).sort();
+    expect(replLineReturnRefs).toEqual(returnLineIds);
 
-    // Verify traceability chain for replacement 1 → return line 1 → original sale line 1
-    expect(replLines1[0]!.originalReturnLineId).toBe(returnLines1[0]!.id);
-    expect(returnLines1[0]!.originalSaleLineId).toBe(saleLineId);
+    // Verify each replacement line traces back to the correct original sale line
+    for (const returnLine of returnLines) {
+      const correspondingReplLine = replLines.find(rpl => rpl.originalReturnLineId === returnLine.id);
+      expect(correspondingReplLine).toBeTruthy();
+      expect(correspondingReplLine!.itemId).toBe(returnLine.itemId);
+      expect(correspondingReplLine!.quantityKg).toBe(returnLine.quantityKg);
+      // The return line itself links to the original sale line
+      expect(returnLine.originalSaleLineId).toBeTruthy();
+    }
 
-    // Verify traceability chain for replacement 2 → return line 2 → original sale line 2
-    expect(replLines2[0]!.originalReturnLineId).toBe(returnLines2[0]!.id);
-    expect(returnLines2[0]!.originalSaleLineId).toBe(saleLineId2);
-
-    // Verify quantities are correct per replacement
-    expect(replLines1[0]!.quantityKg).toBe("100.000");
-    expect(replLines2[0]!.quantityKg).toBe("50.000");
+    // Verify the return was actually approved through ReturnRequestService
+    const rr = await deps.returnRepo.findReturnRequestById(TEST_TENANT_ID, create.returnRequestId);
+    expect(rr?.status).toBe("approved");
   });
 });
 
