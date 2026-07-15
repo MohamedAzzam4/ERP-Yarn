@@ -272,6 +272,7 @@ export {
   importHumanReviewItems, importAliasMappings,
   importBatchApprovals, importCutoverManifests,
   historicalCorrectionRequests,
+  importBackupEvidence, importCutoverLocks,
 } from "./migration";
 export type {
   ImportBatch, NewImportBatch,
@@ -286,6 +287,8 @@ export type {
   ImportBatchApproval, NewImportBatchApproval,
   ImportCutoverManifest, NewImportCutoverManifest,
   HistoricalCorrectionRequest, NewHistoricalCorrectionRequest,
+  ImportBackupEvidence, NewImportBackupEvidence,
+  ImportCutoverLock, NewImportCutoverLock,
 } from "./migration";
 
 // Quality tables (WP-06-01 + WP-06-02)

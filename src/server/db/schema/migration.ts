@@ -385,3 +385,66 @@ export const historicalCorrectionRequests = pgTable("historical_correction_reque
 
 export type HistoricalCorrectionRequest = typeof historicalCorrectionRequests.$inferSelect;
 export type NewHistoricalCorrectionRequest = typeof historicalCorrectionRequests.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// import_backup_evidence (WP-07-04: backup evidence before commit)
+// Contract 08 §8.10: "backup exists for real migration data"
+// ---------------------------------------------------------------------------
+
+export const importBackupEvidence = pgTable("import_backup_evidence", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: tenantIdColumn(),
+  importBatchId: uuid("import_batch_id").notNull().references(() => importBatches.id),
+  // Backup artifact metadata — NO secrets/credentials stored
+  backupType: text("backup_type").notNull(), // 'database_snapshot' | 'file_export' | 'external_backup'
+  backupLocation: text("backup_location").notNull(), // Non-secret reference (e.g. "s3://bucket/path" without credentials)
+  backupHash: text("backup_hash").notNull(), // Checksum of backup artifact
+  backupSizeBytes: integer("backup_size_bytes"),
+  backupCreatedAt: timestamp("backup_created_at", { withTimezone: true, mode: "date" }).notNull(),
+  verifiedBy: uuid("verified_by").references(() => users.id),
+  verifiedAt: timestamp("verified_at", { withTimezone: true, mode: "date" }),
+  verificationNotes: text("verification_notes"),
+  ...makeTenantOwnedRow(usersId),
+}, (t) => [
+  index("import_backup_evidence_tenant_batch_idx").on(t.tenantId, t.importBatchId),
+  index("import_backup_evidence_tenant_hash_idx").on(t.tenantId, t.backupHash),
+]);
+
+export type ImportBackupEvidence = typeof importBackupEvidence.$inferSelect;
+export type NewImportBackupEvidence = typeof importBackupEvidence.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// import_cutover_locks (WP-07-04: cutover lock for concurrent commit prevention)
+// Contract 08 §8.10: "cutover manifest is approved and affected live-write
+//   scopes are locked/paused"
+// Contract 06 §15: "Locks: Import batch/approvals/idempotency, affected
+//   sequences/master records/balances/accounts in deterministic import order"
+// ---------------------------------------------------------------------------
+
+export const importCutoverLocks = pgTable("import_cutover_locks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: tenantIdColumn(),
+  importBatchId: uuid("import_batch_id").notNull().references(() => importBatches.id),
+  // Lock scope — domain or entity type being locked
+  lockScope: text("lock_scope").notNull(), // 'batch' | 'inventory' | 'subledger' | 'sales' | 'production'
+  // Lock state
+  acquiredBy: uuid("acquired_by").notNull().references(() => users.id),
+  acquiredAt: timestamp("acquired_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+  releasedAt: timestamp("released_at", { withTimezone: true, mode: "date" }),
+  releasedBy: uuid("released_by").references(() => users.id),
+  releaseReason: text("release_reason"),
+  // Idempotency key of the commit that acquired the lock
+  commitIdempotencyKey: text("commit_idempotency_key").notNull(),
+  ...makeTenantOwnedRow(usersId),
+}, (t) => [
+  // One active lock per batch+scope — prevents concurrent commits
+  // Partial unique index on (tenant, batch, scope) WHERE released_at IS NULL
+  // is created via raw SQL in migration for active-lock enforcement.
+  index("import_cutover_locks_tenant_batch_idx").on(t.tenantId, t.importBatchId),
+  index("import_cutover_locks_tenant_scope_idx").on(t.tenantId, t.lockScope),
+  index("import_cutover_locks_tenant_active_idx").on(t.tenantId, t.releasedAt),
+]);
+
+export type ImportCutoverLock = typeof importCutoverLocks.$inferSelect;
+export type NewImportCutoverLock = typeof importCutoverLocks.$inferInsert;
