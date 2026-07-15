@@ -178,7 +178,7 @@ describe("WP-07-03 negative/unmatched/versioning", () => {
     });
 
     const results = await deps.repository.findReconciliationResultsForBatch(TEST_TENANT_ID, "batch-001");
-    const negMetric = results.find(r => r.metricKey === "negative_staged_quantity");
+    const negMetric = results.find(r => r.metricKey.startsWith("negative_staged_quantity"));
     expect(negMetric).toBeTruthy();
     expect(negMetric?.status).toBe("blocking");
   });
@@ -223,13 +223,20 @@ describe("WP-07-03 negative/unmatched/versioning", () => {
     });
     expect(result2.reportVersion).toBe(2);
 
-    // Old version 1 results are deleted (re-run replaces)
+    // WP-07-03 correction: Old version 1 results are PRESERVED (not deleted)
     const v1Results = await deps.repository.findReconciliationResultsForBatchVersion(TEST_TENANT_ID, "batch-001", 1);
-    expect(v1Results.length).toBe(0);
+    expect(v1Results.length).toBeGreaterThan(0); // V1 still exists!
+
+    // V1 results are marked as superseded
+    expect(v1Results.every(r => r.notes?.includes("SUPERSEDED"))).toBe(true);
 
     // New version 2 results exist
     const v2Results = await deps.repository.findReconciliationResultsForBatchVersion(TEST_TENANT_ID, "batch-001", 2);
     expect(v2Results.length).toBeGreaterThan(0);
+
+    // Latest version is 2
+    const latestVersion = await deps.repository.findLatestReportVersion(TEST_TENANT_ID, "batch-001");
+    expect(latestVersion).toBe(2);
   });
 });
 

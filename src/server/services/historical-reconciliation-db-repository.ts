@@ -59,16 +59,26 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
       ));
   }
 
-  async deleteReconciliationResultsForBatch(tenantId: string, importBatchId: string): Promise<void> {
-    await this.db.delete(importReconciliationResults)
-      .where(and(eq(importReconciliationResults.tenantId, tenantId), eq(importReconciliationResults.importBatchId, importBatchId)));
-  }
-
   async findLatestReportVersion(tenantId: string, importBatchId: string): Promise<number> {
     const results = await this.db.select().from(importReconciliationResults)
       .where(and(eq(importReconciliationResults.tenantId, tenantId), eq(importReconciliationResults.importBatchId, importBatchId)));
     if (results.length === 0) return 0;
     return Math.max(...results.map(r => r.reportVersion));
+  }
+
+  async markVersionAsSuperseded(tenantId: string, importBatchId: string, reportVersion: number): Promise<void> {
+    // Mark old version results as 'blocking' status with a note — they are superseded.
+    // We use the notes field to indicate supersession since the schema doesn't have
+    // a dedicated superseded flag. The status remains as-is for audit trail;
+    // the notes field records that this version was superseded.
+    // This preserves old evidence without deletion (Contract 08 §8.8 versioning).
+    await this.db.update(importReconciliationResults)
+      .set({ notes: `SUPERSEDED by later report version`, updatedAt: new Date() })
+      .where(and(
+        eq(importReconciliationResults.tenantId, tenantId),
+        eq(importReconciliationResults.importBatchId, importBatchId),
+        eq(importReconciliationResults.reportVersion, reportVersion),
+      ));
   }
 
   async insertReviewItem(row: NewReconciliationReviewItemInput): Promise<ImportHumanReviewItem> {
@@ -88,8 +98,12 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
       .where(and(eq(importHumanReviewItems.tenantId, tenantId), eq(importHumanReviewItems.importBatchId, importBatchId)));
   }
 
-  async deleteReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<void> {
-    await this.db.delete(importHumanReviewItems)
+  async findReviewItemsForBatchVersion(tenantId: string, importBatchId: string): Promise<ImportHumanReviewItem[]> {
+    // Review items don't have a report_version column in the schema.
+    // They are associated with the batch, not the version. All review items
+    // for the batch are returned — this is intentional: old review items
+    // from previous versions remain for audit trail (same as recon results).
+    return this.db.select().from(importHumanReviewItems)
       .where(and(eq(importHumanReviewItems.tenantId, tenantId), eq(importHumanReviewItems.importBatchId, importBatchId)));
   }
 

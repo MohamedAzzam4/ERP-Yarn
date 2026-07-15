@@ -60,16 +60,18 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
     return [...this.results.values()].filter(r => r.tenantId === tenantId && r.importBatchId === importBatchId && r.reportVersion === reportVersion);
   }
 
-  async deleteReconciliationResultsForBatch(tenantId: string, importBatchId: string): Promise<void> {
-    for (const [key, r] of this.results.entries()) {
-      if (r.tenantId === tenantId && r.importBatchId === importBatchId) this.results.delete(key);
-    }
-  }
-
   async findLatestReportVersion(tenantId: string, importBatchId: string): Promise<number> {
     const results = [...this.results.values()].filter(r => r.tenantId === tenantId && r.importBatchId === importBatchId);
     if (results.length === 0) return 0;
     return Math.max(...results.map(r => r.reportVersion));
+  }
+
+  async markVersionAsSuperseded(tenantId: string, importBatchId: string, reportVersion: number): Promise<void> {
+    for (const [key, r] of this.results.entries()) {
+      if (r.tenantId === tenantId && r.importBatchId === importBatchId && r.reportVersion === reportVersion) {
+        this.results.set(key, { ...r, notes: "SUPERSEDED by later report version", updatedAt: NOW() });
+      }
+    }
   }
 
   async insertReviewItem(row: NewReconciliationReviewItemInput): Promise<ImportHumanReviewItem> {
@@ -90,10 +92,8 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
     return [...this.reviews.values()].filter(r => r.tenantId === tenantId && r.importBatchId === importBatchId);
   }
 
-  async deleteReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<void> {
-    for (const [key, r] of this.reviews.entries()) {
-      if (r.tenantId === tenantId && r.importBatchId === importBatchId) this.reviews.delete(key);
-    }
+  async findReviewItemsForBatchVersion(tenantId: string, importBatchId: string): Promise<ImportHumanReviewItem[]> {
+    return [...this.reviews.values()].filter(r => r.tenantId === tenantId && r.importBatchId === importBatchId);
   }
 
   async findReviewItemById(tenantId: string, id: string): Promise<ImportHumanReviewItem | null> {

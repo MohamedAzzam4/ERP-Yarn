@@ -145,86 +145,197 @@ function computeReconciliationMetrics(
 ): ReconciliationMetric[] {
   const metrics: ReconciliationMetric[] = [];
 
-  // Compute staged totals from staging rows
+  // Compute staged totals from staging rows, categorized by entity type
   const stagedTotals: Record<string, number> = {};
+  const docNoCounts: Record<string, number> = {};
+  const entityNames: Array<{ name: string; rowId: string; hasMaster: boolean; entityType: string }> = [];
+
   for (const row of rows) {
     const data = (row.transformedRowJson ?? row.rawRowJson) as Record<string, unknown> | null;
     if (!data) continue;
 
-    // Inventory opening quantity
+    const entityType = String(data.entity_type ?? data.type ?? "unknown").toLowerCase();
+
+    // §8.7.1 Inventory metrics
     if (data.quantity !== undefined && data.quantity !== null && data.quantity !== "") {
       const qty = parseFloat(String(data.quantity));
       if (!isNaN(qty)) {
+        // Categorize by entity type
+        if (entityType.includes("raw") || entityType.includes("fiber")) {
+          stagedTotals["raw_yarn_opening_qty"] = (stagedTotals["raw_yarn_opening_qty"] ?? 0) + qty;
+        } else if (entityType.includes("single") || entityType.includes("yarn")) {
+          stagedTotals["single_yarn_opening_qty"] = (stagedTotals["single_yarn_opening_qty"] ?? 0) + qty;
+        } else if (entityType.includes("twist")) {
+          stagedTotals["twisted_yarn_opening_qty"] = (stagedTotals["twisted_yarn_opening_qty"] ?? 0) + qty;
+        }
         stagedTotals["inventory_opening_qty"] = (stagedTotals["inventory_opening_qty"] ?? 0) + qty;
+
+        // §8.7.1 Negative stock/quantity
         if (qty < 0) {
           metrics.push({
-            metricKey: "negative_staged_quantity",
+            metricKey: `negative_staged_quantity_${row.id.substring(0, 8)}`,
             expectedValue: ">= 0",
             stagedValue: String(qty),
             differenceValue: String(qty),
             status: "blocking",
-            reviewReason: `Negative staged quantity ${qty} detected.`,
+            reviewReason: `Negative staged quantity ${qty} detected in row ${row.sourceRowNumber ?? "?"}.`,
           });
         }
       }
     }
 
-    // Party balance (customer/supplier)
+    // §8.7.2 Location/factory stock
+    if (data.location_qty !== undefined && data.location_qty !== null && data.location_qty !== "") {
+      const locQty = parseFloat(String(data.location_qty));
+      if (!isNaN(locQty)) {
+        stagedTotals["location_stock_total"] = (stagedTotals["location_stock_total"] ?? 0) + locQty;
+      }
+    }
+    if (data.factory_qty !== undefined && data.factory_qty !== null && data.factory_qty !== "") {
+      const factQty = parseFloat(String(data.factory_qty));
+      if (!isNaN(factQty)) {
+        stagedTotals["factory_stock_total"] = (stagedTotals["factory_stock_total"] ?? 0) + factQty;
+      }
+    }
+
+    // §8.7.2 Party/subledger balances
     if (data.balance !== undefined && data.balance !== null && data.balance !== "") {
       const balance = parseFloat(String(data.balance));
       if (!isNaN(balance)) {
+        if (entityType.includes("customer")) {
+          stagedTotals["customer_opening_balance"] = (stagedTotals["customer_opening_balance"] ?? 0) + balance;
+        } else if (entityType.includes("supplier")) {
+          stagedTotals["supplier_opening_balance"] = (stagedTotals["supplier_opening_balance"] ?? 0) + balance;
+        } else if (entityType.includes("factory")) {
+          stagedTotals["factory_payable_balance"] = (stagedTotals["factory_payable_balance"] ?? 0) + balance;
+        }
         stagedTotals["party_balance_total"] = (stagedTotals["party_balance_total"] ?? 0) + balance;
       }
     }
 
-    // WIP quantity
+    // §8.7.3 Sales
+    if (data.sale_amount !== undefined && data.sale_amount !== null && data.sale_amount !== "") {
+      const saleAmt = parseFloat(String(data.sale_amount));
+      if (!isNaN(saleAmt)) {
+        stagedTotals["imported_sales_total"] = (stagedTotals["imported_sales_total"] ?? 0) + saleAmt;
+      }
+    }
+    // §8.7.3 Payments
+    if (data.payment_amount !== undefined && data.payment_amount !== null && data.payment_amount !== "") {
+      const payAmt = parseFloat(String(data.payment_amount));
+      if (!isNaN(payAmt)) {
+        stagedTotals["imported_payments_total"] = (stagedTotals["imported_payments_total"] ?? 0) + payAmt;
+      }
+    }
+
+    // §8.7.3 Overlapping opening balance + imported sales/payments double-count detection
+    if (data.balance !== undefined && data.sale_amount !== undefined) {
+      metrics.push({
+        metricKey: `opening_balance_plus_sales_overlap_${row.id.substring(0, 8)}`,
+        expectedValue: "no overlap",
+        stagedValue: `balance=${data.balance}, sale=${data.sale_amount}`,
+        differenceValue: "overlap detected",
+        status: "blocking",
+        reviewReason: `Row has both opening balance and sale amount — potential double-count.`,
+      });
+    }
+
+    // §8.7.4 Production/WIP
     if (data.wip_qty !== undefined && data.wip_qty !== null && data.wip_qty !== "") {
       const wip = parseFloat(String(data.wip_qty));
       if (!isNaN(wip)) {
         stagedTotals["wip_opening_qty"] = (stagedTotals["wip_opening_qty"] ?? 0) + wip;
       }
     }
+    // §8.7.4 Production issue/receipt overlap warning
+    if (data.issue_qty !== undefined && data.receipt_qty !== undefined) {
+      metrics.push({
+        metricKey: `production_issue_receipt_overlap_${row.id.substring(0, 8)}`,
+        expectedValue: "no overlap",
+        stagedValue: `issue=${data.issue_qty}, receipt=${data.receipt_qty}`,
+        differenceValue: "both present",
+        status: "blocking",
+        reviewReason: `Row has both production issue and receipt quantities — potential WIP double-count.`,
+      });
+    }
 
-    // Duplicate document number detection
+    // §8.7.5 Returns
+    if (data.return_qty !== undefined && data.return_qty !== null && data.return_qty !== "") {
+      const retQty = parseFloat(String(data.return_qty));
+      if (!isNaN(retQty)) {
+        stagedTotals["imported_return_qty"] = (stagedTotals["imported_return_qty"] ?? 0) + retQty;
+      }
+    }
+    // §8.7.5 Return references original sale
+    if (data.return_qty !== undefined && !data.original_sale_id) {
+      metrics.push({
+        metricKey: `return_without_sale_reference_${row.id.substring(0, 8)}`,
+        expectedValue: "original sale reference",
+        stagedValue: "missing",
+        differenceValue: "no sale link",
+        status: "blocking",
+        reviewReason: `Return row has no original sale reference — unmatched return lineage.`,
+      });
+    }
+
+    // §8.7.6 Document/source identity — duplicate document numbers
     if (data.doc_no !== undefined && data.doc_no !== null && data.doc_no !== "") {
       const docNo = String(data.doc_no);
-      const dupCount = rows.filter(r => {
-        const d = (r.transformedRowJson ?? r.rawRowJson) as Record<string, unknown> | null;
-        return d?.doc_no === docNo;
-      }).length;
-      if (dupCount > 1) {
-        // Only add once per doc_no (first occurrence)
-        const firstOccurrence = rows.findIndex(r => {
-          const d = (r.transformedRowJson ?? r.rawRowJson) as Record<string, unknown> | null;
-          return d?.doc_no === docNo;
+      docNoCounts[docNo] = (docNoCounts[docNo] ?? 0) + 1;
+    }
+
+    // §8.7.6 Internal document sequence collision risk
+    if (data.internal_doc_no !== undefined && data.internal_doc_no !== null && data.internal_doc_no !== "") {
+      const internalDocNo = String(data.internal_doc_no);
+      const sourceDocNo = data.doc_no ? String(data.doc_no) : null;
+      if (sourceDocNo && internalDocNo === sourceDocNo) {
+        metrics.push({
+          metricKey: `doc_sequence_collision_${row.id.substring(0, 8)}`,
+          expectedValue: "distinct internal vs source",
+          stagedValue: `internal=${internalDocNo}, source=${sourceDocNo}`,
+          differenceValue: "collision",
+          status: "blocking",
+          reviewReason: `Internal document number collides with source document number — must be distinct.`,
         });
-        if (rows.indexOf(row) === firstOccurrence) {
-          metrics.push({
-            metricKey: `duplicate_document_${docNo}`,
-            expectedValue: "unique",
-            stagedValue: `${dupCount} occurrences`,
-            differenceValue: `${dupCount - 1} extra`,
-            status: "blocking",
-            reviewReason: `Duplicate document number '${docNo}' appears ${dupCount} times.`,
-          });
-        }
       }
     }
 
-    // Unmatched alias/lineage — name exists but no resolved master
-    if (data.name && !data.customer_id && !data.item_id) {
+    // §8.7.7 Unmatched records — collect entity names for unmatched detection
+    if (data.name) {
+      const hasMaster = !!(data.customer_id || data.item_id || data.supplier_id || data.location_id || data.factory_id);
+      entityNames.push({ name: String(data.name), rowId: row.id, hasMaster, entityType });
+    }
+  }
+
+  // §8.7.6 Duplicate document numbers — add metrics for duplicates
+  for (const [docNo, count] of Object.entries(docNoCounts)) {
+    if (count > 1) {
       metrics.push({
-        metricKey: `unmatched_alias_${String(data.name).substring(0, 20)}`,
-        expectedValue: "resolved master",
-        stagedValue: String(data.name),
-        differenceValue: "no master link",
+        metricKey: `duplicate_document_${docNo}`,
+        expectedValue: "unique",
+        stagedValue: `${count} occurrences`,
+        differenceValue: `${count - 1} extra`,
         status: "blocking",
-        reviewReason: `Entity '${data.name}' has no resolved master reference — unmatched alias.`,
+        reviewReason: `Duplicate document number '${docNo}' appears ${count} times in batch.`,
       });
     }
   }
 
-  // Compare expected totals with staged totals
+  // §8.7.7 Unmatched alias/entity — create metrics for entities without resolved masters
+  for (const entity of entityNames) {
+    if (!entity.hasMaster) {
+      metrics.push({
+        metricKey: `unmatched_alias_${entity.name.substring(0, 20)}`,
+        expectedValue: "resolved master reference",
+        stagedValue: entity.name,
+        differenceValue: "no master link",
+        status: "blocking",
+        reviewReason: `Entity '${entity.name}' (${entity.entityType}) has no resolved master reference — unmatched alias.`,
+      });
+    }
+  }
+
+  // §8.7 Compare expected totals with staged totals
   for (const [metricKey, expectedStr] of Object.entries(expectedTotals)) {
     const expected = parseFloat(expectedStr);
     const staged = stagedTotals[metricKey] ?? 0;
@@ -237,12 +348,12 @@ function computeReconciliationMetrics(
       expectedValue: String(expected),
       stagedValue: String(staged),
       differenceValue: String(difference),
-      status: isMatch ? "matched" : (Math.abs(difference) > expected * 0.1 ? "blocking" : "difference"),
+      status: isMatch ? "matched" : (Math.abs(difference) > Math.abs(expected) * 0.1 ? "blocking" : "difference"),
       reviewReason: isMatch ? null : `Mismatch: expected ${expected}, staged ${staged}, difference ${difference}.`,
     });
   }
 
-  // Add staged-only metrics (no expected provided but still report)
+  // Add staged-only metrics (no expected provided but still report for visibility)
   for (const [metricKey, staged] of Object.entries(stagedTotals)) {
     if (!(metricKey in expectedTotals)) {
       metrics.push({
@@ -306,13 +417,17 @@ export class HistoricalReconciliationService {
     if (claim.action === "conflict") throw new HistoricalReconciliationError("IDEMPOTENCY_CONFLICT", `Idempotency key conflict.`);
     if (claim.action === "in_progress") throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", `Operation in progress.`);
 
-    // Get next report version BEFORE deleting old results (versioned reconciliation — §8.8)
+    // WP-07-03 correction: Get next report version and mark old version as superseded.
+    // Old reconciliation evidence is PRESERVED (not deleted) for audit/approval binding.
+    // Contract 08 §8.8: "Versioned reconciliation reports" — old versions remain queryable.
     const latestVersion = await this.deps.repository.findLatestReportVersion(user.tenantId, input.importBatchId);
     const reportVersion = latestVersion + 1;
 
-    // Delete old reconciliation results and review items (re-run is safe — new version replaces old)
-    await this.deps.repository.deleteReconciliationResultsForBatch(user.tenantId, input.importBatchId);
-    await this.deps.repository.deleteReviewItemsForBatch(user.tenantId, input.importBatchId);
+    // Mark old version as superseded (NOT deleted — evidence preserved)
+    if (latestVersion > 0) {
+      await this.deps.repository.markVersionAsSuperseded(user.tenantId, input.importBatchId, latestVersion);
+    }
+    // Note: old review items are also preserved — they remain for audit trail.
 
     // Fetch staging rows
     const rows = await this.deps.repository.findStagingRowsForBatch(user.tenantId, input.importBatchId);

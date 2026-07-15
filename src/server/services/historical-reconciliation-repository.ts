@@ -52,13 +52,17 @@ export interface HistoricalReconciliationRepository {
   insertReconciliationResult(row: NewReconciliationResultInput): Promise<ImportReconciliationResult>;
   findReconciliationResultsForBatch(tenantId: string, importBatchId: string): Promise<ImportReconciliationResult[]>;
   findReconciliationResultsForBatchVersion(tenantId: string, importBatchId: string, reportVersion: number): Promise<ImportReconciliationResult[]>;
-  deleteReconciliationResultsForBatch(tenantId: string, importBatchId: string): Promise<void>;
   findLatestReportVersion(tenantId: string, importBatchId: string): Promise<number>;
+  /**
+   * WP-07-03 correction: Mark old version results as superseded (NOT deleted).
+   * Old reconciliation evidence must be preserved for audit/approval binding.
+   */
+  markVersionAsSuperseded(tenantId: string, importBatchId: string, reportVersion: number): Promise<void>;
 
-  // Review item methods (shared with validation but reconciliation-specific)
+  // Review item methods
   insertReviewItem(row: NewReconciliationReviewItemInput): Promise<ImportHumanReviewItem>;
   findReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<ImportHumanReviewItem[]>;
-  deleteReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<void>;
+  findReviewItemsForBatchVersion(tenantId: string, importBatchId: string): Promise<ImportHumanReviewItem[]>;
   findReviewItemById(tenantId: string, id: string): Promise<ImportHumanReviewItem | null>;
   updateReviewItemDecision(tenantId: string, id: string, patch: {
     status: string; decision: string | null; decisionNotes: string | null;
