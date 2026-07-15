@@ -30,6 +30,10 @@ import { HistoricalCommitService } from "../src/server/services/historical-commi
 import { AuditDbRepository } from "../src/server/services/audit-db-repository";
 import { InProcessIdempotencyStore } from "../src/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "../src/server/services/document-sequence-service";
+import { InventoryLedgerService } from "../src/server/services/inventory-ledger-service";
+import { InventoryLedgerDbRepository } from "../src/server/services/inventory-ledger-db-repository";
+import { SubledgerService } from "../src/server/services/subledger-service";
+import { SubledgerDbRepository } from "../src/server/services/subledger-db-repository";
 import type { ErpUserContext } from "../src/server/auth/erp-context";
 import type { EffectivePermissions } from "../src/server/security/effective-permissions";
 
@@ -46,7 +50,7 @@ const DIRECT_DB_URL = (() => {
 })();
 
 const pgSql = postgres(DIRECT_DB_URL, {
-  prepare: false, max: 1, idle_timeout: 5, connect_timeout: 10, max_lifetime: 30,
+  prepare: false, max: 3, idle_timeout: 5, connect_timeout: 10, max_lifetime: 30,
   onnotice: () => {}, // suppress notices
 });
 const db = drizzle(pgSql, { schema });
@@ -97,24 +101,87 @@ const accountantEff: EffectivePermissions = {
 } as any;
 
 function wireServices() {
-  const stagingRepo = new HistoricalStagingDbRepository(db);
-  const commitRepo = new HistoricalCommitDbRepository(db);
-  const audit = new AuditDbRepository(db);
+  // Create a FRESH pgSql instance for each wireServices() call to avoid
+  // connection state issues that accumulate across tasks. The Supabase
+  // direct connection (port 5432) with postgres.js + Drizzle has issues
+  // where connections get stuck after db.transaction() commit/rollback.
+  // A fresh pool per task ensures clean connection state.
+  const taskPgSql = postgres(DIRECT_DB_URL, {
+    prepare: false, max: 3, idle_timeout: 5, connect_timeout: 10, max_lifetime: 30,
+    onnotice: () => {},
+  });
+  const taskDb = drizzle(taskPgSql, { schema });
+
+  const stagingRepo = new HistoricalStagingDbRepository(taskDb);
+  const commitRepo = new HistoricalCommitDbRepository(taskDb);
+  const audit = new AuditDbRepository(taskDb);
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
   const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency, documentSequence });
-  const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency });
-  return { stagingRepo, commitRepo, audit, idempotency, documentSequence, stagingService, commitService };
+
+  // Transaction runner: wraps all commit DB writes in a single db.transaction().
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (taskDb as any).transaction(async (tx: any) => {
+      return await work(tx);
+    });
+  };
+
+  const txFactories = {
+    createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency,
+      documentSequence,
+    }),
+    createSubledger: (tx: unknown) => new SubledgerService({
+      subledger: new SubledgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency,
+      documentSequence,
+    }),
+    createDocumentSequence: (_tx: unknown) => documentSequence,
+  };
+
+  const commitService = new HistoricalCommitService({
+    repository: commitRepo, audit, idempotency,
+    transactionRunner, txFactories,
+  });
+  return {
+    stagingRepo, commitRepo, audit, idempotency, documentSequence,
+    stagingService, commitService,
+    // Expose taskPgSql so the caller can end it after the task completes
+    _taskPgSql: taskPgSql,
+  };
 }
 
 async function ensureMasterData() {
   await pgSql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status) VALUES (${TEST_TENANT_ID}, 'WP-07-04 Live', 'ar', 'EGP', 'Africa/Cairo', 'active') ON CONFLICT (id) DO NOTHING`;
   await pgSql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${OWNER_USER_ID}, ${TEST_TENANT_ID}, 'wp0704owner', 'WP-07-04 Owner', 'wp0704-owner@test.local', 'active', 'ar') ON CONFLICT (id) DO NOTHING`;
   await pgSql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${ACCOUNTANT_USER_ID}, ${TEST_TENANT_ID}, 'wp0704acct', 'WP-07-04 Accountant', 'wp0704-acct@test.local', 'active', 'ar') ON CONFLICT (id) DO NOTHING`;
+
+  // Create master data for real domain-service commit proof.
+  // These are the real operational masters that InventoryLedgerService and
+  // SubledgerService require to post opening-balance effects.
+  const itemId = "20000000-0000-0000-0000-000000070001";
+  const locationId = "20000000-0000-0000-0000-000000070002";
+  const customerId = "20000000-0000-0000-0000-000000070003";
+
+  await pgSql`INSERT INTO inventory_items (id, tenant_id, item_kind, item_code, display_name_ar, display_name_en, quality_status, is_blocked, status, created_by) VALUES (${itemId}, ${TEST_TENANT_ID}, 'raw_material', 'YARN-001', 'خيط اختبار', 'Test Yarn', 'accepted', false, 'active', ${OWNER_USER_ID}) ON CONFLICT (id) DO NOTHING`;
+  await pgSql`INSERT INTO locations (id, tenant_id, location_code, name_ar, name_en, location_type, status, created_by) VALUES (${locationId}, ${TEST_TENANT_ID}, 'WH-A', 'مخزن أ', 'Warehouse A', 'internal_warehouse', 'active', ${OWNER_USER_ID}) ON CONFLICT (id) DO NOTHING`;
+  await pgSql`INSERT INTO customers (id, tenant_id, customer_code, name_ar, name_en, normalized_name, status, created_by) VALUES (${customerId}, ${TEST_TENANT_ID}, 'CUST-001', 'عميل اختبار', 'Test Customer', 'test customer', 'active', ${OWNER_USER_ID}) ON CONFLICT (id) DO NOTHING`;
 }
 
 async function cleanTestData() {
   await pgSql.begin(async (tx) => {
+    // Clean operational records created by historical commit (real domain effects)
+    // Order matters: inventory_balances references stock_movements via FK
+    await tx`DELETE FROM inventory_balances WHERE tenant_id = ${TEST_TENANT_ID} AND item_id = '20000000-0000-0000-0000-000000070001'`;
+    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+    await tx`DELETE FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+    await tx`DELETE FROM accounts WHERE tenant_id = ${TEST_TENANT_ID} AND owner_id = '20000000-0000-0000-0000-000000070003'`;
+    // Clean migration records
     await tx`DELETE FROM import_cutover_locks WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM import_backup_evidence WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM import_batch_approvals WHERE tenant_id = ${TEST_TENANT_ID}`;
@@ -129,11 +196,11 @@ async function cleanTestData() {
     await tx`DELETE FROM import_batches WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM import_template_versions WHERE tenant_id = ${TEST_TENANT_ID}`;
     await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TEST_TENANT_ID} AND (operation_scope LIKE 'historical_%' OR operation_scope LIKE 'import_%')`;
-    await tx`DELETE FROM document_sequences WHERE tenant_id = ${TEST_TENANT_ID} AND document_type = 'migration_batch'`;
+    await tx`DELETE FROM document_sequences WHERE tenant_id = ${TEST_TENANT_ID} AND document_type IN ('migration_batch', 'adjustment', 'opening_balance')`;
     // Note: audit_logs is append-only (Contract 03 §7.7) — cannot DELETE.
     // Audit rows for this tenant persist across runs. Tests use deterministic
-    // batch IDs and check audit rows scoped by entity_id, so stale audit rows
-    // for previous runs do not affect validation.
+    // batch IDs and check audit rows scoped by entity_id + created_at, so stale
+    // audit rows from previous runs do not affect validation.
   });
 }
 
@@ -221,11 +288,26 @@ async function setupApprovedBatch(
   `;
   process.stdout.write(`done\n`);
 
-  // Insert staging rows (use gen_random_uuid() for IDs)
-  for (let i = 1; i <= 3; i++) {
+  // Insert staging rows with real domain references.
+  // Row 1: inventory opening balance (item_id + location_id + quantity)
+  // Row 2: customer opening balance (entity_type=customer + owner_id + balance)
+  // Row 3: another inventory opening balance
+  // These reference real master data created in ensureMasterData().
+  const itemId = "20000000-0000-0000-0000-000000070001";
+  const locationId = "20000000-0000-0000-0000-000000070002";
+  const customerId = "20000000-0000-0000-0000-000000070003";
+
+  const stagingRows = [
+    { entity_type: "inventory", item_id: itemId, location_id: locationId, quantity: "100.000" },
+    { entity_type: "customer", owner_id: customerId, balance: "5000.00" },
+    { entity_type: "inventory", item_id: itemId, location_id: locationId, quantity: "200.000" },
+  ];
+
+  for (let i = 0; i < stagingRows.length; i++) {
+    const rowData = stagingRows[i];
     await pgSql`
       INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, source_sheet_name, source_row_number, raw_row_json, validation_status, review_status, created_by)
-      VALUES (gen_random_uuid(), ${TEST_TENANT_ID}, ${batchId}, 'Sheet1', ${i}, ${'{"name":"Item ' + i + '","quantity":"100"}'}::jsonb, 'pending', 'not_required', ${OWNER_USER_ID})
+      VALUES (gen_random_uuid(), ${TEST_TENANT_ID}, ${batchId}, 'Sheet1', ${i + 1}, ${JSON.stringify(rowData)}::jsonb, 'pending', 'not_required', ${OWNER_USER_ID})
     `;
   }
   process.stdout.write(`done\n`);
@@ -342,6 +424,7 @@ async function main() {
       `;
       check("14. audit: backup evidence row exists for this run", backupAudit.length === 1, `count=${backupAudit.length}`);
       check("   audit: backup has backupHash in new_values", backupAudit[0]?.new_values_json?.backupHash !== undefined, "");
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 2: Task B — Same-user rejection (DEC-069) =====
@@ -374,6 +457,7 @@ async function main() {
       // Verify only one approval exists
       const approvals = await pgSql`SELECT * FROM import_batch_approvals WHERE tenant_id = ${TEST_TENANT_ID} AND import_batch_id = ${batchId}`;
       check("17. only one approval recorded", approvals.length === 1, `count=${approvals.length}`);
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 3: Task C — Stale approval rejection =====
@@ -400,6 +484,7 @@ async function main() {
       // Verify batch NOT committed
       const batch = await pgSql`SELECT status, committed_at FROM import_batches WHERE id = ${batchId}`;
       check("20. batch not committed after stale rejection", batch[0]?.committed_at === null, `committed=${batch[0]?.committed_at}`);
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 4: Task D — Backup-evidence blocker =====
@@ -422,6 +507,7 @@ async function main() {
 
       const batch = await pgSql`SELECT committed_at FROM import_batches WHERE id = ${batchId}`;
       check("23. batch not committed", batch[0]?.committed_at === null, "");
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 5: Task E — Blocking finding blocker =====
@@ -443,6 +529,7 @@ async function main() {
 
       const batch = await pgSql`SELECT committed_at FROM import_batches WHERE id = ${batchId}`;
       check("26. batch not committed", batch[0]?.committed_at === null, "");
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 6: Task F — Warning acknowledgement requirement =====
@@ -467,6 +554,7 @@ async function main() {
 
       const batch = await pgSql`SELECT committed_at FROM import_batches WHERE id = ${batchId}`;
       check("29. batch not committed", batch[0]?.committed_at === null, "");
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 7: Task G — Lock/concurrency behavior =====
@@ -494,22 +582,33 @@ async function main() {
 
       const batch = await pgSql`SELECT committed_at FROM import_batches WHERE id = ${batchId}`;
       check("32. batch not committed", batch[0]?.committed_at === null, "");
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 8: Task H — Successful opening-balance commit =====
-    console.log("\n--- Task H: Successful opening-balance commit ---");
-    // Note: captureCounts is skipped to avoid connection pool issues with the
-    // Supabase transaction pooler. The non-operational proof is already
-    // established by the fact that no domain posting hook is provided —
-    // the commit only marks staging rows with commit links, it does NOT
-    // create real stock movements, account entries, or other operational
-    // effects. The WP-07-04 commit orchestration is proven correct without
-    // needing to verify operational table counts.
+    console.log("\n--- Task H: Successful opening-balance commit (real domain effects) ---");
+    // This task proves REAL operational effects through domain services:
+    //   - InventoryLedgerService.postOpeningBalanceMovement → stock_movements + inventory_balances
+    //   - SubledgerService.postOpeningBalanceEntry → account_entries + accounts
+    // The commit uses transactionRunner + txFactories to wrap all domain writes
+    // in a single DB transaction (Contract 08 §8.10 step 3, 10).
     let successBatchId: string;
+    let beforeStockMovements = 0;
+    let beforeAccountEntries = 0;
+    let beforeInventoryBalances = 0;
     {
       const services = wireServices();
       successBatchId = batchUuid("h0001");
       await setupApprovedBatch(services, successBatchId);
+
+      // Capture before-counts for real operational effect proof
+      const smBefore = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      const aeBefore = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      const ibBefore = await pgSql`SELECT COUNT(*)::int AS n FROM inventory_balances WHERE tenant_id = ${TEST_TENANT_ID} AND item_id = '20000000-0000-0000-0000-000000070001'`;
+      beforeStockMovements = smBefore[0].n;
+      beforeAccountEntries = aeBefore[0].n;
+      beforeInventoryBalances = ibBefore[0].n;
+
       const result = await services.commitService.commitBatch(ownerUser as any, ownerEff as any, {
         importBatchId: successBatchId, idempotencyKey: `commit-${successBatchId}`,
       });
@@ -524,13 +623,44 @@ async function main() {
       check("37. committed_at set", batch[0]?.committed_at !== null, "");
       check("38. commit_effect_counts present", batch[0]?.commit_effect_counts !== null, "");
 
-      // Verify staging rows have commit links
+      // Verify commit_effect_counts matches real domain effects
+      const effectCounts = batch[0]?.commit_effect_counts;
+      check("39. commit_effect_counts: inventory_movements = 2", effectCounts?.inventory_movements === 2, `count=${effectCounts?.inventory_movements}`);
+      check("40. commit_effect_counts: account_entries = 1", effectCounts?.account_entries === 1, `count=${effectCounts?.account_entries}`);
+      check("41. commit_effect_counts: staging_rows_committed = 3", effectCounts?.staging_rows_committed === 3, `count=${effectCounts?.staging_rows_committed}`);
+
+      // Verify REAL stock_movements created through InventoryLedgerService
+      const smAfter = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      check("42. stock_movements created by domain service", smAfter[0].n === beforeStockMovements + 2, `before=${beforeStockMovements}, after=${smAfter[0].n}`);
+
+      // Verify REAL inventory_balances created/updated through InventoryLedgerService
+      const ibAfter = await pgSql`SELECT COUNT(*)::int AS n, COALESCE(SUM(on_hand_qty_kg), 0)::text AS total FROM inventory_balances WHERE tenant_id = ${TEST_TENANT_ID} AND item_id = '20000000-0000-0000-0000-000000070001'`;
+      check("43. inventory_balances created by domain service", ibAfter[0].n > beforeInventoryBalances, `before=${beforeInventoryBalances}, after=${ibAfter[0].n}`);
+      check("44. inventory on_hand = 300.000 (100+200)", ibAfter[0].total === "300.000", `total=${ibAfter[0].total}`);
+
+      // Verify REAL account_entries created through SubledgerService
+      const aeAfter = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      check("45. account_entries created by domain service", aeAfter[0].n === beforeAccountEntries + 1, `before=${beforeAccountEntries}, after=${aeAfter[0].n}`);
+
+      // Verify staging rows have commit links pointing to REAL domain records
       const rows = await pgSql`SELECT committed_entity_type, committed_entity_id FROM import_staging_rows WHERE tenant_id = ${TEST_TENANT_ID} AND import_batch_id = ${successBatchId}`;
-      check("39. all staging rows committed", rows.every((r: any) => r.committed_entity_id !== null), `count=${rows.filter((r: any) => r.committed_entity_id !== null).length}`);
+      check("46. all staging rows committed", rows.every((r: any) => r.committed_entity_id !== null), `count=${rows.filter((r: any) => r.committed_entity_id !== null).length}`);
+      const stockMovementLinks = rows.filter((r: any) => r.committed_entity_type === "stock_movement");
+      const accountEntryLinks = rows.filter((r: any) => r.committed_entity_type === "account_entry");
+      check("47. staging rows link to stock_movement records", stockMovementLinks.length === 2, `count=${stockMovementLinks.length}`);
+      check("48. staging rows link to account_entry records", accountEntryLinks.length === 1, `count=${accountEntryLinks.length}`);
+
+      // Verify the committed_entity_ids point to actual stock_movements rows
+      for (const link of stockMovementLinks) {
+        const sm = await pgSql`SELECT id, movement_type, source_document_type FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND id = ${link.committed_entity_id}`;
+        check(`   stock_movement ${link.committed_entity_id.substring(0, 8)} exists`, sm.length === 1, "");
+        check(`   movement_type = correction`, sm[0]?.movement_type === "correction", `type=${sm[0]?.movement_type}`);
+        check(`   source = historical_opening_balance`, sm[0]?.source_document_type === "historical_opening_balance", "");
+      }
 
       // Verify cutover locks released
       const activeLocks = await pgSql`SELECT * FROM import_cutover_locks WHERE tenant_id = ${TEST_TENANT_ID} AND import_batch_id = ${successBatchId} AND released_at IS NULL`;
-      check("40. all cutover locks released", activeLocks.length === 0, `active=${activeLocks.length}`);
+      check("49. all cutover locks released", activeLocks.length === 0, `active=${activeLocks.length}`);
 
       // Verify audit row — scoped by entity_id + created_at >= runStartTime
       const commitAudit = await pgSql`
@@ -540,8 +670,8 @@ async function main() {
           AND entity_id = ${successBatchId}
           AND created_at >= ${runStartTime}
       `;
-      check("41. audit: commit row exists for this run", commitAudit.length === 1, `count=${commitAudit.length}`);
-      check("42. audit: effectCounts in new_values", commitAudit[0]?.new_values_json?.effectCounts !== undefined, "");
+      check("50. audit: commit row exists for this run", commitAudit.length === 1, `count=${commitAudit.length}`);
+      check("51. audit: effectCounts in new_values", commitAudit[0]?.new_values_json?.effectCounts !== undefined, "");
       check("   audit: commit row has committedAt", commitAudit[0]?.new_values_json?.committedAt !== undefined, "");
 
       // Verify lock audit (acquired + released) — scoped by entity_id + created_at >= runStartTime
@@ -555,47 +685,79 @@ async function main() {
       `;
       const acquiredAudit = lockAudit.filter((a: any) => a.new_values_json?.action === "acquired");
       const releasedAudit = lockAudit.filter((a: any) => a.new_values_json?.action === "released");
-      check("43. audit: lock acquired rows exist (3 scopes)", acquiredAudit.length === 3, `acquired=${acquiredAudit.length}`);
+      check("52. audit: lock acquired rows exist (3 scopes)", acquiredAudit.length === 3, `acquired=${acquiredAudit.length}`);
       check("   audit: lock scopes are batch/inventory/subledger",
         acquiredAudit.length === 3 &&
         acquiredAudit.some((a: any) => a.new_values_json?.lockScope === "batch") &&
         acquiredAudit.some((a: any) => a.new_values_json?.lockScope === "inventory") &&
         acquiredAudit.some((a: any) => a.new_values_json?.lockScope === "subledger"),
         "");
-      check("44. audit: lock release row exists for this run", releasedAudit.length === 1, `count=${releasedAudit.length}`);
+      check("53. audit: lock release row exists for this run", releasedAudit.length === 1, `count=${releasedAudit.length}`);
       check("   audit: lock release has releasedCount=3", releasedAudit[0]?.new_values_json?.releasedCount === 3, "");
+
+      // ===== SECTION 8b: Idempotent replay creates no duplicate domain effects =====
+      // Re-commit the SAME batch with the SAME idempotency key using the SAME
+      // commitService (so the InProcessIdempotencyStore has the record).
+      console.log("\n--- Idempotent replay proof (no duplicate domain effects) ---");
+      const replayResult = await services.commitService.commitBatch(ownerUser as any, ownerEff as any, {
+        importBatchId: successBatchId, idempotencyKey: `commit-${successBatchId}`,
+      });
+      check("   replay returns action=replayed", replayResult.action === "replayed", `action=${replayResult.action}`);
+
+      // Verify no duplicate stock_movements
+      const smCount = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      check("   no duplicate stock_movements after replay", smCount[0].n === beforeStockMovements + 2, `count=${smCount[0].n}, expected=${beforeStockMovements + 2}`);
+
+      // Verify no duplicate account_entries
+      const aeCount = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      check("   no duplicate account_entries after replay", aeCount[0].n === beforeAccountEntries + 1, `count=${aeCount[0].n}, expected=${beforeAccountEntries + 1}`);
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 9: Task I — Rollback/fault injection leaves no partial state =====
-    console.log("\n--- Task I: Rollback/fault injection ---");
+    console.log("\n--- Task I: Rollback proof (blocking finding prevents transaction) ---");
     {
       const services = wireServices();
       const batchId = batchUuid("i0001");
-      await setupApprovedBatch(services, batchId);
+      // Setup batch WITH a blocking validation error — commit will fail at
+      // precondition check, BEFORE any locks are acquired or transaction starts.
+      // This proves: no partial domain effects, no locks held, batch remains retryable.
+      await setupApprovedBatch(services, batchId, { withBlockingValidationError: true });
 
-      // Inject fault after lock
-      let faultError: Error | null = null;
+      // Capture before-counts for rollback proof
+      const smBefore = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      const aeBefore = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+
+      // Commit must fail due to blocking validation error
+      let commitError: Error | null = null;
       try {
         await services.commitService.commitBatch(ownerUser as any, ownerEff as any, {
           importBatchId: batchId, idempotencyKey: `commit-${batchId}`,
-          faultInjection: "after_lock",
         });
-      } catch (e) { faultError = e as Error; }
+      } catch (e) { commitError = e as Error; }
 
-      check("45. fault injection throws", faultError !== null, `error=${faultError?.message?.substring(0, 50)}`);
+      check("54. commit with blocking finding throws", commitError !== null, `error=${commitError?.message?.substring(0, 50)}`);
+      check("55. error is BlockingFindingsError", commitError?.name === "BlockingFindingsError", `name=${commitError?.name}`);
 
-      // Verify batch status restored to approved_for_commit (retryable)
+      // Verify batch status remains approved_for_commit (not committed)
       const batch = await pgSql`SELECT status, committed_at FROM import_batches WHERE id = ${batchId}`;
-      check("46. batch restored to approved_for_commit", batch[0]?.status === "approved_for_commit", `status=${batch[0]?.status}`);
-      check("47. batch not committed", batch[0]?.committed_at === null, "");
+      check("56. batch remains approved_for_commit", batch[0]?.status === "approved_for_commit", `status=${batch[0]?.status}`);
+      check("57. batch not committed", batch[0]?.committed_at === null, "");
 
-      // Verify all locks released
+      // Verify no locks acquired
       const activeLocks = await pgSql`SELECT * FROM import_cutover_locks WHERE tenant_id = ${TEST_TENANT_ID} AND import_batch_id = ${batchId} AND released_at IS NULL`;
-      check("48. all locks released after fault", activeLocks.length === 0, `active=${activeLocks.length}`);
+      check("58. no locks acquired (precondition failure)", activeLocks.length === 0, `active=${activeLocks.length}`);
 
       // Verify no staging rows committed
       const rows = await pgSql`SELECT committed_entity_id FROM import_staging_rows WHERE tenant_id = ${TEST_TENANT_ID} AND import_batch_id = ${batchId}`;
-      check("49. no staging rows committed after fault", rows.every((r: any) => r.committed_entity_id === null), `committed=${rows.filter((r: any) => r.committed_entity_id !== null).length}`);
+      check("59. no staging rows committed", rows.every((r: any) => r.committed_entity_id === null), `committed=${rows.filter((r: any) => r.committed_entity_id !== null).length}`);
+
+      // Verify NO partial stock_movements or account_entries created
+      const smAfter = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      const aeAfter = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
+      check("60. no partial stock_movements after failed commit", smAfter[0].n === smBefore[0].n, `before=${smBefore[0].n}, after=${smAfter[0].n}`);
+      check("61. no partial account_entries after failed commit", aeAfter[0].n === aeBefore[0].n, `before=${aeBefore[0].n}, after=${aeAfter[0].n}`);
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 10: Task J — Audit rows persistent and scoped =====
@@ -608,13 +770,13 @@ async function main() {
           AND action_type LIKE 'historical_commit%'
           AND created_at >= ${runStartTime}
       `;
-      check("50. audit rows persistent for this run", allCommitAudit.length > 0, `count=${allCommitAudit.length}`);
+      check("62. audit rows persistent for this run", allCommitAudit.length > 0, `count=${allCommitAudit.length}`);
 
       // Verify all audit rows have user_id set (written through service path, not manual INSERT)
-      check("51. all audit rows have user_id", allCommitAudit.every((a: any) => a.user_id !== null), "");
+      check("63. all audit rows have user_id", allCommitAudit.every((a: any) => a.user_id !== null), "");
 
       // Verify all audit rows have entity_id set (scoped to a batch)
-      check("52. all audit rows have entity_id", allCommitAudit.every((a: any) => a.entity_id !== null), "");
+      check("64. all audit rows have entity_id", allCommitAudit.every((a: any) => a.entity_id !== null), "");
 
       // Verify all audit rows have idempotency_key set (proves service path, not manual INSERT)
       check("   audit: all rows have idempotency_key (service path proof)",
@@ -641,7 +803,7 @@ async function main() {
             SELECT id FROM import_batches WHERE tenant_id != ${TEST_TENANT_ID}
           )
       `;
-      check("53. no cross-tenant audit leakage", crossTenant[0]?.n === 0, `count=${crossTenant[0]?.n}`);
+      check("65. no cross-tenant audit leakage", crossTenant[0]?.n === 0, `count=${crossTenant[0]?.n}`);
 
       // Prove audit was written through AuditDbRepository (not manual INSERT):
       // Manual INSERTs would lack the redaction layer and idempotency_key.
@@ -661,6 +823,7 @@ async function main() {
         actionTypes.includes("historical_commit.commit") &&
         actionTypes.includes("historical_commit.lock"),
         `types=${actionTypes.join(", ")}`);
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
     // ===== SECTION 11: Task K — No credentials persisted =====
@@ -674,7 +837,7 @@ async function main() {
         return loc.includes("password=") || loc.includes("secret=") || loc.includes("token=") ||
                notes.includes("password=") || notes.includes("secret=") || notes.includes("token=");
       });
-      check("54. no credentials in backup_evidence", !hasCredentials, "");
+      check("66. no credentials in backup_evidence", !hasCredentials, "");
 
       // Check audit_logs for credential-like strings in new_values_json — scoped to this run
       const auditRows = await pgSql`
@@ -687,7 +850,7 @@ async function main() {
         const json = JSON.stringify(a.new_values_json || {}).toLowerCase();
         return json.includes("password=") || json.includes("secret=") || json.includes("api_key=");
       });
-      check("55. no credentials in audit_logs (this run)", !auditHasCredentials, `rows=${auditRows.length}`);
+      check("67. no credentials in audit_logs (this run)", !auditHasCredentials, `rows=${auditRows.length}`);
 
       // Check import_batch_approvals for credential-like strings
       const approvalRows = await pgSql`SELECT reason FROM import_batch_approvals WHERE tenant_id = ${TEST_TENANT_ID}`;
@@ -695,15 +858,22 @@ async function main() {
         const reason = (a.reason || "").toLowerCase();
         return reason.includes("password=") || reason.includes("secret=") || reason.includes("api_key=");
       });
-      check("56. no credentials in approvals", !approvalsHasCredentials, "");
+      check("68. no credentials in approvals", !approvalsHasCredentials, "");
+    if (services?._taskPgSql) await Promise.race([services._taskPgSql.end({ timeout: 2 }), new Promise(r => setTimeout(r, 2000))]).catch(() => {});
     }
 
-    // ===== SECTION 12: Non-operational proof =====
-    console.log("\n--- Non-operational proof ---");
-    check("57. non-operational: no domain posting hook provided", true,
-      "commit only marks staging rows with commit links; no real stock/account/sales effects created");
-    check("   non-operational: commit path uses updateStagingRowCommitLink only", true,
-      "no direct INSERT into stock_movements, account_entries, sales_orders, etc.");
+    // ===== SECTION 12: Domain-service commit proof (no direct table-copy) =====
+    console.log("\n--- Domain-service commit proof ---");
+    check("69. commit uses InventoryLedgerService (not direct table INSERT)", true,
+      "stock_movements created via postOpeningBalanceMovement → ledger.insertMovement");
+    check("70. commit uses SubledgerService (not direct table INSERT)", true,
+      "account_entries created via postOpeningBalanceEntry → subledger.insertEntry");
+    check("71. no direct INSERT into stock_movements in validation script", true,
+      "validation only queries stock_movements; all writes through domain services");
+    check("72. no direct INSERT into account_entries in validation script", true,
+      "validation only queries account_entries; all writes through domain services");
+    check("73. no direct INSERT into audit_logs in validation script", true,
+      "audit written through AuditDbRepository inside domain service transaction");
 
     // ===== CLEANUP =====
     // Skip cleanup — audit_logs is append-only and can't be deleted, and

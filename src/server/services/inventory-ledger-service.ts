@@ -1971,4 +1971,105 @@ export class InventoryLedgerService {
       reservedQtyKg: newReserved,
     };
   }
+
+  // ===========================================================================
+  // WP-07-04: Narrow tx-scoped opening-balance movement for historical commit.
+  // ===========================================================================
+
+  /**
+   * Post an opening-balance inventory movement for historical migration
+   * commit (WP-07-04, Contract 08 §8.10 step 3-4).
+   *
+   * This is a NARROW tx-scoped method — it does NOT claim its own idempotency
+   * or allocate its own doc_no. The caller (HistoricalCommitService) owns the
+   * commit idempotency and the cutover lock. This method:
+   *   - locks the balance row (findBalanceForUpdate)
+   *   - creates the balance row if missing
+   *   - inserts an immutable `correction` movement (opening balance)
+   *   - updates the balance (on_hand += qty)
+   *
+   * The movement uses `movementType: "correction"` with
+   * `sourceDocumentType: "historical_opening_balance"` and
+   * `sourceDocumentId: stagingRowId` so it is traceable back to the
+   * specific staged row that produced it.
+   *
+   * Permission/tenant checks are the caller's responsibility — this method
+   * is only callable from HistoricalCommitService which already verified
+   * `migration.commit` permission and tenant ownership.
+   *
+   * Contract 04 §13: "Only InventoryLedgerService may insert posted movement
+   *   rows or mutate materialized balances."
+   * Contract 08 §8.10 step 3: "creates records through inventory...
+   *   domain services rather than table-copy logic"
+   */
+  async postOpeningBalanceMovement(
+    tenantId: string,
+    userId: string,
+    input: {
+      itemId: string;
+      locationId: string;
+      quantityKg: string; // signed: positive = opening stock, negative = opening deficit
+      movementDate: string;
+      docNo: string;
+      sourceDocumentType: string; // "historical_opening_balance"
+      sourceDocumentId: string; // staging row ID
+      idempotencyKey: string;
+    },
+  ): Promise<{ movementId: string; balanceVersion: number; onHandQtyKg: string }> {
+    const normalizedQty = normalizeKg(input.quantityKg);
+    if (compareKg(normalizedQty, "0.000") === 0) {
+      throw new ValidationFailedLedgerError(`Opening balance quantity must be non-zero, got '${input.quantityKg}'.`);
+    }
+
+    const now = new Date();
+
+    // Duplicate-source guard: prevent two movements for the same staging row
+    const existingBySource = await this.deps.ledger.findMovementBySource(
+      tenantId, input.sourceDocumentType, input.sourceDocumentId,
+    );
+    if (existingBySource) {
+      throw new DuplicateSourceError(
+        `Movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
+      );
+    }
+
+    // Lock balance row (create if missing)
+    let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.locationId);
+    if (!balance) {
+      balance = await this.deps.ledger.insertBalance({
+        tenantId, itemId: input.itemId, locationId: input.locationId,
+        onHandQtyKg: "0.000", lastMovementId: null,
+      });
+    }
+
+    // Insert the movement (correction type for opening balance)
+    const movement = await this.deps.ledger.insertMovement({
+      tenantId, docNo: input.docNo,
+      movementType: "correction", movementStatus: "posted",
+      itemId: input.itemId,
+      fromLocationId: null, toLocationId: input.locationId,
+      quantityKg: normalizedQty.startsWith("-") ? normalizedQty.slice(1) : normalizedQty,
+      movementDate: input.movementDate,
+      sourceDocumentType: input.sourceDocumentType,
+      sourceDocumentId: input.sourceDocumentId,
+      idempotencyKey: input.idempotencyKey,
+      postedBy: userId, postedAt: now,
+    });
+
+    // Apply signed effect on balance
+    const newOnHand = addKg(balance.onHandQtyKg, normalizedQty);
+    const updatedBalance = await this.deps.ledger.updateBalance(
+      tenantId, input.itemId, input.locationId,
+      { onHandQtyKg: newOnHand, lastMovementId: movement.id, version: balance.version + 1 },
+    );
+    if (!updatedBalance) {
+      throw new InventoryLedgerError("INTERNAL_TRANSACTION_FAILED", "Balance not found during update.");
+    }
+
+    return {
+      movementId: movement.id,
+      balanceVersion: updatedBalance.version,
+      onHandQtyKg: updatedBalance.onHandQtyKg,
+    };
+  }
 }

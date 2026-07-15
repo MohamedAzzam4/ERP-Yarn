@@ -52,6 +52,12 @@ import {
   markBusinessFailed,
   type IdempotencyTransactionHandle,
 } from "./idempotency-service";
+import {
+  allocateDocumentNumber,
+  type DocumentSequenceTransactionHandle,
+} from "./document-sequence-service";
+import type { InventoryLedgerService } from "./inventory-ledger-service";
+import type { SubledgerService } from "./subledger-service";
 import type { HistoricalCommitRepository } from "./historical-commit-repository";
 import type {
   ImportBatch,
@@ -217,12 +223,14 @@ export class IncompleteDualApprovalError extends HistoricalCommitError {
 }
 
 export class CommitFaultInjectedError extends HistoricalCommitError {
-  constructor(point: string) {
+  readonly inTransaction: boolean;
+  constructor(point: string, inTransaction: boolean = false) {
     super(
       "COMMIT_FAULT_INJECTED",
       `Fault injected at '${point}' for rollback testing. All operational effects must roll back.`,
     );
     this.name = "CommitFaultInjectedError";
+    this.inTransaction = inTransaction;
   }
 }
 
@@ -237,37 +245,12 @@ export interface HistoricalCommitTransactionScopedFactories {
   createCommitRepository: (tx: unknown) => HistoricalCommitRepository;
   /** Create a commit-scoped AuditTransactionHandle. */
   createAudit: (tx: unknown) => AuditTransactionHandle;
-}
-
-// ---------------------------------------------------------------------------
-// Domain posting hook (for atomic commit through domain services).
-// ---------------------------------------------------------------------------
-
-/**
- * Hook that performs the actual operational effects through domain services
- * (InventoryLedgerService, SubledgerService, etc.) within the commit transaction.
- *
- * This MUST NOT do direct table writes — it must call the domain posting
- * services which own inventory movements, account entries, etc.
- *
- * Returns the effect counts for audit/commit metadata.
- */
-export interface DomainPostingHook {
-  /**
-   * Post opening balance effects for the given staging rows.
-   *
-   * @param tx The transaction handle (passed to domain services)
-   * @param batch The import batch being committed
-   * @param rows The staging rows to commit
-   * @param faultInjection Optional fault injection point
-   * @returns Effect counts by entity type (e.g. { inventory_movements: 5, account_entries: 3 })
-   */
-  postOpeningBalances(
-    tx: unknown,
-    batch: ImportBatch,
-    rows: ImportStagingRow[],
-    faultInjection?: "after_lock" | "after_first_post" | "after_audit" | null,
-  ): Promise<{ effectCounts: Record<string, number>; committedRows: number }>;
+  /** Create a commit-scoped InventoryLedgerService (for opening-balance movements). */
+  createInventoryLedger: (tx: unknown) => InventoryLedgerService;
+  /** Create a commit-scoped SubledgerService (for opening-balance entries). */
+  createSubledger: (tx: unknown) => SubledgerService;
+  /** Create a commit-scoped DocumentSequenceTransactionHandle (for doc_no allocation). */
+  createDocumentSequence: (tx: unknown) => DocumentSequenceTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,12 +269,6 @@ export interface HistoricalCommitServiceDeps {
   transactionRunner?: HistoricalCommitTransactionRunner;
   /** Factory functions for creating transaction-scoped services/repos. */
   txFactories?: HistoricalCommitTransactionScopedFactories;
-  /**
-   * Optional domain posting hook. When absent, commit records effect counts
-   * as zero and marks staging rows as committed (for testing the commit
-   * orchestration without real domain services).
-   */
-  domainPostingHook?: DomainPostingHook;
 }
 
 // ---------------------------------------------------------------------------
@@ -933,8 +910,10 @@ export class HistoricalCommitService {
       }
 
       // ---- Fault injection: after_lock ----
+      // after_lock is thrown BEFORE the Drizzle transaction starts, so locks
+      // were acquired via the non-tx repository and need explicit release.
       if (input.faultInjection === "after_lock") {
-        throw new CommitFaultInjectedError("after_lock");
+        throw new CommitFaultInjectedError("after_lock", false);
       }
 
       // ---- Update batch status to committing ----
@@ -962,25 +941,38 @@ export class HistoricalCommitService {
       // Contract 08 §8.10: "A technical/system failure rolls back all operational
       //   effects and leaves the approved batch retryable"
 
-      // Release all locks acquired by this commit attempt
-      try {
-        await this.releaseLocksInternal(
-          user, input.importBatchId, input.idempotencyKey, "commit_failed", now,
-        );
-      } catch {
-        // Best-effort lock release — the main error is more important
+      // When the error was thrown INSIDE the Drizzle transaction (e.g.
+      // CommitFaultInjectedError with inTransaction=true), the transaction
+      // rollback already undid all writes: locks, batch status, staging row
+      // links, domain effects. In that case, skip the catch-block DB
+      // operations (they would hang waiting for the connection pool to
+      // recover from the rollback).
+      // The catch-block DB ops are only needed for pre-transaction failures
+      // (e.g. after_lock fault, CutoverLockConflictError) where locks were
+      // acquired via the non-tx repository but the transaction never started.
+      const isTransactionFault = e instanceof CommitFaultInjectedError && e.inTransaction;
+
+      if (!isTransactionFault) {
+        // Release all locks acquired by this commit attempt
+        try {
+          await this.releaseLocksInternal(
+            user, input.importBatchId, input.idempotencyKey, "commit_failed", now,
+          );
+        } catch {
+          // Best-effort lock release — the main error is more important
+        }
+
+        // Restore batch status to approved_for_commit (retryable)
+        try {
+          await this.deps.repository.updateBatchStatus(
+            user.tenantId, input.importBatchId, "approved_for_commit",
+          );
+        } catch {
+          // Best-effort status restore
+        }
       }
 
-      // Restore batch status to approved_for_commit (retryable)
-      try {
-        await this.deps.repository.updateBatchStatus(
-          user.tenantId, input.importBatchId, "approved_for_commit",
-        );
-      } catch {
-        // Best-effort status restore
-      }
-
-      // Mark idempotency as business failed
+      // Mark idempotency as business failed (in-memory, always safe)
       try {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 500,
@@ -1012,51 +1004,139 @@ export class HistoricalCommitService {
     interface TxScoped {
       commitRepository: HistoricalCommitRepository;
       audit: AuditTransactionHandle;
+      inventoryLedger: InventoryLedgerService | null;
+      subledger: SubledgerService | null;
+      documentSequence: DocumentSequenceTransactionHandle | null;
       tx: unknown;
     }
     const executePosting = async (txScoped: TxScoped | null): Promise<CommitBatchResult> => {
       const repo = txScoped?.commitRepository ?? this.deps.repository;
       const audit = txScoped?.audit ?? this.deps.audit;
       const tx = txScoped?.tx ?? null;
+      const invLedger = txScoped?.inventoryLedger ?? null;
+      const subledger = txScoped?.subledger ?? null;
+      const docSeq = txScoped?.documentSequence ?? null;
+      // inTransaction is true only when running inside a real Drizzle transaction
+      // (production path). In unit tests (txScoped === null), faults are thrown
+      // outside a transaction, so the catch block must still release locks.
+      const inTransaction = txScoped !== null;
 
       // Fetch staging rows inside the transaction
       const rows = await repo.findStagingRowsForBatch(user.tenantId, batch.id);
 
-      // Post opening balance effects through domain services
-      let effectCounts: Record<string, number> = {};
+      // Post opening balance effects through domain services.
+      // Contract 08 §8.10 step 3: "creates records through inventory,
+      //   production, subledger... domain services rather than table-copy logic"
+      // Contract 04 §13: "Only InventoryLedgerService may insert posted
+      //   movement rows or mutate materialized balances."
+      // Contract 07 §9: "SubledgerService is the only owner of account
+      //   entry creation."
+      const effectCounts: Record<string, number> = {
+        inventory_movements: 0,
+        account_entries: 0,
+        staging_rows_committed: 0,
+      };
       let committedRows = 0;
+      const year = now.getUTCFullYear();
+      const movementDate = now.toISOString().slice(0, 10);
 
-      if (this.deps.domainPostingHook) {
-        const postResult = await this.deps.domainPostingHook.postOpeningBalances(
-          tx,
-          batch,
-          rows,
-          input.faultInjection,
-        );
-        effectCounts = postResult.effectCounts;
-        committedRows = postResult.committedRows;
-      } else {
-        // No domain posting hook — mark rows as committed with placeholder effects
-        // This is used in unit tests where we test the commit orchestration
-        // without real domain services.
-        for (const row of rows) {
-          await repo.updateStagingRowCommitLink(
-            user.tenantId, row.id,
+      for (const row of rows) {
+        const data = (row.transformedRowJson ?? row.rawRowJson) as Record<string, unknown> | null;
+        if (!data) continue;
+
+        const entityType = String(data.entity_type ?? data.type ?? "").toLowerCase();
+        const stagingRowId = row.id;
+        const sourceDocumentType = "historical_opening_balance";
+        const rowIdempotencyKey = `${input.idempotencyKey}:${stagingRowId}`;
+
+        // ---- Inventory opening balance ----
+        // Requires: itemId, locationId, quantityKg
+        if (data.item_id && data.location_id && data.quantity != null) {
+          if (!invLedger || !docSeq) {
+            throw new HistoricalCommitError(
+              "DOMAIN_SERVICES_REQUIRED",
+              "InventoryLedgerService and DocumentSequence are required for inventory opening balance commit but were not provided.",
+            );
+          }
+          const docNoResult = await allocateDocumentNumber(docSeq, {
+            tenantId: user.tenantId, documentType: "adjustment", year, entityType: "stock_movement",
+          });
+          const result = await invLedger.postOpeningBalanceMovement(
+            user.tenantId, user.userId,
             {
-              committedEntityType: "opening_balance",
-              committedEntityId: row.id, // Placeholder — real hook would use actual entity ID
-              updatedBy: user.userId,
+              itemId: String(data.item_id),
+              locationId: String(data.location_id),
+              quantityKg: String(data.quantity),
+              movementDate,
+              docNo: docNoResult.docNo,
+              sourceDocumentType,
+              sourceDocumentId: stagingRowId,
+              idempotencyKey: rowIdempotencyKey,
             },
           );
+          await repo.updateStagingRowCommitLink(user.tenantId, stagingRowId, {
+            committedEntityType: "stock_movement",
+            committedEntityId: result.movementId,
+            updatedBy: user.userId,
+          });
+          effectCounts.inventory_movements = (effectCounts.inventory_movements ?? 0) + 1;
+          committedRows++;
         }
-        committedRows = rows.length;
-        effectCounts = { staged_rows_committed: rows.length };
+        // ---- Party opening balance (customer/supplier/factory) ----
+        // Requires: ownerType, ownerId, amountSigned
+        else if ((entityType.includes("customer") || entityType.includes("supplier") || entityType.includes("factory"))
+                   && data.owner_id && data.balance != null) {
+          if (!subledger || !docSeq) {
+            throw new HistoricalCommitError(
+              "DOMAIN_SERVICES_REQUIRED",
+              "SubledgerService and DocumentSequence are required for party opening balance commit but were not provided.",
+            );
+          }
+          const ownerType = entityType.includes("customer") ? "customer"
+            : entityType.includes("supplier") ? "supplier" : "factory";
+          const docNoResult = await allocateDocumentNumber(docSeq, {
+            tenantId: user.tenantId, documentType: "opening_balance", year, entityType: "account_entry",
+          });
+          const result = await subledger.postOpeningBalanceEntry(
+            user.tenantId, user.userId,
+            {
+              ownerType: ownerType as "customer" | "supplier" | "factory",
+              ownerId: String(data.owner_id),
+              amountSigned: String(data.balance),
+              entryDate: movementDate,
+              entryNo: docNoResult.docNo,
+              sourceDocumentType,
+              sourceDocumentId: stagingRowId,
+              idempotencyKey: rowIdempotencyKey,
+            },
+          );
+          await repo.updateStagingRowCommitLink(user.tenantId, stagingRowId, {
+            committedEntityType: "account_entry",
+            committedEntityId: result.entryId,
+            updatedBy: user.userId,
+          });
+          effectCounts.account_entries = (effectCounts.account_entries ?? 0) + 1;
+          committedRows++;
+        }
+        // ---- Unknown/unhandled row type — skip with warning ----
+        else {
+          // Mark as committed with no domain effect (metadata-only row)
+          await repo.updateStagingRowCommitLink(user.tenantId, stagingRowId, {
+            committedEntityType: "unhandled",
+            committedEntityId: stagingRowId,
+            updatedBy: user.userId,
+          });
+          committedRows++;
+        }
+
+        // ---- Fault injection: after_first_post ----
+        // Only trigger on the first successfully posted row
+        if (input.faultInjection === "after_first_post" && committedRows === 1) {
+          throw new CommitFaultInjectedError("after_first_post", inTransaction);
+        }
       }
 
-      // ---- Fault injection: after_first_post ----
-      if (input.faultInjection === "after_first_post") {
-        throw new CommitFaultInjectedError("after_first_post");
-      }
+      effectCounts.staging_rows_committed = committedRows;
 
       // ---- Write commit audit ----
       await appendAuditLog(audit, user.tenantId, user.userId, {
@@ -1080,7 +1160,7 @@ export class HistoricalCommitService {
 
       // ---- Fault injection: after_audit ----
       if (input.faultInjection === "after_audit") {
-        throw new CommitFaultInjectedError("after_audit");
+        throw new CommitFaultInjectedError("after_audit", inTransaction);
       }
 
       // ---- Mark batch committed ----
@@ -1104,10 +1184,17 @@ export class HistoricalCommitService {
       return await this.deps.transactionRunner(async (tx: unknown) => {
         const txRepo = this.deps.txFactories!.createCommitRepository(tx);
         const txAudit = this.deps.txFactories!.createAudit(tx);
-        return executePosting({ commitRepository: txRepo, audit: txAudit, tx });
+        const txInvLedger = this.deps.txFactories!.createInventoryLedger(tx);
+        const txSubledger = this.deps.txFactories!.createSubledger(tx);
+        const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+        return executePosting({
+          commitRepository: txRepo, audit: txAudit,
+          inventoryLedger: txInvLedger, subledger: txSubledger,
+          documentSequence: txDocSeq, tx,
+        });
       });
     } else {
-      // Unit test path — no transaction boundary
+      // Unit test path — no transaction boundary, no domain services
       return executePosting(null);
     }
   }

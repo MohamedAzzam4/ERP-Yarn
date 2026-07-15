@@ -1220,4 +1220,94 @@ export class SubledgerService {
       accountId: entry.accountId,
     };
   }
+
+  // ===========================================================================
+  // WP-07-04: Narrow tx-scoped opening-balance entry for historical commit.
+  // ===========================================================================
+
+  /**
+   * Post an opening-balance account entry for historical migration commit
+   * (WP-07-04, Contract 08 §8.10 step 3-4).
+   *
+   * This is a NARROW tx-scoped method — it does NOT claim its own idempotency.
+   * The caller (HistoricalCommitService) owns the commit idempotency and
+   * the cutover lock. This method:
+   *   - finds or creates the party account (customer/supplier/factory)
+   *   - inserts an immutable account entry with entryType "opening_balance"
+   *
+   * The entry uses `sourceDocumentType: "historical_opening_balance"` and
+   * `sourceDocumentId: stagingRowId` for traceability.
+   *
+   * Contract 07 §9: "SubledgerService is the only owner of account entry
+   *   creation/reversal/settlement."
+   * Contract 08 §8.10 step 3: "creates records through... subledger...
+   *   domain services rather than table-copy logic"
+   *
+   * Signed amount convention (Contract 07 §8):
+   *   - positive = party owes company (customer opening receivable)
+   *   - negative = company owes party (supplier/factory opening payable)
+   */
+  async postOpeningBalanceEntry(
+    tenantId: string,
+    userId: string,
+    input: {
+      ownerType: "customer" | "supplier" | "factory";
+      ownerId: string;
+      amountSigned: string; // signed: + receivable, - payable
+      entryDate: string;
+      entryNo: string;
+      currency?: string;
+      sourceDocumentType: string; // "historical_opening_balance"
+      sourceDocumentId: string; // staging row ID
+      idempotencyKey: string;
+    },
+  ): Promise<{ entryId: string; entryNo: string; amountSigned: string; accountId: string }> {
+    const currency = input.currency ?? "EGP";
+    const normalizedAmount = normalizeMoney(input.amountSigned);
+
+    if (isZeroMoney(normalizedAmount)) {
+      throw new ValidationFailedSubledgerError(
+        `Opening balance amount must be non-zero, got '${input.amountSigned}'.`,
+      );
+    }
+
+    // Find or create the party account
+    let account = await this.deps.subledger.findAccount(tenantId, input.ownerType, input.ownerId, currency);
+    if (!account) {
+      account = await this.deps.subledger.insertAccount({
+        tenantId, ownerType: input.ownerType, ownerId: input.ownerId,
+        currency, createdBy: userId,
+      });
+    }
+
+    // Duplicate-source guard
+    const existing = await this.deps.subledger.findEntryBySource(
+      tenantId, input.sourceDocumentType, input.sourceDocumentId,
+    );
+    if (existing) {
+      throw new DuplicateSourceEntryError(
+        `Account entry already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
+      );
+    }
+
+    const entry = await this.deps.subledger.insertEntry({
+      tenantId,
+      accountId: account.id,
+      entryNo: input.entryNo,
+      entryDate: input.entryDate,
+      amountSigned: normalizedAmount,
+      currency,
+      entryType: "historical_opening_balance",
+      sourceDocumentType: input.sourceDocumentType,
+      sourceDocumentId: input.sourceDocumentId,
+      createdBy: userId,
+    });
+
+    return {
+      entryId: entry.id,
+      entryNo: entry.entryNo,
+      amountSigned: entry.amountSigned,
+      accountId: entry.accountId,
+    };
+  }
 }
