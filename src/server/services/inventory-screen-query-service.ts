@@ -19,7 +19,7 @@ import {
 } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type { RoleCode } from "@/server/security/role-codes";
-import { isWorkerRole } from "@/server/security/role-codes";
+import { stockReservations, operationalAlerts, salesOrders } from "@/server/db/schema";
 
 type Db = NonNullable<typeof DbType>;
 
@@ -98,6 +98,34 @@ export interface NegativeStockAlertDto {
   itemName: string;
   locationName: string;
   onHandQtyKg: string;
+}
+
+/** Management reservation DTO — shows reservation state per sale. */
+export interface ManagementReservationDto {
+  id: string;
+  salesOrderId: string;
+  saleDocNo: string;
+  itemId: string;
+  itemCode: string;
+  itemName: string;
+  locationId: string;
+  locationName: string;
+  reservedQtyKg: string;
+  reservationStatus: string;
+  saleStatus: string;
+  createdAt: string;
+}
+
+/** Management alert DTO — persistent operational alerts. */
+export interface ManagementAlertDto {
+  id: string;
+  alertType: string;
+  severity: string;
+  message: string;
+  state: string;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,17 +359,121 @@ export class InventoryScreenQueryService {
     return { results, negativeAlerts };
   }
 
+  // ---- Reservations ----
+
+  /**
+   * List active stock reservations (pending sale submissions).
+   * Contract 04 §9: Reservation state per sale.
+   */
+  async listReservations(tenantId: string): Promise<ManagementReservationDto[]> {
+    const results = await this.db
+      .select({
+        reservation: stockReservations,
+        item: inventoryItems,
+        location: locations,
+        sale: salesOrders,
+      })
+      .from(stockReservations)
+      .innerJoin(inventoryItems, eq(stockReservations.itemId, inventoryItems.id))
+      .innerJoin(locations, eq(stockReservations.locationId, locations.id))
+      .innerJoin(salesOrders, eq(stockReservations.salesOrderId, salesOrders.id))
+      .where(and(
+        eq(stockReservations.tenantId, tenantId),
+        eq(stockReservations.status, "active"),
+      ))
+      .orderBy(desc(stockReservations.createdAt));
+
+    return results.map((r) => ({
+      id: r.reservation.id,
+      salesOrderId: r.reservation.salesOrderId || "",
+      saleDocNo: r.sale.docNo,
+      itemId: r.reservation.itemId,
+      itemCode: r.item.itemCode,
+      itemName: r.item.displayNameEn || "",
+      locationId: r.reservation.locationId,
+      locationName: r.location.nameEn || "",
+      reservedQtyKg: r.reservation.quantityKg,
+      reservationStatus: r.reservation.status,
+      saleStatus: r.sale.saleStatus,
+      createdAt: r.reservation.createdAt.toISOString(),
+    }));
+  }
+
+  // ---- Alerts ----
+
+  /**
+   * List open operational alerts.
+   * Contract 04 §12: Negative stock is a visible alert.
+   * Critical state is not communicated by color alone — includes text message.
+   */
+  async listAlerts(tenantId: string): Promise<ManagementAlertDto[]> {
+    const results = await this.db
+      .select()
+      .from(operationalAlerts)
+      .where(and(
+        eq(operationalAlerts.tenantId, tenantId),
+        eq(operationalAlerts.state, "open"),
+      ))
+      .orderBy(desc(operationalAlerts.createdAt))
+      .limit(50);
+
+    return results.map((r) => ({
+      id: r.id,
+      alertType: r.alertType,
+      severity: r.severity,
+      message: r.messageKey,
+      state: r.state,
+      entityType: r.sourceEntityType,
+      entityId: r.sourceEntityId,
+      createdAt: r.createdAt.toISOString(),
+    }));
+  }
+
   // ---- Role-safe DTO factory ----
 
   /**
+   * Explicit management roles that can see full operational quantities.
+   * Owner and Accountant only — NOT quality, NOT unknown.
+   */
+  private static readonly MANAGEMENT_ROLES: ReadonlySet<string> = new Set(["owner", "accountant"]);
+
+  /**
+   * Explicit worker roles that can see operational-only quantities.
+   * Warehouse and Production only — NOT quality, NOT unknown.
+   */
+  private static readonly WORKER_ROLES: ReadonlySet<string> = new Set(["warehouse_employee", "production_employee"]);
+
+  /**
+   * Check if a role is explicitly allowed to see management inventory data.
+   */
+  static isManagementRole(role: RoleCode): boolean {
+    return InventoryScreenQueryService.MANAGEMENT_ROLES.has(role);
+  }
+
+  /**
+   * Check if a role is explicitly allowed to see worker inventory data.
+   */
+  static isWorkerInventoryRole(role: RoleCode): boolean {
+    return InventoryScreenQueryService.WORKER_ROLES.has(role);
+  }
+
+  /**
    * Get balances as role-safe DTOs.
-   * Worker roles get redacted DTOs (no blocked/returned/financial).
-   * Management roles get full operational DTOs.
+   * Uses EXPLICIT allowlists — quality and unknown roles get denial.
+   *
+   * - Owner/Accountant → ManagementBalanceDto (full operational)
+   * - Warehouse/Production → WorkerBalanceDto (redacted)
+   * - Quality/unknown → throws PermissionDeniedError
    */
   async listBalancesForRole(tenantId: string, role: RoleCode): Promise<ManagementBalanceDto[] | WorkerBalanceDto[]> {
-    if (isWorkerRole(role)) {
+    if (InventoryScreenQueryService.isWorkerInventoryRole(role)) {
       return this.listWorkerBalances(tenantId);
     }
-    return this.listManagementBalances(tenantId);
+    if (InventoryScreenQueryService.isManagementRole(role)) {
+      return this.listManagementBalances(tenantId);
+    }
+    // Quality and unknown roles are explicitly denied — they do NOT
+    // fall through to management data.
+    throw new Error("PERMISSION_DENIED: Role '" + role + "' is not authorized to view inventory balances.");
   }
 }

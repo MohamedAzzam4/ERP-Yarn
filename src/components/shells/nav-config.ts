@@ -72,6 +72,8 @@ export const MANAGEMENT_NAV: ReadonlyArray<ManagementNavCategory> = [
       { id: "inventory-transfers", labelAr: "النقل المخزني", href: "/management/inventory/transfers", icon: "ArrowLeftRight", roles: ["owner", "accountant"], permissionKey: "inventory.transfer.approve" },
       { id: "inventory-adjustments", labelAr: "التسويات", href: "/management/inventory/adjustments", icon: "Scale", roles: ["owner", "accountant"], permissionKey: "inventory.adjustment.approve" },
       { id: "inventory-reconciliation", labelAr: "التسوية والمراجعة", href: "/management/inventory/reconciliation", icon: "Scale", roles: ["owner", "accountant"], permissionKey: "inventory.view_quantity" },
+      { id: "inventory-reservations", labelAr: "الحجوزات", href: "/management/inventory/reservations", icon: "Bookmark", roles: ["owner", "accountant"], permissionKey: "inventory.view_quantity" },
+      { id: "inventory-alerts", labelAr: "التنبيهات", href: "/management/inventory/alerts", icon: "Bell", roles: ["owner", "accountant"], permissionKey: "inventory.view_quantity" },
     ],
   },
   {
