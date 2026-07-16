@@ -1242,6 +1242,44 @@ export class HistoricalCommitService {
   // 4. Query helpers (read-only).
   // ===========================================================================
 
+  /**
+   * Run work inside the service's transactionRunner + txFactories.
+   *
+   * This is a TEST-ONLY method used by live validation to prove that real
+   * domain-service writes inside the commit transaction roll back cleanly
+   * when an error is thrown. It exposes the same transactionRunner +
+   * txFactories that commitBatch uses internally, allowing the test to
+   * call real domain-service methods (e.g. InventoryLedgerService
+   * .postOpeningBalanceMovement) inside the transaction and then throw.
+   *
+   * NOT for production use — production code should use commitBatch.
+   */
+  async runInTransaction<T>(
+    work: (tx: unknown) => Promise<T>,
+  ): Promise<T> {
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new HistoricalCommitError(
+        "NO_TRANSACTION_RUNNER",
+        "transactionRunner and txFactories are required for runInTransaction.",
+      );
+    }
+    return this.deps.transactionRunner(work);
+  }
+
+  /**
+   * Create a tx-scoped InventoryLedgerService via txFactories.
+   * TEST-ONLY — used by live validation rollback proof.
+   */
+  createTxInventoryLedger(tx: unknown): InventoryLedgerService {
+    if (!this.deps.txFactories) {
+      throw new HistoricalCommitError(
+        "NO_TX_FACTORIES",
+        "txFactories are required for createTxInventoryLedger.",
+      );
+    }
+    return this.deps.txFactories.createInventoryLedger(tx);
+  }
+
   async listApprovals(
     user: ErpUserContext,
     effective: EffectivePermissions,

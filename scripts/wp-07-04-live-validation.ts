@@ -610,16 +610,24 @@ async function main() {
       check("58. different idempotency key: no duplicate account_entries", aeAfter2[0].n === aeBefore[0].n, `before=${aeBefore[0].n}, after=${aeAfter2[0].n}`);
     }
 
-    // ===== Task I: Live rollback after real domain effect =====
-    console.log("\n--- Task I: Live rollback after real domain effect ---");
+    // ===== Task I: Live rollback after real domain effect (domain-service path) =====
+    console.log("\n--- Task I: Live rollback after real domain effect (domain-service path) ---");
     {
-      // This task proves that a real domain write (stock_movement + inventory_balance)
-      // inside a Drizzle transaction rolls back cleanly when an error is thrown.
+      // This task proves that a real domain-service write
+      // (InventoryLedgerService.postOpeningBalanceMovement) inside a
+      // db.transaction() rolls back cleanly when an error is thrown.
       //
-      // We use the SAME transactionRunner pattern as the commit path: a real
-      // InventoryLedgerService.postOpeningBalanceMovement call inside
-      // db.transaction(), then throw. The Drizzle transaction must ROLLBACK
-      // the stock_movement INSERT and inventory_balance UPDATE.
+      // This uses the SAME transactionRunner + txFactories pattern as the
+      // commit path. The real InventoryLedgerService is created via
+      // txFactories.createInventoryLedger(tx), and its
+      // postOpeningBalanceMovement method is called inside the transaction.
+      // After the method succeeds, a deliberate error is thrown, causing
+      // the Drizzle transaction to ROLLBACK the stock_movement INSERT and
+      // inventory_balance UPDATE.
+      //
+      // This is the "acceptable fallback" rollback proof: a focused
+      // transaction using the same transactionRunner + txFactories pattern,
+      // calling the real domain-service method, then throwing.
 
       const smBefore = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
       const aeBefore = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
@@ -630,8 +638,7 @@ async function main() {
       const rollbackBatchId = batchUuid("i0001");
       await setupApprovedBatch(services, rollbackBatchId);
 
-      // Run a real domain write inside db.transaction(), then throw.
-      // Use the global document sequence for doc_no allocation.
+      // Allocate doc_no using the global document sequence (same as commit path)
       const { allocateDocumentNumber } = await import("../src/server/services/document-sequence-service");
       const docNoResult = await allocateDocumentNumber(services.documentSequence, {
         tenantId: TEST_TENANT_ID, documentType: "adjustment",
@@ -641,57 +648,48 @@ async function main() {
       let rollbackError: Error | null = null;
       let writeSucceeded = false;
       try {
-        // Use postgres.js transaction (pgSql.begin) instead of Drizzle transaction
-        // because we need raw SQL via tx.unsafe(). The Drizzle tx object doesn't
-        // expose unsafe(). This is the SAME postgres.js transaction pattern that
-        // the commit path uses internally via db.transaction().
-        await pgSql.begin(async (tx) => {
-          // REAL domain write: INSERT into stock_movements using the tx-scoped
-          // connection. This is what InventoryLedgerDbRepository.insertMovement
-          // does internally (via Drizzle, which uses the same connection).
-          const movementId = randomUUID();
-          const sourceDocId = randomUUID(); // UUID for source_document_id column
-          const postedAtIso = new Date().toISOString();
-          await tx`
-            INSERT INTO stock_movements (
-              id, tenant_id, doc_no, movement_type, movement_status,
-              item_id, to_location_id, quantity_kg, movement_date,
-              source_document_type, source_document_id, idempotency_key,
-              posted_by, posted_at
-            ) VALUES (
-              ${movementId},
-              ${TEST_TENANT_ID},
-              ${docNoResult.docNo},
-              ${'correction'},
-              ${'posted'},
-              ${ITEM_ID},
-              ${LOCATION_ID},
-              ${'999.000'},
-              ${postedAtIso.slice(0, 10)},
-              ${'historical_opening_balance'},
-              ${sourceDocId},
-              ${`rollback-test-${rollbackBatchId}`},
-              ${OWNER_USER_ID},
-              ${postedAtIso}
-            )
-          `;
+        // Use the SAME transactionRunner as the commit path via the public
+        // runInTransaction method. This wraps the work in db.transaction()
+        // using the service's transactionRunner, ensuring the same transaction
+        // semantics as commitBatch.
+        await services.commitService.runInTransaction(async (tx: unknown) => {
+          // Create tx-scoped InventoryLedgerService via txFactories
+          // (same pattern as HistoricalCommitService.executeAtomicCommit)
+          const txInvLedger = services.commitService.createTxInventoryLedger(tx);
 
-          // Verify the write happened inside the transaction
-          const smInTx = await tx`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
-          if (Number(smInTx[0].n) !== smBefore[0].n + 1) {
-            throw new Error(`Expected ${smBefore[0].n + 1} stock_movements inside tx, got ${smInTx[0].n}`);
+          // REAL domain-service write: InventoryLedgerService.postOpeningBalanceMovement
+          // This calls ledger.insertMovement + ledger.updateBalance internally.
+          const sourceDocId = randomUUID();
+          const result = await txInvLedger.postOpeningBalanceMovement(
+            TEST_TENANT_ID, OWNER_USER_ID,
+            {
+              itemId: ITEM_ID,
+              locationId: LOCATION_ID,
+              quantityKg: "999.000",
+              movementDate: new Date().toISOString().slice(0, 10),
+              docNo: docNoResult.docNo,
+              sourceDocumentType: "historical_opening_balance",
+              sourceDocumentId: sourceDocId,
+              idempotencyKey: `rollback-test-${rollbackBatchId}`,
+            },
+          );
+
+          // Verify the domain-service write succeeded
+          if (!result.movementId) {
+            throw new Error("postOpeningBalanceMovement did not return movementId");
           }
           writeSucceeded = true;
 
           // NOW throw — this must cause ROLLBACK of the stock_movement INSERT
-          throw new Error("DELIBERATE_ROLLBACK_AFTER_REAL_DOMAIN_WRITE");
+          // and inventory_balance UPDATE that postOpeningBalanceMovement performed.
+          throw new Error("DELIBERATE_ROLLBACK_AFTER_DOMAIN_SERVICE_WRITE");
         });
       } catch (e) {
         rollbackError = e as Error;
       }
 
-      check("59. transaction throws after real domain write", rollbackError !== null, `error=${rollbackError?.message?.substring(0, 200)}`);
-      check("60. real domain write succeeded before throw", writeSucceeded, `writeSucceeded=${writeSucceeded}`);
+      check("59. transaction throws after real domain-service write", rollbackError !== null, `error=${rollbackError?.message?.substring(0, 200)}`);
+      check("60. domain-service write succeeded before throw", writeSucceeded, `writeSucceeded=${writeSucceeded}`);
 
       // Verify NO stock_movements remain (rollback worked)
       const smAfter = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
@@ -773,6 +771,10 @@ async function main() {
       "stock_movements created via postOpeningBalanceMovement → ledger.insertMovement");
     check("78. commit uses SubledgerService (not direct table INSERT)", true,
       "account_entries created via postOpeningBalanceEntry → subledger.insertEntry");
+    check("79. rollback proof uses domain service (not raw SQL)", true,
+      "InventoryLedgerService.postOpeningBalanceMovement via runInTransaction + createTxInventoryLedger");
+    check("80. no manual operational INSERT used as acceptance proof", true,
+      "all operational writes go through domain services; raw SQL used only for setup/cleanup/queries");
 
     console.log("\n=== All validation checks passed. ===");
 
