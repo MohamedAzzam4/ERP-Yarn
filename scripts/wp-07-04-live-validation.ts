@@ -486,19 +486,14 @@ async function main() {
     {
       const services = wireServices();
       successBatchId = batchUuid("h0001");
-      console.log("  [H] setupApprovedBatch...");
       await setupApprovedBatch(services, successBatchId);
-      console.log("  [H] setupApprovedBatch done");
 
       const smBefore = await pgSql`SELECT COUNT(*)::int AS n FROM stock_movements WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
       const aeBefore = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${TEST_TENANT_ID} AND source_document_type = 'historical_opening_balance'`;
-      console.log("  [H] before counts: sm=" + smBefore[0].n + " ae=" + aeBefore[0].n);
 
-      console.log("  [H] commitBatch...");
       const result = await services.commitService.commitBatch(ownerUser as any, ownerEff as any, {
         importBatchId: successBatchId, idempotencyKey: `commit-${successBatchId}`,
       });
-      console.log("  [H] commitBatch done: action=" + result.action);
 
       check("33. commit succeeded", result.action === "committed", `action=${result.action}`);
       check("34. committedAt present", result.committedAt !== null, "");
