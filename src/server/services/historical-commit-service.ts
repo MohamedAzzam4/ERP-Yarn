@@ -941,35 +941,39 @@ export class HistoricalCommitService {
       // Contract 08 §8.10: "A technical/system failure rolls back all operational
       //   effects and leaves the approved batch retryable"
 
-      // When the error was thrown INSIDE the Drizzle transaction (e.g.
-      // CommitFaultInjectedError with inTransaction=true), the transaction
-      // rollback already undid all writes: locks, batch status, staging row
-      // links, domain effects. In that case, skip the catch-block DB
-      // operations (they would hang waiting for the connection pool to
-      // recover from the rollback).
-      // The catch-block DB ops are only needed for pre-transaction failures
-      // (e.g. after_lock fault, CutoverLockConflictError) where locks were
-      // acquired via the non-tx repository but the transaction never started.
-      const isTransactionFault = e instanceof CommitFaultInjectedError && e.inTransaction;
+      // Locks are acquired OUTSIDE the Drizzle transaction (via the non-tx
+      // repository), so they are NOT automatically rolled back when the
+      // transaction fails. We must always release them here.
+      // The Drizzle transaction ROLLBACK undoes: batch status ("committing"),
+      // staging row links, domain effects (stock_movements, account_entries),
+      // and audit. We restore batch status to "approved_for_commit" for retry.
 
-      if (!isTransactionFault) {
-        // Release all locks acquired by this commit attempt
-        try {
-          await this.releaseLocksInternal(
+      // All catch-block DB operations are wrapped in timeouts to prevent
+      // hanging if the connection pool is in a bad state after transaction
+      // rollback. These are best-effort — the main error is more important.
+
+      // Release all locks acquired by this commit attempt
+      try {
+        await Promise.race([
+          this.releaseLocksInternal(
             user, input.importBatchId, input.idempotencyKey, "commit_failed", now,
-          );
-        } catch {
-          // Best-effort lock release — the main error is more important
-        }
+          ),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("lock release timeout")), 10000)),
+        ]);
+      } catch {
+        // Best-effort lock release — the main error is more important
+      }
 
-        // Restore batch status to approved_for_commit (retryable)
-        try {
-          await this.deps.repository.updateBatchStatus(
+      // Restore batch status to approved_for_commit (retryable)
+      try {
+        await Promise.race([
+          this.deps.repository.updateBatchStatus(
             user.tenantId, input.importBatchId, "approved_for_commit",
-          );
-        } catch {
-          // Best-effort status restore
-        }
+          ),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("status restore timeout")), 10000)),
+        ]);
+      } catch {
+        // Best-effort status restore
       }
 
       // Mark idempotency as business failed (in-memory, always safe)
