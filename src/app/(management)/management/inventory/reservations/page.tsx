@@ -9,6 +9,7 @@ import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { isManagementShellRole, getManagementNavForRole } from "@/components/shells/nav-config";
 import { ManagementShell } from "@/components/shells/management-shell";
 import { signOut } from "@/app/login/actions";
+import { requireManagementInventoryActor } from "@/server/security/inventory-guards";
 import type { RoleCode } from "@/server/security/role-codes";
 import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +23,9 @@ export default async function InventoryReservationsPage() {
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
   const managementRole = authResult.roles.find((r) => isManagementShellRole(r)) as RoleCode | undefined;
   if (!managementRole) redirect("/worker");
+
+  // Explicit allowlist guard — quality/unknown denied before any query
+  requireManagementInventoryActor(authResult as any, authResult.roles);
   const navCategories = getManagementNavForRole(managementRole);
 
   let reservations: ManagementReservationDto[] = [];

@@ -8,6 +8,7 @@ import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { isManagementShellRole, getManagementNavForRole } from "@/components/shells/nav-config";
 import { ManagementShell } from "@/components/shells/management-shell";
 import { signOut } from "@/app/login/actions";
+import { requireManagementInventoryActor } from "@/server/security/inventory-guards";
 import type { RoleCode } from "@/server/security/role-codes";
 import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +23,9 @@ export default async function InventoryReconciliationPage() {
 
   const managementRole = authResult.roles.find((r) => isManagementShellRole(r)) as RoleCode | undefined;
   if (!managementRole) redirect("/worker");
+
+  // Explicit allowlist guard — quality/unknown denied before any query
+  requireManagementInventoryActor(authResult as any, authResult.roles);
 
   const navCategories = getManagementNavForRole(managementRole);
 
@@ -50,7 +54,7 @@ export default async function InventoryReconciliationPage() {
 
         {dbAvailable && negativeAlerts.length > 0 && (
           <Card className="mb-4 border-red-300 bg-red-50">
-            <CardHeader><CardTitle className="text-red-700">⚠ تنبيهات المخزون السالب</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-red-700">تنبيه حرج: المخزون السالب</CardTitle></CardHeader>
             <CardContent>
               <p className="text-sm text-red-600 mb-2">يوجد مخزون سالب — يجب مراجعته. المخزون السالب ليس سلوكاً طبيعياً.</p>
               {negativeAlerts.map((a, i) => (

@@ -8,6 +8,7 @@ import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { WorkerShell } from "@/components/shells/worker-shell";
 import { getWorkerTasksForRole } from "@/components/shells/nav-config";
 import { signOut } from "@/app/login/actions";
+import { requireWorkerQuantityActor } from "@/server/security/inventory-guards";
 import type { RoleCode } from "@/server/security/role-codes";
 import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,8 +21,11 @@ export default async function WorkerStockBalancePage() {
   if (!authResult.authenticated) redirect("/login");
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
 
-  const workerRole = authResult.roles.find((r) => !r.match(/^(owner|accountant)$/)) as RoleCode | undefined;
+  const workerRole = authResult.roles.find((r) => r !== "owner" && r !== "accountant") as RoleCode | undefined;
   if (!workerRole) redirect("/management");
+
+  // Explicit allowlist guard — quality/unknown denied before any query
+  requireWorkerQuantityActor(authResult as any, authResult.roles);
 
   const tasks = getWorkerTasksForRole(workerRole);
 
