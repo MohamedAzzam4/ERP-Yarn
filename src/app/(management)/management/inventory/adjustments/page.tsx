@@ -1,13 +1,6 @@
 /**
  * Management Inventory Adjustments page — WP-08-01A.
- *
- * Route: /management/inventory/adjustments
- *
- * Lists posted inventory adjustments (correction-type movements).
- * Owner/Accountant only. Read-only list — no create action in this WP
- * (adjustment creation requires a separate approval workflow service).
- *
- * Contract 04 §8.3: Adjustment uses positive absolute quantity + direction.
+ * Uses InventoryScreenQueryService for DTOs.
  */
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
@@ -19,8 +12,7 @@ import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
-import { stockMovements, inventoryItems, locations } from "@/server/db/schema";
-import { eq, and, desc, or } from "drizzle-orm";
+import { InventoryScreenQueryService, type ManagementAdjustmentDto } from "@/server/services/inventory-screen-query-service";
 
 export default async function InventoryAdjustmentsPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -32,39 +24,13 @@ export default async function InventoryAdjustmentsPage() {
 
   const navCategories = getManagementNavForRole(managementRole);
 
-  let adjustments: any[] = [];
+  let adjustments: ManagementAdjustmentDto[] = [];
   let dbAvailable = false;
 
   if (db) {
     try {
-      const results = await db
-        .select({
-          movement: stockMovements,
-          item: inventoryItems,
-          fromLocation: locations,
-        })
-        .from(stockMovements)
-        .innerJoin(inventoryItems, eq(stockMovements.itemId, inventoryItems.id))
-        .leftJoin(locations, eq(stockMovements.toLocationId, locations.id))
-        .where(and(
-          eq(stockMovements.tenantId, authResult.tenantId),
-          or(
-            eq(stockMovements.movementType, "inventory_adjustment"),
-            eq(stockMovements.movementType, "correction"),
-          ),
-        ))
-        .orderBy(desc(stockMovements.createdAt))
-        .limit(50);
-
-      adjustments = results.map((r) => ({
-        docNo: r.movement.docNo,
-        itemCode: r.item.itemCode,
-        itemName: r.item.displayNameEn,
-        locationName: r.fromLocation?.nameEn || "—",
-        quantityKg: r.movement.quantityKg,
-        movementDate: r.movement.movementDate,
-        sourceDocumentType: r.movement.sourceDocumentType,
-      }));
+      const queryService = new InventoryScreenQueryService(db);
+      adjustments = await queryService.listAdjustments(authResult.tenantId);
       dbAvailable = true;
     } catch { dbAvailable = false; }
   }
@@ -79,26 +45,16 @@ export default async function InventoryAdjustmentsPage() {
         <h1 className="text-2xl font-bold mb-6">التسويات المخزنية</h1>
 
         {!dbAvailable && (
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              قاعدة البيانات غير متاحة.
-            </CardContent>
-          </Card>
+          <Card><CardContent className="py-8 text-center text-muted-foreground">قاعدة البيانات غير متاحة.</CardContent></Card>
         )}
 
         {dbAvailable && adjustments.length === 0 && (
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              لا توجد تسويات مخزنية مسجلة.
-            </CardContent>
-          </Card>
+          <Card><CardContent className="py-8 text-center text-muted-foreground">لا توجد تسويات مخزنية مسجلة.</CardContent></Card>
         )}
 
         {dbAvailable && adjustments.length > 0 && (
           <Card>
-            <CardHeader>
-              <CardTitle>سجل التسويات</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>سجل التسويات</CardTitle></CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -115,25 +71,12 @@ export default async function InventoryAdjustmentsPage() {
                   <tbody>
                     {adjustments.map((a, i) => (
                       <tr key={i} className="border-b">
-                        <td className="py-2 px-3">
-                          <LtrValue className="font-mono">{a.docNo}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          <div className="font-medium">{a.itemName}</div>
-                          <div className="text-xs text-muted-foreground">
-                            <LtrValue>{a.itemCode}</LtrValue>
-                          </div>
-                        </td>
+                        <td className="py-2 px-3"><LtrValue className="font-mono">{a.docNo}</LtrValue></td>
+                        <td className="py-2 px-3"><div className="font-medium">{a.itemName}</div><div className="text-xs text-muted-foreground"><LtrValue>{a.itemCode}</LtrValue></div></td>
                         <td className="py-2 px-3">{a.locationName}</td>
-                        <td className="py-2 px-3">
-                          <LtrValue className="font-bold">{a.quantityKg}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          <LtrValue>{a.movementDate}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          <LtrValue className="text-xs">{a.sourceDocumentType || "—"}</LtrValue>
-                        </td>
+                        <td className="py-2 px-3"><LtrValue className="font-bold">{a.quantityKg}</LtrValue></td>
+                        <td className="py-2 px-3"><LtrValue>{a.movementDate}</LtrValue></td>
+                        <td className="py-2 px-3"><LtrValue className="text-xs">{a.sourceDocumentType || "—"}</LtrValue></td>
                       </tr>
                     ))}
                   </tbody>

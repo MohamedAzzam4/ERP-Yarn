@@ -2,13 +2,7 @@
  * Management Inventory Balances page — WP-08-01A.
  *
  * Route: /management/inventory/balances
- *
- * Shows all inventory balances for the tenant. Owner/Accountant only.
- * Financial fields (stock value) visible only to Owner/Accountant.
- * No financial fields exposed to workers (this is a management-only page).
- *
- * Contract 04 §17: Reconciliation compares movement totals vs on-hand.
- * Contract 11 §8: Worker financial-deny is absolute.
+ * Uses InventoryScreenQueryService for role-safe DTOs.
  */
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
@@ -20,9 +14,7 @@ import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
-import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
-import { inventoryBalances, inventoryItems, locations } from "@/server/db/schema";
-import { eq, and } from "drizzle-orm";
+import { InventoryScreenQueryService, type ManagementBalanceDto } from "@/server/services/inventory-screen-query-service";
 
 export default async function InventoryBalancesPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -34,37 +26,13 @@ export default async function InventoryBalancesPage() {
 
   const navCategories = getManagementNavForRole(managementRole);
 
-  let balances: any[] = [];
+  let balances: ManagementBalanceDto[] = [];
   let dbAvailable = false;
 
   if (db) {
     try {
-      // Join balances with items and locations for display
-      const results = await db
-        .select({
-          balance: inventoryBalances,
-          item: inventoryItems,
-          location: locations,
-        })
-        .from(inventoryBalances)
-        .innerJoin(inventoryItems, eq(inventoryBalances.itemId, inventoryItems.id))
-        .innerJoin(locations, eq(inventoryBalances.locationId, locations.id))
-        .where(eq(inventoryBalances.tenantId, authResult.tenantId));
-
-      balances = results.map((r) => ({
-        itemId: r.balance.itemId,
-        itemCode: r.item.itemCode,
-        itemName: r.item.displayNameEn,
-        locationId: r.balance.locationId,
-        locationCode: r.location.locationCode,
-        locationName: r.location.nameEn,
-        onHandQtyKg: r.balance.onHandQtyKg,
-        reservedQtyKg: r.balance.reservedQtyKg,
-        blockedQtyKg: r.balance.blockedQtyKg,
-        returnedQtyKg: r.balance.returnedQtyKg,
-        availableQtyKg: (parseFloat(r.balance.onHandQtyKg) - parseFloat(r.balance.reservedQtyKg) - parseFloat(r.balance.blockedQtyKg)).toFixed(3),
-        version: r.balance.version,
-      }));
+      const queryService = new InventoryScreenQueryService(db);
+      balances = await queryService.listManagementBalances(authResult.tenantId);
       dbAvailable = true;
     } catch { dbAvailable = false; }
   }
@@ -118,31 +86,17 @@ export default async function InventoryBalancesPage() {
                       <tr key={i} className="border-b">
                         <td className="py-2 px-3">
                           <div className="font-medium">{b.itemName}</div>
-                          <div className="text-xs text-muted-foreground">
-                            <LtrValue>{b.itemCode}</LtrValue>
-                          </div>
+                          <div className="text-xs text-muted-foreground"><LtrValue>{b.itemCode}</LtrValue></div>
                         </td>
                         <td className="py-2 px-3">
                           <div className="font-medium">{b.locationName}</div>
-                          <div className="text-xs text-muted-foreground">
-                            <LtrValue>{b.locationCode}</LtrValue>
-                          </div>
+                          <div className="text-xs text-muted-foreground"><LtrValue>{b.locationCode}</LtrValue></div>
                         </td>
-                        <td className="py-2 px-3">
-                          <LtrValue className="font-bold">{b.availableQtyKg}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          <LtrValue>{b.onHandQtyKg}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          <LtrValue>{b.reservedQtyKg}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          <LtrValue>{b.blockedQtyKg}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          <LtrValue>{b.returnedQtyKg}</LtrValue>
-                        </td>
+                        <td className="py-2 px-3"><LtrValue className="font-bold">{b.availableQtyKg}</LtrValue></td>
+                        <td className="py-2 px-3"><LtrValue>{b.onHandQtyKg}</LtrValue></td>
+                        <td className="py-2 px-3"><LtrValue>{b.reservedQtyKg}</LtrValue></td>
+                        <td className="py-2 px-3"><LtrValue>{b.blockedQtyKg}</LtrValue></td>
+                        <td className="py-2 px-3"><LtrValue>{b.returnedQtyKg}</LtrValue></td>
                       </tr>
                     ))}
                   </tbody>
