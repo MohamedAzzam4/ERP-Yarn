@@ -275,6 +275,7 @@ export class ReturnRequestService {
         returnReason: input.returnReason,
         financialTreatment: input.financialTreatment ?? null,
         isReplacement: input.isReplacement ?? false,
+      customerAdjustmentAmount: null,
         lineCount: input.lines.length,
       } as Record<string, unknown>,
       initiatedBy: user.userId,
@@ -313,6 +314,7 @@ export class ReturnRequestService {
       returnReason: input.returnReason,
       financialTreatment: input.financialTreatment ?? null,
       isReplacement: input.isReplacement ?? false,
+      customerAdjustmentAmount: null,
       createdBy: user.userId,
     } as any);
 
@@ -347,6 +349,7 @@ export class ReturnRequestService {
         returnReason: input.returnReason,
         financialTreatment: input.financialTreatment ?? null,
         isReplacement: input.isReplacement ?? false,
+      customerAdjustmentAmount: null,
         lineCount: input.lines.length,
         status: "draft",
         createdBy: user.userId,

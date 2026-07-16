@@ -32,7 +32,7 @@ export class ReturnRequestDbRepository implements ReturnRequestRepository {
         returnDate: row.returnDate,
         returnReason: row.returnReason,
         financialTreatment: row.financialTreatment ?? null,
-        customerAdjustmentAmount: row.customerAdjustmentAmount ?? null,
+        customerAdjustmentAmount: (row as any).customerAdjustmentAmount ?? null,
         isReplacement: row.isReplacement,
         createdBy: row.createdBy,
       } as any)

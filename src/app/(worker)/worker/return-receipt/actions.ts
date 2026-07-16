@@ -86,9 +86,9 @@ export async function createReturnRequest(formData: FormData): Promise<void> {
     customerId: String(formData.get("customerId")),
     returnDate: String(formData.get("returnDate")),
     returnReason: String(formData.get("returnReason")),
-    // Worker can only set "no_financial_impact" — financial treatment is management
-    financialTreatment: "no_financial_impact",
-    isReplacement: false,
+    // Worker does NOT set financialTreatment or isReplacement.
+    // These default to null/false (undecided) at the domain layer.
+    // Management decides financial treatment at approval time (Contract 06 §9).
     lines: [{
       originalSaleOrderId: String(formData.get("salesOrderId")),
       originalSaleLineId: String(formData.get("itemId")),
