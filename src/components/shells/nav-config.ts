@@ -27,6 +27,7 @@ export const WORKER_TASKS: ReadonlyArray<WorkerTaskItem> = [
   { id: "raw-receipt", labelAr: "استلام خام", href: "/worker/raw-receipts/new", icon: "PackagePlus", roles: ["warehouse_employee"], permissionKey: "inventory.receive.create" },
   { id: "raw-batches", labelAr: "رسائل الخام", href: "/worker/raw-batches", icon: "PackageSearch", roles: ["warehouse_employee", "production_employee", "quality_employee"], permissionKey: "inventory.view_quantity" },
   { id: "stock-transfer", labelAr: "نقل مخزون", href: "/worker/stock-transfer", icon: "ArrowLeftRight", roles: ["warehouse_employee"], permissionKey: "inventory.transfer.create" },
+  { id: "stock-balance", labelAr: "أرصدة المخزون", href: "/worker/stock-balance", icon: "Boxes", roles: ["warehouse_employee", "production_employee"], permissionKey: "inventory.view_quantity" },
   { id: "return-receipt", labelAr: "استلام مرتجع", href: "/worker/return-receipt", icon: "Undo2", roles: ["warehouse_employee"], permissionKey: "returns.create" },
   { id: "production-entry", labelAr: "تسجيل إنتاج", href: "/worker/production-entry", icon: "Factory", roles: ["production_employee"], permissionKey: "production.issue_draft.create" },
   { id: "quality-entry", labelAr: "تسجيل جودة", href: "/worker/quality-entry", icon: "ShieldCheck", roles: ["quality_employee"], permissionKey: "quality_tests.create" },
@@ -65,9 +66,12 @@ export const MANAGEMENT_NAV: ReadonlyArray<ManagementNavCategory> = [
   {
     id: "inventory", labelAr: "المخزون",
     items: [
+      { id: "inventory-balances", labelAr: "أرصدة المخزون", href: "/management/inventory/balances", icon: "Boxes", roles: ["owner", "accountant"], permissionKey: "inventory.view_quantity" },
+      { id: "inventory-movements", labelAr: "حركات المخزون", href: "/management/inventory/movements", icon: "ArrowLeftRight", roles: ["owner", "accountant"], permissionKey: "inventory.view_quantity" },
       { id: "inventory-receipts", labelAr: "استلام الخام", href: "/management/inventory/receipts", icon: "PackagePlus", roles: ["owner", "accountant"], permissionKey: "inventory.receive.approve" },
       { id: "inventory-transfers", labelAr: "النقل المخزني", href: "/management/inventory/transfers", icon: "ArrowLeftRight", roles: ["owner", "accountant"], permissionKey: "inventory.transfer.approve" },
       { id: "inventory-adjustments", labelAr: "التسويات", href: "/management/inventory/adjustments", icon: "Scale", roles: ["owner", "accountant"], permissionKey: "inventory.adjustment.approve" },
+      { id: "inventory-reconciliation", labelAr: "التسوية والمراجعة", href: "/management/inventory/reconciliation", icon: "Scale", roles: ["owner", "accountant"], permissionKey: "inventory.view_quantity" },
     ],
   },
   {
