@@ -61,6 +61,7 @@ const DEFAULT_PREFIXES: Record<string, string> = {
   account_entry: "AE", // WP-02-03: SubledgerService account entry numbering
   direct_cost: "DC", // WP-05-05: direct cost numbering
   opening_balance: "OB", // WP-07-04: historical opening-balance entry numbering
+  correction_request: "CORR", // WP-07-05: historical correction request numbering
 };
 
 function resolvePrefix(documentType: string, year: number, existingRow: DocumentSequenceRow | null, explicitPrefix?: string): string {
