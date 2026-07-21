@@ -5,7 +5,7 @@
  * the return_requests + return_lines tables.
  */
 import "server-only";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { returnRequests, returnLines } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -31,8 +31,8 @@ export class ReturnRequestDbRepository implements ReturnRequestRepository {
         customerId: row.customerId,
         returnDate: row.returnDate,
         returnReason: row.returnReason,
-        financialTreatment: row.financialTreatment ?? null,
-        customerAdjustmentAmount: (row as any).customerAdjustmentAmount ?? null,
+        financialTreatment: sql`NULL`,
+        customerAdjustmentAmount: sql`NULL`,
         isReplacement: row.isReplacement,
         createdBy: row.createdBy,
       } as any)
