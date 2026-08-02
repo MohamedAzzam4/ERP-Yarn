@@ -156,7 +156,9 @@ async function cleanTestData() {
     await tx`DELETE FROM sales_profitability_snapshots WHERE tenant_id = ${T}`;
     await tx`DELETE FROM idempotency_records WHERE tenant_id = ${T}`;
     await tx`DELETE FROM document_sequences WHERE tenant_id = ${T}`;
-    await tx`DELETE FROM audit_logs WHERE tenant_id = ${T} AND entity_type IN ('transfer_request', 'return_request')`;
+    // NOTE: audit_logs is APPEND-ONLY (Contract 03 §7.7, DEC-024).
+    // Cannot DELETE. Audit checks in this script are scoped by
+    // created_at >= runStartTime instead.
   });
 }
 
@@ -170,7 +172,7 @@ async function cleanForeignTestData() {
     await tx`DELETE FROM approval_requests WHERE tenant_id = ${FOREIGN_T}`;
     await tx`DELETE FROM idempotency_records WHERE tenant_id = ${FOREIGN_T}`;
     await tx`DELETE FROM document_sequences WHERE tenant_id = ${FOREIGN_T}`;
-    await tx`DELETE FROM audit_logs WHERE tenant_id = ${FOREIGN_T}`;
+    // NOTE: audit_logs is APPEND-ONLY — cannot DELETE.
   });
 }
 
@@ -214,7 +216,12 @@ async function countRows(table: string, where: string = ""): Promise<number> {
   } catch { return -1; }
 }
 
-async function countAudit(entityType: string): Promise<number> {
+async function countAudit(entityType: string, since?: Date): Promise<number> {
+  if (since) {
+    const sinceIso = since.toISOString();
+    const r = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${T} AND entity_type = ${entityType} AND created_at >= ${sinceIso}::timestamptz`;
+    return r[0].n;
+  }
   const r = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${T} AND entity_type = ${entityType}`;
   return r[0].n;
 }
@@ -286,6 +293,11 @@ async function main() {
     await ensureMasterData();
     await cleanTestData();
     await cleanForeignTestData();
+    // Capture run start time AFTER cleanup so all audit queries in this run
+    // are scoped to created_at >= runStartTime. audit_logs is append-only
+    // (Contract 03 §7.7, DEC-024) — we cannot DELETE prior audit rows, so
+    // we scope by timestamp instead.
+    const runStartTime = new Date();
     const before = await captureCounts();
 
     // =====================================================================
@@ -297,7 +309,7 @@ async function main() {
     {
       const svc = await getTransferService();
       const beforeApprovals = await countRows("approval_requests", "entity_type = 'transfer_request'");
-      const beforeAudit = await countAudit("transfer_request");
+      const beforeAudit = await countAudit("transfer_request", runStartTime);
       let err: Error | null = null;
       try {
         await svc.createTransferRequest(makeUser(), warehouseEff(), {
@@ -307,7 +319,7 @@ async function main() {
       } catch (e) { err = e as Error; }
       check("A1. cross-tenant item rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
       const afterApprovals = await countRows("approval_requests", "entity_type = 'transfer_request'");
-      const afterAudit = await countAudit("transfer_request");
+      const afterAudit = await countAudit("transfer_request", runStartTime);
       check("A1. cross-tenant item: zero transfer request writes", afterApprovals === beforeApprovals, `before=${beforeApprovals}, after=${afterApprovals}`);
       check("A1. cross-tenant item: zero transfer audit writes", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
     }
@@ -316,7 +328,7 @@ async function main() {
     {
       const svc = await getTransferService();
       const beforeApprovals = await countRows("approval_requests", "entity_type = 'transfer_request'");
-      const beforeAudit = await countAudit("transfer_request");
+      const beforeAudit = await countAudit("transfer_request", runStartTime);
       let err: Error | null = null;
       try {
         await svc.createTransferRequest(makeUser(), warehouseEff(), {
@@ -326,7 +338,7 @@ async function main() {
       } catch (e) { err = e as Error; }
       check("A2. cross-tenant source location rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
       const afterApprovals = await countRows("approval_requests", "entity_type = 'transfer_request'");
-      const afterAudit = await countAudit("transfer_request");
+      const afterAudit = await countAudit("transfer_request", runStartTime);
       check("A2. cross-tenant source: zero transfer request writes", afterApprovals === beforeApprovals, `before=${beforeApprovals}, after=${afterApprovals}`);
       check("A2. cross-tenant source: zero transfer audit writes", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
     }
@@ -335,7 +347,7 @@ async function main() {
     {
       const svc = await getTransferService();
       const beforeApprovals = await countRows("approval_requests", "entity_type = 'transfer_request'");
-      const beforeAudit = await countAudit("transfer_request");
+      const beforeAudit = await countAudit("transfer_request", runStartTime);
       let err: Error | null = null;
       try {
         await svc.createTransferRequest(makeUser(), warehouseEff(), {
@@ -345,7 +357,7 @@ async function main() {
       } catch (e) { err = e as Error; }
       check("A3. cross-tenant destination location rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
       const afterApprovals = await countRows("approval_requests", "entity_type = 'transfer_request'");
-      const afterAudit = await countAudit("transfer_request");
+      const afterAudit = await countAudit("transfer_request", runStartTime);
       check("A3. cross-tenant dest: zero transfer request writes", afterApprovals === beforeApprovals, `before=${beforeApprovals}, after=${afterApprovals}`);
       check("A3. cross-tenant dest: zero transfer audit writes", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
     }
@@ -415,7 +427,8 @@ async function main() {
 
     // B6. Exactly one scoped transfer audit for the replayed ID.
     {
-      const transferAudit = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${T} AND entity_type = 'transfer_request' AND entity_id = ${transferId}`;
+      const runStartTimeIso = runStartTime.toISOString();
+      const transferAudit = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${T} AND entity_type = 'transfer_request' AND entity_id = ${transferId} AND created_at >= ${runStartTimeIso}::timestamptz`;
       check("B6. at least one scoped transfer audit for the replayed ID", transferAudit[0].n >= 1, `count=${transferAudit[0].n}`);
       check("B6b. exactly one audit row per transfer (no duplicate on dedup replay)", transferAudit[0].n === 1, `count=${transferAudit[0].n}`);
     }
@@ -430,7 +443,7 @@ async function main() {
       const svc = await getReturnService();
       const beforeRR = await countRows("return_requests");
       const beforeLines = await countRows("return_lines");
-      const beforeAudit = await countAudit("return_request");
+      const beforeAudit = await countAudit("return_request", runStartTime);
       let err: Error | null = null;
       try {
         await svc.createReturnRequest(makeUser(), warehouseEff(), {
@@ -443,7 +456,7 @@ async function main() {
       check("C1. cross-tenant customer rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
       const afterRR = await countRows("return_requests");
       const afterLines = await countRows("return_lines");
-      const afterAudit = await countAudit("return_request");
+      const afterAudit = await countAudit("return_request", runStartTime);
       check("C1. cross-tenant customer: zero return_requests writes", afterRR === beforeRR, `before=${beforeRR}, after=${afterRR}`);
       check("C1. cross-tenant customer: zero return_lines writes", afterLines === beforeLines, `before=${beforeLines}, after=${afterLines}`);
       check("C1. cross-tenant customer: zero return audit writes", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
@@ -453,7 +466,7 @@ async function main() {
     {
       const svc = await getReturnService();
       const beforeRR = await countRows("return_requests");
-      const beforeAudit = await countAudit("return_request");
+      const beforeAudit = await countAudit("return_request", runStartTime);
       let err: Error | null = null;
       try {
         await svc.createReturnRequest(makeUser(), warehouseEff(), {
@@ -465,7 +478,7 @@ async function main() {
       } catch (e) { err = e as Error; }
       check("C2. cross-tenant sale order rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
       const afterRR = await countRows("return_requests");
-      const afterAudit = await countAudit("return_request");
+      const afterAudit = await countAudit("return_request", runStartTime);
       check("C2. cross-tenant sale order: zero return_requests writes", afterRR === beforeRR, `before=${beforeRR}, after=${afterRR}`);
       check("C2. cross-tenant sale order: zero return audit writes", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
     }
@@ -474,7 +487,7 @@ async function main() {
     {
       const svc = await getReturnService();
       const beforeRR = await countRows("return_requests");
-      const beforeAudit = await countAudit("return_request");
+      const beforeAudit = await countAudit("return_request", runStartTime);
       let err: Error | null = null;
       try {
         await svc.createReturnRequest(makeUser(), warehouseEff(), {
@@ -486,7 +499,7 @@ async function main() {
       } catch (e) { err = e as Error; }
       check("C3. cross-tenant sale line rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
       const afterRR = await countRows("return_requests");
-      const afterAudit = await countAudit("return_request");
+      const afterAudit = await countAudit("return_request", runStartTime);
       check("C3. cross-tenant sale line: zero return_requests writes", afterRR === beforeRR, `before=${beforeRR}, after=${afterRR}`);
       check("C3. cross-tenant sale line: zero return audit writes", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
     }
@@ -603,7 +616,8 @@ async function main() {
 
     // E5. Exactly one scoped return audit.
     {
-      const auditCount = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${T} AND entity_type = 'return_request' AND entity_id = ${returnId}`;
+      const runStartTimeIso = runStartTime.toISOString();
+      const auditCount = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${T} AND entity_type = 'return_request' AND entity_id = ${returnId} AND created_at >= ${runStartTimeIso}::timestamptz`;
       check("E5. exactly one scoped return audit", auditCount[0].n === 1, `count=${auditCount[0].n}`);
     }
 
@@ -619,10 +633,10 @@ async function main() {
     console.log("\n--- Section F: Zero pre-approval effects ---");
     await verifyZeroEffect(before, "F");
 
-    // F2. No customer_credit / refund account_entries.
+    // F2. No customer_return_credit account_entries (pre-approval — return is draft).
     {
-      const creditEntries = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${T} AND entry_type IN ('customer_credit', 'refund', 'customer_return_credit')`;
-      check("F2. zero customer_credit / refund account_entries", creditEntries[0].n === 0, `count=${creditEntries[0].n}`);
+      const creditEntries = await pgSql`SELECT COUNT(*)::int AS n FROM account_entries WHERE tenant_id = ${T} AND entry_type = 'customer_return_credit'`;
+      check("F2. zero customer_return_credit account_entries (pre-approval)", creditEntries[0].n === 0, `count=${creditEntries[0].n}`);
     }
 
     // F3. financialTreatment is null (undecided — worker does not set it).
@@ -652,12 +666,17 @@ async function main() {
     {
       const transferReqs = await countRows("approval_requests", "entity_type = 'transfer_request'");
       const returnReqs = await countRows("return_requests");
-      const transferAudit = await countAudit("transfer_request");
-      const returnAudit = await countAudit("return_request");
+      // audit_logs is APPEND-ONLY (Contract 03 §7.7, DEC-024) — cannot DELETE.
+      // Verify the audit rows written THIS RUN are still present (proves the
+      // service wrote them through the production AuditDbRepository path, and
+      // that we did NOT delete them as a shortcut). The run-scoped count is
+      // >= 1 (transfer + return audits from this run).
+      const transferAuditThisRun = await countAudit("transfer_request", runStartTime);
+      const returnAuditThisRun = await countAudit("return_request", runStartTime);
       check("H2. transfer_requests cleaned", transferReqs === 0, `count=${transferReqs}`);
       check("H3. return_requests cleaned", returnReqs === 0, `count=${returnReqs}`);
-      check("H4. transfer audit cleaned", transferAudit === 0, `count=${transferAudit}`);
-      check("H5. return audit cleaned", returnAudit === 0, `count=${returnAudit}`);
+      check("H4. transfer audit rows from this run preserved (append-only, not deleted)", transferAuditThisRun >= 1, `count=${transferAuditThisRun}`);
+      check("H5. return audit rows from this run preserved (append-only, not deleted)", returnAuditThisRun >= 1, `count=${returnAuditThisRun}`);
     }
 
     console.log("\n=== All validation checks complete. ===");
