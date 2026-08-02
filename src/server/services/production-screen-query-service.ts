@@ -43,9 +43,14 @@ import {
 import {
   productionReceipts,
   productionReceiptInputAllocations,
+  productionWasteEntries,
+  productionWipReturns,
   type ProductionReceipt,
+  type ProductionReceiptInputAllocation,
+  type ProductionWasteEntry,
+  type ProductionWipReturn,
 } from "@/server/db/schema/production-receipts";
-import { externalFactories, locations, inventoryItems } from "@/server/db/schema";
+import { externalFactories, locations, inventoryItems, yarnLots } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 
 type Db = NonNullable<typeof DbType>;
@@ -359,4 +364,206 @@ export class ProductionScreenQueryService {
       remainingWipQtyKg: r.wip.wipQtyKg,
     }));
   }
+
+  // ---- Receipt + Allocation queries ----
+
+  /**
+   * List production receipts for management (full — includes financial snapshot).
+   * Contract 10 §8.3: receipt allocation review, confirmed rate/cost basis,
+   * posted payable.
+   */
+  async listManagementReceipts(tenantId: string, productionOrderId?: string): Promise<ManagementReceiptDto[]> {
+    const conditions = [eq(productionReceipts.tenantId, tenantId)];
+    if (productionOrderId) {
+      conditions.push(eq(productionReceipts.productionOrderId, productionOrderId));
+    }
+    const results = await this.db
+      .select({
+        receipt: productionReceipts,
+        order: productionOrders,
+        outputItem: inventoryItems,
+        outputLocation: locations,
+      })
+      .from(productionReceipts)
+      .innerJoin(productionOrders, eq(productionReceipts.productionOrderId, productionOrders.id))
+      .innerJoin(inventoryItems, eq(productionReceipts.outputItemId, inventoryItems.id))
+      .innerJoin(locations, eq(productionReceipts.outputLocationId, locations.id))
+      .where(and(...conditions))
+      .orderBy(desc(productionReceipts.createdAt));
+
+    return results.map((r) => ({
+      id: r.receipt.id,
+      docNo: r.receipt.docNo,
+      productionOrderId: r.receipt.productionOrderId,
+      productionOrderDocNo: r.order.docNo,
+      outputItemCode: r.outputItem.itemCode,
+      outputLocationCode: r.outputLocation.locationCode,
+      outputQtyKg: r.receipt.outputQtyKg,
+      receiptDate: r.receipt.receiptDate,
+      status: r.receipt.status,
+      approvalStatus: r.receipt.approvalStatus,
+      factoryCostBasisUsed: r.receipt.factoryCostBasisUsed,
+      factoryRatePerInputTonUsed: r.receipt.factoryRatePerInputTonUsed,
+      calculatedFactoryCost: r.receipt.calculatedFactoryCost,
+    }));
+  }
+
+  /**
+   * List receipt input allocations for management (full — includes payable cost basis).
+   * Contract 05 §14: each receipt allocates consumed/waste input quantities.
+   */
+  async listManagementReceiptAllocations(tenantId: string, receiptId: string): Promise<ManagementReceiptAllocationDto[]> {
+    const results = await this.db
+      .select({
+        allocation: productionReceiptInputAllocations,
+        input: productionInputs,
+        item: inventoryItems,
+      })
+      .from(productionReceiptInputAllocations)
+      .innerJoin(productionInputs, eq(productionReceiptInputAllocations.productionInputId, productionInputs.id))
+      .innerJoin(inventoryItems, eq(productionInputs.inputItemId, inventoryItems.id))
+      .where(and(
+        eq(productionReceiptInputAllocations.tenantId, tenantId),
+        eq(productionReceiptInputAllocations.productionReceiptId, receiptId),
+      ));
+
+    return results.map((r) => ({
+      id: r.allocation.id,
+      receiptId: r.allocation.productionReceiptId,
+      inputId: r.allocation.productionInputId,
+      itemCode: r.item.itemCode,
+      consumedQtyKg: r.allocation.consumedTowardOutputQtyKg,
+      wasteQtyKg: r.allocation.allocatedWasteQtyKg,
+      payableCostBasisQtyKg: r.allocation.payableCostBasisQtyKg,
+    }));
+  }
+
+  // ---- WIP Return queries ----
+
+  /**
+   * List WIP return requests for management (full — includes approval state).
+   * Contract 10 §8.3: WIP return review/approval state.
+   */
+  async listManagementWipReturns(tenantId: string): Promise<ManagementWipReturnDto[]> {
+    const results = await this.db
+      .select({
+        wipReturn: productionWipReturns,
+        order: productionOrders,
+        input: productionInputs,
+        item: inventoryItems,
+        location: locations,
+      })
+      .from(productionWipReturns)
+      .innerJoin(productionOrders, eq(productionWipReturns.productionOrderId, productionOrders.id))
+      .innerJoin(productionInputs, eq(productionWipReturns.productionInputId, productionInputs.id))
+      .innerJoin(inventoryItems, eq(productionInputs.inputItemId, inventoryItems.id))
+      .innerJoin(locations, eq(productionWipReturns.returnLocationId, locations.id))
+      .where(eq(productionWipReturns.tenantId, tenantId))
+      .orderBy(desc(productionWipReturns.createdAt));
+
+    return results.map((r) => ({
+      id: r.wipReturn.id,
+      docNo: r.wipReturn.docNo,
+      productionOrderDocNo: r.order.docNo,
+      itemCode: r.item.itemCode,
+      returnQtyKg: r.wipReturn.returnQtyKg,
+      returnLocationCode: r.location.locationCode,
+      status: r.wipReturn.status,
+      approvalStatus: r.wipReturn.approvalStatus,
+      reason: r.wipReturn.reason,
+      financialReviewStatus: r.wipReturn.financialReviewStatus,
+    }));
+  }
+
+  /**
+   * List WIP return requests for worker (redacted — no financial review status).
+   * Contract 10 §7.2: worker can request return from WIP.
+   */
+  async listWorkerWipReturns(tenantId: string): Promise<WorkerWipReturnDto[]> {
+    const results = await this.db
+      .select({
+        wipReturn: productionWipReturns,
+        order: productionOrders,
+        item: inventoryItems,
+        location: locations,
+      })
+      .from(productionWipReturns)
+      .innerJoin(productionOrders, eq(productionWipReturns.productionOrderId, productionOrders.id))
+      .innerJoin(productionInputs, eq(productionWipReturns.productionInputId, productionInputs.id))
+      .innerJoin(inventoryItems, eq(productionInputs.inputItemId, inventoryItems.id))
+      .innerJoin(locations, eq(productionWipReturns.returnLocationId, locations.id))
+      .where(eq(productionWipReturns.tenantId, tenantId))
+      .orderBy(desc(productionWipReturns.createdAt));
+
+    return results.map((r) => ({
+      id: r.wipReturn.id,
+      docNo: r.wipReturn.docNo,
+      productionOrderDocNo: r.order.docNo,
+      itemCode: r.item.itemCode,
+      returnQtyKg: r.wipReturn.returnQtyKg,
+      returnLocationCode: r.location.locationCode,
+      status: r.wipReturn.status,
+      reason: r.wipReturn.reason,
+      // NO financialReviewStatus — worker redacted
+    }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Receipt + Allocation DTOs (management only — financial fields)
+// ---------------------------------------------------------------------------
+
+export interface ManagementReceiptDto {
+  id: string;
+  docNo: string;
+  productionOrderId: string;
+  productionOrderDocNo: string;
+  outputItemCode: string;
+  outputLocationCode: string;
+  outputQtyKg: string;
+  receiptDate: string;
+  status: string;
+  approvalStatus: string;
+  factoryCostBasisUsed: string | null;
+  factoryRatePerInputTonUsed: string | null;
+  calculatedFactoryCost: string | null;
+}
+
+export interface ManagementReceiptAllocationDto {
+  id: string;
+  receiptId: string;
+  inputId: string;
+  itemCode: string;
+  consumedQtyKg: string;
+  wasteQtyKg: string;
+  payableCostBasisQtyKg: string;
+}
+
+// ---------------------------------------------------------------------------
+// WIP Return DTOs
+// ---------------------------------------------------------------------------
+
+export interface ManagementWipReturnDto {
+  id: string;
+  docNo: string;
+  productionOrderDocNo: string;
+  itemCode: string;
+  returnQtyKg: string;
+  returnLocationCode: string;
+  status: string;
+  approvalStatus: string;
+  reason: string;
+  financialReviewStatus: string | null;
+}
+
+export interface WorkerWipReturnDto {
+  id: string;
+  docNo: string;
+  productionOrderDocNo: string;
+  itemCode: string;
+  returnQtyKg: string;
+  returnLocationCode: string;
+  status: string;
+  reason: string;
+  // NO financialReviewStatus — worker redacted
 }

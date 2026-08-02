@@ -80,6 +80,7 @@ export const MANAGEMENT_NAV: ReadonlyArray<ManagementNavCategory> = [
     id: "production", labelAr: "الإنتاج والتصنيع لدى الغير",
     items: [
       { id: "production-orders", labelAr: "أوامر الإنتاج", href: "/management/production/orders", icon: "Factory", roles: ["owner", "accountant"], permissionKey: "production.approve" },
+      { id: "production-receipts", labelAr: "سندات الاستلام", href: "/management/production/receipts", icon: "PackageCheck", roles: ["owner", "accountant"], permissionKey: "production.approve" },
       { id: "production-wip", labelAr: "المخزون تحت التشغيل", href: "/management/production/wip", icon: "Boxes", roles: ["owner", "accountant"] },
     ],
   },

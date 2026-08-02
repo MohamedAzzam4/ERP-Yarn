@@ -7,6 +7,12 @@
  *
  * Contract 05: No worker-entered payable, allocation, profitability or accounting entry.
  * Contract 11 §8/§9: Worker financial-deny is absolute.
+ *
+ * Visible: production type, factory, input lot/item, planned/issued/input/output/
+ *          waste/returned quantities, output lot facts, dates, WIP status, operational notes.
+ * Hidden: factory rate/payable, cost basis, direct-cost allocation, payer, account entry, profitability.
+ * Allowed: create/update/submit own drafts; request return from WIP.
+ * Forbidden: issue/receipt financial posting, approve WIP return, change snapshots/rates.
  */
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
@@ -18,7 +24,12 @@ import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
-import { ProductionScreenQueryService, type WorkerProductionOrderDto, type WorkerWipBalanceDto } from "@/server/services/production-screen-query-service";
+import {
+  ProductionScreenQueryService,
+  type WorkerProductionOrderDto,
+  type WorkerWipBalanceDto,
+  type WorkerWipReturnDto,
+} from "@/server/services/production-screen-query-service";
 
 export default async function WorkerProductionEntryPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -35,6 +46,7 @@ export default async function WorkerProductionEntryPage() {
 
   let orders: WorkerProductionOrderDto[] = [];
   let wipBalances: WorkerWipBalanceDto[] = [];
+  let wipReturns: WorkerWipReturnDto[] = [];
   let dbAvailable = false;
 
   if (db) {
@@ -42,6 +54,7 @@ export default async function WorkerProductionEntryPage() {
       const queryService = new ProductionScreenQueryService(db);
       orders = await queryService.listWorkerProductionOrders(authResult.tenantId);
       wipBalances = await queryService.listWorkerWipBalances(authResult.tenantId);
+      wipReturns = await queryService.listWorkerWipReturns(authResult.tenantId);
       dbAvailable = true;
     } catch { dbAvailable = false; }
   }
@@ -61,7 +74,7 @@ export default async function WorkerProductionEntryPage() {
 
         {dbAvailable && (
           <>
-            {/* Production Orders — operational quantities only */}
+            {/* Production Orders — operational quantities only, NO financial */}
             <Card className="mb-6">
               <CardHeader><CardTitle>أوامر الإنتاج</CardTitle></CardHeader>
               <CardContent>
@@ -101,7 +114,7 @@ export default async function WorkerProductionEntryPage() {
             </Card>
 
             {/* WIP Balances — operational quantities only, NO financial */}
-            <Card>
+            <Card className="mb-6">
               <CardHeader><CardTitle>المخزون تحت التشغيل</CardTitle></CardHeader>
               <CardContent>
                 {wipBalances.length === 0 ? (
@@ -124,6 +137,45 @@ export default async function WorkerProductionEntryPage() {
                             <td className="py-2 px-3"><LtrValue>{w.itemCode}</LtrValue> {w.itemName}</td>
                             <td className="py-2 px-3">{w.factoryName}</td>
                             <td className="py-2 px-3"><LtrValue>{w.remainingWipQtyKg}</LtrValue></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* WIP Return Requests — worker can view own requests, NO financial review status */}
+            <Card>
+              <CardHeader><CardTitle>طلبات مرتجع تحت التشغيل</CardTitle></CardHeader>
+              <CardContent>
+                {wipReturns.length === 0 ? (
+                  <p className="text-center text-muted-foreground py-8">لا توجد طلبات مرتجع من تحت التشغيل.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-right">
+                          <th className="py-2 px-3">رقم المستند</th>
+                          <th className="py-2 px-3">أمر الإنتاج</th>
+                          <th className="py-2 px-3">الصنف</th>
+                          <th className="py-2 px-3">الكمية (كجم)</th>
+                          <th className="py-2 px-3">الموقع</th>
+                          <th className="py-2 px-3">الحالة</th>
+                          <th className="py-2 px-3">السبب</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {wipReturns.map((wr) => (
+                          <tr key={wr.id} className="border-b">
+                            <td className="py-2 px-3"><LtrValue>{wr.docNo}</LtrValue></td>
+                            <td className="py-2 px-3"><LtrValue>{wr.productionOrderDocNo}</LtrValue></td>
+                            <td className="py-2 px-3"><LtrValue>{wr.itemCode}</LtrValue></td>
+                            <td className="py-2 px-3"><LtrValue>{wr.returnQtyKg}</LtrValue></td>
+                            <td className="py-2 px-3"><LtrValue>{wr.returnLocationCode}</LtrValue></td>
+                            <td className="py-2 px-3">{wr.status}</td>
+                            <td className="py-2 px-3">{wr.reason}</td>
                           </tr>
                         ))}
                       </tbody>
