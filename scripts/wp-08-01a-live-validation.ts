@@ -109,6 +109,7 @@ async function main() {
 
       const result = await service.createTransferRequest(user as any, eff, {
         itemId: ITEM_ID, fromLocationId: LOCATION_ID, toLocationId: LOCATION_ID + "-dst", quantityKg: "100.000", reason: "Test transfer",
+        idempotencyKey: "transfer-live-001",
       });
 
       check("1. transfer request created", !!result.id, `id=${result.id?.substring(0, 8)}`);

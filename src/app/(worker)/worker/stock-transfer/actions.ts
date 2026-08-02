@@ -79,6 +79,7 @@ export async function createTransferDraft(formData: FormData): Promise<void> {
     toLocationId: String(formData.get("toLocationId")),
     quantityKg: String(formData.get("quantityKg")),
     reason: formData.get("reason") ? String(formData.get("reason")) : null,
+    idempotencyKey: String(formData.get("idempotencyKey")),
   });
 
   revalidatePath("/worker/stock-transfer");

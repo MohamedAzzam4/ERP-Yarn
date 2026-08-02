@@ -213,6 +213,13 @@ export interface NewApprovalRequestInput {
    * movementId/payableEntryId after approval, and by WP-03-02 for
    * transfer params at creation time. */
   submittedChildVersionSummary?: Record<string, unknown> | null;
+  /**
+   * WP-08-01A: Optional idempotency key for the approval_requests row.
+   * Stored in idempotency_key column (unique partial index where NOT NULL).
+   * Used by TransferWorkflowService.createTransferRequest to persist the
+   * caller's idempotency key on the row for traceability.
+   */
+  idempotencyKey?: string | null;
 }
 
 // ---------------------------------------------------------------------------

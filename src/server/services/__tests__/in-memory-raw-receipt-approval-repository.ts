@@ -60,7 +60,7 @@ export class InMemoryRawReceiptApprovalRepository implements RawReceiptApprovalR
       decidedBy: null,
       decidedAt: null,
       decisionNotes: null,
-      idempotencyKey: null,
+      idempotencyKey: row.idempotencyKey ?? null,
       subjectVersion: row.subjectVersion,
       subjectHash: row.subjectHash,
       movementId: null,

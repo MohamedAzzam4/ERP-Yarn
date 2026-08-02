@@ -129,6 +129,7 @@ const TRANSFER_INPUT: CreateTransferRequestInput = {
   toLocationId: TEST_LOC_B,
   quantityKg: "100.000",
   reason: "test",
+  idempotencyKey: "wp-08-01a-transfer-001",
 };
 
 const RETURN_INPUT: CreateReturnRequestInput = {
@@ -493,5 +494,126 @@ describe("WP-08-01A return idempotency replay + conflict", () => {
         returnReason: "different reason",
       }),
     ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|was used with a different request body/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15-20. Transfer idempotency-key conflict detection (WP-08-01A correction).
+// ---------------------------------------------------------------------------
+
+describe("WP-08-01A transfer idempotency-key conflict detection", () => {
+  it("15. first transfer create succeeds", async () => {
+    const deps = makeTransferDeps();
+    const r = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-first",
+    });
+    expect(r.id).toBeTruthy();
+    expect(r.state).toBe("active");
+  });
+
+  it("16. same key + same payload replays same request ID", async () => {
+    const deps = makeTransferDeps();
+    const r1 = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-replay",
+    });
+    const r2 = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-replay",
+    });
+    expect(r2.id).toBe(r1.id);
+  });
+
+  it("17. same key + different quantity conflicts (zero additional writes)", async () => {
+    const deps = makeTransferDeps();
+    const r1 = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-qty-conflict",
+    });
+    const beforeApprovals = (deps.approvalRepository as any).approvals.size;
+    const beforeAudits = deps.audit.count();
+
+    await expect(
+      deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+        ...TRANSFER_INPUT,
+        quantityKg: "999.999",
+        idempotencyKey: "wp0801a-tx-qty-conflict",
+      }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|was used with a different request body/);
+
+    // Zero additional approval_requests + zero additional audit rows.
+    expect((deps.approvalRepository as any).approvals.size).toBe(beforeApprovals);
+    expect(deps.audit.count()).toBe(beforeAudits);
+  });
+
+  it("18. same key + different destination conflicts (zero additional writes)", async () => {
+    const deps = makeTransferDeps();
+    const r1 = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-dest-conflict",
+    });
+    const beforeApprovals = (deps.approvalRepository as any).approvals.size;
+    const beforeAudits = deps.audit.count();
+
+    await expect(
+      deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+        ...TRANSFER_INPUT,
+        fromLocationId: TEST_LOC_B,
+        toLocationId: TEST_LOC_A, // swapped direction
+        idempotencyKey: "wp0801a-tx-dest-conflict",
+      }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|was used with a different request body/);
+
+    expect((deps.approvalRepository as any).approvals.size).toBe(beforeApprovals);
+    expect(deps.audit.count()).toBe(beforeAudits);
+  });
+
+  it("19. conflict count remains one request and one audit", async () => {
+    const deps = makeTransferDeps();
+    const r1 = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-count",
+    });
+
+    // Attempt two conflicts (different qty, different dest) — both rejected.
+    await expect(
+      deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+        ...TRANSFER_INPUT, quantityKg: "999.999",
+        idempotencyKey: "wp0801a-tx-count",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+        ...TRANSFER_INPUT, fromLocationId: TEST_LOC_B, toLocationId: TEST_LOC_A,
+        idempotencyKey: "wp0801a-tx-count",
+      }),
+    ).rejects.toThrow();
+
+    // Exactly one approval_request for this tenant (the original).
+    const allApprovals = [...((deps.approvalRepository as any).approvals as Map<string, any>).values()];
+    const tenantApprovals = allApprovals.filter((a: any) => a.tenantId === TEST_TENANT_ID);
+    expect(tenantApprovals.length).toBe(1);
+    expect(tenantApprovals[0]!.id).toBe(r1.id);
+
+    // Exactly one audit row for transfer_request.create (the original).
+    const transferAudits = deps.audit.getRows().filter((r: any) => r.entityType === "transfer_request" && r.actionType === "transfer_request.create");
+    expect(transferAudits.length).toBe(1);
+    expect(transferAudits[0]!.entityId).toBe(r1.id);
+  });
+
+  it("20. different idempotency key with same subject still dedups via subjectHash", async () => {
+    const deps = makeTransferDeps();
+    const r1 = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-dedup-1",
+    });
+    // Different idempotency key but SAME params (same subjectHash).
+    // The subjectHash dedup (secondary guard) returns the existing row.
+    const r2 = await deps.service.createTransferRequest(makeUser(), makeWhEff(), {
+      ...TRANSFER_INPUT,
+      idempotencyKey: "wp0801a-tx-dedup-2",
+    });
+    expect(r2.id).toBe(r1.id);
   });
 });

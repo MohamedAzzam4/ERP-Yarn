@@ -47,7 +47,7 @@ import {
   type IdempotencyClaimInput,
 } from "./idempotency-service";
 import type { InventoryLedgerService, PostTransferInput, PostTransferResult, PostReversalInput, PostReversalResult } from "./inventory-ledger-service";
-import type { RawReceiptApprovalRepository } from "./raw-receipt-approval-service";
+import type { RawReceiptApprovalRepository, RawReceiptApprovalRequest } from "./raw-receipt-approval-service";
 import type { TenantOwnershipValidator } from "./db-tenant-ownership-validator";
 import { createHash } from "node:crypto";
 
@@ -77,6 +77,19 @@ export interface CreateTransferRequestInput {
   toLocationId: string;
   quantityKg: string;
   reason?: string | null;
+  /**
+   * WP-08-01A: REQUIRED idempotency key.
+   *
+   * Same key + same payload → replay (returns same transfer ID).
+   * Same key + different payload → IDEMPOTENCY_CONFLICT (rejected, zero writes).
+   * Different key → new transfer request.
+   *
+   * The subjectHash dedup is retained as a SECONDARY guard (prevents two
+   * DIFFERENT idempotency keys from creating duplicate active transfers for
+   * the exact same params), but the idempotency key is the PRIMARY conflict
+   * detector.
+   */
+  idempotencyKey: string;
 }
 
 export interface ApproveTransferInput {
@@ -169,14 +182,6 @@ export interface TransferWorkflowServiceDeps {
   idempotency: IdempotencyTransactionHandle;
   /**
    * REQUIRED (WP-08-01A): tenant ownership + relation validator.
-   *
-   * Validates BEFORE any write that item, source location, and destination
-   * location all belong to the actor's tenant, and that source ≠ destination.
-   * A valid Tenant-B row used by Tenant-A MUST be rejected here, before the
-   * idempotency claim or any DB write.
-   *
-   * Production: pass `DbTenantOwnershipValidator`.
-   * Tests: pass a mock implementing `TenantOwnershipValidator`.
    */
   tenantOwnershipValidator: TenantOwnershipValidator;
   /**
@@ -228,18 +233,82 @@ export class TransferWorkflowService {
     if (isNaN(qty) || qty <= 0) {
       throw new TransferWorkflowError("VALIDATION_FAILED", `Quantity must be positive, got '${input.quantityKg}'.`);
     }
+    if (!input.idempotencyKey || input.idempotencyKey.trim() === "") {
+      throw new TransferWorkflowError("VALIDATION_FAILED", "idempotencyKey is required for transfer request creation.");
+    }
 
     // =====================================================================
     // WP-08-01A: Tenant ownership + relation validation.
-    // BEFORE any write (subjectHash dedup query, approval_requests insert,
-    // audit). A valid Tenant-B item/location used by Tenant-A MUST be
-    // rejected here. Cross-tenant rejection produces ZERO writes.
+    // BEFORE any write (idempotency claim, approval_requests insert, audit).
+    // A valid Tenant-B item/location used by Tenant-A MUST be rejected here.
+    // Cross-tenant rejection produces ZERO writes (no idempotency record,
+    // no approval_requests row, no audit).
     // =====================================================================
     await this.deps.tenantOwnershipValidator.validateItemBelongsToTenant(user.tenantId, input.itemId);
     await this.deps.tenantOwnershipValidator.validateLocationBelongsToTenant(user.tenantId, input.fromLocationId);
     await this.deps.tenantOwnershipValidator.validateLocationBelongsToTenant(user.tenantId, input.toLocationId);
     this.deps.tenantOwnershipValidator.validateSourceAndDestinationDiffer(input.fromLocationId, input.toLocationId);
 
+    // =====================================================================
+    // WP-08-01A: Idempotency-key-based conflict detection.
+    //
+    // Same key + same payload → replay (returns same transfer ID).
+    // Same key + different payload → IDEMPOTENCY_CONFLICT (rejected, zero writes).
+    // Different key → new transfer request.
+    //
+    // The subjectHash dedup below is a SECONDARY guard: it prevents two
+    // DIFFERENT idempotency keys from creating duplicate active transfers
+    // for the exact same params. But the idempotency key is the PRIMARY
+    // conflict detector — same key + different payload MUST conflict.
+    // =====================================================================
+    const now = new Date();
+    const transferRequestBody = {
+      itemId: input.itemId,
+      fromLocationId: input.fromLocationId,
+      toLocationId: input.toLocationId,
+      quantityKg: input.quantityKg,
+      reason: input.reason ?? null,
+    };
+    const claim = await claimIdempotency(this.deps.idempotency, {
+      tenantId: user.tenantId,
+      operationScope: "transfer_request.create",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: transferRequestBody,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    });
+
+    if (claim.action === "replay") {
+      // Same key + same payload — return the stored transfer ID.
+      const responseBody = claim.record.responseBody as { transferRequestId?: string } | null;
+      if (responseBody?.transferRequestId) {
+        const replayed = await this.deps.approvalRepository.findApprovalById(
+          user.tenantId, responseBody.transferRequestId,
+        );
+        if (replayed) {
+          return this.mapApprovalToTransfer(replayed);
+        }
+      }
+      // Fall through to execute if the stored result is missing the ID
+      // (shouldn't happen, but defense-in-depth).
+    }
+    if (claim.action === "conflict") {
+      // Same key + DIFFERENT payload — reject. ZERO writes (no approval_requests
+      // insert, no audit). The idempotency record was claimed by the prior call.
+      throw new TransferWorkflowError(
+        "IDEMPOTENCY_CONFLICT",
+        `Idempotency key '${input.idempotencyKey}' was used with a different request body.`,
+      );
+    }
+    if (claim.action === "in_progress") {
+      throw new TransferWorkflowError(
+        "OPERATION_IN_PROGRESS",
+        `Operation '${input.idempotencyKey}' is still in progress.`,
+      );
+    }
+
+    // claim.action === "execute" — fresh call.
     const subjectHash = computeTransferSubjectHash(input);
 
     // Store transfer params in submittedChildVersionSummary (JSONB, Contract 03 §7.6).
@@ -257,37 +326,50 @@ export class TransferWorkflowService {
     const { randomUUID } = await import("node:crypto");
     const entityId = randomUUID();
 
-    // Idempotency: check if an active transfer request with the same subjectHash
-    // already exists for this tenant. The subjectHash is deterministic from the
-    // transfer params, so identical params produce the same hash.
+    // Secondary guard: check if an active transfer request with the same subjectHash
+    // already exists for this tenant (different idempotency key, same params).
+    // If so, return the existing row — prevents duplicate active transfers for
+    // the exact same params under different idempotency keys.
     const existingApprovals = await this.deps.approvalRepository.listPendingApprovals(
       user.tenantId, TRANSFER_ENTITY_TYPE,
     );
     const existing = existingApprovals.find(a => a.subjectHash === subjectHash && a.state === "active");
+    let approval: RawReceiptApprovalRequest;
     if (existing) {
-      return this.mapApprovalToTransfer(existing);
+      approval = existing;
+    } else {
+      approval = await this.deps.approvalRepository.insertApprovalRequest({
+        tenantId: user.tenantId,
+        requestType: TRANSFER_REQUEST_TYPE,
+        entityType: TRANSFER_ENTITY_TYPE,
+        entityId,
+        riskLevel: "standard",
+        requestedBy: user.userId,
+        reason: input.reason ?? null, // human-readable reason only
+        subjectVersion: 1,
+        subjectHash,
+        createdBy: user.userId,
+        submittedChildVersionSummary: transferParams, // structured payload in JSONB
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+        entityType: TRANSFER_ENTITY_TYPE,
+        entityId: approval.id,
+        actionType: "transfer_request.create",
+        newValuesJson: { itemId: input.itemId, fromLocationId: input.fromLocationId, toLocationId: input.toLocationId, quantityKg: input.quantityKg },
+        idempotencyKey: input.idempotencyKey,
+      });
     }
 
-    const approval = await this.deps.approvalRepository.insertApprovalRequest({
-      tenantId: user.tenantId,
-      requestType: TRANSFER_REQUEST_TYPE,
-      entityType: TRANSFER_ENTITY_TYPE,
-      entityId,
-      riskLevel: "standard",
-      requestedBy: user.userId,
-      reason: input.reason ?? null, // human-readable reason only
-      subjectVersion: 1,
-      subjectHash,
-      createdBy: user.userId,
-      submittedChildVersionSummary: transferParams, // structured payload in JSONB
-    });
-
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+    // Mark the idempotency claim as succeeded with the transfer ID so a
+    // subsequent replay with the same key returns this ID.
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200,
+      responseBody: { transferRequestId: approval.id },
       entityType: TRANSFER_ENTITY_TYPE,
       entityId: approval.id,
-      actionType: "transfer_request.create",
-      newValuesJson: { itemId: input.itemId, fromLocationId: input.fromLocationId, toLocationId: input.toLocationId, quantityKg: input.quantityKg },
-    });
+    }, now);
 
     return this.mapApprovalToTransfer(approval);
   }

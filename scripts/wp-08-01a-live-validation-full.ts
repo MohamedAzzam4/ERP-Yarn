@@ -230,18 +230,32 @@ async function countAudit(entityType: string, since?: Date): Promise<number> {
 // Production service factories — same as the server actions use.
 // ---------------------------------------------------------------------------
 
+// Module-level singletons so idempotency + document sequence state persists
+// across multiple getTransferService() / getReturnService() calls within a
+// single validation run. Without this, each call creates a fresh
+// InProcessIdempotencyStore and the idempotency-key conflict detection
+// (same key + different payload → IDEMPOTENCY_CONFLICT) cannot work —
+// the second call wouldn't see the first call's idempotency record.
+let _idempotencyStore: any = null;
+let _documentSequenceStore: any = null;
+
+async function getSharedStores() {
+  const { InProcessIdempotencyStore } = await import("../src/server/services/idempotency-service");
+  const { InProcessDocumentSequenceStore } = await import("../src/server/services/document-sequence-service");
+  if (!_idempotencyStore) _idempotencyStore = new InProcessIdempotencyStore();
+  if (!_documentSequenceStore) _documentSequenceStore = new InProcessDocumentSequenceStore();
+  return { idempotency: _idempotencyStore, documentSequence: _documentSequenceStore };
+}
+
 async function getTransferService() {
   const { TransferWorkflowService } = await import("../src/server/services/transfer-workflow-service");
   const { RawReceiptApprovalDbRepository } = await import("../src/server/services/raw-receipt-approval-db-repository");
   const { InventoryLedgerService } = await import("../src/server/services/inventory-ledger-service");
   const { InventoryLedgerDbRepository } = await import("../src/server/services/inventory-ledger-db-repository");
   const { AuditDbRepository } = await import("../src/server/services/audit-db-repository");
-  const { InProcessIdempotencyStore } = await import("../src/server/services/idempotency-service");
-  const { InProcessDocumentSequenceStore } = await import("../src/server/services/document-sequence-service");
   const { DbTenantOwnershipValidator } = await import("../src/server/services/db-tenant-ownership-validator");
+  const { idempotency, documentSequence } = await getSharedStores();
   const audit = new AuditDbRepository(db);
-  const idempotency = new InProcessIdempotencyStore();
-  const documentSequence = new InProcessDocumentSequenceStore();
   const tenantOwnershipValidator = new DbTenantOwnershipValidator(db);
   const inventoryLedger = new InventoryLedgerService({ ledger: new InventoryLedgerDbRepository(db), audit, idempotency, documentSequence });
   return new TransferWorkflowService({ approvalRepository: new RawReceiptApprovalDbRepository(db), inventoryLedger, audit, idempotency, tenantOwnershipValidator });
@@ -252,8 +266,6 @@ async function getReturnService() {
   const { ReturnRequestDbRepository } = await import("../src/server/services/return-request-db-repository");
   const { SalesDbRepository } = await import("../src/server/services/sales-db-repository");
   const { AuditDbRepository } = await import("../src/server/services/audit-db-repository");
-  const { InProcessIdempotencyStore } = await import("../src/server/services/idempotency-service");
-  const { InProcessDocumentSequenceStore } = await import("../src/server/services/document-sequence-service");
   const { InventoryLedgerService } = await import("../src/server/services/inventory-ledger-service");
   const { InventoryLedgerDbRepository } = await import("../src/server/services/inventory-ledger-db-repository");
   const { SubledgerService } = await import("../src/server/services/subledger-service");
@@ -261,9 +273,8 @@ async function getReturnService() {
   const { ProfitabilitySnapshotService } = await import("../src/server/services/profitability-snapshot-service");
   const { ProfitabilitySnapshotDbRepository } = await import("../src/server/services/profitability-snapshot-db-repository");
   const { DbTenantOwnershipValidator } = await import("../src/server/services/db-tenant-ownership-validator");
+  const { idempotency, documentSequence } = await getSharedStores();
   const audit = new AuditDbRepository(db);
-  const idempotency = new InProcessIdempotencyStore();
-  const documentSequence = new InProcessDocumentSequenceStore();
   const tenantOwnershipValidator = new DbTenantOwnershipValidator(db);
   const inventoryLedger = new InventoryLedgerService({ ledger: new InventoryLedgerDbRepository(db), audit, idempotency, documentSequence });
   const subledger = new SubledgerService({ subledger: new SubledgerDbRepository(db), audit, idempotency, documentSequence });
@@ -315,6 +326,7 @@ async function main() {
         await svc.createTransferRequest(makeUser(), warehouseEff(), {
           itemId: FOREIGN_ITEM, fromLocationId: LOC1, toLocationId: LOC2,
           quantityKg: "100.000", reason: "x-tenant item",
+          idempotencyKey: `x-tenant-item-${RUN}`,
         });
       } catch (e) { err = e as Error; }
       check("A1. cross-tenant item rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
@@ -334,6 +346,7 @@ async function main() {
         await svc.createTransferRequest(makeUser(), warehouseEff(), {
           itemId: ITEM, fromLocationId: FOREIGN_LOC, toLocationId: LOC2,
           quantityKg: "100.000", reason: "x-tenant source",
+          idempotencyKey: `x-tenant-src-${RUN}`,
         });
       } catch (e) { err = e as Error; }
       check("A2. cross-tenant source location rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
@@ -353,6 +366,7 @@ async function main() {
         await svc.createTransferRequest(makeUser(), warehouseEff(), {
           itemId: ITEM, fromLocationId: LOC1, toLocationId: FOREIGN_LOC,
           quantityKg: "100.000", reason: "x-tenant dest",
+          idempotencyKey: `x-tenant-dest-${RUN}`,
         });
       } catch (e) { err = e as Error; }
       check("A3. cross-tenant destination location rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
@@ -370,67 +384,97 @@ async function main() {
         await svc.createTransferRequest(makeUser(), warehouseEff(), {
           itemId: ITEM, fromLocationId: LOC1, toLocationId: LOC1,
           quantityKg: "100.000", reason: "same loc",
+          idempotencyKey: `x-same-loc-${RUN}`,
         });
       } catch (e) { err = e as Error; }
       check("A4. source == destination rejected", err !== null, `err=${err?.message?.substring(0, 60)}`);
     }
 
     // =====================================================================
-    // SECTION B — Transfer idempotency + scoped audit.
+    // SECTION B — Transfer idempotency-key conflict detection + scoped audit.
     // =====================================================================
-    console.log("\n--- Section B: Transfer idempotency + scoped audit ---");
+    console.log("\n--- Section B: Transfer idempotency-key conflict detection ---");
 
-    // B1. Same-key replay returns same ID.
+    // B1. First call: idempotencyKey=K, payload=P1 → creates request R.
     let transferId: string;
+    const TRANSFER_KEY_K = `transfer-K-${RUN}`;
     {
       const svc = await getTransferService();
       const r1 = await svc.createTransferRequest(makeUser(), warehouseEff(), {
         itemId: ITEM, fromLocationId: LOC1, toLocationId: LOC2,
-        quantityKg: "200.000", reason: "idem replay",
+        quantityKg: "200.000", reason: "first call P1",
+        idempotencyKey: TRANSFER_KEY_K,
       });
       transferId = r1.id!;
-      check("B1. transfer created (first call)", !!r1.id, `id=${r1.id?.substring(0, 8)}`);
+      check("B1. transfer created (first call, key=K, payload=P1)", !!r1.id, `id=${r1.id?.substring(0, 8)}, key=${TRANSFER_KEY_K}`);
+    }
 
-      // Second call with identical params returns the same row (subjectHash dedup).
+    // B2. Replay: same key=K, same payload=P1 → returns same R.
+    {
+      const svc = await getTransferService();
       const r2 = await svc.createTransferRequest(makeUser(), warehouseEff(), {
         itemId: ITEM, fromLocationId: LOC1, toLocationId: LOC2,
-        quantityKg: "200.000", reason: "idem replay",
+        quantityKg: "200.000", reason: "first call P1",
+        idempotencyKey: TRANSFER_KEY_K,
       });
-      check("B2. same params return same transfer ID", r2.id === r1.id, `r1=${r1.id?.substring(0, 8)}, r2=${r2.id?.substring(0, 8)}`);
+      check("B2. same key + same payload replays same transfer ID", r2.id === transferId, `r1=${transferId.substring(0, 8)}, r2=${r2.id?.substring(0, 8)}`);
     }
 
-    // B3. Different quantity creates a DIFFERENT transfer (different subjectHash).
+    // B3. Conflict by quantity: same key=K, different quantity → IDEMPOTENCY_CONFLICT.
+    // Must create ZERO additional approval_request rows and ZERO additional audit rows.
     {
       const svc = await getTransferService();
-      const r3 = await svc.createTransferRequest(makeUser(), warehouseEff(), {
-        itemId: ITEM, fromLocationId: LOC1, toLocationId: LOC2,
-        quantityKg: "300.000", reason: "different qty",
-      });
-      check("B3. different quantity creates different transfer", r3.id !== transferId, `r3=${r3.id?.substring(0, 8)} vs first=${transferId.substring(0, 8)}`);
+      const beforeReqs = await countRows("approval_requests", "entity_type = 'transfer_request'");
+      const beforeAudit = await countAudit("transfer_request", runStartTime);
+      let err: Error | null = null;
+      try {
+        await svc.createTransferRequest(makeUser(), warehouseEff(), {
+          itemId: ITEM, fromLocationId: LOC1, toLocationId: LOC2,
+          quantityKg: "999.999", reason: "different qty P2",
+          idempotencyKey: TRANSFER_KEY_K,
+        });
+      } catch (e) { err = e as Error; }
+      check("B3. same key + different quantity conflicts", err !== null, `err=${err?.message?.substring(0, 60)}`);
+      const afterReqs = await countRows("approval_requests", "entity_type = 'transfer_request'");
+      const afterAudit = await countAudit("transfer_request", runStartTime);
+      check("B3. conflict: zero additional approval_request rows", afterReqs === beforeReqs, `before=${beforeReqs}, after=${afterReqs}`);
+      check("B3. conflict: zero additional audit rows", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
     }
 
-    // B4. Different destination creates a DIFFERENT transfer.
+    // B4. Conflict by destination: same key=K, different destination → IDEMPOTENCY_CONFLICT.
+    // Must create ZERO additional approval_request rows and ZERO additional audit rows.
     {
       const svc = await getTransferService();
-      const r5 = await svc.createTransferRequest(makeUser(), warehouseEff(), {
-        itemId: ITEM, fromLocationId: LOC2, toLocationId: LOC1,
-        quantityKg: "200.000", reason: "different direction",
-      });
-      check("B4. different direction creates different transfer", r5.id !== transferId, `r5=${r5.id?.substring(0, 8)} vs first=${transferId.substring(0, 8)}`);
+      const beforeReqs = await countRows("approval_requests", "entity_type = 'transfer_request'");
+      const beforeAudit = await countAudit("transfer_request", runStartTime);
+      let err: Error | null = null;
+      try {
+        await svc.createTransferRequest(makeUser(), warehouseEff(), {
+          itemId: ITEM, fromLocationId: LOC1, toLocationId: LOC2,
+          quantityKg: "200.000", reason: "different dest P3",
+          // Different destination: swap LOC1/LOC2
+          fromLocationId: LOC2, toLocationId: LOC1,
+          idempotencyKey: TRANSFER_KEY_K,
+        } as any);
+      } catch (e) { err = e as Error; }
+      check("B4. same key + different destination conflicts", err !== null, `err=${err?.message?.substring(0, 60)}`);
+      const afterReqs = await countRows("approval_requests", "entity_type = 'transfer_request'");
+      const afterAudit = await countAudit("transfer_request", runStartTime);
+      check("B4. conflict: zero additional approval_request rows", afterReqs === beforeReqs, `before=${beforeReqs}, after=${afterReqs}`);
+      check("B4. conflict: zero additional audit rows", afterAudit === beforeAudit, `before=${beforeAudit}, after=${afterAudit}`);
     }
 
-    // B5. Exactly one scoped transfer request with the test transferId.
+    // B5. Exactly one scoped transfer request for K/R.
     {
       const transferReqs = await pgSql`SELECT COUNT(*)::int AS n FROM approval_requests WHERE tenant_id = ${T} AND entity_type = 'transfer_request' AND id = ${transferId}`;
-      check("B5. exactly one scoped transfer request for the replayed ID", transferReqs[0].n === 1, `count=${transferReqs[0].n}`);
+      check("B5. exactly one scoped transfer request for K/R", transferReqs[0].n === 1, `count=${transferReqs[0].n}`);
     }
 
-    // B6. Exactly one scoped transfer audit for the replayed ID.
+    // B6. Exactly one scoped transfer_request.create audit for R.
     {
       const runStartTimeIso = runStartTime.toISOString();
       const transferAudit = await pgSql`SELECT COUNT(*)::int AS n FROM audit_logs WHERE tenant_id = ${T} AND entity_type = 'transfer_request' AND entity_id = ${transferId} AND created_at >= ${runStartTimeIso}::timestamptz`;
-      check("B6. at least one scoped transfer audit for the replayed ID", transferAudit[0].n >= 1, `count=${transferAudit[0].n}`);
-      check("B6b. exactly one audit row per transfer (no duplicate on dedup replay)", transferAudit[0].n === 1, `count=${transferAudit[0].n}`);
+      check("B6. exactly one scoped transfer_request.create audit for R", transferAudit[0].n === 1, `count=${transferAudit[0].n}`);
     }
 
     // =====================================================================

@@ -133,6 +133,7 @@ describe("WP-03-02 createTransferRequest", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000", reason: "test transfer",
+          idempotencyKey: "wp0302-idem-1",
     });
 
     expect(req.state).toBe("active");
@@ -150,6 +151,7 @@ describe("WP-03-02 createTransferRequest", () => {
     await expect(service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_A,
       quantityKg: "100.000",
+      idempotencyKey: "wp0302-same-loc",
     })).rejects.toThrow(TransferWorkflowError);
   });
 
@@ -161,6 +163,7 @@ describe("WP-03-02 createTransferRequest", () => {
     await expect(service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "0.000",
+      idempotencyKey: "wp0302-zero-qty",
     })).rejects.toThrow(TransferWorkflowError);
   });
 
@@ -172,10 +175,12 @@ describe("WP-03-02 createTransferRequest", () => {
     const req1 = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000",
+          idempotencyKey: "wp0302-idem-2",
     });
     const req2 = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000",
+          idempotencyKey: "wp0302-idem-3",
     });
     expect(req2.id).toBe(req1.id);
   });
@@ -188,6 +193,7 @@ describe("WP-03-02 createTransferRequest", () => {
     await expect(service.createTransferRequest(prodUser as any, prodEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000",
+      idempotencyKey: "wp0302-prod-deny",
     })).rejects.toThrow(PermissionDeniedError);
   });
 });
@@ -206,6 +212,7 @@ describe("WP-03-02 approveTransfer", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000",
+          idempotencyKey: "wp0302-idem-4",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -235,6 +242,7 @@ describe("WP-03-02 approveTransfer", () => {
     const req = await service.createTransferRequest(ownerUser as any, ownerEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000",
+          idempotencyKey: "wp0302-idem-5",
     });
 
     await expect(service.approveTransfer(ownerUser as any, ownerEff, {
@@ -249,6 +257,7 @@ describe("WP-03-02 approveTransfer", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000",
+          idempotencyKey: "wp0302-idem-6",
     });
 
     await expect(service.approveTransfer(whUser as any, whEff, {
@@ -265,6 +274,7 @@ describe("WP-03-02 approveTransfer", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "200.000",
+          idempotencyKey: "wp0302-idem-7",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -294,6 +304,7 @@ describe("WP-03-02 approveTransfer", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000",
+          idempotencyKey: "wp0302-idem-8",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -320,6 +331,7 @@ describe("WP-03-02 approveTransfer", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000",
+          idempotencyKey: "wp0302-idem-9",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -345,6 +357,7 @@ describe("WP-03-02 approveTransfer", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "500.000",
+          idempotencyKey: "wp0302-idem-10",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -431,6 +444,7 @@ describe("WP-03-02 no financial side effects", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000",
+          idempotencyKey: "wp0302-idem-11",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -477,6 +491,7 @@ describe("WP-03-02 listPendingTransfers", () => {
     await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000",
+          idempotencyKey: "wp0302-idem-12",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -500,6 +515,7 @@ describe("WP-03-02 regression: reason vs submittedChildVersionSummary", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000", reason: "نقل مخزون لموقع ب",
+          idempotencyKey: "wp0302-idem-13",
     });
 
     // Fetch the raw approval from the repository
@@ -518,6 +534,7 @@ describe("WP-03-02 regression: reason vs submittedChildVersionSummary", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000", // no reason
+      idempotencyKey: "wp0302-idem-14",
     });
 
     const raw = await approvalRepository.findApprovalById(TEST_TENANT_ID, req.id);
@@ -532,6 +549,7 @@ describe("WP-03-02 regression: reason vs submittedChildVersionSummary", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000", reason: "test",
+          idempotencyKey: "wp0302-idem-15",
     });
 
     const raw = await approvalRepository.findApprovalById(TEST_TENANT_ID, req.id);
@@ -552,6 +570,7 @@ describe("WP-03-02 regression: reason vs submittedChildVersionSummary", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "250.000", reason: "human reason text",
+          idempotencyKey: "wp0302-idem-16",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -578,6 +597,7 @@ describe("WP-03-02 regression: reason vs submittedChildVersionSummary", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000", reason: '{"quantityKg": "999.000"}', // deceptive JSON in reason
+      idempotencyKey: "wp0302-payload-store",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -655,6 +675,7 @@ describe("WP-03-02 regression: reason vs submittedChildVersionSummary", () => {
     await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "100.000", reason: "نقل لمخزن ب",
+          idempotencyKey: "wp0302-idem-17",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -690,6 +711,7 @@ describe("WP-03-02 approveTransfer atomicity/rollback (V12)", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "500.000", // exceeds seeded 100 kg → postTransfer will throw StockInsufficientError
+      idempotencyKey: "wp0302-idem-18",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -732,6 +754,7 @@ describe("WP-03-02 approveTransfer atomicity/rollback (V12)", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "500.000",
+          idempotencyKey: "wp0302-idem-19",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -753,6 +776,7 @@ describe("WP-03-02 approveTransfer atomicity/rollback (V12)", () => {
     const req2 = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "80.000", // smaller, within the 100 kg available
+      idempotencyKey: "wp0302-idem-20",
     });
 
     // Retry with a NEW idempotency key — succeeds.
@@ -785,6 +809,7 @@ describe("WP-03-02 approveTransfer atomicity/rollback (V12)", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000",
+          idempotencyKey: "wp0302-idem-21",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -858,6 +883,7 @@ describe("WP-03-02 two-sided transfer reversal", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000",
+          idempotencyKey: "wp0302-idem-22",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -905,6 +931,7 @@ describe("WP-03-02 two-sided transfer reversal", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "300.000",
+          idempotencyKey: "wp0302-idem-23",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);
@@ -944,6 +971,7 @@ describe("WP-03-02 JSONB payload preservation after markDecided", () => {
     const req = await service.createTransferRequest(whUser as any, whEff, {
       itemId: TEST_ITEM_ID, fromLocationId: TEST_LOC_A, toLocationId: TEST_LOC_B,
       quantityKg: "250.000", reason: "preserve payload test",
+          idempotencyKey: "wp0302-idem-24",
     });
 
     const ownerUser = makeUser(TEST_USERS.owner.userId);

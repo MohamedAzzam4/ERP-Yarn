@@ -43,6 +43,7 @@ export class RawReceiptApprovalDbRepository implements RawReceiptApprovalReposit
         subjectHash: row.subjectHash,
         createdBy: row.createdBy,
         submittedChildVersionSummary: row.submittedChildVersionSummary ?? undefined,
+        idempotencyKey: row.idempotencyKey ?? null,
       })
       .returning();
 
