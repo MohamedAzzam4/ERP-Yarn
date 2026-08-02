@@ -13,7 +13,7 @@ export default function Error({ error, reset }: { error: Error; reset: () => voi
 
   return (
     <div className="flex flex-col items-center justify-center py-12 gap-4">
-      <p className="text-red-600 font-medium">{message}</p>
+      <p role="alert" className="text-red-600 font-medium">{message}</p>
       <button onClick={reset} className="px-4 py-2 border rounded text-sm" style={{ minHeight: "44px" }}>
         إعادة المحاولة
       </button>

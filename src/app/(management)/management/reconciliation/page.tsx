@@ -121,7 +121,7 @@ export default async function ReconciliationPage() {
                   </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
-                    <p className="text-sm font-medium text-success">✓ جميع الأرصدة مطابقة لحركات المخزون</p>
+                    <p className="text-sm font-medium text-success" role="status">جميع الأرصدة مطابقة لحركات المخزون</p>
                     <p className="text-xs text-muted-foreground mt-1">لا توجد اختلافات أو أرصدة سالبة</p>
                   </div>
                 )}
