@@ -11,6 +11,7 @@ import type { RoleCode } from "@/server/security/role-codes";
 const MANAGEMENT_INVENTORY_ROLES: ReadonlySet<string> = new Set(["owner", "accountant"]);
 const WAREHOUSE_TASK_ROLES: ReadonlySet<string> = new Set(["warehouse_employee"]);
 const WORKER_QUANTITY_ROLES: ReadonlySet<string> = new Set(["warehouse_employee", "production_employee"]);
+const PRODUCTION_TASK_ROLES: ReadonlySet<string> = new Set(["production_employee"]);
 
 export class InventoryScreenAuthError extends Error {
   readonly code: string;
@@ -59,6 +60,23 @@ export function requireWorkerQuantityActor(user: ErpUserContext, roles: Readonly
     throw new InventoryScreenAuthError(
       "PERMISSION_DENIED",
       `Role(s) [${roles.join(", ")}] are not authorized for worker quantity screens. Required: warehouse_employee or production_employee.`,
+    );
+  }
+}
+
+/**
+ * Require that the caller is a Production Employee.
+ * Throws if the caller is management, warehouse, quality, or unknown.
+ *
+ * Contract 10 §7.2: Production Employee Screens — only production_employee
+ * can access production task screens.
+ */
+export function requireProductionTaskActor(user: ErpUserContext, roles: ReadonlyArray<RoleCode>): void {
+  const hasProductionRole = roles.some((r) => PRODUCTION_TASK_ROLES.has(r));
+  if (!hasProductionRole) {
+    throw new InventoryScreenAuthError(
+      "PERMISSION_DENIED",
+      `Role(s) [${roles.join(", ")}] are not authorized for production task screens. Required: production_employee.`,
     );
   }
 }
