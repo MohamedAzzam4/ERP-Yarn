@@ -35,6 +35,7 @@ import {
   type ReverseMovementInput,
 } from "@/server/services/transfer-workflow-service";
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
+import { DbTenantOwnershipValidator } from "@/server/services/db-tenant-ownership-validator";
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { db } from "@/server/db/client";
@@ -85,6 +86,7 @@ function getService() {
     inventoryLedger,
     audit,
     idempotency,
+    tenantOwnershipValidator: new DbTenantOwnershipValidator(db),
     transactionRunner,
     txFactories,
   });

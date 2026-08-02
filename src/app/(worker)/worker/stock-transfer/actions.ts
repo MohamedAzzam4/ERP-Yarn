@@ -3,6 +3,13 @@
  *
  * Warehouse employees can create transfer DRAFTS.
  * No posting, approval, reversal, or balance editing.
+ *
+ * WP-08-01A CORRECTION:
+ *   DbTenantOwnershipValidator is REQUIRED — the service validates item,
+ *   source location, and destination location all belong to the actor's
+ *   tenant BEFORE any write (idempotency claim, approval_requests insert,
+ *   audit). A valid Tenant-B item/location used by Tenant-A is rejected
+ *   with ZERO writes.
  */
 "use server";
 
@@ -17,6 +24,7 @@ import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { DbTenantOwnershipValidator } from "@/server/services/db-tenant-ownership-validator";
 import { db } from "@/server/db/client";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -26,12 +34,14 @@ function getTransferService() {
   const audit = new AuditDbRepository(db);
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const tenantOwnershipValidator = new DbTenantOwnershipValidator(db);
   const inventoryLedger = new InventoryLedgerService({
     ledger: new InventoryLedgerDbRepository(db), audit, idempotency, documentSequence,
   });
   return new TransferWorkflowService({
     approvalRepository: new RawReceiptApprovalDbRepository(db),
     inventoryLedger, audit, idempotency,
+    tenantOwnershipValidator,
   });
 }
 

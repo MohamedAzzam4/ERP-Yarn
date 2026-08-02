@@ -3,6 +3,14 @@
  *
  * Warehouse employees can create return requests with physical/classification facts.
  * No financial treatment, refund, credit, or replacement approval.
+ *
+ * WP-08-01A CORRECTION:
+ *   The worker MUST submit `saleLineId` (the original sale's line ID). The
+ *   service validates `saleLineId -> saleOrderId -> customerId` and
+ *   `saleLineId -> itemId` via DbTenantOwnershipValidator BEFORE any write.
+ *   `itemId` alone is NEVER used as `originalSaleLineId` — that would
+ *   bypass the sale-line/order/item relation chain and allow referencing
+ *   a line from a different sale.
  */
 "use server";
 
@@ -16,6 +24,7 @@ import { SalesDbRepository } from "@/server/services/sales-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { DbTenantOwnershipValidator } from "@/server/services/db-tenant-ownership-validator";
 import { db } from "@/server/db/client";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -25,10 +34,12 @@ function getReturnService() {
   const audit = new AuditDbRepository(db);
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const tenantOwnershipValidator = new DbTenantOwnershipValidator(db);
   // ReturnRequestService requires inventoryLedger, subledger, snapshotService
   // for the APPROVAL path. For draft creation, we pass minimal stubs.
-  // The service's createReturnRequest method only uses returnRequestRepository
-  // and salesRepository — it does not post inventory or subledger.
+  // The service's createReturnRequest method only uses returnRequestRepository,
+  // salesRepository, and tenantOwnershipValidator — it does not post inventory
+  // or subledger until approval.
   const { InventoryLedgerService } = require("@/server/services/inventory-ledger-service");
   const { InventoryLedgerDbRepository } = require("@/server/services/inventory-ledger-db-repository");
   const { SubledgerService } = require("@/server/services/subledger-service");
@@ -50,6 +61,7 @@ function getReturnService() {
     salesRepository: new SalesDbRepository(db),
     inventoryLedger, subledger, snapshotService,
     audit, idempotency, documentSequence,
+    tenantOwnershipValidator,
   });
 }
 
@@ -80,6 +92,12 @@ export async function createReturnRequest(formData: FormData): Promise<void> {
     }
   }
 
+  // WP-08-01A: saleLineId is REQUIRED. Never substitute itemId for saleLineId.
+  const saleLineId = String(formData.get("saleLineId") ?? "").trim();
+  if (!saleLineId) {
+    throw new Error("VALIDATION_FAILED: saleLineId is required. Worker must select the original sale line.");
+  }
+
   const service = getReturnService();
   await service.createReturnRequest(authResult as any, effective, {
     salesOrderId: String(formData.get("salesOrderId")),
@@ -91,7 +109,7 @@ export async function createReturnRequest(formData: FormData): Promise<void> {
     // Management decides financial treatment at approval time (Contract 06 §9).
     lines: [{
       originalSaleOrderId: String(formData.get("salesOrderId")),
-      originalSaleLineId: String(formData.get("itemId")),
+      originalSaleLineId: saleLineId,
       itemId: String(formData.get("itemId")),
       quantityKg: String(formData.get("quantityKg")),
       returnLocationId: String(formData.get("returnLocationId")),

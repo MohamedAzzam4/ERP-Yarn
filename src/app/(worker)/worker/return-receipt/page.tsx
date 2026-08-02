@@ -20,7 +20,7 @@ import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
-import { inventoryItems, locations, customers, salesOrders } from "@/server/db/schema";
+import { inventoryItems, locations, customers, salesOrders, salesOrderLines } from "@/server/db/schema";
 import { eq } from "drizzle-orm";
 import { createReturnRequest } from "./actions";
 
@@ -41,6 +41,7 @@ export default async function WorkerReturnReceiptPage() {
   let locs: { id: string; code: string; name: string }[] = [];
   let custs: { id: string; code: string; name: string }[] = [];
   let sales: { id: string; docNo: string }[] = [];
+  let lines: { id: string; saleId: string; lineNo: number; itemId: string; itemCode: string; qty: string }[] = [];
   let dbAvailable = false;
 
   if (db) {
@@ -53,6 +54,13 @@ export default async function WorkerReturnReceiptPage() {
       custs = custRows.map((r) => ({ id: r.id, code: r.customerCode, name: r.nameEn || r.customerCode }));
       const saleRows = await db.select().from(salesOrders).where(eq(salesOrders.tenantId, authResult.tenantId));
       sales = saleRows.map((r) => ({ id: r.id, docNo: r.docNo }));
+      // WP-08-01A: load sale lines so the worker can select the original line.
+      const lineRows = await db.select().from(salesOrderLines).where(eq(salesOrderLines.tenantId, authResult.tenantId));
+      lines = lineRows.map((r) => ({
+        id: r.id, saleId: r.salesOrderId, lineNo: r.lineNo,
+        itemId: r.itemId, itemCode: items.find((i) => i.id === r.itemId)?.code ?? "?",
+        qty: r.quantityKg,
+      }));
       dbAvailable = true;
     } catch { dbAvailable = false; }
   }
@@ -91,6 +99,15 @@ export default async function WorkerReturnReceiptPage() {
                     <option value="">اختر أمر البيع</option>
                     {sales.map((s) => (<option key={s.id} value={s.id}><LtrValue>{s.docNo}</LtrValue></option>))}
                   </select>
+                </div>
+
+                {/* WP-08-01A: Original sale line — required so the service can validate saleLineId -> saleOrderId -> customerId -> itemId */}
+                <div>
+                  <label htmlFor="saleLineId" className="block text-sm font-medium mb-1">بند البيع الأصلي</label>
+                  <select id="saleLineId" name="saleLineId" required className="w-full p-2 border rounded" style={{ minHeight: "44px" }}>
+                    <option value="">اختر بند البيع</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground mt-1">يجب اختيار أمر البيع أولاً.</p>
                 </div>
 
                 {/* Item */}
@@ -150,6 +167,38 @@ export default async function WorkerReturnReceiptPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* WP-08-01A: client-side wiring so saleLineId dropdown is filtered by selected sale,
+            and selecting a sale line auto-syncs the item dropdown. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function(){
+                var lines = ${JSON.stringify(lines)};
+                var saleSel = document.getElementById('salesOrderId');
+                var lineSel = document.getElementById('saleLineId');
+                var itemSel = document.getElementById('itemId');
+                if (!saleSel || !lineSel) return;
+                saleSel.addEventListener('change', function(){
+                  var saleId = saleSel.value;
+                  lineSel.innerHTML = '<option value="">اختر بند البيع</option>';
+                  if (!saleId) return;
+                  lines.filter(function(l){return l.saleId === saleId;}).forEach(function(l){
+                    var opt = document.createElement('option');
+                    opt.value = l.id;
+                    opt.textContent = '#' + l.lineNo + ' (' + l.itemCode + ', ' + l.qty + 'kg)';
+                    lineSel.appendChild(opt);
+                  });
+                });
+                lineSel.addEventListener('change', function(){
+                  var lineId = lineSel.value;
+                  var ln = lines.find(function(l){return l.id === lineId;});
+                  if (ln && itemSel) itemSel.value = ln.itemId;
+                });
+              })();
+            `,
+          }}
+        />
       </Container>
     </WorkerShell>
   );

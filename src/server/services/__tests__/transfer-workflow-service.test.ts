@@ -23,6 +23,7 @@ import {
 } from "../transfer-workflow-service";
 import { InMemoryRawReceiptApprovalRepository } from "./in-memory-raw-receipt-approval-repository";
 import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-repository";
+import { InMemoryTenantOwnershipValidator } from "./in-memory-tenant-ownership-validator";
 import { InProcessAuditStore } from "../audit-service";
 import { InProcessIdempotencyStore } from "../idempotency-service";
 import { InProcessDocumentSequenceStore } from "../document-sequence-service";
@@ -43,9 +44,10 @@ function makeDeps() {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const tenantOwnershipValidator = new InMemoryTenantOwnershipValidator();
   const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
-  const service = new TransferWorkflowService({ approvalRepository, inventoryLedger, audit, idempotency });
-  return { approvalRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, service };
+  const service = new TransferWorkflowService({ approvalRepository, inventoryLedger, audit, idempotency, tenantOwnershipValidator });
+  return { approvalRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, service, tenantOwnershipValidator };
 }
 
 /**
@@ -65,6 +67,7 @@ function makeDepsWithTxRunner() {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const tenantOwnershipValidator = new InMemoryTenantOwnershipValidator();
   const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
 
   // Serialize transactions: each tx runs one at a time (deterministic).
@@ -96,9 +99,10 @@ function makeDepsWithTxRunner() {
 
   const service = new TransferWorkflowService({
     approvalRepository, inventoryLedger, audit, idempotency,
+    tenantOwnershipValidator,
     transactionRunner, txFactories,
   });
-  return { approvalRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, service, transactionRunner };
+  return { approvalRepository, ledgerRepo, audit, idempotency, documentSequence, inventoryLedger, service, transactionRunner, tenantOwnershipValidator };
 }
 
 function makeUser(userId: string, tenantId: string = TEST_TENANT_ID) {

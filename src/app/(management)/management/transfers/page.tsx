@@ -18,6 +18,7 @@ import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { TransferWorkflowService } from "@/server/services/transfer-workflow-service";
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
+import { DbTenantOwnershipValidator } from "@/server/services/db-tenant-ownership-validator";
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
@@ -51,6 +52,7 @@ export default async function TransfersPage() {
     const service = new TransferWorkflowService({
       approvalRepository: new RawReceiptApprovalDbRepository(db),
       inventoryLedger, audit, idempotency,
+      tenantOwnershipValidator: new DbTenantOwnershipValidator(db),
     });
     const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, TEST_ROLE_PERMISSION_MATRIX);
     try {

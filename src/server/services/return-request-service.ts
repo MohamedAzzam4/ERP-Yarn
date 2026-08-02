@@ -60,6 +60,7 @@ import type { InventoryLedgerService } from "./inventory-ledger-service";
 import type { SubledgerService } from "./subledger-service";
 import type { SalesRepository } from "./sales-repository";
 import type { ProfitabilitySnapshotService } from "./profitability-snapshot-service";
+import type { TenantOwnershipValidator } from "./db-tenant-ownership-validator";
 import { normalizeMoney, isPositiveMoney, addMoney, compareMoney, isZeroMoney, subtractMoney } from "./decimal-money";
 import { normalizeKg, isPositiveKg, addKg, compareKg } from "./decimal-kg";
 
@@ -212,9 +213,31 @@ export interface ReturnRequestServiceDeps {
   /** Required for approveReturnRequest: creates return-impact profitability snapshot version. */
   snapshotService: ProfitabilitySnapshotService;
   /**
+   * REQUIRED (WP-08-01A): tenant ownership + relation validator.
+   *
+   * Validates BEFORE any write that customer, sale order, sale line, item,
+   * and return location all belong to the actor's tenant, AND that the
+   * relation chain is consistent:
+   *   - sale order belongs to customer
+   *   - sale line belongs to sale order
+   *   - sale line references the selected item
+   * A valid Tenant-B row used by Tenant-A MUST be rejected here, before the
+   * idempotency claim or any DB write.
+   *
+   * Production: pass `DbTenantOwnershipValidator`.
+   * Tests: pass a mock implementing `TenantOwnershipValidator`.
+   */
+  tenantOwnershipValidator: TenantOwnershipValidator;
+  /**
    * Optional transaction runner. When provided, all DB writes in
-   * approveReturnRequest are wrapped in a single DB transaction. When absent
-   * (unit tests), services run without a DB transaction boundary.
+   * approveReturnRequest AND createReturnRequest are wrapped in a single
+   * DB transaction. When absent (unit tests), services run without a DB
+   * transaction boundary.
+   *
+   * WP-08-01A: createReturnRequest now uses this runner to wrap
+   * (header insert + lines insert + audit) so that a line-insert failure
+   * or audit failure rolls back the header. Idempotency claim + markSucceeded
+   * remain OUTSIDE the transaction (they are not business data).
    */
   transactionRunner?: ReturnRequestTransactionRunner;
   /**
@@ -260,6 +283,40 @@ export class ReturnRequestService {
       if (!isPositiveKg(line.quantityKg)) {
         throw new ReturnRequestError("VALIDATION_FAILED", `Line quantity must be positive, got '${line.quantityKg}'.`);
       }
+      if (!line.originalSaleOrderId?.trim() || !line.originalSaleLineId?.trim() || !line.itemId?.trim() || !line.returnLocationId?.trim()) {
+        throw new ReturnRequestError("VALIDATION_FAILED", "Each line requires originalSaleOrderId, originalSaleLineId, itemId, returnLocationId.");
+      }
+    }
+
+    // =====================================================================
+    // WP-08-01A: Tenant ownership + relation validation.
+    // BEFORE the idempotency claim — a rejected request must NOT create
+    // an idempotency record, header, line, or audit. Cross-tenant
+    // rejection produces ZERO writes.
+    //
+    // For each return line we validate the FULL chain:
+    //   customer   ∈ tenant
+    //   sale       ∈ tenant AND sale.customer_id = customer
+    //   saleLine   ∈ tenant AND saleLine.sales_order_id = sale
+    //   saleLine   references the line's itemId (saleLine.item_id = itemId)
+    //   item       ∈ tenant
+    //   location   ∈ tenant
+    // A valid Tenant-B ID used by Tenant-A is rejected here even if the
+    // FK exists (FK only proves existence, not ownership).
+    // =====================================================================
+    await this.deps.tenantOwnershipValidator.validateCustomerBelongsToTenant(user.tenantId, input.customerId);
+    await this.deps.tenantOwnershipValidator.validateSaleBelongsToTenantAndCustomer(
+      user.tenantId, input.salesOrderId, input.customerId,
+    );
+    for (const line of input.lines) {
+      await this.deps.tenantOwnershipValidator.validateLineBelongsToSale(
+        user.tenantId, line.originalSaleLineId, line.originalSaleOrderId,
+      );
+      await this.deps.tenantOwnershipValidator.validateLineReferencesItem(
+        user.tenantId, line.originalSaleLineId, line.itemId,
+      );
+      await this.deps.tenantOwnershipValidator.validateItemBelongsToTenant(user.tenantId, line.itemId);
+      await this.deps.tenantOwnershipValidator.validateLocationBelongsToTenant(user.tenantId, line.returnLocationId);
     }
 
     // Claim idempotency
@@ -304,58 +361,115 @@ export class ReturnRequestService {
       tenantId: user.tenantId, documentType: "return_request", year, entityType: RETURN_ENTITY_TYPE,
     });
 
-    // Insert return request
-    const returnRequest = await this.deps.returnRequestRepository.insertReturnRequest({
-      tenantId: user.tenantId,
-      docNo: docNoResult.docNo,
-      salesOrderId: input.salesOrderId,
-      customerId: input.customerId,
-      returnDate: input.returnDate,
-      returnReason: input.returnReason,
-      financialTreatment: input.financialTreatment ?? null,
-      isReplacement: input.isReplacement ?? false,
-      customerAdjustmentAmount: null,
-      createdBy: user.userId,
-    } as any);
+    // =====================================================================
+    // WP-08-01A: Atomic header + lines + audit.
+    //
+    // When `transactionRunner` is provided (production), all three writes
+    // commit in a single DB transaction. If any line insert fails, OR the
+    // audit fails, the entire transaction rolls back — no return header
+    // remains, no line remains, no audit remains. The idempotency claim
+    // is OUTSIDE the transaction (it is not business data; the caller can
+    // retry with the SAME idempotency key after fixing the cause and it
+    // will succeed exactly once).
+    //
+    // When `transactionRunner` is NOT provided (unit tests with in-memory
+    // repos), the writes run without a DB transaction boundary — but the
+    // service still throws on any failure, so the caller observes the
+    // error. In-memory tests that need to verify rollback semantics must
+    // pass a mock transactionRunner.
+    // =====================================================================
+    const executeCreate = async (
+      txScoped: {
+        returnRequestRepository: ReturnRequestRepository;
+        audit: AuditTransactionHandle;
+      } | null,
+    ): Promise<{ returnRequest: ReturnRequest }> => {
+      const rrRepo = txScoped?.returnRequestRepository ?? this.deps.returnRequestRepository;
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
 
-    this.deps.returnRequestRepository.recordIdempotencyKey?.(user.tenantId, input.idempotencyKey, returnRequest.id);
-
-    // Insert return lines
-    for (const line of input.lines) {
-      await this.deps.returnRequestRepository.insertReturnLine({
+      // Insert return request (header)
+      const returnRequest = await rrRepo.insertReturnRequest({
         tenantId: user.tenantId,
-        returnRequestId: returnRequest.id,
-        originalSaleOrderId: line.originalSaleOrderId,
-        originalSaleLineId: line.originalSaleLineId,
-        itemId: line.itemId,
-        quantityKg: normalizeKg(line.quantityKg),
-        returnLocationId: line.returnLocationId,
-        returnedStockStatus: line.returnedStockStatus,
-        originalSaleLineNetUnitValue: line.originalSaleLineNetUnitValue ?? null,
-        createdBy: user.userId,
-      } as any);
-    }
-
-    // Audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: RETURN_ENTITY_TYPE,
-      entityId: returnRequest.id,
-      actionType: "return_request.create",
-      newValuesJson: {
-        docNo: returnRequest.docNo,
+        docNo: docNoResult.docNo,
         salesOrderId: input.salesOrderId,
         customerId: input.customerId,
         returnDate: input.returnDate,
         returnReason: input.returnReason,
         financialTreatment: input.financialTreatment ?? null,
         isReplacement: input.isReplacement ?? false,
-      customerAdjustmentAmount: null,
-        lineCount: input.lines.length,
-        status: "draft",
+        customerAdjustmentAmount: null,
         createdBy: user.userId,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+      } as any);
+
+      rrRepo.recordIdempotencyKey?.(user.tenantId, input.idempotencyKey, returnRequest.id);
+
+      // Insert return lines — ANY failure here rolls back the header.
+      for (const line of input.lines) {
+        await rrRepo.insertReturnLine({
+          tenantId: user.tenantId,
+          returnRequestId: returnRequest.id,
+          originalSaleOrderId: line.originalSaleOrderId,
+          originalSaleLineId: line.originalSaleLineId,
+          itemId: line.itemId,
+          quantityKg: normalizeKg(line.quantityKg),
+          returnLocationId: line.returnLocationId,
+          returnedStockStatus: line.returnedStockStatus,
+          originalSaleLineNetUnitValue: line.originalSaleLineNetUnitValue ?? null,
+          createdBy: user.userId,
+        } as any);
+      }
+
+      // Audit — ANY failure here rolls back header + lines (DEC-024).
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
+        entityType: RETURN_ENTITY_TYPE,
+        entityId: returnRequest.id,
+        actionType: "return_request.create",
+        newValuesJson: {
+          docNo: returnRequest.docNo,
+          salesOrderId: input.salesOrderId,
+          customerId: input.customerId,
+          returnDate: input.returnDate,
+          returnReason: input.returnReason,
+          financialTreatment: input.financialTreatment ?? null,
+          isReplacement: input.isReplacement ?? false,
+        customerAdjustmentAmount: null,
+          lineCount: input.lines.length,
+          status: "draft",
+          createdBy: user.userId,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      return { returnRequest };
+    };
+
+    let returnRequest: ReturnRequest;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        // Wrap header + lines + audit in a single DB transaction.
+        const txResult = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txRrRepo = this.deps.txFactories!.createReturnRequestRepository(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          return executeCreate({ returnRequestRepository: txRrRepo, audit: txAudit });
+        });
+        returnRequest = txResult.returnRequest;
+      } else {
+        // No transaction runner (unit tests).
+        const res = await executeCreate(null);
+        returnRequest = res.returnRequest;
+      }
+    } catch (txError) {
+      // The DB transaction rolled back — no header, no lines, no audit.
+      // Mark the idempotency claim as business-failed so the caller can
+      // retry with the SAME key (idempotency_records.responseBody is null,
+      // claimIdempotency returns "execute" on the next call).
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 500,
+        responseBody: { message: "Return request creation transaction failed and rolled back." },
+        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+      }, now);
+      throw txError;
+    }
 
     const result: CreateReturnRequestResult = {
       action: "created",

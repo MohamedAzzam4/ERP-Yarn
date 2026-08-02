@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import { ReturnRequestService } from "@/server/services/return-request-service";
 import { InMemoryReturnRequestRepository } from "@/server/services/__tests__/in-memory-return-request-repository";
+import { InMemoryTenantOwnershipValidator } from "@/server/services/__tests__/in-memory-tenant-ownership-validator";
 import { InProcessAuditStore } from "@/server/services/audit-service";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
@@ -33,6 +34,7 @@ function makeDeps() {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const tenantOwnershipValidator = new InMemoryTenantOwnershipValidator();
   const inventoryLedger = { postReturnReceipt: async () => ({ movementId: "sm-1" }) } as any;
   const subledger = { postReturnCreditEntry: async () => ({ entryId: "ae-1" }) } as any;
   const snapshotService = { createReturnImpactSnapshot: async () => ({ id: "snap-1" }) } as any;
@@ -42,6 +44,7 @@ function makeDeps() {
     salesRepository: salesRepo,
     inventoryLedger, subledger, snapshotService,
     audit, idempotency, documentSequence,
+    tenantOwnershipValidator,
   });
   return { returnRepo, audit, idempotency, documentSequence, service };
 }
@@ -106,6 +109,7 @@ describe("WP-08-01A return treatment default behavioral proof", () => {
       subledger: { postReturnCreditEntry: async () => { creditCalled = true; return { entryId: "ae-1" }; } } as any,
       snapshotService: { createReturnImpactSnapshot: async () => { snapshotCalled = true; return { id: "snap-1" }; } } as any,
       audit: deps.audit, idempotency: deps.idempotency, documentSequence: deps.documentSequence,
+      tenantOwnershipValidator: new InMemoryTenantOwnershipValidator(),
     });
     await service.createReturnRequest(makeUser() as any, makeWarehouseEff() as any, makeReturnInput() as any);
     expect(creditCalled).toBe(false);

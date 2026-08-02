@@ -72,6 +72,7 @@ import { SubledgerService } from "../subledger-service";
 import { InMemorySalesRepository } from "./in-memory-sales-repository";
 import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-repository";
 import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
+import { InMemoryTenantOwnershipValidator } from "./in-memory-tenant-ownership-validator";
 
 function makeDeps() {
   const returnRepo = new InMemoryReturnRequestRepository();
@@ -82,6 +83,7 @@ function makeDeps() {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const tenantOwnershipValidator = new InMemoryTenantOwnershipValidator();
   const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
   const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: snapshotRepo, salesRepository, audit });
@@ -89,8 +91,9 @@ function makeDeps() {
     returnRequestRepository: returnRepo,
     audit, idempotency, documentSequence,
     inventoryLedger, subledger, salesRepository, snapshotService,
+    tenantOwnershipValidator,
   });
-  return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, snapshotRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, snapshotService, returnService };
+  return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, snapshotRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, snapshotService, returnService, tenantOwnershipValidator };
 }
 
 const BASE_LINE = {

@@ -85,16 +85,19 @@ async function main() {
       const { AuditDbRepository } = await import("../src/server/services/audit-db-repository");
       const { InProcessIdempotencyStore } = await import("../src/server/services/idempotency-service");
       const { InProcessDocumentSequenceStore } = await import("../src/server/services/document-sequence-service");
+      const { DbTenantOwnershipValidator } = await import("../src/server/services/db-tenant-ownership-validator");
 
       const audit = new AuditDbRepository(db);
       const idempotency = new InProcessIdempotencyStore();
       const documentSequence = new InProcessDocumentSequenceStore();
+      const tenantOwnershipValidator = new DbTenantOwnershipValidator(db);
       const inventoryLedger = new InventoryLedgerService({
         ledger: new InventoryLedgerDbRepository(db), audit, idempotency, documentSequence,
       });
       const service = new TransferWorkflowService({
         approvalRepository: new RawReceiptApprovalDbRepository(db),
         inventoryLedger, audit, idempotency,
+        tenantOwnershipValidator,
       });
 
       const user = { authenticated: true as const, userId: WAREHOUSE_USER_ID, tenantId: TEST_TENANT_ID, email: "t@e.com", name: "T", authId: "t" };
@@ -138,10 +141,12 @@ async function main() {
       const { SubledgerDbRepository } = await import("../src/server/services/subledger-db-repository");
       const { ProfitabilitySnapshotService } = await import("../src/server/services/profitability-snapshot-service");
       const { ProfitabilitySnapshotDbRepository } = await import("../src/server/services/profitability-snapshot-db-repository");
+      const { DbTenantOwnershipValidator } = await import("../src/server/services/db-tenant-ownership-validator");
 
       const audit = new AuditDbRepository(db);
       const idempotency = new InProcessIdempotencyStore();
       const documentSequence = new InProcessDocumentSequenceStore();
+      const tenantOwnershipValidator = new DbTenantOwnershipValidator(db);
       const inventoryLedger = new InventoryLedgerService({ ledger: new InventoryLedgerDbRepository(db), audit, idempotency, documentSequence });
       const subledger = new SubledgerService({ subledger: new SubledgerDbRepository(db), audit, idempotency, documentSequence });
       const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: new ProfitabilitySnapshotDbRepository(db), salesRepository: new SalesDbRepository(db), audit });
@@ -150,6 +155,7 @@ async function main() {
         returnRequestRepository: new ReturnRequestDbRepository(db),
         salesRepository: new SalesDbRepository(db),
         inventoryLedger, subledger, snapshotService, audit, idempotency, documentSequence,
+        tenantOwnershipValidator,
       });
 
       const user = { authenticated: true as const, userId: WAREHOUSE_USER_ID, tenantId: TEST_TENANT_ID, email: "t@e.com", name: "T", authId: "t" };

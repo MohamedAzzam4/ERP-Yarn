@@ -48,6 +48,7 @@ import {
 } from "./idempotency-service";
 import type { InventoryLedgerService, PostTransferInput, PostTransferResult, PostReversalInput, PostReversalResult } from "./inventory-ledger-service";
 import type { RawReceiptApprovalRepository } from "./raw-receipt-approval-service";
+import type { TenantOwnershipValidator } from "./db-tenant-ownership-validator";
 import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,18 @@ export interface TransferWorkflowServiceDeps {
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   /**
+   * REQUIRED (WP-08-01A): tenant ownership + relation validator.
+   *
+   * Validates BEFORE any write that item, source location, and destination
+   * location all belong to the actor's tenant, and that source ≠ destination.
+   * A valid Tenant-B row used by Tenant-A MUST be rejected here, before the
+   * idempotency claim or any DB write.
+   *
+   * Production: pass `DbTenantOwnershipValidator`.
+   * Tests: pass a mock implementing `TenantOwnershipValidator`.
+   */
+  tenantOwnershipValidator: TenantOwnershipValidator;
+  /**
    * Optional transaction runner. When provided, all DB writes in
    * approveTransfer are wrapped in a single DB transaction.
    * When absent (unit tests with in-memory repos), services run without
@@ -215,6 +228,17 @@ export class TransferWorkflowService {
     if (isNaN(qty) || qty <= 0) {
       throw new TransferWorkflowError("VALIDATION_FAILED", `Quantity must be positive, got '${input.quantityKg}'.`);
     }
+
+    // =====================================================================
+    // WP-08-01A: Tenant ownership + relation validation.
+    // BEFORE any write (subjectHash dedup query, approval_requests insert,
+    // audit). A valid Tenant-B item/location used by Tenant-A MUST be
+    // rejected here. Cross-tenant rejection produces ZERO writes.
+    // =====================================================================
+    await this.deps.tenantOwnershipValidator.validateItemBelongsToTenant(user.tenantId, input.itemId);
+    await this.deps.tenantOwnershipValidator.validateLocationBelongsToTenant(user.tenantId, input.fromLocationId);
+    await this.deps.tenantOwnershipValidator.validateLocationBelongsToTenant(user.tenantId, input.toLocationId);
+    this.deps.tenantOwnershipValidator.validateSourceAndDestinationDiffer(input.fromLocationId, input.toLocationId);
 
     const subjectHash = computeTransferSubjectHash(input);
 

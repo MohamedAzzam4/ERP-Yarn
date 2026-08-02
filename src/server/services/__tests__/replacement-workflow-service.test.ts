@@ -60,6 +60,7 @@ import { SalesDraftService } from "../sales-draft-service";
 import { InMemorySalesRepository } from "./in-memory-sales-repository";
 import { InMemoryInventoryLedgerRepository } from "./in-memory-inventory-ledger-repository";
 import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
+import { InMemoryTenantOwnershipValidator } from "./in-memory-tenant-ownership-validator";
 import { InMemoryStockReservationRepository } from "./in-memory-stock-reservation-repository";
 
 const TEST_TENANT_ID = "00000000-0000-0000-0000-000000060004";
@@ -143,6 +144,7 @@ function makeFullDeps(): FullDeps {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const tenantOwnershipValidator = new InMemoryTenantOwnershipValidator();
   const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
   const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: snapshotRepo, salesRepository, audit });
@@ -150,6 +152,7 @@ function makeFullDeps(): FullDeps {
     returnRequestRepository: returnRepo,
     audit, idempotency, documentSequence,
     inventoryLedger, subledger, salesRepository, snapshotService,
+    tenantOwnershipValidator,
   });
   const salesSubmissionService = new SalesSubmissionService({
     salesRepository, reservationRepository: reservationRepo,

@@ -37,6 +37,7 @@ import { randomUUID } from "node:crypto";
 import { ReturnRequestDbRepository } from "../src/server/services/return-request-db-repository";
 import { ReturnRequestService } from "../src/server/services/return-request-service";
 import { AuditDbRepository } from "../src/server/services/audit-db-repository";
+import { DbTenantOwnershipValidator } from "../src/server/services/db-tenant-ownership-validator";
 import { InventoryLedgerDbRepository } from "../src/server/services/inventory-ledger-db-repository";
 import { InventoryLedgerService } from "../src/server/services/inventory-ledger-service";
 import { SubledgerDbRepository } from "../src/server/services/subledger-db-repository";
@@ -227,6 +228,7 @@ function wireServices(fault: FaultInjectionPoint = "none") {
   const returnService = new ReturnRequestService({
     returnRequestRepository: returnDbRepo, audit: auditDbRepo, idempotency, documentSequence,
     inventoryLedger, subledger, salesRepository: salesDbRepo, snapshotService,
+    tenantOwnershipValidator: new DbTenantOwnershipValidator(db),
     transactionRunner, txFactories,
   });
   return { returnDbRepo, auditDbRepo, ledgerDbRepo, subledgerDbRepo, salesDbRepo, snapshotDbRepo, idempotency, documentSequence, inventoryLedger, subledger, snapshotService, returnService };

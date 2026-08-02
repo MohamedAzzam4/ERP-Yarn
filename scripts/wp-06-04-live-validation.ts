@@ -34,6 +34,7 @@ import * as schema from "../src/server/db/schema/index";
 import { randomUUID } from "node:crypto";
 import { ReturnRequestDbRepository } from "../src/server/services/return-request-db-repository";
 import { ReturnRequestService } from "../src/server/services/return-request-service";
+import { DbTenantOwnershipValidator } from "../src/server/services/db-tenant-ownership-validator";
 import { ReplacementWorkflowService } from "../src/server/services/replacement-workflow-service";
 import { AuditDbRepository } from "../src/server/services/audit-db-repository";
 import { InventoryLedgerDbRepository } from "../src/server/services/inventory-ledger-db-repository";
@@ -150,6 +151,7 @@ function wireServices() {
     returnRequestRepository: returnDbRepo,
     audit: auditDbRepo, idempotency, documentSequence,
     inventoryLedger, subledger, salesRepository: salesDbRepo, snapshotService,
+    tenantOwnershipValidator: new DbTenantOwnershipValidator(db),
   });
   const salesSubmissionService = new SalesSubmissionService({
     salesRepository: salesDbRepo,
@@ -332,6 +334,7 @@ function wireServicesWithReplacementFault(fault: ReplacementFaultPoint): Service
     returnRequestRepository: returnDbRepo,
     audit: auditDbRepo, idempotency, documentSequence,
     inventoryLedger, subledger, salesRepository: salesDbRepo, snapshotService,
+    tenantOwnershipValidator: new DbTenantOwnershipValidator(db),
   });
   const salesSubmissionService = new SalesSubmissionService({
     salesRepository: salesDbRepo,
