@@ -58,17 +58,30 @@
 
 ## Worker action states (browser screenshots via Playwright)
 
-### Form-visible states (VLM-verified)
+### Worker action success/error states (browser screenshots via Playwright — VLM-verified)
 
-| Route | Viewport | State | Action | Screenshot | DB content | Pass/Fail | Notes |
-|---|---|---|---|---|---|---|---|
-| /worker/production-entry | 360 | forms visible | N/A | `action-forms-visible-360.png` | YES | PASS | Forms + tables with real data |
-| /worker/production-entry | 768 | forms visible | N/A | `action-forms-visible-768.png` | YES | PASS | |
-| /worker/production-entry | 1024 | forms visible | N/A | `action-forms-visible-1024.png` | YES | PASS | |
-| /worker/production-entry | 1440 | forms visible | N/A | `action-forms-visible-1440.png` | YES | PASS | VLM: "QA Production" visible, 3 forms + 4 tables |
-| /worker/production-entry | 1440 | draft submitted | createProductionDraft | `action-prod-draft-success-1440.png` | YES | PASS | VLM: error state shown (server action executed, validation feedback visible) |
-| /worker/production-entry | 1440 | WIP return submitted | createWipReturnRequest | `action-wip-return-success-1440.png` | YES | PASS | VLM: "QA Production" visible, page stayed on production-entry, return history table visible |
-| /worker/production-entry | 1440 | validation error | empty form submit | `action-validation-error-1440.png` | YES | PASS | VLM: validation error "Please select an item in the list." on required dropdown |
+| Route | Viewport | State | Action | Screenshot | Success/Error | DB content | Pass/Fail | Notes |
+|---|---|---|---|---|---|---|---|---|
+| /worker/production-entry | 360 | prod draft success | createProductionDraft | `action-prod-draft-success-360.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 768 | prod draft success | createProductionDraft | `action-prod-draft-success-768.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 1024 | prod draft success | createProductionDraft | `action-prod-draft-success-1024.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 1440 | prod draft success | createProductionDraft | `action-prod-draft-success-1440.png` | SUCCESS | YES | PASS | VLM: "QA Production" visible, new order PO-2026-000001 (draft) in table |
+| /worker/production-entry | 360 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-360.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 768 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-768.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 1024 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-1024.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 1440 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-1440.png` | SUCCESS | YES | PASS | VLM: "QA Production" visible, production orders table with data |
+| /worker/production-entry | 360 | WIP return success | createWipReturnRequest | `action-wip-return-success-360.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 768 | WIP return success | createWipReturnRequest | `action-wip-return-success-768.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 1024 | WIP return success | createWipReturnRequest | `action-wip-return-success-1024.png` | SUCCESS | YES | PASS | |
+| /worker/production-entry | 1440 | WIP return success | createWipReturnRequest | `action-wip-return-success-1440.png` | SUCCESS | YES | PASS | VLM: WR-2026-000001 visible in table (pending_approval, 20.000kg) |
+| /worker/production-entry | 360 | validation error | empty form submit | `action-validation-error-360.png` | ERROR | YES | PASS | |
+| /worker/production-entry | 768 | validation error | empty form submit | `action-validation-error-768.png` | ERROR | YES | PASS | |
+| /worker/production-entry | 1024 | validation error | empty form submit | `action-validation-error-1024.png` | ERROR | YES | PASS | |
+| /worker/production-entry | 1440 | validation error | empty form submit | `action-validation-error-1440.png` | ERROR | YES | PASS | VLM: "Please select an item in the list." on required dropdown |
+| /worker/production-entry | 360 | forms visible | N/A | `action-forms-visible-360.png` | N/A | YES | PASS | |
+| /worker/production-entry | 768 | forms visible | N/A | `action-forms-visible-768.png` | N/A | YES | PASS | |
+| /worker/production-entry | 1024 | forms visible | N/A | `action-forms-visible-1024.png` | N/A | YES | PASS | |
+| /worker/production-entry | 1440 | forms visible | N/A | `action-forms-visible-1440.png` | N/A | YES | PASS | VLM: "QA Production" visible, 3 forms + tables |
 
 ### Browser session fix
 
