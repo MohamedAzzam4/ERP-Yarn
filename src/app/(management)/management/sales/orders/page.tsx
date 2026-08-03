@@ -1,10 +1,13 @@
 /**
  * Management Sales Orders page — WP-08-01C.
  *
- * Contract 10 §8.4: Sales Screens.
- *   Draft multi-line-capable sales, complete commercial data, submit/reserve,
- *   approve, reject/cancel, and inspect immutable results.
- *   Full commercial totals visible to Owner/Accountant.
+ * Contract 10 §8.4: Sales screens support draft, complete price, submit,
+ * approve, reject/cancel, correction/reversal by permission.
+ * Contract 10 §8.1: approve/reject only through dedicated commands with
+ * reason/idempotency.
+ *
+ * Shows sales orders with commercial totals + approve/reject forms for
+ * pending_approval orders.
  */
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
@@ -17,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { SalesScreenQueryService, type ManagementSalesOrderDto } from "@/server/services/sales-screen-query-service";
+import { approveSaleAction, rejectSaleAction } from "./actions";
 
 export default async function ManagementSalesOrdersPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -39,6 +43,8 @@ export default async function ManagementSalesOrdersPage() {
     } catch { dbAvailable = false; }
   }
 
+  const pendingOrders = orders.filter((o) => o.approvalStatus === "pending_approval");
+
   return (
     <ManagementShell
       userName={authResult.name || authResult.email}
@@ -57,45 +63,91 @@ export default async function ManagementSalesOrdersPage() {
         )}
 
         {dbAvailable && orders.length > 0 && (
-          <Card>
-            <CardHeader><CardTitle>الأوامر الحالية</CardTitle></CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-right">
-                      <th className="py-2 px-3">رقم المستند</th>
-                      <th className="py-2 px-3">العميل</th>
-                      <th className="py-2 px-3">الحالة</th>
-                      <th className="py-2 px-3">الموافقة</th>
-                      <th className="py-2 px-3">إجمالي الإيراد</th>
-                      <th className="py-2 px-3">الخصم</th>
-                      <th className="py-2 px-3">الإجمالي المنشور</th>
-                      <th className="py-2 px-3">الحجز</th>
-                      <th className="py-2 px-3">الدفع</th>
-                      <th className="py-2 px-3">التسليم</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {orders.map((o) => (
-                      <tr key={o.id} className="border-b">
-                        <td className="py-2 px-3"><LtrValue>{o.docNo}</LtrValue></td>
-                        <td className="py-2 px-3">{o.customerName} (<LtrValue>{o.customerCode}</LtrValue>)</td>
-                        <td className="py-2 px-3">{o.saleStatus}</td>
-                        <td className="py-2 px-3">{o.approvalStatus}</td>
-                        <td className="py-2 px-3"><LtrValue>{o.totalGrossRevenue}</LtrValue></td>
-                        <td className="py-2 px-3"><LtrValue>{o.orderDiscountTotal}</LtrValue></td>
-                        <td className="py-2 px-3"><LtrValue>{o.documentTotalPosted}</LtrValue></td>
-                        <td className="py-2 px-3">{o.reservationStatus ?? "—"}</td>
-                        <td className="py-2 px-3">{o.paymentStatus ?? "—"}</td>
-                        <td className="py-2 px-3">{o.deliveryStatus ?? "—"}</td>
+          <>
+            {/* Pending approval orders with action forms */}
+            {pendingOrders.length > 0 && (
+              <Card className="mb-6">
+                <CardHeader><CardTitle>أوامر بانتظار الموافقة</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  {pendingOrders.map((o) => (
+                    <div key={o.id} className="border rounded p-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <div>
+                          <span className="font-medium"><LtrValue>{o.docNo}</LtrValue></span>
+                          <span className="text-muted-foreground mr-2">{o.customerName} (<LtrValue>{o.customerCode}</LtrValue>)</span>
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          الإجمالي: <LtrValue>{o.documentTotalPosted}</LtrValue>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {/* Approve form */}
+                        <form action={approveSaleAction} className="inline">
+                          <input type="hidden" name="saleId" value={o.id} />
+                          <input type="hidden" name="idempotencyKey" value={`approve-${o.id}`} />
+                          <input type="hidden" name="decisionNotes" value="" />
+                          <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>
+                            موافقة
+                          </button>
+                        </form>
+                        {/* Reject form */}
+                        <form action={rejectSaleAction} className="inline flex gap-2">
+                          <input type="hidden" name="saleId" value={o.id} />
+                          <input type="hidden" name="idempotencyKey" value={`reject-${o.id}`} />
+                          <input type="hidden" name="humanResolutionType" value="rejected" />
+                          <input type="text" name="resolutionReason" required placeholder="سبب الرفض" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                          <button type="submit" className="px-4 py-2 border border-red-600 text-red-600 rounded text-sm" style={{ minHeight: "44px" }}>
+                            رفض
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* All orders table */}
+            <Card>
+              <CardHeader><CardTitle>جميع الأوامر</CardTitle></CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-right">
+                        <th className="py-2 px-3">رقم المستند</th>
+                        <th className="py-2 px-3">العميل</th>
+                        <th className="py-2 px-3">الحالة</th>
+                        <th className="py-2 px-3">الموافقة</th>
+                        <th className="py-2 px-3">إجمالي الإيراد</th>
+                        <th className="py-2 px-3">الخصم</th>
+                        <th className="py-2 px-3">الإجمالي المنشور</th>
+                        <th className="py-2 px-3">الحجز</th>
+                        <th className="py-2 px-3">الدفع</th>
+                        <th className="py-2 px-3">التسليم</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+                    </thead>
+                    <tbody>
+                      {orders.map((o) => (
+                        <tr key={o.id} className="border-b">
+                          <td className="py-2 px-3"><LtrValue>{o.docNo}</LtrValue></td>
+                          <td className="py-2 px-3">{o.customerName} (<LtrValue>{o.customerCode}</LtrValue>)</td>
+                          <td className="py-2 px-3">{o.saleStatus}</td>
+                          <td className="py-2 px-3">{o.approvalStatus}</td>
+                          <td className="py-2 px-3"><LtrValue>{o.totalGrossRevenue}</LtrValue></td>
+                          <td className="py-2 px-3"><LtrValue>{o.orderDiscountTotal}</LtrValue></td>
+                          <td className="py-2 px-3"><LtrValue>{o.documentTotalPosted}</LtrValue></td>
+                          <td className="py-2 px-3">{o.reservationStatus ?? "—"}</td>
+                          <td className="py-2 px-3">{o.paymentStatus ?? "—"}</td>
+                          <td className="py-2 px-3">{o.deliveryStatus ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </>
         )}
       </Container>
     </ManagementShell>

@@ -34,6 +34,7 @@ import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { db } from "@/server/db/client";
+import { revalidatePath } from "next/cache";
 
 function getService() {
   if (!db) {
@@ -85,7 +86,7 @@ function getService() {
   });
 }
 
-export async function resolveSaleFailureAction(formData: FormData) {
+export async function resolveSaleFailureAction(formData: FormData): Promise<void> {
   const authResult = await getErpAuthContextWithRoles();
   if (!authResult.authenticated) redirect("/login");
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
@@ -104,20 +105,9 @@ export async function resolveSaleFailureAction(formData: FormData) {
     idempotencyKey: `resolve-${authResult.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   };
 
-  try {
-    const service = getService();
-    const result = await service.resolveSaleFailure(authResult, effective, input);
-    return {
-      success: true,
-      action: result.action,
-      saleId: result.saleId,
-      saleStatus: result.saleStatus,
-      reason: result.reason,
-      reservationReleased: result.reservationReleased,
-      reservationMarkedFailed: result.reservationMarkedFailed,
-      criticalAlertIds: result.criticalAlertIds,
-    };
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
-  }
+  const service = getService();
+  await service.resolveSaleFailure(authResult, effective, input);
+
+  revalidatePath("/management/sales/failure-resolution");
+  revalidatePath("/management/sales/orders");
 }

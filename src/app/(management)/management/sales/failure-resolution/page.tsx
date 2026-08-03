@@ -4,8 +4,8 @@
  * Contract 10 §8.4: Sales failure resolution.
  * Contract 10 §8.1: Approval Center queue categories.
  *
- * Shows the approval queue filtered to sales-related entity types,
- * plus any sales with failure-resolution status.
+ * Shows the approval queue + failed orders with resolve action form.
+ * Uses existing resolveSaleFailureAction from sales-failure-resolution/actions.ts.
  */
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
@@ -18,6 +18,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { SalesScreenQueryService, type ManagementApprovalQueueDto, type ManagementSalesOrderDto } from "@/server/services/sales-screen-query-service";
+import { resolveSaleFailureAction } from "../../sales-failure-resolution/actions";
+import { SALE_FAILURE_REASONS } from "@/server/services/sales-failure-resolution-types";
 
 export default async function ManagementSalesFailureResolutionPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -36,13 +38,9 @@ export default async function ManagementSalesFailureResolutionPage() {
   if (db) {
     try {
       const queryService = new SalesScreenQueryService(db);
-      // Get sales-related approval queue items
       queueItems = await queryService.listManagementApprovalQueue(authResult.tenantId, [
-        "sale_order",
-        "return_request",
-        "transfer_request",
+        "sale_order", "return_request", "transfer_request",
       ]);
-      // Get sales orders with failure-resolution status
       const allOrders = await queryService.listManagementSalesOrders(authResult.tenantId);
       failedOrders = allOrders.filter((o) =>
         o.qualityWarningStatus === "quality_risk" ||
@@ -103,36 +101,54 @@ export default async function ManagementSalesFailureResolutionPage() {
               </CardContent>
             </Card>
 
-            {/* Failed/Quality-Risk Orders */}
+            {/* Failed/Quality-Risk Orders with resolve form */}
             <Card>
               <CardHeader><CardTitle>أوامر البيع ذات المشاكل</CardTitle></CardHeader>
               <CardContent>
                 {failedOrders.length === 0 ? (
                   <p className="text-center text-muted-foreground py-8">لا توجد أوامر بيع ذات مشاكل.</p>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b text-right">
-                          <th className="py-2 px-3">رقم المستند</th>
-                          <th className="py-2 px-3">العميل</th>
-                          <th className="py-2 px-3">الحالة</th>
-                          <th className="py-2 px-3">الموافقة</th>
-                          <th className="py-2 px-3">تحذير الجودة</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {failedOrders.map((o) => (
-                          <tr key={o.id} className="border-b">
-                            <td className="py-2 px-3"><LtrValue>{o.docNo}</LtrValue></td>
-                            <td className="py-2 px-3">{o.customerName}</td>
-                            <td className="py-2 px-3">{o.saleStatus}</td>
-                            <td className="py-2 px-3">{o.approvalStatus}</td>
-                            <td className="py-2 px-3">{o.qualityWarningStatus ?? "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="space-y-4">
+                    {failedOrders.map((o) => (
+                      <div key={o.id} className="border rounded p-4">
+                        <div className="flex justify-between items-center mb-3">
+                          <div>
+                            <span className="font-medium"><LtrValue>{o.docNo}</LtrValue></span>
+                            <span className="text-muted-foreground mr-2">{o.customerName}</span>
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            الحالة: {o.saleStatus} | الموافقة: {o.approvalStatus}
+                            {o.qualityWarningStatus && ` | تحذير: ${o.qualityWarningStatus}`}
+                          </div>
+                        </div>
+                        {/* Resolve failure form */}
+                        <form action={resolveSaleFailureAction} className="flex flex-wrap gap-2 items-end">
+                          <input type="hidden" name="sale_id" value={o.id} />
+                          <div>
+                            <label htmlFor={`reason-${o.id}`} className="block text-xs text-muted-foreground mb-1">السبب</label>
+                            <select id={`reason-${o.id}`} name="reason" required className="p-2 border rounded text-sm" style={{ minHeight: "44px" }}>
+                              {SALE_FAILURE_REASONS.map((r) => (
+                                <option key={r} value={r}>{r}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label htmlFor={`resolution-${o.id}`} className="block text-xs text-muted-foreground mb-1">تفاصيل الحل</label>
+                            <input id={`resolution-${o.id}`} name="resolution_reason" type="text" required placeholder="سبب/تفاصيل الحل" className="p-2 border rounded text-sm" style={{ minHeight: "44px" }} />
+                          </div>
+                          <div>
+                            <label htmlFor={`humanType-${o.id}`} className="block text-xs text-muted-foreground mb-1">نوع الحل البشري</label>
+                            <select id={`humanType-${o.id}`} name="human_resolution_type" className="p-2 border rounded text-sm" style={{ minHeight: "44px" }}>
+                              <option value="rejected">رفض</option>
+                              <option value="cancelled">إلغاء</option>
+                            </select>
+                          </div>
+                          <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>
+                            حل الفشل
+                          </button>
+                        </form>
+                      </div>
+                    ))}
                   </div>
                 )}
               </CardContent>
