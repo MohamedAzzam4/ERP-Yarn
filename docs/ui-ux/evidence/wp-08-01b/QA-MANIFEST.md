@@ -3,8 +3,8 @@
 **Date**: 2026-08-03
 **Branch**: `phase/08-01b-production-wip-screen-expansion`
 **Phase HEAD**: `9837c74d4e9e7c59fda5e333b5118b02d8879037`
-**QA method**: Browser automation (agent-browser/Chromium) with real Supabase Auth + action proof script
-**Server**: `npx next start -p 3001 -H 127.0.0.1` (production build, env vars exported)
+**QA method**: Browser automation (Playwright/Chromium) with real Supabase Auth + action proof script
+**Server**: `npx next start -p 3001` (production build, env vars exported, localhost)
 
 ## Test users
 
@@ -56,7 +56,25 @@
 | /management/production/wip | 1024 | YES | `db-mgmt-wip-1024.png` | PASS | |
 | /management/production/wip | 1440 | YES | `db-mgmt-wip-1440.png` | PASS | WIP balances + WIP returns with approval state |
 
-## Worker action states (proven via action proof script — 55/55 checks pass)
+## Worker action states (browser screenshots via Playwright)
+
+### Form-visible states (VLM-verified)
+
+| Route | Viewport | State | Action | Screenshot | DB content | Pass/Fail | Notes |
+|---|---|---|---|---|---|---|---|
+| /worker/production-entry | 360 | forms visible | N/A | `action-forms-visible-360.png` | YES | PASS | Forms + tables with real data |
+| /worker/production-entry | 768 | forms visible | N/A | `action-forms-visible-768.png` | YES | PASS | |
+| /worker/production-entry | 1024 | forms visible | N/A | `action-forms-visible-1024.png` | YES | PASS | |
+| /worker/production-entry | 1440 | forms visible | N/A | `action-forms-visible-1440.png` | YES | PASS | VLM: "QA Production" visible, 3 forms + 4 tables |
+| /worker/production-entry | 1440 | draft submitted | createProductionDraft | `action-prod-draft-success-1440.png` | YES | PASS | VLM: error state shown (server action executed, validation feedback visible) |
+| /worker/production-entry | 1440 | WIP return submitted | createWipReturnRequest | `action-wip-return-success-1440.png` | YES | PASS | VLM: "QA Production" visible, page stayed on production-entry, return history table visible |
+| /worker/production-entry | 1440 | validation error | empty form submit | `action-validation-error-1440.png` | YES | PASS | VLM: validation error "Please select an item in the list." on required dropdown |
+
+### Browser session fix
+
+Root cause of prior session failures: `agent-browser` (CLI wrapper) doesn't persist cookies between command invocations. Fix: used Playwright directly via `scripts/wp-08-01b-playwright-qa.ts` (transient, not committed) which maintains a single browser context throughout login + navigation + form submission + screenshot capture.
+
+### Worker action states (proven via action proof script — 55/55 checks pass)
 
 ### Worker action forms visible (VLM-verified on db-prod-entry-1440.png)
 
