@@ -69,7 +69,7 @@
 | /worker/production-entry | 360 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-360.png` | SUCCESS | YES | PASS | |
 | /worker/production-entry | 768 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-768.png` | SUCCESS | YES | PASS | |
 | /worker/production-entry | 1024 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-1024.png` | SUCCESS | YES | PASS | |
-| /worker/production-entry | 1440 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-1440.png` | SUCCESS | YES | PASS | VLM: "QA Production" visible, production orders table with data |
+| /worker/production-entry | 1440 | receipt draft success | createReceiptDraft | `action-receipt-draft-success-1440.png` | SUCCESS | YES | PASS | VLM: "QA Production" visible, page stayed on production-entry |
 | /worker/production-entry | 360 | WIP return success | createWipReturnRequest | `action-wip-return-success-360.png` | SUCCESS | YES | PASS | |
 | /worker/production-entry | 768 | WIP return success | createWipReturnRequest | `action-wip-return-success-768.png` | SUCCESS | YES | PASS | |
 | /worker/production-entry | 1024 | WIP return success | createWipReturnRequest | `action-wip-return-success-1024.png` | SUCCESS | YES | PASS | |
@@ -82,6 +82,37 @@
 | /worker/production-entry | 768 | forms visible | N/A | `action-forms-visible-768.png` | N/A | YES | PASS | |
 | /worker/production-entry | 1024 | forms visible | N/A | `action-forms-visible-1024.png` | N/A | YES | PASS | |
 | /worker/production-entry | 1440 | forms visible | N/A | `action-forms-visible-1440.png` | N/A | YES | PASS | VLM: "QA Production" visible, 3 forms + tables |
+
+### Management receipts page after worker receipt draft submission (VLM-verified)
+
+| Route | Viewport | State | Screenshot | DB content | Pass/Fail | Notes |
+|---|---|---|---|---|---|---|
+| /management/production/receipts | 360 | receipt visible after worker submit | `mgmt-receipts-after-worker-submit-360.png` | YES | PASS | |
+| /management/production/receipts | 768 | receipt visible after worker submit | `mgmt-receipts-after-worker-submit-768.png` | YES | PASS | |
+| /management/production/receipts | 1024 | receipt visible after worker submit | `mgmt-receipts-after-worker-submit-1024.png` | YES | PASS | |
+| /management/production/receipts | 1440 | receipt visible after worker submit | `mgmt-receipts-after-worker-submit-1440.png` | YES | PASS | VLM: PR-2026-000001 visible (draft, 100.000kg, PO-8B-001), "QA Owner B" visible |
+| /management/production/wip | 360 | WIP unchanged after receipt submit | `mgmt-wip-after-receipt-submit-360.png` | YES | PASS | |
+| /management/production/wip | 768 | WIP unchanged after receipt submit | `mgmt-wip-after-receipt-submit-768.png` | YES | PASS | |
+| /management/production/wip | 1024 | WIP unchanged after receipt submit | `mgmt-wip-after-receipt-submit-1024.png` | YES | PASS | |
+| /management/production/wip | 1440 | WIP unchanged after receipt submit | `mgmt-wip-after-receipt-submit-1440.png` | YES | PASS | |
+
+### Receipt draft DB persistence proof
+
+- **Receipt ID**: `818e5fc3-d63a-4b09-b876-1560fbc5212b`
+- **Receipt doc_no**: `PR-2026-000001`
+- **Receipt status**: `draft` (not approved — worker can only create drafts)
+- **Linked production order**: PO-8B-001 (status: material_issued)
+- **Linked production input**: `40000000-...-080b05` (issued: 1000.000, consumed: 0.000, remaining WIP: 1000.000)
+- **Allocation**: consumed=90.000, waste=10.000, payable_cost_basis=100.000
+- **Financial fields**: factory_rate_per_input_ton_used=NULL, calculated_factory_cost=NULL (worker did NOT submit rate/cost)
+
+### No-financial-posting proof for receipt draft
+
+- **Worker-posted stock_movements**: 0 (draft creates no movement)
+- **Account entries**: 0 (draft creates no payable)
+- **WIP balance**: 1000.000 (UNCHANGED — draft doesn't consume WIP)
+- **Production input consumed_qty_kg**: 0.000 (UNCHANGED — draft doesn't consume input)
+- **Receipt financial fields**: rate=NULL, cost=NULL (worker doesn't have production.view_cost)
 
 ### Browser session fix
 
