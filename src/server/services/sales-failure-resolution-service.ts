@@ -75,6 +75,8 @@ export interface SalesFailureResolutionTransactionScopedFactories {
   createSalesRepository: (tx: unknown) => SalesRepository;
   createAlertRepository: (tx: unknown) => OperationalAlertRepository;
   createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
+  /** WP-08-01C: tx-scoped audit for atomic audit rollback. */
+  createAudit?: (tx: unknown) => AuditTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +247,7 @@ export class SalesFailureResolutionService {
         salesRepository: SalesRepository;
         alertRepository: OperationalAlertRepository;
         idempotency?: IdempotencyTransactionHandle;
+        audit?: AuditTransactionHandle;
       } | null,
     ): Promise<ResolveSaleFailureResult> => {
       const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
@@ -252,6 +255,7 @@ export class SalesFailureResolutionService {
       const salesRepo = txScoped?.salesRepository ?? this.deps.salesRepository;
       const alertRepo = txScoped?.alertRepository ?? this.deps.alertRepository;
       const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
 
       const criticalAlertIds: string[] = [];
       const balanceSnapshots: ResolveSaleFailureResult["balanceSnapshots"] = [];
@@ -418,7 +422,7 @@ export class SalesFailureResolutionService {
       // atomically with the business mutations — if audit fails, the sale
       // status change, reservation release, reserved_qty decrease, and alert
       // creation all roll back.
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
         entityType: SALE_ENTITY_TYPE,
         entityId: sale.id,
         actionType: "sales_failure_resolution.resolve",
@@ -462,12 +466,14 @@ export class SalesFailureResolutionService {
           const txSalesRepo = this.deps.txFactories!.createSalesRepository(tx);
           const txAlertRepo = this.deps.txFactories!.createAlertRepository(tx);
           const txIdem = this.deps.txFactories!.createIdempotency?.(tx);
+          const txAudit = this.deps.txFactories!.createAudit?.(tx);
           return executeResolution({
             inventoryLedger: txInvLedger,
             reservationRepository: txResRepo,
             salesRepository: txSalesRepo,
             alertRepository: txAlertRepo,
             idempotency: txIdem,
+            audit: txAudit,
           });
         });
       } else {

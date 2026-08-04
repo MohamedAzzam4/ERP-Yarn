@@ -126,6 +126,8 @@ export interface SalesApprovalTransactionScopedFactories {
   createReservationRepository: (tx: unknown) => StockReservationRepository;
   createSnapshotService: (tx: unknown) => ProfitabilitySnapshotService;
   createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
+  /** WP-08-01C: tx-scoped audit for atomic audit rollback. */
+  createAudit?: (tx: unknown) => AuditTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +346,7 @@ export class SalesApprovalService {
         reservationRepository: StockReservationRepository;
         snapshotService: ProfitabilitySnapshotService;
         idempotency?: IdempotencyTransactionHandle;
+        audit?: AuditTransactionHandle;
       } | null,
     ): Promise<ApproveSaleResult> => {
       const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
@@ -352,6 +355,8 @@ export class SalesApprovalService {
       const resRepo = txScoped?.reservationRepository ?? this.deps.reservationRepository;
       const snapSvc = txScoped?.snapshotService ?? this.deps.snapshotService;
       const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
+      // WP-08-01C: Use tx-scoped audit if available (for atomic audit rollback).
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
 
       const year = now.getUTCFullYear();
       const movementResults: Array<{ lineId: string; movementId: string; docNo: string }> = [];
@@ -426,7 +431,7 @@ export class SalesApprovalService {
       }
 
       // Step 10: Audit (inside same tx — DEC-024)
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
         entityType: SALES_ENTITY_TYPE,
         entityId: sale.id,
         actionType: "sales_approval.approve",
@@ -471,10 +476,11 @@ export class SalesApprovalService {
           const txRes = this.deps.txFactories!.createReservationRepository(tx);
           const txSnap = this.deps.txFactories!.createSnapshotService(tx);
           const txIdem = this.deps.txFactories!.createIdempotency?.(tx);
+          const txAudit = this.deps.txFactories!.createAudit?.(tx);
           return executeApproval({
             inventoryLedger: txInv, subledger: txSub, salesRepository: txSales,
             reservationRepository: txRes, snapshotService: txSnap,
-            idempotency: txIdem,
+            idempotency: txIdem, audit: txAudit,
           });
         });
       } else {

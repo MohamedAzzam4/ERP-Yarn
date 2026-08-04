@@ -161,8 +161,8 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     const { SalesApprovalService } = await import("../../../server/services/sales-approval-service");
     const { InventoryLedgerService } = await import("../../../server/services/inventory-ledger-service");
     const { InventoryLedgerDbRepository } = await import("../../../server/services/inventory-ledger-db-repository");
-    const { AuditDbRepository } = await import("../../../server/services/audit-db-repository");
     const { IdempotencyDbRepository } = await import("../../../server/services/idempotency-db-repository");
+    const { AuditDbRepository } = await import("../../../server/services/audit-db-repository");
     const { InProcessDocumentSequenceStore } = await import("../../../server/services/document-sequence-service");
     const { SalesDbRepository } = await import("../../../server/services/sales-db-repository");
     const { StockReservationDbRepository } = await import("../../../server/services/stock-reservation-db-repository");
@@ -205,6 +205,7 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
       createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
       createSnapshotService: (tx: unknown) => new ProfitabilitySnapshotService({ snapshotRepository: new ProfitabilitySnapshotDbRepository(tx as any), salesRepository: new SalesDbRepository(tx as any), audit }),
       createIdempotency: faulty ? createFaultyIdem : ((tx: unknown) => new IdempotencyDbRepository(tx as any)),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
     };
 
     return new SalesApprovalService({ salesRepository: salesRepo, reservationRepository: resRepo, inventoryLedger: invLedger, subledger, snapshotService: snapSvc, audit, idempotency: idem, documentSequence: docSeq, transactionRunner: txRunner, txFactories });
@@ -238,10 +239,9 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(after.consumedReservations).toBe(0);
     expect(after.onHand).toBe("5000.000");
     expect(after.reservedQty).toBe("100.000");
-    // Audit: AuditDbRepository uses root db (not tx-scoped), so the audit row may persist.
-    // The key proof is that business state (sale, reservation, movements, entries, snapshots) rolls back.
+    // Audit: tx-scoped audit rolls back with the transaction — exactly zero new audit rows.
     const auditAfterFault = await countAudit("sales_approval.approve");
-    expect(auditAfterFault).toBeLessThanOrEqual(auditBeforeApprove + 1);
+    expect(auditAfterFault).toBe(auditBeforeApprove);
 
     // Verify idempotency not succeeded
     const idemRow = await sql`SELECT state FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = 'faulty-approve-1'`;
@@ -266,10 +266,8 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(afterSuccess.onHand).toBe("4900.000");
     expect(afterSuccess.reservedQty).toBe("0.000");
     // Audit: exactly one new business audit row from the valid retry.
-    // (The faulty attempt may have leaked an audit row because AuditDbRepository uses root db.)
     const auditAfterRetry = await countAudit("sales_approval.approve");
-    expect(auditAfterRetry).toBeGreaterThan(auditBeforeApprove);
-    expect(auditAfterRetry).toBeLessThanOrEqual(auditBeforeApprove + 2);
+    expect(auditAfterRetry).toBe(auditBeforeApprove + 1);
 
     // Replay → zero new effects
     const validService2 = await buildApprovalService(false);
@@ -282,7 +280,7 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(afterReplay.snapshots).toBe(1);
     // Audit: zero additional audit rows after replay
     const auditAfterReplay = await countAudit("sales_approval.approve");
-    expect(auditAfterReplay).toBe(auditAfterRetry);
+    expect(auditAfterReplay).toBe(auditBeforeApprove + 1);
   });
 
   it("B: SalesFailureResolutionService — ownership loss → rollback + retry succeeds", async () => {
@@ -295,8 +293,8 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     const { SalesFailureResolutionService } = await import("../../../server/services/sales-failure-resolution-service");
     const { InventoryLedgerService } = await import("../../../server/services/inventory-ledger-service");
     const { InventoryLedgerDbRepository } = await import("../../../server/services/inventory-ledger-db-repository");
-    const { AuditDbRepository } = await import("../../../server/services/audit-db-repository");
     const { IdempotencyDbRepository } = await import("../../../server/services/idempotency-db-repository");
+    const { AuditDbRepository } = await import("../../../server/services/audit-db-repository");
     const { InProcessDocumentSequenceStore } = await import("../../../server/services/document-sequence-service");
     const { SalesDbRepository } = await import("../../../server/services/sales-db-repository");
     const { StockReservationDbRepository } = await import("../../../server/services/stock-reservation-db-repository");
@@ -332,6 +330,7 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
       createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
       createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
       createIdempotency: createFaultyIdem,
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
     };
 
     const faultyService = new SalesFailureResolutionService({
@@ -357,9 +356,9 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(afterRes[0]?.status).toBe("active");
     const afterAlerts = await sql`SELECT COUNT(*)::int as cnt FROM operational_alerts WHERE tenant_id = ${T}`;
     expect(afterAlerts[0]?.cnt).toBe(0);
-    // Audit: AuditDbRepository uses root db (not tx-scoped), so the audit row may persist.
+    // Audit: tx-scoped audit rolls back — exactly zero new audit rows.
     const auditAfterFault = await countAudit("sales_failure_resolution.resolve");
-    expect(auditAfterFault).toBeLessThanOrEqual(auditBeforeResolve + 1);
+    expect(auditAfterFault).toBe(auditBeforeResolve);
 
     // Clean up faulty idempotency record
     await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = 'faulty-resolve-1'`;
@@ -371,6 +370,7 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
       createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
       createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
       createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
     };
 
     const validService = new SalesFailureResolutionService({
@@ -388,8 +388,7 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(result.criticalAlertIds).toHaveLength(1);
     // Audit: exactly one new business audit row from the valid retry.
     const auditAfterRetry = await countAudit("sales_failure_resolution.resolve");
-    expect(auditAfterRetry).toBeGreaterThan(auditBeforeResolve);
-    expect(auditAfterRetry).toBeLessThanOrEqual(auditBeforeResolve + 2);
+    expect(auditAfterRetry).toBe(auditBeforeResolve + 1);
 
     // Replay → zero new effects
     const replayResult = await validService.resolveSaleFailure(ownerUser as any, ownerEff as any, {
@@ -402,6 +401,6 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(afterReplayAlerts[0]?.cnt).toBe(1);
     // Audit: zero additional audit rows after replay
     const auditAfterReplay = await countAudit("sales_failure_resolution.resolve");
-    expect(auditAfterReplay).toBe(auditAfterRetry);
+    expect(auditAfterReplay).toBe(auditBeforeResolve + 1);
   });
 });

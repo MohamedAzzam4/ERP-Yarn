@@ -124,6 +124,7 @@ export async function approveSaleAction(formData: FormData): Promise<void> {
       salesRepository: new SalesDbRepository(tx as any), audit,
     }),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
   };
 
   const service = new SalesApprovalService({
@@ -199,6 +200,7 @@ export async function rejectSaleAction(formData: FormData): Promise<void> {
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
   };
 
   const service = new SalesFailureResolutionService({

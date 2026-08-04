@@ -73,6 +73,7 @@ function getService() {
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
   };
 
   return new SalesFailureResolutionService({
