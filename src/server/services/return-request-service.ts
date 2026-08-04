@@ -467,7 +467,7 @@ export class ReturnRequestService {
         responseCode: 500,
         responseBody: { message: "Return request creation transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -482,7 +482,7 @@ export class ReturnRequestService {
       responseBody: result,
       entityType: RETURN_ENTITY_TYPE,
       entityId: returnRequest.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -526,7 +526,7 @@ export class ReturnRequestService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: `Return in status '${rr.status}'.` },
         lastErrorClass: "ReturnRequestNotApprovableError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReturnRequestError("STATE_CONFLICT", `Return request '${rr.id}' is in status '${rr.status}' — only 'draft' can be submitted.`);
     }
 
@@ -548,7 +548,7 @@ export class ReturnRequestService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
     return result;
   }
 
@@ -620,7 +620,7 @@ export class ReturnRequestService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 403, responseBody: { message: "Requester cannot approve own return." },
         lastErrorClass: "RequesterCannotApproveOwnReturnError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new RequesterCannotApproveOwnReturnError(rr.id, user.userId);
     }
 
@@ -629,7 +629,7 @@ export class ReturnRequestService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: `Return in status '${rr.status}'.` },
         lastErrorClass: "ReturnRequestNotApprovableError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReturnRequestNotApprovableError(rr.id, rr.status);
     }
 
@@ -662,7 +662,7 @@ export class ReturnRequestService {
           await markBusinessFailed(this.deps.idempotency, claim.record.id, {
             responseCode: 422, responseBody: { message: `Return qty ${totalQty} exceeds sale line qty ${originalQty} (DEC-068).` },
             lastErrorClass: "ReturnExceedsSaleLineCapError",
-          }, now);
+          }, claim.record.ownerToken!, now);
           throw new ReturnExceedsSaleLineCapError(line.id, totalQty, originalQty);
         }
       }
@@ -700,7 +700,7 @@ export class ReturnRequestService {
           await markBusinessFailed(this.deps.idempotency, claim.record.id, {
             responseCode: 422, responseBody: { message: `Cumulative return credit ${totalCredit} exceeds sale line net value ${originalNetValue} (DEC-068).` },
             lastErrorClass: "ReturnExceedsSaleLineCapError",
-          }, now);
+          }, claim.record.ownerToken!, now);
           throw new ReturnExceedsSaleLineCapError(line.id, totalCredit, originalNetValue);
         }
       }
@@ -1008,7 +1008,7 @@ export class ReturnRequestService {
         responseCode: 500,
         responseBody: { message: "Return approval transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -1018,7 +1018,7 @@ export class ReturnRequestService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
     return result;
   }
 
@@ -1083,7 +1083,7 @@ export class ReturnRequestService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
     return result;
   }
 

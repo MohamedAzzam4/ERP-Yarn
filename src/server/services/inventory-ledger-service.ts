@@ -500,7 +500,7 @@ export class InventoryLedgerService {
         responseCode: 409,
         responseBody: { message: "Duplicate source document" },
         lastErrorClass: "DuplicateSourceError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(
         `A movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
       );
@@ -639,7 +639,7 @@ export class InventoryLedgerService {
         balanceVersion: updatedBalance.version,
         onHandQtyKg: updatedBalance.onHandQtyKg,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return {
       action: "posted",
@@ -733,7 +733,7 @@ export class InventoryLedgerService {
     // Duplicate source guard
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(`Movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
     }
 
@@ -756,7 +756,7 @@ export class InventoryLedgerService {
       requireTenantMatch(user, fromBalance.tenantId);
       // Check sufficient stock for source
       if (compareKg(fromBalance.onHandQtyKg, normalizedQty) < 0) {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, now);
+        await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, claim.record.ownerToken!, now);
         throw new StockInsufficientError(`Insufficient stock at source: on_hand=${fromBalance.onHandQtyKg}, requested=${normalizedQty}.`);
       }
     }
@@ -774,7 +774,7 @@ export class InventoryLedgerService {
 
     // Stock check: ensure source has sufficient stock (checked after both balances are locked)
     if (compareKg(srcBal.onHandQtyKg, normalizedQty) < 0) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, now);
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, claim.record.ownerToken!, now);
       throw new StockInsufficientError(`Insufficient stock at source: on_hand=${srcBal.onHandQtyKg}, requested=${normalizedQty}.`);
     }
 
@@ -804,7 +804,7 @@ export class InventoryLedgerService {
       idempotencyKey: input.idempotencyKey,
     });
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, claim.record.ownerToken!, now);
 
     return { action: "posted", movementId: movement.id, docNo: movement.docNo, fromBalanceVersion: updatedSrc.version, fromOnHandQtyKg: updatedSrc.onHandQtyKg, toBalanceVersion: updatedDst.version, toOnHandQtyKg: updatedDst.onHandQtyKg };
   }
@@ -854,7 +854,7 @@ export class InventoryLedgerService {
 
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(`Movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
     }
 
@@ -896,7 +896,7 @@ export class InventoryLedgerService {
       idempotencyKey: input.idempotencyKey,
     });
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, claim.record.ownerToken!, now);
 
     return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg };
   }
@@ -979,7 +979,7 @@ export class InventoryLedgerService {
       idempotencyKey: input.idempotencyKey,
     });
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, claim.record.ownerToken!, now);
 
     return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: balance.version, onHandQtyKg: balance.onHandQtyKg };
   }
@@ -1068,7 +1068,7 @@ export class InventoryLedgerService {
     // Duplicate source guard
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(`Movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
     }
 
@@ -1083,7 +1083,7 @@ export class InventoryLedgerService {
 
     // Check sufficient stock
     if (compareKg(balance.onHandQtyKg, normalizedQty) < 0) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, now);
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 422, responseBody: { message: "Insufficient stock" }, lastErrorClass: "StockInsufficientError" }, claim.record.ownerToken!, now);
       throw new StockInsufficientError(`Insufficient stock at factory location: on_hand=${balance.onHandQtyKg}, requested=${normalizedQty}.`);
     }
 
@@ -1107,7 +1107,7 @@ export class InventoryLedgerService {
       idempotencyKey: input.idempotencyKey,
     });
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, claim.record.ownerToken!, now);
 
     return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg };
   }
@@ -1167,7 +1167,7 @@ export class InventoryLedgerService {
     // sourceDocumentType='stock_movement', sourceDocumentId=originalMovementId.
     const existingReversal = await this.deps.ledger.findMovementBySource(tenantId, "stock_movement", input.originalMovementId);
     if (existingReversal) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate reversal" }, lastErrorClass: "DuplicateSourceError" }, now);
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate reversal" }, lastErrorClass: "DuplicateSourceError" }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(`A reversal already exists for movement ${input.originalMovementId}.`);
     }
 
@@ -1228,7 +1228,7 @@ export class InventoryLedgerService {
         idempotencyKey: input.idempotencyKey,
       });
 
-      await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+      await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, claim.record.ownerToken!, now);
 
       return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedSrc.version, onHandQtyKg: updatedSrc.onHandQtyKg, originalMovementId: input.originalMovementId };
 
@@ -1269,7 +1269,7 @@ export class InventoryLedgerService {
         idempotencyKey: input.idempotencyKey,
       });
 
-      await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+      await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, claim.record.ownerToken!, now);
 
       return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg, originalMovementId: input.originalMovementId };
     }
@@ -1317,7 +1317,7 @@ export class InventoryLedgerService {
 
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, now);
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(`Duplicate source ${input.sourceDocumentType}/${input.sourceDocumentId}.`);
     }
 
@@ -1347,7 +1347,7 @@ export class InventoryLedgerService {
       idempotencyKey: input.idempotencyKey,
     });
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, now);
+    await markSucceeded(this.deps.idempotency, claim.record.id, { responseCode: 200, responseBody: { movementId: movement.id } }, claim.record.ownerToken!, now);
 
     return { action: "posted", movementId: movement.id, docNo: movement.docNo, balanceVersion: updatedBalance.version, onHandQtyKg: updatedBalance.onHandQtyKg };
   }
@@ -1559,7 +1559,7 @@ export class InventoryLedgerService {
         responseCode: 409,
         responseBody: { message: "Duplicate source document for waste movement" },
         lastErrorClass: "DuplicateSourceError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(
         `A waste movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
       );
@@ -1609,7 +1609,7 @@ export class InventoryLedgerService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200,
       responseBody: { movementId: movement.id },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return { action: "posted", movementId: movement.id, docNo: movement.docNo };
   }
@@ -1727,7 +1727,7 @@ export class InventoryLedgerService {
         responseCode: 409,
         responseBody: { message: "Duplicate source document for return-from-WIP movement" },
         lastErrorClass: "DuplicateSourceError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new DuplicateSourceError(
         `A return-from-WIP movement already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
       );
@@ -1829,7 +1829,7 @@ export class InventoryLedgerService {
         balanceVersion: updatedBalance.version,
         onHandQtyKg: updatedBalance.onHandQtyKg,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return {
       action: "posted",

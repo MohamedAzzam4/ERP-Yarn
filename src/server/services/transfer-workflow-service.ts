@@ -369,7 +369,7 @@ export class TransferWorkflowService {
       responseBody: { transferRequestId: approval.id },
       entityType: TRANSFER_ENTITY_TYPE,
       entityId: approval.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return this.mapApprovalToTransfer(approval);
   }
@@ -480,7 +480,7 @@ export class TransferWorkflowService {
         responseCode: 409,
         responseBody: { message: `Transfer already in state '${approval.state}'.` },
         lastErrorClass: "TransferAlreadyDecidedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new TransferAlreadyDecidedError(approval.id, approval.state);
     }
 
@@ -490,7 +490,7 @@ export class TransferWorkflowService {
         responseCode: 403,
         responseBody: { message: "Requester cannot approve own transfer request." },
         lastErrorClass: "TransferRequesterCannotApproveError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new TransferRequesterCannotApproveError(approval.id, user.userId);
     }
 
@@ -506,7 +506,7 @@ export class TransferWorkflowService {
         responseCode: 422,
         responseBody: { message: "Transfer payload missing required fields in submittedChildVersionSummary." },
         lastErrorClass: "TransferWorkflowError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new TransferWorkflowError("VALIDATION_FAILED", "Transfer payload missing required fields in submittedChildVersionSummary.");
     }
 
@@ -604,7 +604,7 @@ export class TransferWorkflowService {
         responseCode: 500,
         responseBody: { message: "Transfer posting transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -631,7 +631,7 @@ export class TransferWorkflowService {
         movementId: transferResult.movementId,
         docNo: transferResult.docNo,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return transferResult;
   }

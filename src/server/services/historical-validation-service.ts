@@ -590,7 +590,7 @@ export class HistoricalValidationService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: "import_batch", entityId: input.importBatchId,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

@@ -69,7 +69,8 @@ export interface IdempotencyTransactionHandle {
     completedAt?: Date | null;
     entityType?: string | null;
     entityId?: string | null;
-  }): Promise<void>;
+    expectedOwnerToken: string;
+  }): Promise<number>;
   heartbeat(id: string, now: Date): Promise<void>;
 }
 
@@ -98,6 +99,9 @@ export async function claimIdempotency(
       initiatedBy: input.initiatedBy,
       completedAt: null,
     });
+    if (!record.ownerToken) {
+      throw new Error("IDEMPOTENCY_INvariant_VIOLATION: insert returned null ownerToken");
+    }
     return { action: "execute", record };
   }
 
@@ -110,50 +114,59 @@ export async function claimIdempotency(
   }
 
   if (existing.state === "in_progress") {
-    const leaseExpired = existing.leaseExpiresAt !== null && existing.leaseExpiresAt.getTime() < now.getTime();
+    const leaseExpired = existing.ownerToken === null || (existing.leaseExpiresAt !== null && existing.leaseExpiresAt.getTime() < now.getTime());
     if (!leaseExpired) {
       return { action: "in_progress", record: existing };
     }
     const claimed = await tx.claimExpiredLease(existing.id, leaseExpiresAt, now, now);
     if (!claimed) return { action: "in_progress", record: existing };
-    return {
-      action: "execute",
-      record: { ...existing, state: "in_progress", attemptCount: existing.attemptCount + 1, leaseHeartbeatAt: now, leaseExpiresAt },
-    };
+    const reclaimed = await tx.findByTenantScopeKey(input.tenantId, input.operationScope, input.idempotencyKey);
+    if (reclaimed && reclaimed.ownerToken) {
+      return { action: "execute", record: reclaimed };
+    }
+    throw new Error("IDEMPOTENCY_INvariant_VIOLATION: reclaimed record has null ownerToken");
   }
 
   // state === "retryable_failed" → re-execute
-  const claimed = await tx.claimExpiredLease(existing.id, leaseExpiresAt, now, now);
-  if (!claimed) return { action: "in_progress", record: existing };
-  return {
-    action: "execute",
-    record: { ...existing, state: "in_progress", attemptCount: existing.attemptCount + 1, leaseHeartbeatAt: now, leaseExpiresAt },
-  };
+  const claimedRetry = await tx.claimExpiredLease(existing.id, leaseExpiresAt, now, now);
+  if (!claimedRetry) return { action: "in_progress", record: existing };
+  const reclaimedRetry = await tx.findByTenantScopeKey(input.tenantId, input.operationScope, input.idempotencyKey);
+  if (reclaimedRetry && reclaimedRetry.ownerToken) {
+    return { action: "execute", record: reclaimedRetry };
+  }
+  throw new Error("IDEMPOTENCY_INvariant_VIOLATION: reclaimed retry record has null ownerToken");
 }
 
 export async function markSucceeded(
   tx: IdempotencyTransactionHandle,
   recordId: string,
   result: { responseCode: number; responseBody: unknown; entityType?: string; entityId?: string },
+  expectedOwnerToken: string,
   now: Date = new Date(),
-): Promise<void> {
-  await tx.updateState(recordId, {
+): Promise<number> {
+  const affected = await tx.updateState(recordId, {
     state: "succeeded",
     responseCode: result.responseCode,
     responseBody: result.responseBody,
     completedAt: now,
     entityType: result.entityType ?? null,
     entityId: result.entityId ?? null,
+    expectedOwnerToken,
   });
+  if (affected === 0) {
+    throw new IdempotencyOwnershipLostError(recordId, expectedOwnerToken);
+  }
+  return affected;
 }
 
 export async function markBusinessFailed(
   tx: IdempotencyTransactionHandle,
   recordId: string,
   result: { responseCode: number; responseBody: unknown; lastErrorClass: string; entityType?: string; entityId?: string },
+  expectedOwnerToken: string,
   now: Date = new Date(),
-): Promise<void> {
-  await tx.updateState(recordId, {
+): Promise<number> {
+  const affected = await tx.updateState(recordId, {
     state: "business_failed",
     responseCode: result.responseCode,
     responseBody: result.responseBody,
@@ -161,22 +174,27 @@ export async function markBusinessFailed(
     completedAt: now,
     entityType: result.entityType ?? null,
     entityId: result.entityId ?? null,
+    expectedOwnerToken,
   });
+  return affected;
 }
 
 export async function markRetryableFailed(
   tx: IdempotencyTransactionHandle,
   recordId: string,
   result: { responseCode?: number; responseBody?: unknown; lastErrorClass: string },
+  expectedOwnerToken: string,
   now: Date = new Date(),
-): Promise<void> {
-  await tx.updateState(recordId, {
+): Promise<number> {
+  const affected = await tx.updateState(recordId, {
     state: "retryable_failed",
     responseCode: result.responseCode ?? null,
     responseBody: result.responseBody ?? null,
     lastErrorClass: result.lastErrorClass,
     completedAt: now,
+    expectedOwnerToken,
   });
+  return affected;
 }
 
 export async function heartbeatIdempotency(
@@ -204,7 +222,8 @@ export class InProcessIdempotencyStore implements IdempotencyTransactionHandle {
 
   async insert(record: Omit<IdempotencyRecordShape, "id" | "createdAt"> & { id?: string }): Promise<IdempotencyRecordShape> {
     const id = record.id ?? `idem-${++this.idCounter}`;
-    const fullRecord: IdempotencyRecordShape = { ...record, id, createdAt: new Date() };
+    const ownerToken = record.ownerToken ?? `owner-${++this.idCounter}`;
+    const fullRecord: IdempotencyRecordShape = { ...record, id, ownerToken, createdAt: new Date() };
     this.records.set(id, fullRecord);
     return { ...fullRecord };
   }
@@ -215,12 +234,14 @@ export class InProcessIdempotencyStore implements IdempotencyTransactionHandle {
     const leaseExpired = existing.leaseExpiresAt === null || existing.leaseExpiresAt.getTime() < now.getTime();
     const isRetryableFailed = existing.state === "retryable_failed";
     if (!leaseExpired && !isRetryableFailed) return false;
+    const newOwnerToken = `owner-${++this.idCounter}`;
     this.records.set(id, {
       ...existing,
       state: "in_progress",
       attemptCount: existing.attemptCount + 1,
       leaseHeartbeatAt: newHeartbeatAt,
       leaseExpiresAt: newLeaseExpiresAt,
+      ownerToken: newOwnerToken,
     });
     return true;
   }
@@ -233,9 +254,13 @@ export class InProcessIdempotencyStore implements IdempotencyTransactionHandle {
     completedAt?: Date | null;
     entityType?: string | null;
     entityId?: string | null;
-  }): Promise<void> {
+    expectedOwnerToken: string;
+  }): Promise<number> {
     const existing = this.records.get(id);
     if (!existing) throw new Error(`Idempotency record '${id}' not found`);
+    if (existing.ownerToken !== update.expectedOwnerToken) {
+      return 0;
+    }
     this.records.set(id, {
       ...existing,
       state: update.state,
@@ -246,6 +271,7 @@ export class InProcessIdempotencyStore implements IdempotencyTransactionHandle {
       entityType: update.entityType ?? existing.entityType,
       entityId: update.entityId ?? existing.entityId,
     });
+    return 1;
   }
 
   async heartbeat(id: string, now: Date): Promise<void> {
@@ -266,3 +292,11 @@ export class InProcessIdempotencyStore implements IdempotencyTransactionHandle {
 
 export { IdempotencyConflictError, OperationInProgressError } from "./errors";
 export { computeRequestHash, requestHashesMatch } from "./request-hash";
+
+export class IdempotencyOwnershipLostError extends Error {
+  readonly code = "IDEMPOTENCY_OWNERSHIP_LOST";
+  constructor(recordId: string, expectedOwnerToken: string) {
+    super(`Ownership lost for idempotency record '${recordId}': expected ownerToken '${expectedOwnerToken}' no longer matches. Another claimant reclaimed the lease.`);
+    this.name = "IdempotencyOwnershipLostError";
+  }
+}

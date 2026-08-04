@@ -306,8 +306,10 @@ export class TransactionalTestStore {
     },
     insert: async (record: any): Promise<IdempotencyRecordShape> => {
       const key = `${record.tenantId}:${record.operationScope}:${record.idempotencyKey}`;
+      const ownerToken = record.ownerToken ?? `test-owner-${Date.now()}-${Math.random()}`;
       const fullRecord: IdempotencyRecordShape = {
         ...record,
+        ownerToken,
         id: record.id ?? nid("idem", Date.now()),
         createdAt: new Date(),
       };
@@ -322,6 +324,7 @@ export class TransactionalTestStore {
         if ((rec as IdempotencyRecordShape).id === id) {
           (rec as IdempotencyRecordShape).leaseExpiresAt = newLeaseExpiresAt;
           (rec as IdempotencyRecordShape).leaseHeartbeatAt = newHeartbeatAt;
+          (rec as IdempotencyRecordShape).ownerToken = `test-owner-${Date.now()}-${Math.random()}`;
           return true;
         }
       }
@@ -330,14 +333,18 @@ export class TransactionalTestStore {
     updateState: async (id: string, update: any) => {
       for (const [key, rec] of this.stagingIdempotencyRecords) {
         if ((rec as IdempotencyRecordShape).id === id) {
+          if ((rec as IdempotencyRecordShape).ownerToken !== update.expectedOwnerToken) {
+            return 0;
+          }
           const updated = { ...(rec as IdempotencyRecordShape), ...update };
           this.stagingIdempotencyRecords.set(key, updated);
           if (!this.inTransaction) {
             this.committedIdempotencyRecords.set(key, updated);
           }
-          return;
+          return 1;
         }
       }
+      return 0;
     },
     heartbeat: async (id: string, now: Date): Promise<void> => {
       // No-op for tests

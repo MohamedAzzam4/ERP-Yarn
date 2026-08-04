@@ -421,7 +421,7 @@ export class SubledgerService {
         responseCode: 409,
         responseBody: { message: "Duplicate source document" },
         lastErrorClass: "DuplicateSourceEntryError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new DuplicateSourceEntryError(
         `An account entry already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
       );
@@ -482,7 +482,7 @@ export class SubledgerService {
         amountSigned: entry.amountSigned,
         accountId: entry.accountId,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     // Step 10: Return result with derived balance
     const balanceResult = await this.deriveAccountBalance(user, account.id);
@@ -667,7 +667,7 @@ export class SubledgerService {
         responseCode: 409,
         responseBody: { message: "Duplicate source document for factory payable" },
         lastErrorClass: "DuplicateSourceEntryError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new DuplicateSourceEntryError(
         `A factory payable entry already exists for source ${input.sourceDocumentType}/${input.sourceDocumentId}.`,
       );
@@ -723,7 +723,7 @@ export class SubledgerService {
         amountSigned: entry.amountSigned,
         accountId: entry.accountId,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     const balanceResult = await this.deriveAccountBalance(user, account.id);
 

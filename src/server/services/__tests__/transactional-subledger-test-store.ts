@@ -181,7 +181,8 @@ export class TransactionalSubledgerTestStore {
     },
     insert: async (record) => {
       const key = `${record.tenantId}:${record.operationScope}:${record.idempotencyKey}`;
-      const full: IdempotencyRecordShape = { ...record, id: record.id ?? nid("idem", Date.now()), createdAt: new Date() };
+      const ownerToken = record.ownerToken ?? `test-owner-${Date.now()}-${Math.random()}`;
+      const full: IdempotencyRecordShape = { ...record, ownerToken, id: record.id ?? nid("idem", Date.now()), createdAt: new Date() };
       this.stagingIdemRecords.set(key, full);
       if (!this.inTx) this.committedIdemRecords.set(key, full);
       return full;
@@ -193,12 +194,16 @@ export class TransactionalSubledgerTestStore {
     updateState: async (id, update) => {
       for (const [key, rec] of this.stagingIdemRecords) {
         if (rec.id === id) {
+          if (rec.ownerToken !== update.expectedOwnerToken) {
+            return 0;
+          }
           const updated = { ...rec, ...update };
           this.stagingIdemRecords.set(key, updated);
           if (!this.inTx) this.committedIdemRecords.set(key, updated);
-          return;
+          return 1;
         }
       }
+      return 0;
     },
     heartbeat: async () => {},
   };

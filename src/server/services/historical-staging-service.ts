@@ -237,7 +237,7 @@ export class HistoricalStagingService {
         responseCode: 409,
         responseBody: { message: `Template version already exists.` },
         lastErrorClass: "TemplateVersionAlreadyExistsError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new TemplateVersionAlreadyExistsError(input.templateName, input.templateVersion);
     }
 
@@ -270,7 +270,7 @@ export class HistoricalStagingService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: TEMPLATE_ENTITY_TYPE, entityId: template.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -344,7 +344,7 @@ export class HistoricalStagingService {
       await markSucceeded(this.deps.idempotency, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: FILE_ENTITY_TYPE, entityId: existing.id,
-      }, now);
+      }, claim.record.ownerToken!, now);
       return result;
     }
 
@@ -384,7 +384,7 @@ export class HistoricalStagingService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: FILE_ENTITY_TYPE, entityId: file.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -461,7 +461,7 @@ export class HistoricalStagingService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: ENTITY_TYPE, entityId: batch.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -544,7 +544,7 @@ export class HistoricalStagingService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: STAGING_ROW_ENTITY_TYPE, entityId: stagingRow.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

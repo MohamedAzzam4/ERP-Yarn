@@ -225,7 +225,7 @@ export class SettlementService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 422, responseBody: { message: "Payment has no posted entry." },
         lastErrorClass: "PaymentNotPostedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new PaymentNotPostedError(payment.id, payment.status);
     }
     await this.deps.paymentRepository.lockPaymentEntry(user.tenantId, payment.postedEntryId);
@@ -243,7 +243,7 @@ export class SettlementService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Target entry '${a.settledEntryId}' not found.` },
           lastErrorClass: "SettlementTargetNotFoundError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new SettlementTargetNotFoundError(a.settledEntryId);
       }
       // Same tenant
@@ -253,7 +253,7 @@ export class SettlementService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Account mismatch: payment account ${paymentEntry.accountId} vs target account ${target.accountId}.` },
           lastErrorClass: "SettlementIncompatibleError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new SettlementIncompatibleError(`payment account ${paymentEntry.accountId} != target account ${target.accountId}`);
       }
       // Same currency
@@ -261,7 +261,7 @@ export class SettlementService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Currency mismatch: ${paymentEntry.currency} vs ${target.currency}.` },
           lastErrorClass: "SettlementIncompatibleError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new SettlementIncompatibleError(`currency mismatch: ${paymentEntry.currency} vs ${target.currency}`);
       }
       // Compatible signs: payment entry and target entry must have OPPOSITE signs
@@ -273,7 +273,7 @@ export class SettlementService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Incompatible signs: payment ${paymentEntry.amountSigned}, target ${target.amountSigned}.` },
           lastErrorClass: "SettlementIncompatibleError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new SettlementIncompatibleError(`incompatible signs: payment ${paymentEntry.amountSigned}, target ${target.amountSigned}`);
       }
       // Target must not be already fully settled or reversed
@@ -281,14 +281,14 @@ export class SettlementService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Target entry '${a.settledEntryId}' is already settled.` },
           lastErrorClass: "OverSettlementError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new OverSettlementError("target", a.settledAmount, "0.00");
       }
       if (target.settlementStatus === "reversed") {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Target entry '${a.settledEntryId}' is reversed.` },
           lastErrorClass: "SettlementIncompatibleError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new SettlementIncompatibleError(`target entry '${a.settledEntryId}' is reversed`);
       }
       targetEntries.push(target);
@@ -311,7 +311,7 @@ export class SettlementService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 422, responseBody: { message: `Over-settlement on payment: requested ${totalNewSettlement}, available ${paymentCapacity}.` },
         lastErrorClass: "OverSettlementError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new OverSettlementError("payment", totalNewSettlement, paymentCapacity);
     }
 
@@ -332,7 +332,7 @@ export class SettlementService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Over-settlement on target '${a.settledEntryId}': requested ${a.settledAmount}, available ${targetCapacity}.` },
           lastErrorClass: "OverSettlementError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new OverSettlementError("target", a.settledAmount, targetCapacity);
       }
       targetCapacities.set(a.settledEntryId, targetCapacity);
@@ -415,7 +415,7 @@ export class SettlementService {
       responseBody: result,
       entityType: SETTLEMENT_ENTITY_TYPE,
       entityId: settlementIds[0]!,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

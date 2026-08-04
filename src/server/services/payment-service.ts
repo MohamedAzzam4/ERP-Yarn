@@ -357,7 +357,7 @@ export class PaymentService {
       },
       entityType: PAYMENT_ENTITY_TYPE,
       entityId: payment.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return { paymentId: payment.id, paymentNo: payment.paymentNo, status: payment.status };
   }
@@ -420,14 +420,14 @@ export class PaymentService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: "Payment already posted." },
         lastErrorClass: "PaymentAlreadyPostedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new PaymentAlreadyPostedError(payment.id);
     }
     if (payment.status !== "draft") {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: `Payment in status '${payment.status}'.` },
         lastErrorClass: "PaymentNotPostableError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new PaymentNotPostableError(payment.id, payment.status);
     }
 
@@ -498,7 +498,7 @@ export class PaymentService {
       responseBody: result,
       entityType: PAYMENT_ENTITY_TYPE,
       entityId: payment.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

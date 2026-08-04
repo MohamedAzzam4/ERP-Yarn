@@ -474,7 +474,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 409,
         responseBody: { message: `Receipt in status '${receipt.status}' cannot be approved.` },
         lastErrorClass: "ReceiptAlreadyApprovedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReceiptAlreadyApprovedError(receipt.id, receipt.status, receipt.approvalStatus);
     }
     if (receipt.isLocked) {
@@ -482,7 +482,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 409,
         responseBody: { message: "Receipt is already locked." },
         lastErrorClass: "ReceiptAlreadyApprovedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReceiptAlreadyApprovedError(receipt.id, receipt.status, receipt.approvalStatus);
     }
 
@@ -493,7 +493,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 403,
         responseBody: { message: "Requester cannot approve own receipt." },
         lastErrorClass: "RequesterCannotApproveOwnReceiptError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new RequesterCannotApproveOwnReceiptError(receipt.id, user.userId);
     }
 
@@ -507,7 +507,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 422,
         responseBody: { message: "Receipt has no allocations." },
         lastErrorClass: "AllocationNotFoundError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new AllocationNotFoundError(receipt.id);
     }
 
@@ -517,7 +517,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 409,
         responseBody: { message: "Subject hash mismatch — draft facts changed." },
         lastErrorClass: "SubjectHashMismatchError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new SubjectHashMismatchError(receipt.id);
     }
 
@@ -536,7 +536,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 409,
         responseBody: { message: `Order in status '${order.status}' cannot receive receipts.` },
         lastErrorClass: "OrderNotReadyForApprovalError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new OrderNotReadyForApprovalError(order.id, order.status);
     }
 
@@ -547,7 +547,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 422,
         responseBody: { message: "Receipt has no confirmed factory rate." },
         lastErrorClass: "MissingFactoryRateError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new MissingFactoryRateError(receipt.id);
     }
     const factoryRate = receipt.factoryRatePerInputTonUsed;
@@ -568,7 +568,7 @@ export class ProductionReceiptApprovalService {
           responseCode: 422,
           responseBody: { message: `Allocation references unknown input '${alloc.productionInputId}'.` },
           lastErrorClass: "ReceiptInputMismatchError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new ReceiptInputMismatchError(receipt.id, alloc.productionInputId);
       }
     }
@@ -975,7 +975,7 @@ export class ProductionReceiptApprovalService {
         responseCode: 500,
         responseBody: { message: "Receipt approval transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -985,7 +985,7 @@ export class ProductionReceiptApprovalService {
       responseBody: result,
       entityType: RECEIPT_ENTITY_TYPE,
       entityId: receipt.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

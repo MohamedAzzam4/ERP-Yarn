@@ -265,7 +265,7 @@ export class WipReturnApprovalService {
         responseCode: 409,
         responseBody: { message: `Request in status '${request.status}' cannot be approved.` },
         lastErrorClass: "WipReturnAlreadyApprovedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new WipReturnAlreadyApprovedError(request.id, request.status);
     }
     if (request.isLocked) {
@@ -273,7 +273,7 @@ export class WipReturnApprovalService {
         responseCode: 409,
         responseBody: { message: "Request is already locked." },
         lastErrorClass: "WipReturnAlreadyApprovedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new WipReturnAlreadyApprovedError(request.id, request.status);
     }
 
@@ -283,7 +283,7 @@ export class WipReturnApprovalService {
         responseCode: 403,
         responseBody: { message: "Requester cannot approve own WIP return." },
         lastErrorClass: "RequesterCannotApproveOwnWipReturnError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new RequesterCannotApproveOwnWipReturnError(request.id, user.userId);
     }
 
@@ -300,7 +300,7 @@ export class WipReturnApprovalService {
         responseCode: 409,
         responseBody: { message: "Subject hash mismatch." },
         lastErrorClass: "WipReturnSubjectHashMismatchError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new WipReturnSubjectHashMismatchError(request.id);
     }
 
@@ -314,7 +314,7 @@ export class WipReturnApprovalService {
         responseCode: 409,
         responseBody: { message: `Order in status '${order.status}' cannot receive WIP returns.` },
         lastErrorClass: "OrderNotReadyForReturnApprovalError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new OrderNotReadyForReturnApprovalError(order.id, order.status);
     }
 
@@ -474,7 +474,7 @@ export class WipReturnApprovalService {
         responseCode: 500,
         responseBody: { message: "WIP return approval transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -484,7 +484,7 @@ export class WipReturnApprovalService {
       responseBody: result,
       entityType: RETURN_ENTITY_TYPE,
       entityId: request.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

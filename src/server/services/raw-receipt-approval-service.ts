@@ -589,7 +589,7 @@ export class RawReceiptApprovalService {
         responseCode: 409,
         responseBody: { message: `Approval already in state '${approval.state}'.` },
         lastErrorClass: "ApprovalAlreadyDecidedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ApprovalAlreadyDecidedError(approval.id, approval.state);
     }
 
@@ -599,7 +599,7 @@ export class RawReceiptApprovalService {
         responseCode: 403,
         responseBody: { message: "Requester cannot approve own request." },
         lastErrorClass: "RequesterCannotApproveOwnRequestError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new RequesterCannotApproveOwnRequestError(approval.id, user.userId);
     }
 
@@ -627,7 +627,7 @@ export class RawReceiptApprovalService {
         responseCode: 422,
         responseBody: { message: "Draft has no storage_location_id — cannot post stock." },
         lastErrorClass: "ValidationFailedApprovalError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ValidationFailedApprovalError(
         "Draft has no storage_location_id — cannot post stock. The worker must specify a storage location before approval.",
       );
@@ -741,7 +741,7 @@ export class RawReceiptApprovalService {
         responseCode: 500,
         responseBody: { message: "Posting transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -774,7 +774,7 @@ export class RawReceiptApprovalService {
         payableEntryId,
         payableDeferred,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return {
       action: "posted",
@@ -897,7 +897,7 @@ export class RawReceiptApprovalService {
         responseCode: 422,
         responseBody: { message: `Approval must be 'decided' to confirm late price.` },
         lastErrorClass: "ValidationFailedApprovalError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ValidationFailedApprovalError(
         `Approval '${input.approvalRequestId}' must be in 'decided' state to confirm late price. Current state: '${approval.state}'.`,
       );
@@ -908,7 +908,7 @@ export class RawReceiptApprovalService {
         responseCode: 422,
         responseBody: { message: `Payable already posted.` },
         lastErrorClass: "ValidationFailedApprovalError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ValidationFailedApprovalError(
         `Approval '${input.approvalRequestId}' already has a payable posted (not deferred). Late-price confirmation is not applicable.`,
       );
@@ -926,7 +926,7 @@ export class RawReceiptApprovalService {
         responseCode: 422,
         responseBody: { message: `Draft has no supplier.` },
         lastErrorClass: "ValidationFailedApprovalError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ValidationFailedApprovalError(
         "Draft has no supplier — cannot post payable. A supplier must be assigned before late-price confirmation.",
       );
@@ -992,7 +992,7 @@ export class RawReceiptApprovalService {
         responseCode: 500,
         responseBody: { message: "Late-price transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -1015,7 +1015,7 @@ export class RawReceiptApprovalService {
       responseBody: {
         payableEntryId: payableResult.entryId,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return {
       action: "posted",

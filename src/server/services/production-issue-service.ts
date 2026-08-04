@@ -292,7 +292,7 @@ export class ProductionIssueService {
         responseCode: 409,
         responseBody: { message: `Order in status '${order.status}' cannot be issued.` },
         lastErrorClass: "ProductionOrderNotIssuableError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ProductionOrderNotIssuableError(order.id, order.status);
     }
 
@@ -421,14 +421,14 @@ export class ProductionIssueService {
         responseCode: 500,
         responseBody: { message: "Production issue transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200,
       responseBody: { productionOrderId: order.id, movementId: result.movementId },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

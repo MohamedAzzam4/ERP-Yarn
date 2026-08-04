@@ -281,7 +281,7 @@ export class ComplaintService {
       responseBody: result,
       entityType: COMPLAINT_ENTITY_TYPE,
       entityId: complaint.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -402,7 +402,7 @@ export class ComplaintService {
       responseBody: result,
       entityType: COMPLAINT_ENTITY_TYPE,
       entityId: complaint.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

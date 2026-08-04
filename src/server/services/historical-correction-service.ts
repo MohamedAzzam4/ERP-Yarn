@@ -378,7 +378,7 @@ export class HistoricalCorrectionService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: CORRECTION_ENTITY_TYPE, entityId: request.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -532,7 +532,7 @@ export class HistoricalCorrectionService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: CORRECTION_ENTITY_TYPE, entityId: input.correctionRequestId,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -672,7 +672,7 @@ export class HistoricalCorrectionService {
       await markSucceeded(this.deps.idempotency, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: CORRECTION_ENTITY_TYPE, entityId: input.correctionRequestId,
-      }, now);
+      }, claim.record.ownerToken!, now);
 
       return result;
 
@@ -685,7 +685,7 @@ export class HistoricalCorrectionService {
           lastErrorClass: (e as Error).name ?? "Error",
           entityType: CORRECTION_ENTITY_TYPE,
           entityId: input.correctionRequestId,
-        }, now);
+        }, claim.record.ownerToken!, now);
       } catch {
         // Best-effort
       }

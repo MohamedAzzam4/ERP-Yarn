@@ -39,7 +39,7 @@ import { ProfitabilitySnapshotDbRepository } from "@/server/services/profitabili
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
-import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
 import { db } from "@/server/db/client";
 import { revalidatePath } from "next/cache";
@@ -57,7 +57,7 @@ const FORBIDDEN_SALES_FIELDS = [
 function getSharedDeps() {
   if (!db) throw new Error("Database not available.");
   const audit = new AuditDbRepository(db);
-  const idempotency = new InProcessIdempotencyStore();
+  const idempotency = new IdempotencyDbRepository(db);
   const documentSequence = new InProcessDocumentSequenceStore();
   return { db, audit, idempotency, documentSequence };
 }
@@ -123,6 +123,7 @@ export async function approveSaleAction(formData: FormData): Promise<void> {
       snapshotRepository: new ProfitabilitySnapshotDbRepository(tx as any),
       salesRepository: new SalesDbRepository(tx as any), audit,
     }),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
   };
 
   const service = new SalesApprovalService({
@@ -197,6 +198,7 @@ export async function rejectSaleAction(formData: FormData): Promise<void> {
     createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
   };
 
   const service = new SalesFailureResolutionService({

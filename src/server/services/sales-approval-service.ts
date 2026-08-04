@@ -125,6 +125,7 @@ export interface SalesApprovalTransactionScopedFactories {
   createSalesRepository: (tx: unknown) => SalesRepository;
   createReservationRepository: (tx: unknown) => StockReservationRepository;
   createSnapshotService: (tx: unknown) => ProfitabilitySnapshotService;
+  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +232,7 @@ export class SalesApprovalService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: `Sale in status '${sale.saleStatus}' cannot be approved.` },
         lastErrorClass: "SaleNotPendingError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new SaleNotPendingError(sale.id, sale.saleStatus);
     }
 
@@ -241,7 +242,7 @@ export class SalesApprovalService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 403, responseBody: { message: "Requester cannot approve own sale." },
         lastErrorClass: "RequesterCannotApproveOwnSaleError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new RequesterCannotApproveOwnSaleError(sale.id, user.userId);
     }
 
@@ -251,7 +252,7 @@ export class SalesApprovalService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 422, responseBody: { message: "Sale has no lines." },
         lastErrorClass: "SalesApprovalError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new SalesApprovalError("VALIDATION_FAILED", "Sale has no lines.");
     }
 
@@ -261,7 +262,7 @@ export class SalesApprovalService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: "Commercial totals not completed." },
           lastErrorClass: "CommercialTotalsNotPostedError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new CommercialTotalsNotPostedError(sale.id);
       }
     }
@@ -273,7 +274,7 @@ export class SalesApprovalService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: "Missing subject_hash." },
         lastErrorClass: "MissingSubjectHashError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new MissingSubjectHashError(sale.id);
     }
     // Recompute and reject stale/mismatched subject hash before any mutation.
@@ -282,7 +283,7 @@ export class SalesApprovalService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: "Subject hash mismatch." },
         lastErrorClass: "SubjectHashMismatchError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new SubjectHashMismatchError(sale.id);
     }
 
@@ -304,7 +305,7 @@ export class SalesApprovalService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Line '${line.id}' has no active reservation (missing/mismatch/inactive).` },
           lastErrorClass: "ReservationMismatchError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new ReservationMismatchError(sale.id);
       }
       // Duplicate-active-reservation guard: a line must not have multiple
@@ -314,7 +315,7 @@ export class SalesApprovalService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Reservation '${res.id}' is duplicated across lines.` },
           lastErrorClass: "ReservationMismatchError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new ReservationMismatchError(sale.id);
       }
       seenReservationIds.add(res.id);
@@ -325,7 +326,7 @@ export class SalesApprovalService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Reservation '${res.id}' quantity ${res.quantityKg} < line quantity ${line.quantityKg}.` },
           lastErrorClass: "ReservationMismatchError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new ReservationMismatchError(sale.id);
       }
       reservations.push(res);
@@ -342,6 +343,7 @@ export class SalesApprovalService {
         salesRepository: SalesRepository;
         reservationRepository: StockReservationRepository;
         snapshotService: ProfitabilitySnapshotService;
+        idempotency?: IdempotencyTransactionHandle;
       } | null,
     ): Promise<ApproveSaleResult> => {
       const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
@@ -349,6 +351,7 @@ export class SalesApprovalService {
       const salesRepo = txScoped?.salesRepository ?? this.deps.salesRepository;
       const resRepo = txScoped?.reservationRepository ?? this.deps.reservationRepository;
       const snapSvc = txScoped?.snapshotService ?? this.deps.snapshotService;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
 
       const year = now.getUTCFullYear();
       const movementResults: Array<{ lineId: string; movementId: string; docNo: string }> = [];
@@ -440,7 +443,7 @@ export class SalesApprovalService {
         idempotencyKey: input.idempotencyKey,
       });
 
-      return {
+      const result: ApproveSaleResult = {
         action: "posted",
         saleId: sale.id,
         saleStatus: "approved",
@@ -451,6 +454,11 @@ export class SalesApprovalService {
         snapshotId: snapshotResult.snapshotId,
         snapshotVersion: snapshotResult.version,
       };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200, responseBody: result,
+        entityType: SALES_ENTITY_TYPE, entityId: sale.id,
+      }, claim.record.ownerToken!, now);
+      return result;
     };
 
     let result: ApproveSaleResult;
@@ -462,27 +470,27 @@ export class SalesApprovalService {
           const txSales = this.deps.txFactories!.createSalesRepository(tx);
           const txRes = this.deps.txFactories!.createReservationRepository(tx);
           const txSnap = this.deps.txFactories!.createSnapshotService(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency?.(tx);
           return executeApproval({
             inventoryLedger: txInv, subledger: txSub, salesRepository: txSales,
             reservationRepository: txRes, snapshotService: txSnap,
+            idempotency: txIdem,
           });
         });
       } else {
         result = await executeApproval(null);
       }
     } catch (txError) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 500, responseBody: { message: "Approval transaction failed and rolled back." },
-        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      try {
+        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500, responseBody: { message: "Approval transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch (markError) {
+        console.error("Failed to mark idempotency as business_failed after tx rollback:", markError);
+      }
       throw txError;
     }
-
-    // Step 11: mark idempotency succeeded
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: SALES_ENTITY_TYPE, entityId: sale.id,
-    }, now);
 
     return result;
   }

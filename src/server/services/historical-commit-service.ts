@@ -555,7 +555,7 @@ export class HistoricalCommitService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: COMMIT_ENTITY_TYPE, entityId: input.importBatchId,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -674,7 +674,7 @@ export class HistoricalCommitService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: COMMIT_ENTITY_TYPE, entityId: input.importBatchId,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -769,7 +769,7 @@ export class HistoricalCommitService {
       await markSucceeded(this.deps.idempotency, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: COMMIT_ENTITY_TYPE, entityId: input.importBatchId,
-      }, now);
+      }, claim.record.ownerToken!, now);
       return result;
     }
 
@@ -932,7 +932,7 @@ export class HistoricalCommitService {
       await markSucceeded(this.deps.idempotency, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: COMMIT_ENTITY_TYPE, entityId: input.importBatchId,
-      }, now);
+      }, claim.record.ownerToken!, now);
 
       return result;
 
@@ -984,7 +984,7 @@ export class HistoricalCommitService {
           lastErrorClass: (e as Error).name ?? "Error",
           entityType: COMMIT_ENTITY_TYPE,
           entityId: input.importBatchId,
-        }, now);
+        }, claim.record.ownerToken!, now);
       } catch {
         // Best-effort idempotency update
       }

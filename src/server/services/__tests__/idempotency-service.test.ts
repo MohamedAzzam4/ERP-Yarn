@@ -40,7 +40,7 @@ describe("claimIdempotency — same key + same request → replay", () => {
   it("returns action=replay when prior result was succeeded", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { sale_id: "s1" }));
-    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { result: "approved" } });
+    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { result: "approved" } }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { sale_id: "s1" }));
     expect(r2.action).toBe("replay");
     expect(r2.record.state).toBe("succeeded");
@@ -50,7 +50,7 @@ describe("claimIdempotency — same key + same request → replay", () => {
   it("returns action=replay when prior result was business_failed", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { sale_id: "s1" }));
-    await markBusinessFailed(store, r1.record.id, { responseCode: 409, responseBody: { error: "STOCK_INSUFFICIENT" }, lastErrorClass: "STOCK_INSUFFICIENT" });
+    await markBusinessFailed(store, r1.record.id, { responseCode: 409, responseBody: { error: "STOCK_INSUFFICIENT" }, lastErrorClass: "STOCK_INSUFFICIENT" }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { sale_id: "s1" }));
     expect(r2.action).toBe("replay");
     expect(r2.record.state).toBe("business_failed");
@@ -59,7 +59,7 @@ describe("claimIdempotency — same key + same request → replay", () => {
   it("replay does NOT create a new record", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { x: 1 }));
-    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true } });
+    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true } }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { x: 1 }));
     expect(r2.record.id).toBe(r1.record.id);
     expect(store.getAllRecords().length).toBe(1);
@@ -70,7 +70,7 @@ describe("claimIdempotency — same key + different request → conflict", () =>
   it("returns action=conflict when request body differs", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { sale_id: "s1" }));
-    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true } });
+    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true } }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { sale_id: "s2" }));
     expect(r2.action).toBe("conflict");
   });
@@ -85,7 +85,7 @@ describe("claimIdempotency — same key + different request → conflict", () =>
   it("conflict is NOT triggered by authority field differences (stripped)", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { data: "x", tenant_id: "t1" }));
-    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true } });
+    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true } }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { data: "x", tenant_id: "t2" }));
     expect(r2.action).toBe("replay");
   });
@@ -129,7 +129,7 @@ describe("claimIdempotency — retryable_failed re-executes", () => {
     const store = new InProcessIdempotencyStore();
     const now = new Date("2026-06-28T00:00:00Z");
     const r1 = await claimIdempotency(store, makeInput("key-1", { x: 1 }, now));
-    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "DB_TIMEOUT" });
+    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "DB_TIMEOUT" }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { x: 1 }, now));
     expect(r2.action).toBe("execute");
     expect(r2.record.attemptCount).toBe(2);
@@ -140,7 +140,7 @@ describe("claimIdempotency — business_failed does NOT re-execute", () => {
   it("returns action=replay when prior state was business_failed", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { x: 1 }));
-    await markBusinessFailed(store, r1.record.id, { responseCode: 409, responseBody: { error: "STOCK_INSUFFICIENT" }, lastErrorClass: "STOCK_INSUFFICIENT" });
+    await markBusinessFailed(store, r1.record.id, { responseCode: 409, responseBody: { error: "STOCK_INSUFFICIENT" }, lastErrorClass: "STOCK_INSUFFICIENT" }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { x: 1 }));
     expect(r2.action).toBe("replay");
   });
@@ -160,9 +160,9 @@ describe("claimIdempotency — no indefinite OPERATION_IN_PROGRESS deadlock", ()
     const store = new InProcessIdempotencyStore();
     const now = new Date("2026-06-28T00:00:00Z");
     const r1 = await claimIdempotency(store, makeInput("key-1", { x: 1 }, now));
-    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "TIMEOUT" });
+    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "TIMEOUT" }, r1.record.ownerToken!);
     const r2 = await claimIdempotency(store, makeInput("key-1", { x: 1 }, now));
-    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "TIMEOUT" });
+    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "TIMEOUT" }, r2.record.ownerToken!);
     const r3 = await claimIdempotency(store, makeInput("key-1", { x: 1 }, now));
     expect(r2.action).toBe("execute");
     expect(r3.action).toBe("execute");
@@ -193,7 +193,7 @@ describe("markSucceeded / markBusinessFailed / markRetryableFailed", () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { x: 1 }));
     const now = new Date("2026-06-28T00:01:00Z");
-    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true }, entityType: "sales_order", entityId: "so-1" }, now);
+    await markSucceeded(store, r1.record.id, { responseCode: 200, responseBody: { ok: true }, entityType: "sales_order", entityId: "so-1" }, r1.record.ownerToken!, now);
     const record = store.getRecord(r1.record.id)!;
     expect(record.state).toBe("succeeded");
     expect(record.responseCode).toBe(200);
@@ -204,7 +204,7 @@ describe("markSucceeded / markBusinessFailed / markRetryableFailed", () => {
   it("markBusinessFailed sets state and lastErrorClass", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { x: 1 }));
-    await markBusinessFailed(store, r1.record.id, { responseCode: 409, responseBody: { error: "STOCK_INSUFFICIENT" }, lastErrorClass: "STOCK_INSUFFICIENT" });
+    await markBusinessFailed(store, r1.record.id, { responseCode: 409, responseBody: { error: "STOCK_INSUFFICIENT" }, lastErrorClass: "STOCK_INSUFFICIENT" }, r1.record.ownerToken!);
     expect(store.getRecord(r1.record.id)!.state).toBe("business_failed");
     expect(store.getRecord(r1.record.id)!.lastErrorClass).toBe("STOCK_INSUFFICIENT");
   });
@@ -212,7 +212,7 @@ describe("markSucceeded / markBusinessFailed / markRetryableFailed", () => {
   it("markRetryableFailed sets state and lastErrorClass", async () => {
     const store = new InProcessIdempotencyStore();
     const r1 = await claimIdempotency(store, makeInput("key-1", { x: 1 }));
-    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "DB_TIMEOUT" });
+    await markRetryableFailed(store, r1.record.id, { lastErrorClass: "DB_TIMEOUT" }, r1.record.ownerToken!);
     expect(store.getRecord(r1.record.id)!.state).toBe("retryable_failed");
     expect(store.getRecord(r1.record.id)!.lastErrorClass).toBe("DB_TIMEOUT");
   });

@@ -341,7 +341,7 @@ export class QualityTestService {
       responseBody: result,
       entityType: QUALITY_TEST_ENTITY_TYPE,
       entityId: qualityTest.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -533,7 +533,7 @@ export class QualityTestService {
       responseBody: result,
       entityType: QUALITY_TEST_ENTITY_TYPE,
       entityId: test.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -630,7 +630,7 @@ export class QualityTestService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: "Hold already cleared or not found." },
         lastErrorClass: "QualityTestError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new QualityTestError("STATE_CONFLICT", `Quality hold '${input.qualityHoldId}' is already cleared or not found.`);
     }
 
@@ -656,7 +656,7 @@ export class QualityTestService {
       responseBody: result,
       entityType: "quality_hold",
       entityId: hold.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

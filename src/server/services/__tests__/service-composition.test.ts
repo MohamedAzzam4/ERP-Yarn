@@ -34,7 +34,7 @@ describe("Service composition — audit + idempotency + document sequence", () =
 
     await markSucceeded(idemStore, claim.record.id, {
       responseCode: 200, responseBody: { doc_no: docNum.docNo }, entityType: "sales_order", entityId: "s1",
-    });
+    }, claim.record.ownerToken!);
 
     expect(auditStore.count()).toBe(1);
     expect(idemStore.getRecord(claim.record.id)!.state).toBe("succeeded");

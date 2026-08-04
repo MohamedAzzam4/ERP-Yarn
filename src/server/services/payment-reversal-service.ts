@@ -186,14 +186,14 @@ export class PaymentReversalService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: "Payment already reversed." },
         lastErrorClass: "PaymentAlreadyReversedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new PaymentAlreadyReversedError(payment.id);
     }
     if (payment.status !== "posted") {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: `Payment in status '${payment.status}'.` },
         lastErrorClass: "PaymentNotReversibleError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new PaymentNotReversibleError(payment.id, payment.status);
     }
 
@@ -325,7 +325,7 @@ export class PaymentReversalService {
       responseBody: result,
       entityType: PAYMENT_ENTITY_TYPE,
       entityId: payment.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

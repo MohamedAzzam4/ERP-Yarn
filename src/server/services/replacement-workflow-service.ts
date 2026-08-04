@@ -322,7 +322,7 @@ export class ReplacementWorkflowService {
         responseCode: 409,
         responseBody: { message: `Return in status '${rr.status}'.` },
         lastErrorClass: "ReturnNotApprovedForReplacementError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReturnNotApprovedForReplacementError(rr.id, rr.status);
     }
 
@@ -332,7 +332,7 @@ export class ReplacementWorkflowService {
         responseCode: 409,
         responseBody: { message: `Treatment '${rr.financialTreatment}' is not 'replacement'.` },
         lastErrorClass: "ReturnNotReplacementTreatmentError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReturnNotReplacementTreatmentError(rr.id, rr.financialTreatment);
     }
 
@@ -347,7 +347,7 @@ export class ReplacementWorkflowService {
         responseCode: 409,
         responseBody: { message: `Replacement order '${existing.id}' already exists.` },
         lastErrorClass: "ReplacementAlreadyExistsError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReplacementAlreadyExistsError(rr.id, existing.id);
     }
 
@@ -358,7 +358,7 @@ export class ReplacementWorkflowService {
         responseCode: 422,
         responseBody: { message: "Return request has no lines." },
         lastErrorClass: "ReturnHasNoLinesError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new ReturnHasNoLinesError(rr.id);
     }
 
@@ -514,7 +514,7 @@ export class ReplacementWorkflowService {
           responseCode: 409,
           responseBody: { message: `Concurrent replacement creation won by '${winner?.id ?? "unknown"}'.` },
           lastErrorClass: "ReplacementAlreadyExistsError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new ReplacementAlreadyExistsError(rr.id, winner?.id ?? "unknown");
       }
       // Other error — mark idempotency as failed and re-throw.
@@ -522,7 +522,7 @@ export class ReplacementWorkflowService {
         responseCode: 500,
         responseBody: { message: "Replacement order creation failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -541,7 +541,7 @@ export class ReplacementWorkflowService {
       responseBody: result,
       entityType: REPLACEMENT_ENTITY_TYPE,
       entityId: postingResult.replacementSaleId,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

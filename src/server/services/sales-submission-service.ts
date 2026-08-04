@@ -340,7 +340,7 @@ export class SalesSubmissionService {
         responseCode: 409,
         responseBody: { message: `Sale already in state '${sale.saleStatus}'.` },
         lastErrorClass: "SaleAlreadySubmittedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new SaleAlreadySubmittedError(sale.id, sale.saleStatus);
     }
 
@@ -351,7 +351,7 @@ export class SalesSubmissionService {
         responseCode: 422,
         responseBody: { message: "Sale has no lines." },
         lastErrorClass: "SaleHasNoLinesError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new SaleHasNoLinesError(sale.id);
     }
 
@@ -362,7 +362,7 @@ export class SalesSubmissionService {
           responseCode: 422,
           responseBody: { message: `Line ${line.lineNo} quantity must be positive.` },
           lastErrorClass: "SalesSubmissionError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new SalesSubmissionError(
           "VALIDATION_FAILED",
           `Line ${line.lineNo} quantity must be positive, got '${line.quantityKg}'.`,
@@ -574,7 +574,7 @@ export class SalesSubmissionService {
         responseCode: 500,
         responseBody: { message: "Sales submission transaction failed and rolled back." },
         lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw txError;
     }
 
@@ -604,7 +604,7 @@ export class SalesSubmissionService {
         saleStatus: result.saleStatus,
         reservationCount: result.reservations.length,
       },
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

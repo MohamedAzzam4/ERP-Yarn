@@ -21,7 +21,7 @@ import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
-import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
 import {
   SalesFailureResolutionService,
@@ -45,7 +45,7 @@ function getService() {
   // This is NOT InProcessAuditStore — audit records are persisted to the
   // audit_logs table in the same DB transaction as the business mutations.
   const audit = new AuditDbRepository(db);
-  const idempotency = new InProcessIdempotencyStore();
+  const idempotency = new IdempotencyDbRepository(db);
   const documentSequence = new InProcessDocumentSequenceStore();
 
   const salesRepository = new SalesDbRepository(db);
@@ -72,6 +72,7 @@ function getService() {
     createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
   };
 
   return new SalesFailureResolutionService({
@@ -102,7 +103,8 @@ export async function resolveSaleFailureAction(formData: FormData): Promise<void
     reason: (formData.get("reason") as any) || "technical_system",
     humanResolutionType: ((formData.get("human_resolution_type") as string) || undefined) as any,
     resolutionReason: (formData.get("resolution_reason") as string) || "",
-    idempotencyKey: `resolve-${authResult.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    idempotencyKey: (formData.get("idempotencyKey") as string) ||
+      `resolve-${(formData.get("sale_id") as string) || ""}-${(formData.get("reason") as string) || ""}`,
   };
 
   const service = getService();

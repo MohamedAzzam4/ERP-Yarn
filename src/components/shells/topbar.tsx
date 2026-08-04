@@ -84,8 +84,8 @@ export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar, side
       )}
       role="banner"
     >
-      <div className="flex items-center justify-between gap-4 px-4 py-3">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between gap-2 px-3 py-3 sm:gap-4 sm:px-4">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           {onToggleSidebar && (
             <Button
               type="button"
@@ -93,7 +93,7 @@ export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar, side
               size="sm"
               onClick={onToggleSidebar}
               aria-label="فتح القائمة الجانبية"
-              className="min-h-[44px] min-w-[44px] p-2 lg:hidden"
+              className="min-h-[44px] min-w-[44px] p-2 shrink-0 lg:hidden"
             >
               <MenuIcon />
             </Button>
@@ -105,22 +105,22 @@ export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar, side
           >
             E
           </div>
-          <div className="flex flex-col">
-            <h1 className="text-heading-4 font-bold text-primary leading-tight">
+          <div className="flex flex-col min-w-0">
+            <h1 className="text-heading-4 font-bold text-primary leading-tight truncate">
               {tenantLabel ?? "ERP-Yarn"}
             </h1>
-            <p className="text-xs text-muted-foreground">{userName}</p>
+            <p className="text-xs text-muted-foreground truncate">{userName}</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           {/* Placeholder: Quick search — DISABLED */}
           <button
             type="button"
             disabled
             aria-label="بحث سريع (غير متاح حالياً)"
             title="البحث السريع غير متاح حالياً"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg p-2 text-muted-foreground opacity-40 transition-colors hover:bg-muted"
+            className="hidden sm:flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg p-2 text-muted-foreground opacity-40 transition-colors hover:bg-muted"
           >
             <SearchIcon />
           </button>
@@ -131,7 +131,7 @@ export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar, side
             disabled
             aria-label="الإشعارات (غير متاح حالياً)"
             title="الإشعارات غير متاحة حالياً"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg p-2 text-muted-foreground opacity-40 transition-colors hover:bg-muted"
+            className="hidden sm:flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg p-2 text-muted-foreground opacity-40 transition-colors hover:bg-muted"
           >
             <BellIcon />
           </button>
@@ -142,7 +142,7 @@ export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar, side
             disabled
             aria-label="تحديث (غير متاح حالياً)"
             title="التحديث اليدوي غير متاح حالياً"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg p-2 text-muted-foreground opacity-40 transition-colors hover:bg-muted"
+            className="hidden sm:flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg p-2 text-muted-foreground opacity-40 transition-colors hover:bg-muted"
           >
             <RefreshIcon />
           </button>
@@ -154,7 +154,7 @@ export function Topbar({ userName, tenantLabel, onSignOut, onToggleSidebar, side
               size="sm"
               onClick={onSignOut}
               aria-label="تسجيل الخروج"
-              className="min-h-[44px] mr-2"
+              className="min-h-[44px] shrink-0"
             >
               خروج
             </Button>

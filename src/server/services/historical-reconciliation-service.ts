@@ -535,7 +535,7 @@ export class HistoricalReconciliationService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: "import_batch", entityId: input.importBatchId,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -611,7 +611,7 @@ export class HistoricalReconciliationService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: "import_human_review_item", entityId: input.reviewItemId,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }

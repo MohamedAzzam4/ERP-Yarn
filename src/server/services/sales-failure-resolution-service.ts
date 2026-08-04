@@ -74,6 +74,7 @@ export interface SalesFailureResolutionTransactionScopedFactories {
   createReservationRepository: (tx: unknown) => StockReservationRepository;
   createSalesRepository: (tx: unknown) => SalesRepository;
   createAlertRepository: (tx: unknown) => OperationalAlertRepository;
+  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +219,7 @@ export class SalesFailureResolutionService {
         responseCode: 409,
         responseBody: { message: `Sale in state '${sale.saleStatus}' cannot be resolved.` },
         lastErrorClass: "SaleAlreadyResolvedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new SaleAlreadyResolvedError(sale.id, sale.saleStatus);
     }
 
@@ -243,12 +244,14 @@ export class SalesFailureResolutionService {
         reservationRepository: StockReservationRepository;
         salesRepository: SalesRepository;
         alertRepository: OperationalAlertRepository;
+        idempotency?: IdempotencyTransactionHandle;
       } | null,
     ): Promise<ResolveSaleFailureResult> => {
       const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
       const reservationRepo = txScoped?.reservationRepository ?? this.deps.reservationRepository;
       const salesRepo = txScoped?.salesRepository ?? this.deps.salesRepository;
       const alertRepo = txScoped?.alertRepository ?? this.deps.alertRepository;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
 
       const criticalAlertIds: string[] = [];
       const balanceSnapshots: ResolveSaleFailureResult["balanceSnapshots"] = [];
@@ -432,7 +435,7 @@ export class SalesFailureResolutionService {
         idempotencyKey: input.idempotencyKey,
       });
 
-      return {
+      const result: ResolveSaleFailureResult = {
         action: "resolved" as const,
         saleId: sale.id,
         saleStatus: updatedSale.saleStatus,
@@ -443,6 +446,11 @@ export class SalesFailureResolutionService {
         criticalAlertIds,
         balanceSnapshots,
       };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: { saleId: sale.id, reason: input.reason, saleStatus: result.saleStatus },
+      }, claim.record.ownerToken!, now);
+      return result;
     };
 
     let result: ResolveSaleFailureResult;
@@ -453,36 +461,30 @@ export class SalesFailureResolutionService {
           const txResRepo = this.deps.txFactories!.createReservationRepository(tx);
           const txSalesRepo = this.deps.txFactories!.createSalesRepository(tx);
           const txAlertRepo = this.deps.txFactories!.createAlertRepository(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency?.(tx);
           return executeResolution({
             inventoryLedger: txInvLedger,
             reservationRepository: txResRepo,
             salesRepository: txSalesRepo,
             alertRepository: txAlertRepo,
+            idempotency: txIdem,
           });
         });
       } else {
         result = await executeResolution(null);
       }
     } catch (txError) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 500,
-        responseBody: { message: "Sales failure resolution transaction failed and rolled back." },
-        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, now);
+      try {
+        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500,
+          responseBody: { message: "Sales failure resolution transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch (markError) {
+        console.error("Failed to mark idempotency as business_failed after tx rollback:", markError);
+      }
       throw txError;
     }
-
-    // Mark idempotency succeeded (outside tx — operational record, not business state).
-    // Note: the audit is INSIDE the transaction (above). The idempotency success
-    // record is operational and does not need to be in the same transaction.
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: {
-        saleId: sale.id,
-        reason: input.reason,
-        saleStatus: result.saleStatus,
-      },
-    }, now);
 
     return result;
   }

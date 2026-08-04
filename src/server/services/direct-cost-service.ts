@@ -321,7 +321,7 @@ export class DirectCostService {
       },
       entityType: DIRECT_COST_ENTITY_TYPE,
       entityId: directCost.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return { directCostId: directCost.id, costNo: directCost.costNo, reviewStatus: directCost.reviewStatus };
   }
@@ -406,7 +406,7 @@ export class DirectCostService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 403, responseBody: { message: "Requester cannot approve own direct cost." },
         lastErrorClass: "RequesterCannotApproveOwnDirectCostError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new RequesterCannotApproveOwnDirectCostError(directCost.id, user.userId);
     }
 
@@ -415,7 +415,7 @@ export class DirectCostService {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: `Direct cost in status '${directCost.reviewStatus}'.` },
         lastErrorClass: "DirectCostAlreadyReviewedError",
-      }, now);
+      }, claim.record.ownerToken!, now);
       throw new DirectCostAlreadyReviewedError(directCost.id);
     }
 
@@ -425,7 +425,7 @@ export class DirectCostService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: "Shared responsibility requires allocations." },
           lastErrorClass: "InvalidAllocationTotalError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new InvalidAllocationTotalError(input.amount, "0.00");
       }
       const totalAllocated = input.allocations.reduce(
@@ -435,7 +435,7 @@ export class DirectCostService {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 422, responseBody: { message: `Allocation total ${totalAllocated} != amount ${input.amount}.` },
           lastErrorClass: "InvalidAllocationTotalError",
-        }, now);
+        }, claim.record.ownerToken!, now);
         throw new InvalidAllocationTotalError(input.amount, totalAllocated);
       }
     }
@@ -575,7 +575,7 @@ export class DirectCostService {
       responseBody: result,
       entityType: DIRECT_COST_ENTITY_TYPE,
       entityId: directCost.id,
-    }, now);
+    }, claim.record.ownerToken!, now);
 
     return result;
   }
