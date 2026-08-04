@@ -356,6 +356,7 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(afterRes[0]?.status).toBe("active");
     const afterAlerts = await sql`SELECT COUNT(*)::int as cnt FROM operational_alerts WHERE tenant_id = ${T}`;
     expect(afterAlerts[0]?.cnt).toBe(0);
+    expect(afterFault.reservedQty).toBe("300.000"); // unchanged after rollback
     // Audit: tx-scoped audit rolls back — exactly zero new audit rows.
     const auditAfterFault = await countAudit("sales_failure_resolution.resolve");
     expect(auditAfterFault).toBe(auditBeforeResolve);
@@ -386,6 +387,11 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(result.saleStatus).toBe("approval_failed");
     expect(result.reservationMarkedFailed).toBe(true);
     expect(result.criticalAlertIds).toHaveLength(1);
+    // Verify reservation failed and reserved_qty reconciled
+    const afterRetryRes = await sql`SELECT status FROM stock_reservations WHERE tenant_id = ${T} AND sales_order_id = ${saleId}`;
+    expect(afterRetryRes[0]?.status).toBe("failed");
+    const afterRetryEffects = await countEffects(saleId);
+    expect(afterRetryEffects.reservedQty).toBe("0.000"); // reconciled after valid retry
     // Audit: exactly one new business audit row from the valid retry.
     const auditAfterRetry = await countAudit("sales_failure_resolution.resolve");
     expect(auditAfterRetry).toBe(auditBeforeResolve + 1);
@@ -399,6 +405,8 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
 
     const afterReplayAlerts = await sql`SELECT COUNT(*)::int as cnt FROM operational_alerts WHERE tenant_id = ${T}`;
     expect(afterReplayAlerts[0]?.cnt).toBe(1);
+    const afterReplayRes = await sql`SELECT status FROM stock_reservations WHERE tenant_id = ${T} AND sales_order_id = ${saleId}`;
+    expect(afterReplayRes[0]?.status).toBe("failed"); // unchanged after replay
     // Audit: zero additional audit rows after replay
     const auditAfterReplay = await countAudit("sales_failure_resolution.resolve");
     expect(auditAfterReplay).toBe(auditBeforeResolve + 1);
