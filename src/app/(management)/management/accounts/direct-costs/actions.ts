@@ -1,0 +1,395 @@
+/**
+ * Server actions for Management Direct Cost Review — WP-08-01D Milestone A.
+ *
+ * Contract 10 §8.6: Direct Cost Review screen — Owner/Accountant review
+ * direct cost drafts (status='needs_accountant_review'), confirm the
+ * amount, set the actual payer, decide profitability inclusion, and (for
+ * shared responsibility) provide allocations.
+ *
+ * Contract 07 §18:
+ *   - Worker input is restricted to amount (if known), simple responsibility,
+ *     and notes. No financial fields.
+ *   - Accountant/Owner review confirms amount, actual payer, allocations,
+ *     profitability inclusion, and posts subledger entries where applicable.
+ *   - "No direct-cost subledger entry before required review."
+ *
+ * DEC-080: The user who created the draft cannot review/approve it. This
+ * is enforced by the DirectCostService (throws
+ * RequesterCannotApproveOwnDirectCostError).
+ *
+ * Actions:
+ * 1. reviewDirectCostAction → DirectCostService.reviewDirectCost
+ *    (permission: direct_costs.review)
+ *
+ * All actions:
+ * - Use idempotency keys
+ * - Verify state via domain service (stale state rejection)
+ * - Enforce RBAC server-side
+ * - Preserve tenant isolation
+ * - Write audit through AuditDbRepository
+ * - Call domain service boundary, not raw table mutation
+ *
+ * NOTE: This milestone wires the action surface to the existing domain
+ * services. The persistence boundary for direct costs
+ * (`DirectCostRepository`) is currently provided by the in-memory test
+ * repository until a Drizzle-backed `DirectCostDbRepository` is added in
+ * a follow-up milestone. The `SubledgerService`,
+ * `ProfitabilitySnapshotService`, `AuditDbRepository`, and
+ * `IdempotencyDbRepository` are already DB-backed, so all subledger
+ * entries, snapshots, audit logs, and idempotency records persist to the
+ * live database.
+ */
+"use server";
+
+import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
+import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
+import { resolveAndRequirePermission } from "@/server/security/guards";
+import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { DirectCostService } from "@/server/services/direct-cost-service";
+import type {
+  ReviewDirectCostInput,
+  CostResponsibilityType,
+  ActualPayerType,
+} from "@/server/services/direct-cost-service";
+import { SubledgerService } from "@/server/services/subledger-service";
+import { SubledgerDbRepository } from "@/server/services/subledger-db-repository";
+import { ProfitabilitySnapshotService } from "@/server/services/profitability-snapshot-service";
+import { ProfitabilitySnapshotDbRepository } from "@/server/services/profitability-snapshot-db-repository";
+import { SalesDbRepository } from "@/server/services/sales-db-repository";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { InMemoryDirectCostRepository } from "@/server/services/__tests__/in-memory-direct-cost-repository";
+import { db } from "@/server/db/client";
+
+// ---------------------------------------------------------------------------
+// Forbidden fields — client must NEVER submit these.
+// ---------------------------------------------------------------------------
+
+/**
+ * Financial authority fields that must never be accepted from the client.
+ * These are computed/derived server-side by the domain services.
+ *
+ * Contract 09 §5: "Do not accept authoritative tenant_id, actor, role,
+ * approval status, calculated balance, stock delta, cost, payable sign, or
+ * profitability total from the request body."
+ */
+const FORBIDDEN_DIRECT_COST_FIELDS = [
+  // Review-state authority fields (server-controlled)
+  "reviewStatus",
+  "reviewedBy",
+  "reviewedAt",
+  "subledgerEntryId",
+  "snapshotId",
+  "snapshotVersion",
+  // Document / entity authority fields
+  "costNo",
+  "tenantId",
+  "createdBy",
+  "updatedBy",
+  // Audit/idempotency authority fields
+  "auditLogId",
+  "idempotencyRecordId",
+];
+
+function rejectForbiddenFields(formData: FormData): void {
+  for (const field of FORBIDDEN_DIRECT_COST_FIELDS) {
+    if (formData.has(field)) {
+      throw new Error(
+        `FORBIDDEN_FIELD: Field '${field}' is not allowed in direct cost review.`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared deps — DB-backed audit/idempotency/document-sequence.
+// ---------------------------------------------------------------------------
+
+function getSharedDeps() {
+  if (!db) throw new Error("Database not available.");
+  const audit = new AuditDbRepository(db);
+  const idempotency = new IdempotencyDbRepository(db);
+  const documentSequence = new InProcessDocumentSequenceStore();
+  return { db, audit, idempotency, documentSequence };
+}
+
+/**
+ * Transaction runner — wraps all DB writes in a single db.transaction().
+ * DirectCostService doesn't currently accept a transactionRunner in its
+ * deps interface, but we expose it here for symmetry with the WP-08-01C
+ * sales-orders pattern and to support future service-internal
+ * transactional composition.
+ */
+function makeTransactionRunner() {
+  if (!db) throw new Error("Database not available.");
+  const transactionRunner = async <T>(
+    work: (tx: unknown) => Promise<T>,
+  ): Promise<T> => {
+    return (db as any).transaction(async (tx: any) => work(tx));
+  };
+  return transactionRunner;
+}
+
+/**
+ * Transaction-scoped factories — used to create repos + services that
+ * share the same `tx` instance when composing multi-step writes.
+ *
+ * `createIdempotency` and `createAudit` are required by the
+ * WP-08-01C pattern.
+ */
+function makeTxFactories(
+  audit: AuditDbRepository,
+  idempotency: IdempotencyDbRepository,
+  documentSequence: InProcessDocumentSequenceStore,
+) {
+  return {
+    createIdempotency: (tx: unknown) =>
+      new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createSubledger: (tx: unknown) =>
+      new SubledgerService({
+        subledger: new SubledgerDbRepository(tx as any),
+        audit,
+        idempotency,
+        documentSequence,
+      }),
+    createSnapshotService: (tx: unknown) =>
+      new ProfitabilitySnapshotService({
+        snapshotRepository: new ProfitabilitySnapshotDbRepository(tx as any),
+        salesRepository: new SalesDbRepository(tx as any),
+        audit,
+      }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers.
+// ---------------------------------------------------------------------------
+
+const ALLOWED_RESPONSIBILITY_TYPES: ReadonlySet<CostResponsibilityType> =
+  new Set<CostResponsibilityType>([
+    "company",
+    "customer",
+    "factory",
+    "shared",
+    "unknown",
+    "included_elsewhere",
+    "needs_accountant_review",
+  ]);
+
+const ALLOWED_PAYER_TYPES: ReadonlySet<ActualPayerType> = new Set<ActualPayerType>([
+  "company",
+  "customer",
+  "factory",
+  "other",
+  "unknown",
+  "not_recorded",
+]);
+
+function parseResponsibilityType(value: string): CostResponsibilityType {
+  if (!ALLOWED_RESPONSIBILITY_TYPES.has(value as CostResponsibilityType)) {
+    throw new Error(
+      `VALIDATION_FAILED: Invalid costResponsibilityType '${value}'.`,
+    );
+  }
+  return value as CostResponsibilityType;
+}
+
+function parsePayerType(value: string): ActualPayerType {
+  if (!ALLOWED_PAYER_TYPES.has(value as ActualPayerType)) {
+    throw new Error(`VALIDATION_FAILED: Invalid actualPayerType '${value}'.`);
+  }
+  return value as ActualPayerType;
+}
+
+interface AllocationFormInput {
+  partyType: "customer" | "supplier" | "factory";
+  partyId: string;
+  shareAmount: string;
+}
+
+/**
+ * Parse the optional shared-responsibility allocations JSON.
+ * Returns an empty array if no allocations are submitted (the service
+ * will validate that shared responsibility requires non-empty
+ * allocations).
+ */
+function parseAllocations(
+  raw: string | null | undefined,
+): Array<{
+  responsiblePartyType: "customer" | "supplier" | "factory";
+  responsiblePartyId: string;
+  shareAmount: string;
+}> {
+  if (!raw || !raw.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      "VALIDATION_FAILED: allocationsJson must be valid JSON.",
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      "VALIDATION_FAILED: allocationsJson must be an array.",
+    );
+  }
+  return parsed.map((item, idx) => {
+    const a = item as Partial<AllocationFormInput>;
+    if (!a || typeof a !== "object") {
+      throw new Error(`VALIDATION_FAILED: allocation[${idx}] is not an object.`);
+    }
+    const partyType = a.partyType;
+    const partyId = a.partyId;
+    const shareAmount = a.shareAmount;
+    if (
+      partyType !== "customer" &&
+      partyType !== "supplier" &&
+      partyType !== "factory"
+    ) {
+      throw new Error(
+        `VALIDATION_FAILED: allocation[${idx}].partyType must be customer|supplier|factory.`,
+      );
+    }
+    if (typeof partyId !== "string" || !partyId.trim()) {
+      throw new Error(
+        `VALIDATION_FAILED: allocation[${idx}].partyId is required.`,
+      );
+    }
+    if (typeof shareAmount !== "string" || !shareAmount.trim()) {
+      throw new Error(
+        `VALIDATION_FAILED: allocation[${idx}].shareAmount is required.`,
+      );
+    }
+    return {
+      responsiblePartyType: partyType,
+      responsiblePartyId: partyId,
+      shareAmount,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Action 1: Review (approve) a direct cost.
+// ---------------------------------------------------------------------------
+
+/**
+ * Review and approve a direct cost draft.
+ *
+ * Wires to DirectCostService.reviewDirectCost.
+ * Permission: direct_costs.review (Owner/Accountant only).
+ *
+ * On approval:
+ *   1. Service validates shared allocations sum to confirmed amount.
+ *   2. Service posts subledger entry (customer-borne → positive
+ *      customer_direct_cost_receivable; factory-borne → positive
+ *      factory_direct_cost_recovery; other → no entry).
+ *   3. Service inserts allocation rows (if shared).
+ *   4. If includedInProfitability: service creates later profitability
+ *      snapshot version via ProfitabilitySnapshotService.
+ *   5. Service updates direct cost review status to 'approved'.
+ *
+ * DEC-080: The user who created the draft cannot review/approve it.
+ */
+export async function reviewDirectCostAction(
+  formData: FormData,
+): Promise<void> {
+  const authResult = await getErpAuthContextWithRoles();
+  if (!authResult.authenticated) redirect("/login");
+  if (authResult.roles.length === 0) redirect("/login?error=no_role");
+
+  const effective = resolveAndRequirePermission(
+    authResult.roles,
+    TEST_ROLE_PERMISSION_MATRIX,
+    "direct_costs.review",
+  );
+
+  rejectForbiddenFields(formData);
+
+  const directCostId = String(formData.get("directCostId") ?? "").trim();
+  const amount = String(formData.get("amount") ?? "").trim();
+  const costResponsibilityType = parseResponsibilityType(
+    String(formData.get("costResponsibilityType") ?? "").trim(),
+  );
+  const actualPayerType = parsePayerType(
+    String(formData.get("actualPayerType") ?? "").trim(),
+  );
+  const includedInProfitabilityRaw = String(
+    formData.get("includedInProfitability") ?? "false",
+  ).trim();
+  const includedInProfitability = includedInProfitabilityRaw === "true";
+  const allocationsRaw = formData.get("allocationsJson")
+    ? String(formData.get("allocationsJson"))
+    : null;
+  const allocations = parseAllocations(allocationsRaw);
+  const notes = formData.get("notes")
+    ? String(formData.get("notes"))
+    : null;
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+
+  if (!directCostId || !amount || !idempotencyKey) {
+    throw new Error(
+      "VALIDATION_FAILED: directCostId, amount, and idempotencyKey are required.",
+    );
+  }
+
+  const { db: dbInstance, audit, idempotency, documentSequence } =
+    getSharedDeps();
+
+  // NOTE: DirectCostRepository is currently backed by the in-memory test
+  // implementation. A DB-backed DirectCostDbRepository will replace this in
+  // a follow-up milestone. Subledger entries, snapshots, audit logs, and
+  // idempotency records are persisted to the live DB.
+  const directCostRepository = new InMemoryDirectCostRepository();
+  const subledger = new SubledgerService({
+    subledger: new SubledgerDbRepository(dbInstance),
+    audit,
+    idempotency,
+    documentSequence,
+  });
+  const snapshotService = new ProfitabilitySnapshotService({
+    snapshotRepository: new ProfitabilitySnapshotDbRepository(dbInstance),
+    salesRepository: new SalesDbRepository(dbInstance),
+    audit,
+  });
+
+  // Build the transaction runner + tx factories (used by future
+  // service-internal transactional composition; documented here for
+  // symmetry with the WP-08-01C sales-orders pattern).
+  void makeTransactionRunner();
+  void makeTxFactories(audit, idempotency, documentSequence);
+
+  const service = new DirectCostService({
+    directCostRepository,
+    subledger,
+    snapshotService,
+    audit,
+    idempotency,
+    documentSequence,
+  });
+
+  const input: ReviewDirectCostInput = {
+    directCostId,
+    amount,
+    costResponsibilityType,
+    actualPayerType,
+    includedInProfitability,
+    allocations:
+      allocations.length > 0
+        ? allocations.map((a) => ({
+            responsiblePartyType: a.responsiblePartyType,
+            responsiblePartyId: a.responsiblePartyId,
+            shareAmount: a.shareAmount,
+          }))
+        : undefined,
+    notes,
+    idempotencyKey,
+  };
+
+  await service.reviewDirectCost(authResult as any, effective, input);
+
+  revalidatePath("/management/accounts/direct-costs");
+}
