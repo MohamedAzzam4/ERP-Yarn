@@ -161,4 +161,83 @@ describeOrSkip("WP-08-01C Persistent Idempotency — Owner-Token Fencing", () =>
     expect(c2.action).toBe("execute");
     expect(c2.record.attemptCount).toBe(2);
   });
+
+  // =========================================================================
+  // Legacy NULL owner-token compatibility tests
+  // =========================================================================
+
+  it("L1: legacy NULL-token unexpired claim — FAIL CLOSED (return in_progress, not reclaimed)", async () => {
+    const scope = "test.L1.legacyUnexpired", key = "key-L1", payload = { saleId: "s" };
+    const repo = new IdempotencyDbRepository(db);
+    // Create a modern claim first, then corrupt it to have NULL ownerToken
+    const claim = await claimIdempotency(repo, { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 60000 });
+    await sql`UPDATE idempotency_records SET owner_token = NULL WHERE id = ${claim.record.id}`;
+
+    // Fresh caller tries to claim — must get in_progress (FAIL CLOSED)
+    const c2 = await claimIdempotency(new IdempotencyDbRepository(db), { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 30000 });
+    expect(c2.action).toBe("in_progress");
+    expect(c2.record.ownerToken).toBeNull();
+
+    // Verify record was NOT reclaimed (attemptCount still 1)
+    const rec = await new IdempotencyDbRepository(db).findByTenantScopeKey(TEST_TENANT_A, scope, key);
+    expect(rec!.attemptCount).toBe(1);
+    expect(rec!.ownerToken).toBeNull();
+  });
+
+  it("L2: legacy NULL-token expired claim — safely reclaimed with new non-null ownerToken", async () => {
+    const scope = "test.L2.legacyExpired", key = "key-L2", payload = { saleId: "s" };
+    const repo = new IdempotencyDbRepository(db);
+    // Create a claim with short lease, then corrupt to NULL ownerToken and wait for expiry
+    const claim = await claimIdempotency(repo, { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 1 });
+    await new Promise(r => setTimeout(r, 50));
+    await sql`UPDATE idempotency_records SET owner_token = NULL WHERE id = ${claim.record.id}`;
+
+    // Fresh caller reclaims — should get execute with new non-null ownerToken
+    const c2 = await claimIdempotency(new IdempotencyDbRepository(db), { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 30000 });
+    expect(c2.action).toBe("execute");
+    expect(c2.record.ownerToken).not.toBeNull();
+    expect(c2.record.attemptCount).toBe(2);
+  });
+
+  it("L3: legacy NULL-token with NULL leaseExpiresAt — FAIL CLOSED", async () => {
+    const scope = "test.L3.legacyNoExpiry", key = "key-L3", payload = { saleId: "s" };
+    const repo = new IdempotencyDbRepository(db);
+    const claim = await claimIdempotency(repo, { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 60000 });
+    // Corrupt: NULL ownerToken AND NULL lease_expires_at
+    await sql`UPDATE idempotency_records SET owner_token = NULL, lease_expires_at = NULL WHERE id = ${claim.record.id}`;
+
+    const c2 = await claimIdempotency(new IdempotencyDbRepository(db), { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 30000 });
+    expect(c2.action).toBe("in_progress");
+    expect(c2.record.ownerToken).toBeNull();
+  });
+
+  it("L4: terminal legacy records (succeeded/business_failed with NULL ownerToken) — replay preserved", async () => {
+    const scope = "test.L4.legacyTerminal", key = "key-L4", payload = { saleId: "s" };
+    const repo = new IdempotencyDbRepository(db);
+    const claim = await claimIdempotency(repo, { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 30000 });
+    // Mark succeeded, then corrupt to NULL ownerToken
+    await markSucceeded(repo, claim.record.id, { responseCode: 200, responseBody: { ok: true } }, claim.record.ownerToken!);
+    await sql`UPDATE idempotency_records SET owner_token = NULL WHERE id = ${claim.record.id}`;
+
+    // Fresh caller — must get replay (terminal state preserved, not mutated)
+    const c2 = await claimIdempotency(new IdempotencyDbRepository(db), { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 30000 });
+    expect(c2.action).toBe("replay");
+    expect(c2.record.state).toBe("succeeded");
+    expect(c2.record.responseBody).toEqual({ ok: true });
+    expect(c2.record.ownerToken).toBeNull(); // NOT mutated — terminal legacy preserved
+  });
+
+  it("L5: concurrent modern/legacy safety — modern claim cannot be stolen by legacy-style reclaim", async () => {
+    const scope = "test.L5.concurrent", key = "key-L5", payload = { saleId: "s" };
+    const repo = new IdempotencyDbRepository(db);
+    // Modern active claim (non-null ownerToken, unexpired lease)
+    const claim = await claimIdempotency(repo, { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 60000 });
+
+    // Simultaneously, a legacy-style caller (NULL ownerToken) tries to reclaim
+    // The DB claimExpiredLease predicate requires lease_expires_at < now,
+    // so an unexpired modern claim cannot be reclaimed.
+    const c2 = await claimIdempotency(new IdempotencyDbRepository(db), { tenantId: TEST_TENANT_A, operationScope: scope, idempotencyKey: key, requestBody: payload, initiatedBy: TEST_USER, leaseDurationMs: 30000 });
+    expect(c2.action).toBe("in_progress");
+    expect(c2.record.ownerToken).toBe(claim.record.ownerToken); // unchanged
+  });
 });

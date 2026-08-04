@@ -114,10 +114,32 @@ export async function claimIdempotency(
   }
 
   if (existing.state === "in_progress") {
-    const leaseExpired = existing.ownerToken === null || (existing.leaseExpiresAt !== null && existing.leaseExpiresAt.getTime() < now.getTime());
-    if (!leaseExpired) {
-      return { action: "in_progress", record: existing };
+    // WP-08-01C legacy NULL owner-token safety:
+    // - Modern claim (ownerToken non-null): check lease expiry normally.
+    // - Legacy claim (ownerToken null, lease expired): may be safely reclaimed.
+    // - Legacy claim (ownerToken null, lease unexpired): FAIL CLOSED — return in_progress.
+    //   Do NOT auto-reclaim. The claim may still be actively owned by a legacy caller.
+    // - Legacy claim (ownerToken null, leaseExpiresAt null): FAIL CLOSED — no safe
+    //   expiry information. Return in_progress. Requires administrative recovery.
+    const hasOwnerToken = existing.ownerToken !== null;
+    const leaseExpired = existing.leaseExpiresAt !== null && existing.leaseExpiresAt.getTime() < now.getTime();
+
+    if (hasOwnerToken) {
+      // Modern claim — check lease normally
+      if (!leaseExpired) {
+        return { action: "in_progress", record: existing };
+      }
+      // Lease expired — reclaim
+    } else {
+      // Legacy NULL ownerToken claim
+      if (!leaseExpired) {
+        // Legacy claim with unexpired or unknown lease — FAIL CLOSED
+        return { action: "in_progress", record: existing };
+      }
+      // Legacy claim with genuinely expired lease — may be safely reclaimed
+      // claimExpiredLease will assign a new non-null ownerToken
     }
+
     const claimed = await tx.claimExpiredLease(existing.id, leaseExpiresAt, now, now);
     if (!claimed) return { action: "in_progress", record: existing };
     const reclaimed = await tx.findByTenantScopeKey(input.tenantId, input.operationScope, input.idempotencyKey);
