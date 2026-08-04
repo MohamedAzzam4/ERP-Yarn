@@ -14,8 +14,8 @@
  *   - §16 Settlement record links payment entry to target entry.
  *   - §17 Reversal creates opposite signed entry; never delete/edit original.
  *
- * Permission: payments.approve (sidebar entry). Action permission is
- * re-checked server-side by each server action (payments.create /
+ * Permission: payments.approve (sidebar entry). Action permissions are
+ * re-checked server-side by each server action (payments.approve /
  * payments.reverse).
  */
 import { redirect } from "next/navigation";

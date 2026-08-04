@@ -12,8 +12,8 @@
  *   - §17 Reversal creates opposite signed entry; never delete/edit original.
  *
  * Actions:
- * 1. postPaymentAction    → PaymentService.postPayment           (payments.create)
- * 2. settlePaymentAction  → SettlementService.settlePayment      (payments.create)
+ * 1. postPaymentAction    → PaymentService.postPayment           (payments.approve)
+ * 2. settlePaymentAction  → SettlementService.settlePayment      (payments.approve)
  * 3. reversePaymentAction → PaymentReversalService.reversePayment (payments.reverse)
  *
  * All actions:
@@ -161,8 +161,10 @@ function makeTxFactories(
  * Post a draft payment — creates the immutable signed account entry.
  *
  * Wires to PaymentService.postPayment.
- * Permission: payments.create (Owner/Accountant only — Workers denied per
+ * Permission: payments.approve (Owner/Accountant only — Workers denied per
  * Contract 11 §13).
+ *
+ * Contract 09 §20.5: POST /payments/:paymentId/post → permission: payments.approve
  *
  * Idempotency: same key + same body = replay; different body = conflict.
  * State check: only 'draft' payments can be posted.
@@ -175,7 +177,7 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
   const effective = resolveAndRequirePermission(
     authResult.roles,
     TEST_ROLE_PERMISSION_MATRIX,
-    "payments.create",
+    "payments.approve",
   );
 
   rejectForbiddenFields(formData, "payment post");
@@ -238,7 +240,9 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
  * receivable/payable entries.
  *
  * Wires to SettlementService.settlePayment.
- * Permission: payments.create (Owner/Accountant).
+ * Permission: payments.approve (Owner/Accountant).
+ *
+ * Contract 09 §20.5: POST /payments/:paymentId/settlements → permission: payments.approve
  *
  * The form submits a single allocation (one settledEntryId + one
  * settledAmount). The service enforces same-account/currency/sign
@@ -255,7 +259,7 @@ export async function settlePaymentAction(formData: FormData): Promise<void> {
   const effective = resolveAndRequirePermission(
     authResult.roles,
     TEST_ROLE_PERMISSION_MATRIX,
-    "payments.create",
+    "payments.approve",
   );
 
   rejectForbiddenFields(formData, "payment settlement");
