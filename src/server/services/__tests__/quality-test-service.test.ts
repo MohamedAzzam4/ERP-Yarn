@@ -296,7 +296,7 @@ describe("WP-06-01 quality status transitions", () => {
     });
     expect(test.testStatus).toBe("needs_review");
 
-    const result = await deps.qualityTestService.reviewQualityTest(qualityUser as any, qualityEff as any, {
+    const result = await deps.qualityTestService.reviewQualityTest(qualityUser as any, makeOwnerEff() as any, {
       qualityTestId: test.qualityTestId,
       testStatus: "accepted",
       riskClassification: "none",
@@ -324,7 +324,7 @@ describe("WP-06-01 quality status transitions", () => {
       idempotencyKey: "qt-blocked-001",
     });
 
-    const result = await deps.qualityTestService.reviewQualityTest(qualityUser as any, qualityEff as any, {
+    const result = await deps.qualityTestService.reviewQualityTest(qualityUser as any, makeOwnerEff() as any, {
       qualityTestId: test.qualityTestId,
       testStatus: "blocked",
       riskClassification: "reprocess_required",
@@ -348,7 +348,7 @@ describe("WP-06-01 quality status transitions", () => {
       idempotencyKey: "qt-correct-001",
     });
 
-    const result = await deps.qualityTestService.reviewQualityTest(qualityUser as any, qualityEff as any, {
+    const result = await deps.qualityTestService.reviewQualityTest(qualityUser as any, makeOwnerEff() as any, {
       qualityTestId: test.qualityTestId,
       testStatus: "accepted",
       riskClassification: "none",
@@ -363,7 +363,7 @@ describe("WP-06-01 quality status transitions", () => {
     const qualityUser = makeUser(TEST_USERS.quality.userId);
     const qualityEff = makeQualityEff();
 
-    await expect(deps.qualityTestService.reviewQualityTest(qualityUser as any, qualityEff as any, {
+    await expect(deps.qualityTestService.reviewQualityTest(qualityUser as any, makeOwnerEff() as any, {
       qualityTestId: "nonexistent",
       testStatus: "accepted",
       riskClassification: "none",
@@ -440,8 +440,11 @@ describe("WP-06-01 tenant isolation", () => {
     });
 
     // Foreign tenant user tries to review — QUALITY_TEST_NOT_FOUND
+    // (using ownerEff which has quality_risk_sales.approve so permission
+    // check passes, then tenant isolation fails)
     const foreignUser = makeUser(TEST_USERS.quality.userId, "ffffffff-ffff-ffff-ffff-ffffffffffff");
-    await expect(deps.qualityTestService.reviewQualityTest(foreignUser as any, qualityEff as any, {
+    const ownerEff = makeOwnerEff();
+    await expect(deps.qualityTestService.reviewQualityTest(foreignUser as any, ownerEff as any, {
       qualityTestId: test.qualityTestId,
       testStatus: "accepted",
       riskClassification: "none",
@@ -500,7 +503,7 @@ describe("WP-06-01 role permissions", () => {
       linkedEntityId: TEST_ITEM_ID,
       idempotencyKey: "qt-quality-001",
     });
-    const review = await deps.qualityTestService.reviewQualityTest(qualityUser as any, qualityEff as any, {
+    const review = await deps.qualityTestService.reviewQualityTest(qualityUser as any, makeOwnerEff() as any, {
       qualityTestId: test.qualityTestId,
       testStatus: "accepted",
       riskClassification: "none",
@@ -591,7 +594,7 @@ describe("WP-06-01 audit persistence", () => {
       testDate: "2026-07-10", linkedEntityType: "inventory_item", linkedEntityId: TEST_ITEM_ID,
       idempotencyKey: "qt-audit-review-001",
     });
-    await deps.qualityTestService.reviewQualityTest(qualityUser as any, qualityEff as any, {
+    await deps.qualityTestService.reviewQualityTest(qualityUser as any, makeOwnerEff() as any, {
       qualityTestId: test.qualityTestId,
       testStatus: "accepted", riskClassification: "none",
       idempotencyKey: "qt-audit-review-001:review",
@@ -617,7 +620,7 @@ describe("WP-06-01 no side effects", () => {
       testDate: "2026-07-10", linkedEntityType: "inventory_item", linkedEntityId: TEST_ITEM_ID,
       idempotencyKey: "qt-noside-001",
     });
-    await deps.qualityTestService.reviewQualityTest(qualityUser as any, qualityEff as any, {
+    await deps.qualityTestService.reviewQualityTest(qualityUser as any, makeOwnerEff() as any, {
       qualityTestId: test.qualityTestId,
       testStatus: "accepted", riskClassification: "none",
       idempotencyKey: "qt-noside-001:review",

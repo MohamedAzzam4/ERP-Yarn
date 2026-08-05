@@ -419,7 +419,13 @@ export class QualityTestService {
     effective: EffectivePermissions,
     input: ReviewQualityTestInput,
   ): Promise<ReviewQualityTestResult> {
-    requirePermission(effective, "quality_tests.create");
+    // Contract 11 §7: Quality-risk sale approval = Owner/Accountant only.
+    // This review can clear holds, classify stock as sellable, authorize
+    // sellable_with_discount, or otherwise permit risky sale — therefore
+    // it requires quality_risk_sales.approve, NOT quality_tests.create.
+    // Workers (Quality/Warehouse) retain quality_tests.create for fact
+    // recording only.
+    requirePermission(effective, "quality_risk_sales.approve");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
     if (!input.qualityTestId?.trim()) throw new QualityTestError("VALIDATION_FAILED", "qualityTestId is required.");

@@ -258,8 +258,17 @@ export async function rejectReturnAction(
 /**
  * Create a linked replacement sales order from an approved return request.
  *
- * Permission: returns.create (Owner/Accountant — workers cannot create
- * replacement orders because they involve financial treatment decisions).
+ * Permission: returns.approve (Owner/Accountant ONLY).
+ *
+ * Contract 11 §7 (Role/Action Matrix):
+ *   Return/replacement approval and financial treatment:
+ *   Owner = A/R, Accountant = A/R, Warehouse = -, Quality = -.
+ *
+ * Warehouse and Quality users retain returns.create for physical
+ * return-request facts only — they CANNOT create replacement orders
+ * because replacement creation is a financially consequential action.
+ * Denial occurs before any idempotency, stock, sales-order, account,
+ * or audit side effects.
  *
  * Contract 10 §8.7: Linked replacement flow.
  * Contract 06 §9: Linked Replacement Issue/Sale.
@@ -300,7 +309,7 @@ export async function createReplacementOrderAction(
   const effective = resolveAndRequirePermission(
     authResult.roles,
     TEST_ROLE_PERMISSION_MATRIX,
-    "returns.create",
+    "returns.approve",
   );
 
   rejectForbiddenFields(formData, "replacement order create");

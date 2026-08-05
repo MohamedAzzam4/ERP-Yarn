@@ -261,7 +261,14 @@ export class ReplacementWorkflowService {
     effective: EffectivePermissions,
     input: CreateReplacementOrderInput,
   ): Promise<CreateReplacementOrderResult> {
-    requirePermission(effective, "returns.create");
+    // Contract 11 §7: Return/replacement approval and financial treatment =
+    // Owner/Accountant only (A/R). Warehouse and Quality have returns.create
+    // for physical return-request facts only — they CANNOT create replacement
+    // orders because replacement creation is a financially consequential action
+    // (creates a linked sales order with receivable implications).
+    // Contract 09 §11: The linked replacement order is a normal sales order,
+    // but creation requires the same authorization as return approval.
+    requirePermission(effective, "returns.approve");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
     if (!input.returnRequestId?.trim()) {

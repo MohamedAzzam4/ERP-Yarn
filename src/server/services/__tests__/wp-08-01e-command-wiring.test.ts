@@ -4,8 +4,8 @@
  * Verifies the 4 new contracted commands are correctly wired:
  *   1. recordQualityTestValueAction (worker) — quality_tests.create
  *   2. updateComplaintAction (worker) — complaints.investigate
- *   3. reviewQualityTestAction (management) — quality_tests.create
- *   4. createReplacementOrderAction (management) — returns.create
+ *   3. reviewQualityTestAction (management) — quality_risk_sales.approve
+ *   4. createReplacementOrderAction (management) — returns.approve
  *
  * Tests prove:
  *   - Correct permissions and worker denial;
@@ -129,9 +129,9 @@ describe("WP-08-01E Command-Wiring Correction", () => {
       expect(actions).toMatch(/export async function reviewQualityTestAction/);
     });
 
-    it("requires quality_tests.create permission", () => {
+    it("requires quality_risk_sales.approve permission (management-only)", () => {
       expect(actions).toMatch(
-        /reviewQualityTestAction[\s\S]*?"quality_tests\.create"/,
+        /reviewQualityTestAction[\s\S]*?"quality_risk_sales\.approve"/,
       );
     });
 
@@ -170,9 +170,9 @@ describe("WP-08-01E Command-Wiring Correction", () => {
       );
     });
 
-    it("requires returns.create permission (management-only)", () => {
+    it("requires returns.approve permission (management-only)", () => {
       expect(actions).toMatch(
-        /createReplacementOrderAction[\s\S]*?"returns\.create"/,
+        /createReplacementOrderAction[\s\S]*?"returns\.approve"/,
       );
     });
 
@@ -282,24 +282,24 @@ describe("WP-08-01E Command-Wiring Correction", () => {
       }).toThrow(PermissionDeniedError);
     });
 
-    it("owner is ALLOWED returns.create (can create replacement)", () => {
+    it("owner is ALLOWED returns.approve (can create replacement)", () => {
       const ownerRoles = ["owner"] as any[];
       const effective = resolveAndRequirePermission(
         ownerRoles,
         TEST_ROLE_PERMISSION_MATRIX,
-        "returns.create",
+        "returns.approve",
       );
-      expect(effective.permissionKeys.has("returns.create")).toBe(true);
+      expect(effective.permissionKeys.has("returns.approve")).toBe(true);
     });
 
-    it("accountant is ALLOWED returns.create", () => {
+    it("accountant is ALLOWED returns.approve", () => {
       const acctRoles = ["accountant"] as any[];
       const effective = resolveAndRequirePermission(
         acctRoles,
         TEST_ROLE_PERMISSION_MATRIX,
-        "returns.create",
+        "returns.approve",
       );
-      expect(effective.permissionKeys.has("returns.create")).toBe(true);
+      expect(effective.permissionKeys.has("returns.approve")).toBe(true);
     });
 
     it("quality_employee is ALLOWED quality_tests.create (can record values)", () => {

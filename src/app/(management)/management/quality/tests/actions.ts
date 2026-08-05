@@ -82,22 +82,36 @@ function getSharedDeps() {
 /**
  * Review a quality test — set test status + risk classification.
  *
- * Permission: quality_tests.create (Owner/Accountant/Quality lead).
+ * Permission: quality_risk_sales.approve (Owner/Accountant ONLY).
+ *
+ * Contract 11 §7 (Role/Action Matrix):
+ *   Quality-risk sale approval: Owner = A, Accountant = A,
+ *   Warehouse = -, Quality = investigation/comment only.
  *
  * This is the management-level review that authorizes risk disposition:
  *   - accepted → stock is sellable
  *   - needs_review → stock held for further review
  *   - blocked → stock blocked from sale
+ *   - sellable_with_discount → REVIEW FLAG that permits risky sale
  *
  * The service creates/clears quality holds based on the risk classification.
+ * This action can clear a hold, classify stock as sellable, authorize
+ * sellable_with_discount, or otherwise permit risky sale — therefore it
+ * requires the exact management authorization quality_risk_sales.approve
+ * and denies Quality/Warehouse users server-side.
+ *
+ * Workers (Quality/Warehouse) retain quality_tests.create for fact recording
+ * only (createQualityTestAction, recordQualityTestValueAction) — they cannot
+ * perform this management risk-clearance review.
+ *
  * This does NOT:
  *   - Create stock movements
  *   - Create account entries
- *   - Authorize discount sales (sellable_with_discount is a REVIEW FLAG only)
- *   - Approve sales or returns
+ *   - Approve sales or returns directly
  *
  * Contract 04 §11: Quality records facts; management authorizes risk.
  * Contract 10 §8.7: Management review of quality tests.
+ * Contract 11 §7: Quality-risk sale approval = Owner/Accountant only.
  */
 export async function reviewQualityTestAction(
   formData: FormData,
@@ -109,7 +123,7 @@ export async function reviewQualityTestAction(
   const effective = resolveAndRequirePermission(
     authResult.roles,
     TEST_ROLE_PERMISSION_MATRIX,
-    "quality_tests.create",
+    "quality_risk_sales.approve",
   );
 
   rejectForbiddenFields(formData, "quality test review");
