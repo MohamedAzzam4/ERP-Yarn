@@ -24,13 +24,13 @@
  * - Write audit through AuditDbRepository
  * - Call domain service boundary, not raw table mutation
  *
- * NOTE: This milestone wires the action surface to the existing domain
- * services. The persistence boundary for payments (`PaymentRepository`)
- * is currently provided by the in-memory test repository until a
- * Drizzle-backed `PaymentDbRepository` is added in a follow-up milestone.
- * The `SubledgerService`, `AuditDbRepository`, and `IdempotencyDbRepository`
- * are already DB-backed, so all subledger entries, audit logs, and
- * idempotency records persist to the live database.
+ * All persistence boundaries are DB-backed:
+ *   - PaymentRepository → PaymentDbRepository (Drizzle, payments + payment_settlements)
+ *   - SubledgerService → SubledgerDbRepository (Drizzle, accounts + account_entries)
+ *   - AuditDbRepository (Drizzle, audit_logs)
+ *   - IdempotencyDbRepository (Drizzle, idempotency_records)
+ *
+ * NO in-memory test repositories are used in production actions.
  */
 "use server";
 
@@ -46,8 +46,8 @@ import { SubledgerService } from "@/server/services/subledger-service";
 import { SubledgerDbRepository } from "@/server/services/subledger-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { PaymentDbRepository } from "@/server/services/payment-db-repository";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
-import { InMemoryPaymentRepository } from "@/server/services/__tests__/in-memory-payment-repository";
 import { db } from "@/server/db/client";
 
 // ---------------------------------------------------------------------------
@@ -150,6 +150,11 @@ function makeTxFactories(
         idempotency,
         documentSequence,
       }),
+    // PRODUCTION: tx-scoped PaymentDbRepository for future service-internal
+    // transactional composition (when PaymentService/SettlementService/
+    // PaymentReversalService accept a transactionRunner like the
+    // SalesApprovalService pattern in WP-08-01C).
+    createPayment: (tx: unknown) => new PaymentDbRepository(tx as any),
   };
 }
 
@@ -196,11 +201,9 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
 
   const { db: dbInstance, audit, idempotency, documentSequence } =
     getSharedDeps();
-  // NOTE: PaymentRepository is currently backed by the in-memory test
-  // implementation. A DB-backed PaymentDbRepository will replace this in a
-  // follow-up milestone. Subledger entries, audit logs, and idempotency
-  // records are persisted to the live DB.
-  const paymentRepository = new InMemoryPaymentRepository();
+  // PRODUCTION: PaymentDbRepository — Drizzle-backed, persists payments +
+  // payment_settlements to the live DB. NO in-memory test repositories.
+  const paymentRepository = new PaymentDbRepository(dbInstance);
   const subledger = new SubledgerService({
     subledger: new SubledgerDbRepository(dbInstance),
     audit,
@@ -280,7 +283,9 @@ export async function settlePaymentAction(formData: FormData): Promise<void> {
 
   const { db: dbInstance, audit, idempotency, documentSequence } =
     getSharedDeps();
-  const paymentRepository = new InMemoryPaymentRepository();
+  // PRODUCTION: PaymentDbRepository — Drizzle-backed, persists payments +
+  // payment_settlements to the live DB. NO in-memory test repositories.
+  const paymentRepository = new PaymentDbRepository(dbInstance);
   const subledger = new SubledgerService({
     subledger: new SubledgerDbRepository(dbInstance),
     audit,
@@ -351,7 +356,9 @@ export async function reversePaymentAction(formData: FormData): Promise<void> {
 
   const { db: dbInstance, audit, idempotency, documentSequence } =
     getSharedDeps();
-  const paymentRepository = new InMemoryPaymentRepository();
+  // PRODUCTION: PaymentDbRepository — Drizzle-backed, persists payments +
+  // payment_settlements to the live DB. NO in-memory test repositories.
+  const paymentRepository = new PaymentDbRepository(dbInstance);
   const subledger = new SubledgerService({
     subledger: new SubledgerDbRepository(dbInstance),
     audit,

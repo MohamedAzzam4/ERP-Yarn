@@ -29,15 +29,15 @@
  * - Write audit through AuditDbRepository
  * - Call domain service boundary, not raw table mutation
  *
- * NOTE: This milestone wires the action surface to the existing domain
- * services. The persistence boundary for direct costs
- * (`DirectCostRepository`) is currently provided by the in-memory test
- * repository until a Drizzle-backed `DirectCostDbRepository` is added in
- * a follow-up milestone. The `SubledgerService`,
- * `ProfitabilitySnapshotService`, `AuditDbRepository`, and
- * `IdempotencyDbRepository` are already DB-backed, so all subledger
- * entries, snapshots, audit logs, and idempotency records persist to the
- * live database.
+ * All persistence boundaries are DB-backed:
+ *   - DirectCostRepository → DirectCostDbRepository (Drizzle, direct_costs + direct_cost_allocations)
+ *   - SubledgerService → SubledgerDbRepository (Drizzle, accounts + account_entries)
+ *   - ProfitabilitySnapshotService → ProfitabilitySnapshotDbRepository (Drizzle, snapshots)
+ *   - SalesDbRepository (Drizzle, sales_orders)
+ *   - AuditDbRepository (Drizzle, audit_logs)
+ *   - IdempotencyDbRepository (Drizzle, idempotency_records)
+ *
+ * NO in-memory test repositories are used in production actions.
  */
 "use server";
 
@@ -59,8 +59,8 @@ import { ProfitabilitySnapshotDbRepository } from "@/server/services/profitabili
 import { SalesDbRepository } from "@/server/services/sales-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { DirectCostDbRepository } from "@/server/services/direct-cost-db-repository";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
-import { InMemoryDirectCostRepository } from "@/server/services/__tests__/in-memory-direct-cost-repository";
 import { db } from "@/server/db/client";
 
 // ---------------------------------------------------------------------------
@@ -161,6 +161,10 @@ function makeTxFactories(
         salesRepository: new SalesDbRepository(tx as any),
         audit,
       }),
+    // PRODUCTION: tx-scoped DirectCostDbRepository for future service-internal
+    // transactional composition (when DirectCostService accepts a
+    // transactionRunner like the SalesApprovalService pattern in WP-08-01C).
+    createDirectCost: (tx: unknown) => new DirectCostDbRepository(tx as any),
   };
 }
 
@@ -339,11 +343,9 @@ export async function reviewDirectCostAction(
   const { db: dbInstance, audit, idempotency, documentSequence } =
     getSharedDeps();
 
-  // NOTE: DirectCostRepository is currently backed by the in-memory test
-  // implementation. A DB-backed DirectCostDbRepository will replace this in
-  // a follow-up milestone. Subledger entries, snapshots, audit logs, and
-  // idempotency records are persisted to the live DB.
-  const directCostRepository = new InMemoryDirectCostRepository();
+  // PRODUCTION: DirectCostDbRepository — Drizzle-backed, persists direct_costs
+  // + direct_cost_allocations to the live DB. NO in-memory test repositories.
+  const directCostRepository = new DirectCostDbRepository(dbInstance);
   const subledger = new SubledgerService({
     subledger: new SubledgerDbRepository(dbInstance),
     audit,
