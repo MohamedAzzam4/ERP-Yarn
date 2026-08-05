@@ -158,6 +158,7 @@ describe("WP-08-01D Production Repository Wiring", () => {
 
     it("lockSettledEntry uses pg_advisory_xact_lock (NOT a no-op)", () => {
       expect(repo).toMatch(/pg_advisory_xact_lock/);
+      expect(repo).toMatch(/hashtext/);
       // The method body must NOT be a no-op (no `_tenantId, _entryId` and empty body).
       expect(repo).not.toMatch(/async lockSettledEntry\([^)]*\)\s*\{\s*\}/);
     });

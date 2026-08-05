@@ -314,14 +314,16 @@ export class PaymentDbRepository implements PaymentRepository {
    * Acquire a transaction-scoped advisory lock on a settled entry id.
    * Prevents two concurrent settlements from over-settling the same target.
    * Caller MUST be inside a db.transaction() for transaction-scoped semantics.
+   *
+   * Uses pg_advisory_xact_lock(hashtext(key)) — same pattern as
+   * SubledgerDbRepository.lockSourceEntry. hashtext returns int4 which is
+   * implicitly cast to int8 (bigint) for the single-key form of
+   * pg_advisory_xact_lock.
    */
   async lockSettledEntry(_tenantId: string, entryId: string): Promise<void> {
-    // Use a deterministic 64-bit key from the UUID's first 16 hex chars.
-    // pg_advisory_xact_lock takes a single bigint argument.
-    const key = entryId.replace(/-/g, "").slice(0, 15);
-    const keyBigInt = drizzleSql`(${key})::bit(64)::bigint`;
+    const key = `settled|${entryId}`;
     await this.db.execute(
-      drizzleSql`SELECT pg_advisory_xact_lock(${keyBigInt})`,
+      drizzleSql`SELECT pg_advisory_xact_lock(hashtext(${key}))`,
     );
   }
 
@@ -329,15 +331,14 @@ export class PaymentDbRepository implements PaymentRepository {
    * Acquire a transaction-scoped advisory lock on a payment entry id.
    * Prevents two concurrent settlements from over-settling the same payment.
    * Caller MUST be inside a db.transaction() for transaction-scoped semantics.
+   *
+   * Uses a different key namespace from lockSettledEntry (prefix `paymentEntry|`)
+   * to avoid accidental collisions between the two lock namespaces.
    */
   async lockPaymentEntry(_tenantId: string, entryId: string): Promise<void> {
-    // Use a different key space from lockSettledEntry by XORing with a
-    // constant discriminator (0x1). This avoids accidental collisions
-    // between the two lock namespaces.
-    const key = entryId.replace(/-/g, "").slice(0, 15);
-    const keyBigInt = drizzleSql`(${key})::bit(64)::bigint # 1::bigint`;
+    const key = `paymentEntry|${entryId}`;
     await this.db.execute(
-      drizzleSql`SELECT pg_advisory_xact_lock(${keyBigInt})`,
+      drizzleSql`SELECT pg_advisory_xact_lock(hashtext(${key}))`,
     );
   }
 }
