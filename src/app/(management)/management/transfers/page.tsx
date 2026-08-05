@@ -22,8 +22,8 @@ import { DbTenantOwnershipValidator } from "@/server/services/db-tenant-ownershi
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
-import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
@@ -43,8 +43,8 @@ export default async function TransfersPage() {
 
   if (db) {
     const audit = new AuditDbRepository(db);
-    const idempotency = new InProcessIdempotencyStore();
-    const documentSequence = new InProcessDocumentSequenceStore();
+    const idempotency = new IdempotencyDbRepository(db);
+    const documentSequence = new DocumentSequenceDbRepository(db);
     const inventoryLedger = new InventoryLedgerService({
       ledger: new InventoryLedgerDbRepository(db),
       audit, idempotency, documentSequence,

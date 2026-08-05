@@ -21,8 +21,8 @@ import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
-import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import {
   RawReceiptApprovalService,
   type ApproveRawReceiptInput,
@@ -41,8 +41,8 @@ function getService() {
     throw new Error("Database not available. Raw receipt approval requires a live DB connection.");
   }
   const audit = new AuditDbRepository(db);
-  const idempotency = new InProcessIdempotencyStore();
-  const documentSequence = new InProcessDocumentSequenceStore();
+  const idempotency = new IdempotencyDbRepository(db);
+  const documentSequence = new DocumentSequenceDbRepository(db);
 
   // Base (non-transaction) repos for reads (findApprovalById, findDraftById, etc.)
   const approvalRepository = new RawReceiptApprovalDbRepository(db);

@@ -22,7 +22,7 @@ import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import {
   SalesFailureResolutionService,
 } from "@/server/services/sales-failure-resolution-service";
@@ -46,7 +46,7 @@ function getService() {
   // audit_logs table in the same DB transaction as the business mutations.
   const audit = new AuditDbRepository(db);
   const idempotency = new IdempotencyDbRepository(db);
-  const documentSequence = new InProcessDocumentSequenceStore();
+  const documentSequence = new DocumentSequenceDbRepository(db);
 
   const salesRepository = new SalesDbRepository(db);
   const reservationRepository = new StockReservationDbRepository(db);
@@ -66,14 +66,15 @@ function getService() {
     createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
       ledger: new InventoryLedgerDbRepository(tx as any),
       audit,
-      idempotency,
-      documentSequence,
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
     }),
     createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
   };
 
   return new SalesFailureResolutionService({

@@ -22,8 +22,8 @@ import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-ap
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
-import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import { DbTenantOwnershipValidator } from "@/server/services/db-tenant-ownership-validator";
 import { db } from "@/server/db/client";
 import { redirect } from "next/navigation";
@@ -32,8 +32,8 @@ import { revalidatePath } from "next/cache";
 function getTransferService() {
   if (!db) throw new Error("Database not available.");
   const audit = new AuditDbRepository(db);
-  const idempotency = new InProcessIdempotencyStore();
-  const documentSequence = new InProcessDocumentSequenceStore();
+  const idempotency = new IdempotencyDbRepository(db);
+  const documentSequence = new DocumentSequenceDbRepository(db);
   const tenantOwnershipValidator = new DbTenantOwnershipValidator(db);
   const inventoryLedger = new InventoryLedgerService({
     ledger: new InventoryLedgerDbRepository(db), audit, idempotency, documentSequence,

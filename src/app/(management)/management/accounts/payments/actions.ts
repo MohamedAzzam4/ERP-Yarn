@@ -47,7 +47,7 @@ import { SubledgerDbRepository } from "@/server/services/subledger-db-repository
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { PaymentDbRepository } from "@/server/services/payment-db-repository";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import { db } from "@/server/db/client";
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ function getSharedDeps() {
   if (!db) throw new Error("Database not available.");
   const audit = new AuditDbRepository(db);
   const idempotency = new IdempotencyDbRepository(db);
-  const documentSequence = new InProcessDocumentSequenceStore();
+  const documentSequence = new DocumentSequenceDbRepository(db);
   return { db, audit, idempotency, documentSequence };
 }
 
@@ -136,8 +136,8 @@ function makeTransactionRunner() {
  */
 function makeTxFactories(
   audit: AuditDbRepository,
-  idempotency: IdempotencyDbRepository,
-  documentSequence: InProcessDocumentSequenceStore,
+  _idempotency: IdempotencyDbRepository,
+  _documentSequence: DocumentSequenceDbRepository,
 ) {
   return {
     createIdempotency: (tx: unknown) =>
@@ -147,9 +147,11 @@ function makeTxFactories(
       new SubledgerService({
         subledger: new SubledgerDbRepository(tx as any),
         audit,
-        idempotency,
-        documentSequence,
+        idempotency: new IdempotencyDbRepository(tx as any),
+        documentSequence: new DocumentSequenceDbRepository(tx as any),
       }),
+    createDocumentSequence: (tx: unknown) =>
+      new DocumentSequenceDbRepository(tx as any),
     // PRODUCTION: tx-scoped PaymentDbRepository for future service-internal
     // transactional composition (when PaymentService/SettlementService/
     // PaymentReversalService accept a transactionRunner like the

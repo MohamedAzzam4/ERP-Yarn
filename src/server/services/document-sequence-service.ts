@@ -92,7 +92,27 @@ export async function allocateDocumentNumber(
     try {
       row = await tx.insert(input.tenantId, input.documentType, input.year, prefix);
     } catch (e) {
-      throw new SequenceAllocationFailedError(input.documentType, input.year, { cause: e, reason: "Failed to insert new document_sequences row." });
+      // DB-backed repository throws DocumentSequenceConcurrentInsertError when
+      // a concurrent insert wins the race on the unique
+      // (tenant_id, document_type, year) index. Retry findForUpdate to pick
+      // up the existing row, then re-acquire the FOR UPDATE lock.
+      if (
+        e instanceof Error &&
+        (e.name === "DocumentSequenceConcurrentInsertError" ||
+          (e as { code?: string }).code === "DOCUMENT_SEQUENCE_CONCURRENT_INSERT")
+      ) {
+        row = await tx.findForUpdate(
+          input.tenantId,
+          input.documentType,
+          input.year,
+        );
+      }
+      if (!row) {
+        throw new SequenceAllocationFailedError(input.documentType, input.year, {
+          cause: e,
+          reason: "Failed to insert new document_sequences row and retry findForUpdate returned null.",
+        });
+      }
     }
   }
 

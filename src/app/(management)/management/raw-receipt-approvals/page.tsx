@@ -30,8 +30,8 @@ import { db } from "@/server/db/client";
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
 import { RawReceiptDraftDbRepository } from "@/server/services/raw-receipt-draft-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
-import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import {
   RawReceiptApprovalService,
 } from "@/server/services/raw-receipt-approval-service";
@@ -83,8 +83,8 @@ export default async function RawReceiptApprovalsPage() {
     const approvalRepository = new RawReceiptApprovalDbRepository(db);
     const draftRepository = new RawReceiptDraftDbRepository(db);
     const audit = new AuditDbRepository(db);
-    const idempotency = new InProcessIdempotencyStore();
-    const documentSequence = new InProcessDocumentSequenceStore();
+    const idempotency = new IdempotencyDbRepository(db);
+    const documentSequence = new DocumentSequenceDbRepository(db);
     const inventoryLedger = new InventoryLedgerService({
       ledger: new InventoryLedgerDbRepository(db),
       audit,

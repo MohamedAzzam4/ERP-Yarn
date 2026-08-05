@@ -34,8 +34,8 @@ import { WipBalanceDbRepository } from "@/server/services/wip-balance-db-reposit
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
-import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import { db } from "@/server/db/client";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -56,8 +56,8 @@ function checkForbiddenFields(formData: FormData): void {
 function getSharedDeps() {
   if (!db) throw new Error("Database not available.");
   const audit = new AuditDbRepository(db);
-  const documentSequence = new InProcessDocumentSequenceStore();
-  const idempotency = new InProcessIdempotencyStore();
+  const documentSequence = new DocumentSequenceDbRepository(db);
+  const idempotency = new IdempotencyDbRepository(db);
   return { db, audit, documentSequence, idempotency };
 }
 

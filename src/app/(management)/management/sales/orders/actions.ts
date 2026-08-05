@@ -40,7 +40,7 @@ import { InventoryLedgerService } from "@/server/services/inventory-ledger-servi
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
-import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import { db } from "@/server/db/client";
 import { revalidatePath } from "next/cache";
 
@@ -58,7 +58,7 @@ function getSharedDeps() {
   if (!db) throw new Error("Database not available.");
   const audit = new AuditDbRepository(db);
   const idempotency = new IdempotencyDbRepository(db);
-  const documentSequence = new InProcessDocumentSequenceStore();
+  const documentSequence = new DocumentSequenceDbRepository(db);
   return { db, audit, idempotency, documentSequence };
 }
 
@@ -112,10 +112,16 @@ export async function approveSaleAction(formData: FormData): Promise<void> {
 
   const txFactories = {
     createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
-      ledger: new InventoryLedgerDbRepository(tx as any), audit, idempotency, documentSequence,
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit,
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
     }),
     createSubledger: (tx: unknown) => new SubledgerService({
-      subledger: new SubledgerDbRepository(tx as any), audit, idempotency, documentSequence,
+      subledger: new SubledgerDbRepository(tx as any),
+      audit,
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
     }),
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
@@ -125,6 +131,7 @@ export async function approveSaleAction(formData: FormData): Promise<void> {
     }),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
   };
 
   const service = new SalesApprovalService({
