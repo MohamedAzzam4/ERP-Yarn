@@ -33,6 +33,7 @@ import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import { ReturnRequestService } from "@/server/services/return-request-service";
+import { ReplacementWorkflowService } from "@/server/services/replacement-workflow-service";
 import { SubledgerService } from "@/server/services/subledger-service";
 import { SubledgerDbRepository } from "@/server/services/subledger-db-repository";
 import { ReturnRequestDbRepository } from "@/server/services/return-request-db-repository";
@@ -244,6 +245,99 @@ export async function rejectReturnAction(
   await service.rejectReturnRequest(authResult as any, effective, {
     returnRequestId: returnId,
     rejectionReason: decisionReason,
+    idempotencyKey,
+  });
+
+  revalidatePath("/management/quality/returns");
+}
+
+// ---------------------------------------------------------------------------
+// Action 3: Create a linked replacement sales order (management only).
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a linked replacement sales order from an approved return request.
+ *
+ * Permission: returns.create (Owner/Accountant — workers cannot create
+ * replacement orders because they involve financial treatment decisions).
+ *
+ * Contract 10 §8.7: Linked replacement flow.
+ * Contract 06 §9: Linked Replacement Issue/Sale.
+ * Contract 09 §11: The linked replacement order is a normal sales order.
+ *
+ * Preconditions (enforced by ReplacementWorkflowService):
+ *   - Return request exists + belongs to tenant.
+ *   - Return request status = "approved".
+ *   - Return request financialTreatment = "replacement".
+ *   - No existing replacement order linked to this return request.
+ *   - Return request has at least one return line.
+ *
+ * Writes (all inside idempotency claim):
+ *   1. Allocate doc_no for the replacement sales order.
+ *   2. Insert sales_orders row with is_replacement_order = true.
+ *   3. Insert sales_order_lines mirroring the return lines.
+ *   4. Link return_request.replacement_order_id.
+ *   5. Audit.
+ *
+ * The replacement order uses the NORMAL SALES PIPELINE:
+ *   - Reserves on submission
+ *   - Uses /sales/:saleId/approve for issue, approved net receivable, profitability
+ *   - No manual stock movement
+ *   - No automatic refund (refund is a separate payment command)
+ *   - No direct account-entry mutation
+ *
+ * Equal/higher/lower value outcomes are derived from the linked negative
+ * return credit and positive replacement receivable. Refund uses a separate
+ * payment command and is never an automatic side effect.
+ */
+export async function createReplacementOrderAction(
+  formData: FormData,
+): Promise<void> {
+  const authResult = await getErpAuthContextWithRoles();
+  if (!authResult.authenticated) redirect("/login");
+  if (authResult.roles.length === 0) redirect("/login?error=no_role");
+
+  const effective = resolveAndRequirePermission(
+    authResult.roles,
+    TEST_ROLE_PERMISSION_MATRIX,
+    "returns.create",
+  );
+
+  rejectForbiddenFields(formData, "replacement order create");
+
+  const returnRequestId = String(formData.get("returnRequestId") ?? "").trim();
+  const saleDate = formData.get("saleDate")
+    ? String(formData.get("saleDate"))
+    : undefined;
+  const decisionNotes = formData.get("decisionNotes")
+    ? String(formData.get("decisionNotes"))
+    : null;
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+
+  if (!returnRequestId || !idempotencyKey) {
+    throw new Error(
+      "VALIDATION_FAILED: returnRequestId and idempotencyKey are required.",
+    );
+  }
+
+  const { db: dbInstance, audit, idempotency, documentSequence } =
+    getSharedDeps();
+
+  const returnRequestRepository = new ReturnRequestDbRepository(dbInstance);
+  const salesRepository = new SalesDbRepository(dbInstance);
+
+  const service = new ReplacementWorkflowService({
+    returnRequestRepository,
+    salesRepository,
+    audit,
+    idempotency,
+    documentSequence,
+  });
+
+  await service.createReplacementOrder(authResult as any, effective, {
+    returnRequestId,
+    saleDate,
+    decisionNotes,
     idempotencyKey,
   });
 

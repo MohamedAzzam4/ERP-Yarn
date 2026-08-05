@@ -31,7 +31,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { QualityReturnScreenQueryService } from "@/server/services/quality-return-screen-query-service";
-import { approveReturnAction, rejectReturnAction } from "./actions";
+import { approveReturnAction, rejectReturnAction, createReplacementOrderAction } from "./actions";
 
 export default async function ManagementReturnsPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -217,6 +217,86 @@ export default async function ManagementReturnsPage() {
                       </div>
                     </div>
                   ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Create replacement order form (for approved replacement returns) */}
+            {approvedReturns.some((r) => r.isReplacement) && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle>إنشاء طلب استبدال</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <form
+                    action={createReplacementOrderAction}
+                    className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
+                  >
+                    <input
+                      type="hidden"
+                      name="idempotencyKey"
+                      value={`replacement-${crypto.randomUUID()}`}
+                    />
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        المرتجع المعتمد:
+                      </span>
+                      <select
+                        name="returnRequestId"
+                        required
+                        className="px-2 py-1 border rounded text-sm bg-background"
+                        style={{ minHeight: "44px" }}
+                      >
+                        {approvedReturns
+                          .filter((r) => r.isReplacement)
+                          .map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.returnNo} — {r.customerName}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        تاريخ البيع:
+                      </span>
+                      <input
+                        type="date"
+                        name="saleDate"
+                        defaultValue={new Date()
+                          .toISOString()
+                          .slice(0, 10)}
+                        className="px-2 py-1 border rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        ملاحظات القرار:
+                      </span>
+                      <input
+                        type="text"
+                        name="decisionNotes"
+                        placeholder="ملاحظات القرار"
+                        className="px-2 py-1 border rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      />
+                    </label>
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      >
+                        إنشاء طلب الاستبدال
+                      </button>
+                    </div>
+                  </form>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    طلب الاستبدال هو أمر بيع عادي يستخدم مسار المبيعات
+                    القياسي. لا توجد حركة مخزون يدوية، لا استرداد تلقائي،
+                    لا تعديل مباشر للقيود المحاسبية.
+                  </p>
                 </CardContent>
               </Card>
             )}

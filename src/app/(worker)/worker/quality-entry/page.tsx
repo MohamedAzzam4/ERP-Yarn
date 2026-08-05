@@ -25,7 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { QualityReturnScreenQueryService } from "@/server/services/quality-return-screen-query-service";
-import { createQualityTestAction, createComplaintAction } from "./actions";
+import { createQualityTestAction, createComplaintAction, recordQualityTestValueAction, updateComplaintAction } from "./actions";
 
 export default async function WorkerQualityEntryPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -282,6 +282,202 @@ export default async function WorkerQualityEntryPage() {
                 </form>
               </CardContent>
             </Card>
+
+            {/* Record quality test value form */}
+            {qualityTests.length > 0 && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle>تسجيل قيمة اختبار</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <form
+                    action={recordQualityTestValueAction}
+                    className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
+                  >
+                    <input
+                      type="hidden"
+                      name="idempotencyKey"
+                      value={`quality-value-${crypto.randomUUID()}`}
+                    />
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        اختبار الجودة:
+                      </span>
+                      <select
+                        name="qualityTestId"
+                        required
+                        className="px-2 py-1 border rounded text-sm bg-background"
+                        style={{ minHeight: "44px" }}
+                      >
+                        {qualityTests.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.testNo} — {t.testStatus}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        اسم المعامل:
+                      </span>
+                      <input
+                        type="text"
+                        name="parameterName"
+                        required
+                        placeholder="اسم المعامل"
+                        className="px-2 py-1 border rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        رمز المعامل:
+                      </span>
+                      <input
+                        type="text"
+                        name="parameterCode"
+                        required
+                        placeholder="رمز المعامل"
+                        className="px-2 py-1 border rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        القيمة المقاسة:
+                      </span>
+                      <input
+                        type="text"
+                        name="measuredValue"
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        className="px-2 py-1 border rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">
+                        حالة القيمة:
+                      </span>
+                      <select
+                        name="valueStatus"
+                        defaultValue="pending"
+                        className="px-2 py-1 border rounded text-sm bg-background"
+                        style={{ minHeight: "44px" }}
+                      >
+                        <option value="pending">بانتظار</option>
+                        <option value="pass">نجاح</option>
+                        <option value="fail">فشل</option>
+                        <option value="review">مراجعة</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">ملاحظات:</span>
+                      <input
+                        type="text"
+                        name="notes"
+                        placeholder="ملاحظات القيمة"
+                        className="px-2 py-1 border rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      />
+                    </label>
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      >
+                        تسجيل القيمة
+                      </button>
+                    </div>
+                  </form>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Update complaint form */}
+            {complaints.length > 0 && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle>تحديث الشكوى</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <form
+                    action={updateComplaintAction}
+                    className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
+                  >
+                    <input
+                      type="hidden"
+                      name="idempotencyKey"
+                      value={`complaint-update-${crypto.randomUUID()}`}
+                    />
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">الشكوى:</span>
+                      <select
+                        name="complaintId"
+                        required
+                        className="px-2 py-1 border rounded text-sm bg-background"
+                        style={{ minHeight: "44px" }}
+                      >
+                        {complaints.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.complaintNo} — {c.subject}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">الحالة:</span>
+                      <select
+                        name="status"
+                        defaultValue="investigating"
+                        className="px-2 py-1 border rounded text-sm bg-background"
+                        style={{ minHeight: "44px" }}
+                      >
+                        <option value="open">مفتوحة</option>
+                        <option value="investigating">قيد التحقيق</option>
+                        <option value="resolved">تم الحل</option>
+                        <option value="closed">مغلقة</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">الأولوية:</span>
+                      <select
+                        name="priority"
+                        defaultValue="normal"
+                        className="px-2 py-1 border rounded text-sm bg-background"
+                        style={{ minHeight: "44px" }}
+                      >
+                        <option value="low">منخفضة</option>
+                        <option value="normal">عادية</option>
+                        <option value="high">عالية</option>
+                        <option value="urgent">عاجلة</option>
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm sm:col-span-2 lg:col-span-3">
+                      <span className="text-muted-foreground">
+                        ملاحظات التحقيق:
+                      </span>
+                      <textarea
+                        name="investigationNotes"
+                        placeholder="ملاحظات التحقيق"
+                        className="px-2 py-1 border rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      />
+                    </label>
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm"
+                        style={{ minHeight: "44px" }}
+                      >
+                        تحديث الشكوى
+                      </button>
+                    </div>
+                  </form>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Recent quality tests */}
             {qualityTests.length > 0 && (

@@ -31,6 +31,7 @@ import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import { QualityTestService } from "@/server/services/quality-test-service";
 import { ComplaintService } from "@/server/services/complaint-service";
+import type { UpdateComplaintInput } from "@/server/services/complaint-service";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
@@ -210,6 +211,164 @@ export async function createComplaintAction(
     priority: priority as any,
     idempotencyKey,
   });
+
+  revalidatePath("/worker/quality-entry");
+}
+
+// ---------------------------------------------------------------------------
+// Action 3: Record a quality test value (worker facts only).
+// ---------------------------------------------------------------------------
+
+/**
+ * Record a measured value for a quality test parameter.
+ *
+ * Permission: quality_tests.create (Quality role + Owner + Accountant).
+ * Workers record FACTS only — no risk clearance, no financial effect.
+ *
+ * Contract 10 §7.3: Quality employees record test values and observations.
+ * Contract 04 §11: Quality records facts; management authorizes risk.
+ */
+export async function recordQualityTestValueAction(
+  formData: FormData,
+): Promise<void> {
+  const authResult = await getErpAuthContextWithRoles();
+  if (!authResult.authenticated) redirect("/login");
+  if (authResult.roles.length === 0) redirect("/login?error=no_role");
+
+  const effective = resolveAndRequirePermission(
+    authResult.roles,
+    TEST_ROLE_PERMISSION_MATRIX,
+    "quality_tests.create",
+  );
+
+  rejectForbiddenFields(formData, FORBIDDEN_QUALITY_FIELDS, "quality test value");
+
+  const qualityTestId = String(formData.get("qualityTestId") ?? "").trim();
+  const parameterName = String(formData.get("parameterName") ?? "").trim();
+  const parameterCode = String(formData.get("parameterCode") ?? "").trim();
+  const measuredValue = formData.get("measuredValue")
+    ? String(formData.get("measuredValue"))
+    : null;
+  const valueStatus = String(formData.get("valueStatus") ?? "pending").trim();
+  const notes = formData.get("notes")
+    ? String(formData.get("notes"))
+    : null;
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+
+  if (!qualityTestId || !parameterCode || !idempotencyKey) {
+    throw new Error(
+      "VALIDATION_FAILED: qualityTestId, parameterCode, and idempotencyKey are required.",
+    );
+  }
+
+  const { db: dbInstance, audit, idempotency, documentSequence } =
+    getSharedDeps();
+
+  const qualityTestRepository = new QualityTestDbRepository(dbInstance);
+
+  const service = new QualityTestService({
+    qualityTestRepository,
+    audit,
+    idempotency,
+    documentSequence,
+  });
+
+  await service.recordQualityTestValue(authResult as any, effective, {
+    qualityTestId,
+    parameterName,
+    parameterCode,
+    measuredValue,
+    valueStatus: valueStatus as "pending" | "pass" | "fail" | "review",
+    notes,
+    idempotencyKey,
+  });
+
+  revalidatePath("/worker/quality-entry");
+}
+
+// ---------------------------------------------------------------------------
+// Action 4: Update a complaint (investigation facts only).
+// ---------------------------------------------------------------------------
+
+/**
+ * Update complaint investigation status, notes, and resolution.
+ *
+ * Permission: complaints.investigate (Quality + Owner + Accountant).
+ * This is a view-with-comment action — NO operational side effects.
+ *
+ * Contract 10 §7.3: Quality employees record investigation facts.
+ * Contract 11 §8: Workers cannot set financial resolution values.
+ */
+export async function updateComplaintAction(
+  formData: FormData,
+): Promise<void> {
+  const authResult = await getErpAuthContextWithRoles();
+  if (!authResult.authenticated) redirect("/login");
+  if (authResult.roles.length === 0) redirect("/login?error=no_role");
+
+  const effective = resolveAndRequirePermission(
+    authResult.roles,
+    TEST_ROLE_PERMISSION_MATRIX,
+    "complaints.investigate",
+  );
+
+  rejectForbiddenFields(
+    formData,
+    FORBIDDEN_COMPLAINT_FIELDS,
+    "complaint update",
+  );
+
+  const complaintId = String(formData.get("complaintId") ?? "").trim();
+  const status = formData.get("status")
+    ? String(formData.get("status"))
+    : undefined;
+  const priority = formData.get("priority")
+    ? String(formData.get("priority"))
+    : undefined;
+  const investigationNotes = formData.get("investigationNotes")
+    ? String(formData.get("investigationNotes"))
+    : undefined;
+  const resolutionNotes = formData.get("resolutionNotes")
+    ? String(formData.get("resolutionNotes"))
+    : undefined;
+  const resolutionType = formData.get("resolutionType")
+    ? String(formData.get("resolutionType"))
+    : undefined;
+  const notes = formData.get("notes")
+    ? String(formData.get("notes"))
+    : undefined;
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+
+  if (!complaintId || !idempotencyKey) {
+    throw new Error(
+      "VALIDATION_FAILED: complaintId and idempotencyKey are required.",
+    );
+  }
+
+  const { db: dbInstance, audit, idempotency, documentSequence } =
+    getSharedDeps();
+
+  const complaintRepository = new ComplaintDbRepository(dbInstance);
+
+  const service = new ComplaintService({
+    complaintRepository,
+    audit,
+    idempotency,
+    documentSequence,
+  });
+
+  const input: UpdateComplaintInput = {
+    complaintId,
+    idempotencyKey,
+  };
+  if (status) input.status = status as any;
+  if (priority) input.priority = priority as any;
+  if (investigationNotes !== undefined) input.investigationNotes = investigationNotes;
+  if (resolutionNotes !== undefined) input.resolutionNotes = resolutionNotes;
+  if (resolutionType !== undefined) input.resolutionType = resolutionType;
+  if (notes !== undefined) input.notes = notes;
+
+  await service.updateComplaint(authResult as any, effective, input);
 
   revalidatePath("/worker/quality-entry");
 }
