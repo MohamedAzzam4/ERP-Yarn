@@ -75,10 +75,13 @@ function getService() {
     createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
       ledger: new InventoryLedgerDbRepository(tx as any),
       audit,
-      idempotency,
-      documentSequence,
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
     }),
     createApprovalRepository: (tx: unknown) => new RawReceiptApprovalDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
   };
 
   return new TransferWorkflowService({

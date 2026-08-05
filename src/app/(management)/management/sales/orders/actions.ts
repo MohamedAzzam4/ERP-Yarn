@@ -201,13 +201,17 @@ export async function rejectSaleAction(formData: FormData): Promise<void> {
 
   const txFactories = {
     createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
-      ledger: new InventoryLedgerDbRepository(tx as any), audit, idempotency, documentSequence,
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit,
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
     }),
     createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createAlertRepository: (tx: unknown) => new OperationalAlertDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
   };
 
   const service = new SalesFailureResolutionService({
