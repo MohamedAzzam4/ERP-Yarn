@@ -52,6 +52,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  IdempotencyOwnershipLostError,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
 } from "./idempotency-service";
@@ -134,11 +135,28 @@ const ALLOWED_PRIORITIES: ReadonlySet<ComplaintPriority> = new Set([
 // Service deps.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Transaction composition types (WP-08-01E Milestone A transaction correction).
+// ---------------------------------------------------------------------------
+
+export type ComplaintTransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+export interface ComplaintTransactionScopedFactories {
+  createComplaintRepository: (tx: unknown) => ComplaintRepository;
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+  createDocumentSequence: (tx: unknown) => DocumentSequenceTransactionHandle;
+}
+
 export interface ComplaintServiceDeps {
   complaintRepository: ComplaintRepository;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
+  /** Optional transaction runner for atomic business writes + markSucceeded. */
+  transactionRunner?: ComplaintTransactionRunner;
+  /** Optional tx-scoped factories. */
+  txFactories?: ComplaintTransactionScopedFactories;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,66 +240,115 @@ export class ComplaintService {
       throw new ComplaintError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
     }
 
-    // Allocate complaint number
-    const year = now.getUTCFullYear();
-    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, {
-      tenantId: user.tenantId, documentType: "complaint", year, entityType: COMPLAINT_ENTITY_TYPE,
-    });
+    // Execute business writes + markSucceeded inside a single transaction
+    // (WP-08-01E Milestone A transaction correction).
+    const executeCreate = async (
+      txScoped: {
+        complaintRepository: ComplaintRepository;
+        idempotency: IdempotencyTransactionHandle;
+        audit: AuditTransactionHandle;
+        documentSequence: DocumentSequenceTransactionHandle;
+      } | null,
+    ): Promise<CreateComplaintResult> => {
+      const repo = txScoped?.complaintRepository ?? this.deps.complaintRepository;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
+      const docSeqHandle = txScoped?.documentSequence ?? this.deps.documentSequence;
 
-    const complaint = await this.deps.complaintRepository.insertComplaint({
-      tenantId: user.tenantId,
-      complaintNo: docNoResult.docNo,
-      complaintDate: input.complaintDate,
-      customerId: input.customerId ?? null,
-      saleId: input.saleId ?? null,
-      saleLineId: input.saleLineId ?? null,
-      itemId: input.itemId ?? null,
-      qualityTestId: input.qualityTestId ?? null,
-      rawMaterialBatchId: input.rawMaterialBatchId ?? null,
-      yarnLotId: input.yarnLotId ?? null,
-      subject: input.subject,
-      description: input.description ?? null,
-      status: "open",
-      priority,
-      notes: input.notes ?? null,
-      createdBy: user.userId,
-    });
+      const year = now.getUTCFullYear();
+      const docNoResult = await allocateDocumentNumber(docSeqHandle, {
+        tenantId: user.tenantId, documentType: "complaint", year, entityType: COMPLAINT_ENTITY_TYPE,
+      });
 
-    this.deps.complaintRepository.recordIdempotencyKey?.(user.tenantId, input.idempotencyKey, complaint.id);
-
-    // Audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: COMPLAINT_ENTITY_TYPE,
-      entityId: complaint.id,
-      actionType: "complaint.create",
-      newValuesJson: {
-        complaintNo: complaint.complaintNo,
-        complaintDate: complaint.complaintDate,
-        customerId: complaint.customerId,
-        saleId: complaint.saleId,
-        saleLineId: complaint.saleLineId,
-        itemId: complaint.itemId,
-        qualityTestId: complaint.qualityTestId,
-        subject: complaint.subject,
-        priority: complaint.priority,
+      const complaint = await repo.insertComplaint({
+        tenantId: user.tenantId,
+        complaintNo: docNoResult.docNo,
+        complaintDate: input.complaintDate,
+        customerId: input.customerId ?? null,
+        saleId: input.saleId ?? null,
+        saleLineId: input.saleLineId ?? null,
+        itemId: input.itemId ?? null,
+        qualityTestId: input.qualityTestId ?? null,
+        rawMaterialBatchId: input.rawMaterialBatchId ?? null,
+        yarnLotId: input.yarnLotId ?? null,
+        subject: input.subject,
+        description: input.description ?? null,
         status: "open",
+        priority,
+        notes: input.notes ?? null,
         createdBy: user.userId,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+      });
 
-    const result: CreateComplaintResult = {
-      action: "created",
-      complaintId: complaint.id,
-      complaintNo: complaint.complaintNo,
-      status: "open",
+      repo.recordIdempotencyKey?.(user.tenantId, input.idempotencyKey, complaint.id);
+
+      // Audit (tx-scoped)
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
+        entityType: COMPLAINT_ENTITY_TYPE,
+        entityId: complaint.id,
+        actionType: "complaint.create",
+        newValuesJson: {
+          complaintNo: complaint.complaintNo,
+          complaintDate: complaint.complaintDate,
+          customerId: complaint.customerId,
+          saleId: complaint.saleId,
+          saleLineId: complaint.saleLineId,
+          itemId: complaint.itemId,
+          qualityTestId: complaint.qualityTestId,
+          subject: complaint.subject,
+          priority: complaint.priority,
+          status: "open",
+          createdBy: user.userId,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result: CreateComplaintResult = {
+        action: "created",
+        complaintId: complaint.id,
+        complaintNo: complaint.complaintNo,
+        status: "open",
+      };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: COMPLAINT_ENTITY_TYPE,
+        entityId: complaint.id,
+      }, claim.record.ownerToken!, now);
+
+      return result;
     };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: COMPLAINT_ENTITY_TYPE,
-      entityId: complaint.id,
-    }, claim.record.ownerToken!, now);
+
+    let result: CreateComplaintResult;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        result = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txRepo = this.deps.txFactories!.createComplaintRepository(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+          return executeCreate({
+            complaintRepository: txRepo,
+            idempotency: txIdem,
+            audit: txAudit,
+            documentSequence: txDocSeq,
+          });
+        });
+      } else {
+        result = await executeCreate(null);
+      }
+    } catch (txError) {
+      if (txError instanceof IdempotencyOwnershipLostError) {
+        try {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409, responseBody: { message: "Ownership lost during create." },
+            lastErrorClass: "IdempotencyOwnershipLostError",
+          }, claim.record.ownerToken!, now);
+        } catch (markError) {
+          console.error("Failed to mark idempotency as business_failed after ownership loss:", markError);
+        }
+      }
+      throw txError;
+    }
 
     return result;
   }
@@ -372,37 +439,83 @@ export class ComplaintService {
       patch.resolvedAt = now;
     }
 
-    const updated = await this.deps.complaintRepository.updateComplaint(
-      user.tenantId, input.complaintId, patch,
-    );
-    if (!updated) {
-      throw new ComplaintError("INTERNAL_TRANSACTION_FAILED", `Complaint '${input.complaintId}' could not be updated.`);
+    // Execute business writes + markSucceeded inside a single transaction
+    // (WP-08-01E Milestone A transaction correction).
+    const executeUpdate = async (
+      txScoped: {
+        complaintRepository: ComplaintRepository;
+        idempotency: IdempotencyTransactionHandle;
+        audit: AuditTransactionHandle;
+      } | null,
+    ): Promise<{ action: "updated"; complaintId: string; status: ComplaintStatus }> => {
+      const repo = txScoped?.complaintRepository ?? this.deps.complaintRepository;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
+
+      const updated = await repo.updateComplaint(
+        user.tenantId, input.complaintId, patch,
+      );
+      if (!updated) {
+        throw new ComplaintError("INTERNAL_TRANSACTION_FAILED", `Complaint '${input.complaintId}' could not be updated.`);
+      }
+
+      // Audit (tx-scoped)
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
+        entityType: COMPLAINT_ENTITY_TYPE,
+        entityId: complaint.id,
+        actionType: "complaint.update",
+        newValuesJson: {
+          complaintNo: complaint.complaintNo,
+          previousStatus: complaint.status,
+          newStatus,
+          investigationNotes: patch.investigationNotes,
+          resolutionNotes: patch.resolutionNotes,
+          resolutionType: patch.resolutionType,
+          updatedBy: user.userId,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result = { action: "updated" as const, complaintId: complaint.id, status: newStatus };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: COMPLAINT_ENTITY_TYPE,
+        entityId: complaint.id,
+      }, claim.record.ownerToken!, now);
+
+      return result;
+    };
+
+    let result: { action: "updated" | "replayed"; complaintId: string; status: ComplaintStatus };
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        result = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txRepo = this.deps.txFactories!.createComplaintRepository(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          return executeUpdate({
+            complaintRepository: txRepo,
+            idempotency: txIdem,
+            audit: txAudit,
+          });
+        });
+      } else {
+        result = await executeUpdate(null);
+      }
+    } catch (txError) {
+      if (txError instanceof IdempotencyOwnershipLostError) {
+        try {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409, responseBody: { message: "Ownership lost during update." },
+            lastErrorClass: "IdempotencyOwnershipLostError",
+          }, claim.record.ownerToken!, now);
+        } catch (markError) {
+          console.error("Failed to mark idempotency as business_failed after ownership loss:", markError);
+        }
+      }
+      throw txError;
     }
-
-    // Audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: COMPLAINT_ENTITY_TYPE,
-      entityId: complaint.id,
-      actionType: "complaint.update",
-      newValuesJson: {
-        complaintNo: complaint.complaintNo,
-        previousStatus: complaint.status,
-        newStatus,
-        investigationNotes: patch.investigationNotes,
-        resolutionNotes: patch.resolutionNotes,
-        resolutionType: patch.resolutionType,
-        updatedBy: user.userId,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
-
-    const result = { action: "updated" as const, complaintId: complaint.id, status: newStatus };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: COMPLAINT_ENTITY_TYPE,
-      entityId: complaint.id,
-    }, claim.record.ownerToken!, now);
 
     return result;
   }

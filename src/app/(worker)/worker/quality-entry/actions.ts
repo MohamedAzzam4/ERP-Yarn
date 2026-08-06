@@ -135,11 +135,24 @@ export async function createQualityTestAction(
 
   const qualityTestRepository = new QualityTestDbRepository(dbInstance);
 
+  // Production transaction runner + tx-scoped factories (WP-08-01E Milestone A)
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (dbInstance as any).transaction(async (tx: any) => work(tx));
+  };
+  const txFactories = {
+    createQualityTestRepository: (tx: unknown) => new QualityTestDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+  };
+
   const service = new QualityTestService({
     qualityTestRepository,
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   await service.createQualityTest(authResult as any, effective, {
@@ -197,11 +210,24 @@ export async function createComplaintAction(
 
   const complaintRepository = new ComplaintDbRepository(dbInstance);
 
+  // Production transaction runner + tx-scoped factories (WP-08-01E Milestone A)
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (dbInstance as any).transaction(async (tx: any) => work(tx));
+  };
+  const txFactories = {
+    createComplaintRepository: (tx: unknown) => new ComplaintDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+  };
+
   const service = new ComplaintService({
     complaintRepository,
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   await service.createComplaint(authResult as any, effective, {
@@ -266,11 +292,24 @@ export async function recordQualityTestValueAction(
 
   const qualityTestRepository = new QualityTestDbRepository(dbInstance);
 
+  // Production transaction runner + tx-scoped factories (WP-08-01E Milestone A)
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (dbInstance as any).transaction(async (tx: any) => work(tx));
+  };
+  const txFactories = {
+    createQualityTestRepository: (tx: unknown) => new QualityTestDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+  };
+
   const service = new QualityTestService({
     qualityTestRepository,
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   await service.recordQualityTestValue(authResult as any, effective, {
@@ -350,11 +389,24 @@ export async function updateComplaintAction(
 
   const complaintRepository = new ComplaintDbRepository(dbInstance);
 
+  // Production transaction runner + tx-scoped factories (WP-08-01E Milestone A)
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (dbInstance as any).transaction(async (tx: any) => work(tx));
+  };
+  const txFactories = {
+    createComplaintRepository: (tx: unknown) => new ComplaintDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+  };
+
   const service = new ComplaintService({
     complaintRepository,
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   const input: UpdateComplaintInput = {
