@@ -369,6 +369,42 @@ export class QualityTestService {
     if (!test) throw new QualityTestNotFoundError(input.qualityTestId);
     requireTenantMatch(user, test.tenantId);
 
+    // Claim idempotency (WP-08-01E Milestone A: add persistent DB-backed
+    // idempotency to recordQualityTestValue — was missing entirely, causing
+    // duplicate values on replay and concurrent execution).
+    const now = new Date();
+    const idempotencyInput: IdempotencyClaimInput = {
+      tenantId: user.tenantId,
+      operationScope: "quality_test.value.record",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        qualityTestId: input.qualityTestId,
+        parameterName: input.parameterName,
+        parameterCode: input.parameterCode,
+        measuredValue: input.measuredValue ?? null,
+        valueStatus: input.valueStatus,
+        notes: input.notes ?? null,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    };
+
+    const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
+
+    if (claim.action === "replay") {
+      const responseBody = claim.record.responseBody as { valueId?: string; valueStatus?: string } | null;
+      if (responseBody?.valueId) {
+        return { valueId: responseBody.valueId, valueStatus: responseBody.valueStatus! };
+      }
+    }
+    if (claim.action === "conflict") {
+      throw new QualityTestError("IDEMPOTENCY_CONFLICT", `Idempotency key '${input.idempotencyKey}' was used with a different request body.`);
+    }
+    if (claim.action === "in_progress") {
+      throw new QualityTestError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
+    }
+
     const value = await this.deps.qualityTestRepository.insertQualityTestValue({
       tenantId: user.tenantId,
       qualityTestId: input.qualityTestId,
@@ -395,6 +431,14 @@ export class QualityTestService {
       },
       idempotencyKey: input.idempotencyKey,
     });
+
+    // Mark idempotency succeeded (with mandatory owner-token fencing)
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200,
+      responseBody: { valueId: value.id, valueStatus: value.valueStatus },
+      entityType: QUALITY_TEST_ENTITY_TYPE,
+      entityId: test.id,
+    }, claim.record.ownerToken!, now);
 
     return { valueId: value.id, valueStatus: value.valueStatus };
   }
