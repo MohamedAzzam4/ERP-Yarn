@@ -159,6 +159,14 @@ async function getIdemOwnerTokenNonNullable(sql: any, scope: string, key: string
   if (r.length === 0) return false;
   return r[0].owner_token !== null;
 }
+// INTERNAL-ONLY: returns the actual owner_token value for equality comparison.
+// The value is NEVER printed, logged, or included in any report or error
+// message. Only used for internal A/B/C/D equality assertions.
+async function getIdemOwnerTokenValue(sql: any, scope: string, key: string): Promise<string | null> {
+  const r = await sql.unsafe(`SELECT owner_token FROM idempotency_records WHERE tenant_id = $1 AND operation_scope = $2 AND idempotency_key = $3`, [T, scope, key]);
+  if (r.length === 0) return null;
+  return r[0].owner_token;
+}
 async function getIdemAttemptCount(sql: any, scope: string, key: string): Promise<number | null> {
   const r = await sql.unsafe(`SELECT attempt_count FROM idempotency_records WHERE tenant_id = $1 AND operation_scope = $2 AND idempotency_key = $3`, [T, scope, key]);
   return r.length > 0 ? r[0].attempt_count : null;
@@ -213,14 +221,19 @@ const compEff = { assignedRoleCodes: ["quality_employee"], permissionKeys: new S
 //   - record id
 //   - state = 'in_progress'
 //   - original owner token (non-null)
-// Returns the affected row count. MUST be exactly 1 for a real takeover.
-// Never prints the token value — only the affected-row count.
+// Returns structured takeover evidence: the affected row count (MUST be
+// exactly 1 for a real takeover) and the replacement owner token installed
+// (token C — captured internally, NEVER printed or included in reports).
 // ---------------------------------------------------------------------------
+interface TakeoverEvidence {
+  affectedRows: number;
+  replacementToken: string;
+}
 async function rootTakeoverOwnerToken(
   rootSql: any,
   recordId: string,
   expectedOwnerToken: string,
-): Promise<number> {
+): Promise<TakeoverEvidence> {
   const newOwnerToken = crypto.randomUUID();
   const result = await rootSql.unsafe(
     `UPDATE idempotency_records
@@ -234,7 +247,7 @@ async function rootTakeoverOwnerToken(
        AND owner_token IS NOT NULL`,
     [recordId, expectedOwnerToken, newOwnerToken],
   );
-  return result.count;
+  return { affectedRows: result.count, replacementToken: newOwnerToken };
 }
 
 // ---------------------------------------------------------------------------
@@ -321,47 +334,111 @@ interface OwnerLossContext {
 async function proveOwnerLoss(sql: any, db: any, ctx: OwnerLossContext) {
   console.log(`\n  --- owner-loss: ${ctx.label} ---`);
 
-  // Step 1: pre-claim via rootSql so we capture the original non-null owner
-  // token. The production command will reuse the same key+payload and
-  // reclaim the lease (or claim execute if state==in_progress with unexpired
-  // lease — but we'll force expiry so claim returns execute with a fresh
-  // owner).
+  // ===================================================================
+  // Token capture plan (values NEVER printed — only equality/non-null):
+  //   A = initial claim owner (step 1)
+  //   B = owner after expired-lease reclaim by the production command
+  //       (captured via wrapper intercepting claimExpiredLease)
+  //   C = replacement owner installed by independent root takeover
+  //       (captured via wrapper, returned by rootTakeoverOwnerToken)
+  //   D = owner after final same-key reclaim/retry
+  //       (captured via DB query after retry succeeds)
+  // ===================================================================
+  let tokenA: string | null = null;
+  let tokenB: string | null = null;
+  let tokenC: string | null = null;
+  let tokenD: string | null = null;
+
+  // Structured takeover evidence collected by the wrapper.
+  interface TakeoverEvidenceCollected {
+    takeoverAffectedRows: number | null;      // expected exactly 1
+    staleMarkSucceededAffectedRows: number | null;  // expected exactly 0
+    staleMarkRetryableFailedAffectedRows: number | null;  // expected exactly 0
+    reclaimOwnerToken: string | null;  // token B (from claimExpiredLease)
+    replacementOwnerToken: string | null;  // token C (from rootTakeoverOwnerToken)
+  }
+  const evidence: TakeoverEvidenceCollected = {
+    takeoverAffectedRows: null,
+    staleMarkSucceededAffectedRows: null,
+    staleMarkRetryableFailedAffectedRows: null,
+    reclaimOwnerToken: null,
+    replacementOwnerToken: null,
+  };
+
+  // Step 1: pre-claim via rootSql so we capture token A (the original
+  // non-null owner). The production command will reuse the same key+payload
+  // and reclaim the expired lease, installing token B.
   const repo = new IdempotencyDbRepository(db);
   const claim = await claimIdempotency(repo, {
     tenantId: T, operationScope: ctx.scope, idempotencyKey: ctx.key,
     requestBody: ctx.claimInput, initiatedBy: U, leaseDurationMs: 30000, now: new Date(),
   });
   check(`${ctx.label}: original claim execute`, claim.action === "execute");
-  const originalOwner = claim.record.ownerToken!;
-  check(`${ctx.label}: original owner token non-null`, !!originalOwner);
+  tokenA = claim.record.ownerToken!;
+  check(`${ctx.label}: token A (initial claim) non-null`, tokenA !== null && tokenA !== undefined);
+  const attemptCountAfterA = await getIdemAttemptCount(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: attempt_count == 1 after initial claim`,
+    attemptCountAfterA === 1, `got ${attemptCountAfterA}`);
 
   // Step 2: immediately expire the lease so the production command will
-  // reclaim it on its next claimIdempotency call. This gives us a known
-  // "second" owner token (the reclaim token).
+  // reclaim it on its next claimIdempotency call (installing token B).
   await rootExpireLease(sql, claim.record.id);
 
-  // Step 3: Build a takeover-idempotency wrapper that intercepts
-  // updateState(state="succeeded") and performs the root takeover BEFORE
-  // delegating. The stale markSucceeded will then affect 0 rows.
-  class TakeoverIdemRepo extends IdempotencyDbRepository {
+  // Step 3: Build a takeover-evidence-collector wrapper that intercepts:
+  //   - claimExpiredLease: capture token B (the reclaim owner)
+  //   - updateState(state="succeeded"): perform root takeover (installs C),
+  //     capture takeover affected rows (expected 1) and replacement token C,
+  //     then delegate and capture stale markSucceeded affected rows (expected 0)
+  //   - updateState(state="retryable_failed"): delegate and capture stale
+  //     defensive markRetryableFailed affected rows (expected 0)
+  //
+  // The wrapper extends IdempotencyDbRepository so it can be used both as
+  // the outer idempotency dep AND as the tx-scoped factory.
+  class TakeoverEvidenceCollector extends IdempotencyDbRepository {
     constructor(txOrDb: any) { super(txOrDb); }
+
+    async claimExpiredLease(id: string, newLeaseExpiresAt: Date, newHeartbeatAt: Date, now: Date): Promise<boolean> {
+      const result = await super.claimExpiredLease(id, newLeaseExpiresAt, newHeartbeatAt, now);
+      if (result) {
+        // Capture token B immediately after a successful reclaim.
+        // Query via the SAME connection to avoid race conditions.
+        const row = await this.findByTenantScopeKey(T, ctx.scope, ctx.key);
+        if (row && row.ownerToken) {
+          evidence.reclaimOwnerToken = row.ownerToken;
+        }
+      }
+      return result;
+    }
+
     async updateState(id: string, update: any): Promise<number> {
       if (update.state === "succeeded" && update.expectedOwnerToken) {
-        // Perform the takeover from an INDEPENDENT root connection.
-        // We use a fresh postgres connection each time to prove atomicity
-        // across connection boundaries.
+        // Perform the takeover from an INDEPENDENT root connection BEFORE
+        // delegating the stale markSucceeded. The root connection commits
+        // independently of the current transaction.
         const rootSql = postgres(DATABASE_URL!, {
           prepare: false, max: 1, idle_timeout: 5, connect_timeout: 5,
         });
         try {
-          const takeoverAffected = await rootTakeoverOwnerToken(
+          const takeoverEv = await rootTakeoverOwnerToken(
             rootSql, id, update.expectedOwnerToken,
           );
-          check(`${ctx.label}: takeover affected exactly 1 row`, takeoverAffected === 1,
-            `got ${takeoverAffected}`);
+          evidence.takeoverAffectedRows = takeoverEv.affectedRows;
+          evidence.replacementOwnerToken = takeoverEv.replacementToken;
         } finally {
           await rootSql.end();
         }
+        // Now delegate the stale markSucceeded — must affect 0 rows because
+        // owner_token has been replaced by C.
+        const affected = await super.updateState(id, update);
+        evidence.staleMarkSucceededAffectedRows = affected;
+        return affected;
+      }
+      if (update.state === "retryable_failed" && update.expectedOwnerToken) {
+        // Defensive stale markRetryableFailed in the production catch block.
+        // Must affect 0 rows because owner_token is now C (not B).
+        const affected = await super.updateState(id, update);
+        evidence.staleMarkRetryableFailedAffectedRows = affected;
+        return affected;
       }
       return super.updateState(id, update);
     }
@@ -372,20 +449,18 @@ async function proveOwnerLoss(sql: any, db: any, ctx: OwnerLossContext) {
   const auditBefore = await countAudit(sql, ctx.auditActionType);
   const docSeqBefore = ctx.docSeqType ? await getDocSeq(sql, ctx.docSeqType) : null;
 
-  // Step 5: run the production command with the takeover wrapper.
-  // We need to use a custom service factory that wires TakeoverIdemRepo
-  // into the txFactories.createIdempotency slot.
-  // Build the service manually based on scope.
+  // Step 5: run the production command with the takeover wrapper wired
+  // into BOTH the outer idempotency dep AND the tx-scoped factory.
   let svc: any;
   const tr = async <W>(work: (tx: unknown) => Promise<W>): Promise<W> => (db as any).transaction(async (tx: any) => work(tx));
   if (ctx.scope.startsWith("quality_test")) {
     svc = new QualityTestService({
       qualityTestRepository: new QualityTestDbRepository(db), audit: new AuditDbRepository(db),
-      idempotency: new TakeoverIdemRepo(db), documentSequence: new DocumentSequenceDbRepository(db),
+      idempotency: new TakeoverEvidenceCollector(db), documentSequence: new DocumentSequenceDbRepository(db),
       transactionRunner: tr,
       txFactories: {
         createQualityTestRepository: (tx: unknown) => new QualityTestDbRepository(tx as any),
-        createIdempotency: (tx: unknown) => new TakeoverIdemRepo(tx as any),
+        createIdempotency: (tx: unknown) => new TakeoverEvidenceCollector(tx as any),
         createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
         createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
       },
@@ -393,11 +468,11 @@ async function proveOwnerLoss(sql: any, db: any, ctx: OwnerLossContext) {
   } else {
     svc = new ComplaintService({
       complaintRepository: new ComplaintDbRepository(db), audit: new AuditDbRepository(db),
-      idempotency: new TakeoverIdemRepo(db), documentSequence: new DocumentSequenceDbRepository(db),
+      idempotency: new TakeoverEvidenceCollector(db), documentSequence: new DocumentSequenceDbRepository(db),
       transactionRunner: tr,
       txFactories: {
         createComplaintRepository: (tx: unknown) => new ComplaintDbRepository(tx as any),
-        createIdempotency: (tx: unknown) => new TakeoverIdemRepo(tx as any),
+        createIdempotency: (tx: unknown) => new TakeoverEvidenceCollector(tx as any),
         createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
         createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
       },
@@ -417,20 +492,61 @@ async function proveOwnerLoss(sql: any, db: any, ctx: OwnerLossContext) {
       || e?.cause?.name === "IdempotencyOwnershipLostError";
   }
   check(`${ctx.label}: IdempotencyOwnershipLostError thrown`, threwOwnership,
-    caughtErr ? `got: code=${caughtErr?.code}, name=${caughtErr?.name}, msg=${caughtErr?.message ?? ""}` : "(no error thrown)");
+    caughtErr ? `got: code=${caughtErr?.code}, name=${caughtErr?.name}` : "(no error thrown)");
 
-  // Step 6: verify zero committed business mutation.
+  // --- Token B assertions (reclaim owner by production command) ---
+  tokenB = evidence.reclaimOwnerToken;
+  check(`${ctx.label}: token B (reclaim owner) non-null`, tokenB !== null && tokenB !== undefined);
+  check(`${ctx.label}: token A != token B`, tokenA !== null && tokenB !== null && tokenA !== tokenB);
+
+  // --- Token C assertions (replacement owner by root takeover) ---
+  tokenC = evidence.replacementOwnerToken;
+  check(`${ctx.label}: token C (takeover owner) non-null`, tokenC !== null && tokenC !== undefined);
+  check(`${ctx.label}: token B != token C`, tokenB !== null && tokenC !== null && tokenB !== tokenC);
+
+  // --- Takeover affected rows: exactly 1 ---
+  check(`${ctx.label}: takeover affected exactly 1 row`,
+    evidence.takeoverAffectedRows === 1, `got ${evidence.takeoverAffectedRows}`);
+
+  // --- Stale markSucceeded affected rows: exactly 0 ---
+  check(`${ctx.label}: stale markSucceeded affected exactly 0 rows`,
+    evidence.staleMarkSucceededAffectedRows === 0, `got ${evidence.staleMarkSucceededAffectedRows}`);
+
+  // --- Defensive stale markRetryableFailed affected rows: exactly 0 ---
+  check(`${ctx.label}: defensive stale markRetryableFailed affected exactly 0 rows`,
+    evidence.staleMarkRetryableFailedAffectedRows === 0, `got ${evidence.staleMarkRetryableFailedAffectedRows}`);
+
+  // --- C remains the stored owner after stale transaction rollback ---
+  // Query the DB directly — the owner_token must equal tokenC (the takeover
+  // survived rollback because it was committed on an independent connection).
+  const storedOwnerAfterRollback = await getIdemOwnerTokenValue(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: stored owner == token C after rollback`,
+    storedOwnerAfterRollback !== null && storedOwnerAfterRollback === tokenC);
+
+  // --- State after stale rollback: exactly 'in_progress' ---
+  const stateAfter = await getIdemState(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: state exactly 'in_progress' after rollback`,
+    stateAfter === "in_progress", `got '${stateAfter}'`);
+
+  // --- Attempt count after rollback: exactly 3 ---
+  // (1 initial + 1 reclaim + 1 takeover; defensive markRetryableFailed
+  // affected 0 rows so no further increment)
+  const attemptCountAfterRollback = await getIdemAttemptCount(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: attempt_count == 3 after rollback`,
+    attemptCountAfterRollback === 3, `got ${attemptCountAfterRollback}`);
+
+  // --- Zero committed business mutation ---
   const bizAfter = await ctx.countBusinessDelta();
   check(`${ctx.label}: 0 committed business mutation`,
-    bizAfter.after - bizAfter.before === 0,
-    `delta=${bizAfter.after - bizAfter.before} table=${bizAfter.table}`);
+    bizAfter.after - bizBefore.before === 0,
+    `delta=${bizAfter.after - bizBefore.before} table=${bizAfter.table}`);
 
-  // Step 7: verify zero audit delta.
+  // --- Zero audit delta ---
   const auditAfter = await countAudit(sql, ctx.auditActionType);
   check(`${ctx.label}: 0 audit delta`, auditAfter - auditBefore === 0,
     `delta=${auditAfter - auditBefore}`);
 
-  // Step 8: verify zero doc-seq increment (where applicable).
+  // --- Zero doc-seq increment (where applicable) ---
   if (ctx.docSeqType !== null) {
     const docSeqAfter = await getDocSeq(sql, ctx.docSeqType!);
     check(`${ctx.label}: 0 doc-seq increment`,
@@ -438,21 +554,8 @@ async function proveOwnerLoss(sql: any, db: any, ctx: OwnerLossContext) {
       `before=${docSeqBefore} after=${docSeqAfter}`);
   }
 
-  // Step 9: state not succeeded.
-  const stateAfter = await getIdemState(sql, ctx.scope, ctx.key);
-  check(`${ctx.label}: state not succeeded`, stateAfter !== "succeeded",
-    `state=${stateAfter}`);
-
-  // Step 10: owner token changed (non-null, different from original).
-  const ownerNonNullable = await getIdemOwnerTokenNonNullable(sql, ctx.scope, ctx.key);
-  check(`${ctx.label}: owner token non-null after takeover`, ownerNonNullable);
-  // We don't print the actual token values. Verify changed via attemptCount
-  // increment (takeover increments attempt_count).
-  const attemptCount = await getIdemAttemptCount(sql, ctx.scope, ctx.key);
-  check(`${ctx.label}: attempt_count incremented (≥2)`, attemptCount !== null && attemptCount >= 2,
-    `attempt_count=${attemptCount}`);
-
-  // Step 11: expire the replacement owner's lease through deterministic setup.
+  // Step 11: expire the replacement owner's lease (token C's lease) through
+  // deterministic test setup so the retry can reclaim.
   const idemRow = await sql.unsafe(
     `SELECT id FROM idempotency_records WHERE tenant_id = $1 AND operation_scope = $2 AND idempotency_key = $3`,
     [T, ctx.scope, ctx.key],
@@ -461,51 +564,95 @@ async function proveOwnerLoss(sql: any, db: any, ctx: OwnerLossContext) {
   await rootExpireLease(sql, recordId);
 
   // Step 12: retry using the same key and payload through production code.
+  // The production service reclaims the expired lease (installing token D)
+  // and completes the business effect.
   const retrySvc = ctx.scope.startsWith("quality_test")
     ? makeQtService(db) : makeCompService(db);
   const bizBeforeRetry = await ctx.countBusinessDelta();
   const auditBeforeRetry = await countAudit(sql, ctx.auditActionType);
   let retryResult: any;
+  let retryThrew = false;
+  let retryErr: any = null;
   try {
     retryResult = await ctx.runCommand(retrySvc);
   } catch (e: any) {
-    check(`${ctx.label}: retry succeeds (no throw)`, false, `threw: ${e.message}`);
-    return;
+    retryThrew = true;
+    retryErr = e;
   }
-  check(`${ctx.label}: retry succeeds`, !!retryResult || retryResult === undefined);
+  check(`${ctx.label}: retry succeeds (no throw)`, !retryThrew,
+    retryThrew ? `threw: code=${retryErr?.code}, name=${retryErr?.name}` : "");
 
-  // Step 13: verify exactly one successful business effect (delta=1).
+  // --- Token D assertions (reclaim owner by retry) ---
+  tokenD = await getIdemOwnerTokenValue(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: token D (retry reclaim owner) non-null`, tokenD !== null && tokenD !== undefined);
+  check(`${ctx.label}: token C != token D`, tokenC !== null && tokenD !== null && tokenC !== tokenD);
+
+  // --- Attempt count after retry: exactly 4 ---
+  // (3 from before + 1 reclaim by retry)
+  const attemptCountAfterRetry = await getIdemAttemptCount(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: attempt_count == 4 after retry`,
+    attemptCountAfterRetry === 4, `got ${attemptCountAfterRetry}`);
+
+  // --- Retry creates exactly 1 business effect ---
   const bizAfterRetry = await ctx.countBusinessDelta();
   check(`${ctx.label}: retry creates exactly 1 effect`,
     bizAfterRetry.after - bizBeforeRetry.before === 1,
     `delta=${bizAfterRetry.after - bizBeforeRetry.before}`);
 
-  // Step 14: verify reclaimed owner token differs (attempt_count >= 3).
-  const attemptCountAfterRetry = await getIdemAttemptCount(sql, ctx.scope, ctx.key);
-  check(`${ctx.label}: reclaimed owner differs (attempt_count ≥ 3)`,
-    attemptCountAfterRetry !== null && attemptCountAfterRetry >= 3,
-    `attempt_count=${attemptCountAfterRetry}`);
+  // --- State after retry: exactly 'succeeded' ---
+  const stateAfterRetry = await getIdemState(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: state exactly 'succeeded' after retry`,
+    stateAfterRetry === "succeeded", `got '${stateAfterRetry}'`);
 
-  // Step 15: replay with same key produces zero new effects.
+  // Step 15: replay with same key. MUST NOT throw — if it does, the error
+  // is captured and reported (never swallowed). Replay must produce zero
+  // new effects.
   const auditBeforeReplay = await countAudit(sql, ctx.auditActionType);
   const bizBeforeReplay = await ctx.countBusinessDelta();
+  const attemptCountBeforeReplay = await getIdemAttemptCount(sql, ctx.scope, ctx.key);
+  let replayThrew = false;
+  let replayErr: any = null;
+  let replayResult: any = null;
   try {
-    await ctx.runCommand(retrySvc);
+    replayResult = await ctx.runCommand(retrySvc);
   } catch (e: any) {
-    // Replay should not throw if the previous call succeeded.
+    replayThrew = true;
+    replayErr = e;
   }
+  // Replay must NOT throw. If it does, fail with the error details (no
+  // token values, just code/name).
+  check(`${ctx.label}: replay does not throw`, !replayThrew,
+    replayThrew ? `threw: code=${replayErr?.code}, name=${replayErr?.name}` : "");
+
   const auditAfterReplay = await countAudit(sql, ctx.auditActionType);
   const bizAfterReplay = await ctx.countBusinessDelta();
+  const attemptCountAfterReplay = await getIdemAttemptCount(sql, ctx.scope, ctx.key);
   check(`${ctx.label}: replay creates 0 new audits`,
     auditAfterReplay - auditBeforeReplay === 0,
     `delta=${auditAfterReplay - auditBeforeReplay}`);
   check(`${ctx.label}: replay creates 0 new business effects`,
     bizAfterReplay.after - bizBeforeReplay.before === 0,
     `delta=${bizAfterReplay.after - bizBeforeReplay.before}`);
-  // Final state: succeeded
+  // Replay must NOT increment attempt_count (no reclaim on terminal state).
+  check(`${ctx.label}: replay does not increment attempt_count`,
+    attemptCountAfterReplay === attemptCountBeforeReplay,
+    `before=${attemptCountBeforeReplay} after=${attemptCountAfterReplay}`);
+
+  // --- Final state: exactly 'succeeded' ---
   const finalState = await getIdemState(sql, ctx.scope, ctx.key);
-  check(`${ctx.label}: final state succeeded`, finalState === "succeeded",
-    `state=${finalState}`);
+  check(`${ctx.label}: final state exactly 'succeeded'`, finalState === "succeeded",
+    `got '${finalState}'`);
+
+  // --- Final token D unchanged after replay ---
+  const tokenDFinal = await getIdemOwnerTokenValue(sql, ctx.scope, ctx.key);
+  check(`${ctx.label}: token D unchanged after replay`, tokenD === tokenDFinal);
+
+  // --- All four tokens non-null summary ---
+  check(`${ctx.label}: all four tokens (A,B,C,D) non-null`,
+    tokenA !== null && tokenB !== null && tokenC !== null && tokenD !== null);
+  // --- All four tokens distinct summary ---
+  check(`${ctx.label}: tokens A,B,C,D all distinct`,
+    tokenA !== tokenB && tokenB !== tokenC && tokenC !== tokenD && tokenA !== tokenC && tokenB !== tokenD && tokenA !== tokenD);
 }
 
 // ===========================================================================
