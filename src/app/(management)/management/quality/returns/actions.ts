@@ -182,6 +182,7 @@ export async function approveReturnAction(
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
   };
 
   const service = new ReturnRequestService({
@@ -288,6 +289,7 @@ export async function rejectReturnAction(
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
   };
 
   const service = new ReturnRequestService({
@@ -408,6 +410,7 @@ export async function createReplacementOrderAction(
     createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
   };
 
   const service = new ReplacementWorkflowService({

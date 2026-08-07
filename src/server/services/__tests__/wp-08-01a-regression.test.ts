@@ -114,11 +114,38 @@ function makeReturnDeps(opts: { validator?: InMemoryTenantOwnershipValidator } =
   const inventoryLedger = new InventoryLedgerService({ ledger: ledgerRepo, audit, idempotency, documentSequence });
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
   const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: snapshotRepo, salesRepository, audit });
+  // WP-08-01E BLOCKER 2: simulated transaction runner with snapshot/restore
+  // for in-memory repos. Required by fail-closed requireTransactionConfig().
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    const snaps: any[] = [
+      returnRepo.snapshot(), salesRepository.snapshot(),
+      ledgerRepo.snapshot(), subledgerRepo.snapshot(), snapshotRepo.snapshot(),
+    ];
+    const auditRows = [...(audit as any).getRows()];
+    try {
+      return await work({ /* mock tx */ });
+    } catch (e) {
+      returnRepo.restore(snaps[0]); salesRepository.restore(snaps[1]);
+      ledgerRepo.restore(snaps[2]); subledgerRepo.restore(snaps[3]); snapshotRepo.restore(snaps[4]);
+      (audit as any).clear(); for (const r of auditRows) (audit as any).insertAuditLog(r);
+      throw e;
+    }
+  };
+  const txFactories = {
+    createInventoryLedger: () => inventoryLedger,
+    createSubledger: () => subledger,
+    createSnapshotService: () => snapshotService,
+    createSalesRepository: () => salesRepository,
+    createReturnRequestRepository: () => returnRepo,
+    createAudit: () => audit,
+    createIdempotency: () => idempotency,
+  };
   const returnService = new ReturnRequestService({
     returnRequestRepository: returnRepo,
     audit, idempotency, documentSequence,
     inventoryLedger, subledger, salesRepository, snapshotService,
     tenantOwnershipValidator,
+    transactionRunner, txFactories,
   });
   return { returnRepo, salesRepository, ledgerRepo, subledgerRepo, snapshotRepo, audit, idempotency, documentSequence, inventoryLedger, subledger, snapshotService, returnService, tenantOwnershipValidator };
 }
@@ -372,6 +399,7 @@ describe("WP-08-01A atomic return creation (rollback + retry)", () => {
       createSalesRepository: () => salesRepository,
       createReturnRequestRepository: () => returnRepo,
       createAudit: () => audit,
+      createIdempotency: () => idempotency,
     };
 
     const returnService = new ReturnRequestService({

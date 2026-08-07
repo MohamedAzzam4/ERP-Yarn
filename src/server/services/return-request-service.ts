@@ -47,6 +47,8 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
+  IdempotencyOwnershipLostError,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
 } from "./idempotency-service";
@@ -193,6 +195,13 @@ export interface ReturnRequestTransactionScopedFactories {
   createReturnRequestRepository: (tx: unknown) => ReturnRequestRepository;
   /** Create an AuditTransactionHandle that uses the transaction-scoped `tx`. */
   createAudit: (tx: unknown) => AuditTransactionHandle;
+  /**
+   * Create an IdempotencyTransactionHandle that uses the transaction-scoped
+   * `tx`. WP-08-01E BLOCKER 2: markSucceeded must execute INSIDE the same
+   * transaction as business writes + audit so that ownership loss rolls
+   * back ALL effects atomically.
+   */
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +261,37 @@ export interface ReturnRequestServiceDeps {
 // ---------------------------------------------------------------------------
 
 export class ReturnRequestService {
-  constructor(private readonly deps: ReturnRequestServiceDeps) {}
+  constructor(private readonly deps: ReturnRequestServiceDeps) {
+    // WP-08-01E BLOCKER 2: fail-closed if transactionRunner or txFactories
+    // are missing. Production mutation commands require atomic
+    // markSucceeded-inside-transaction to prevent partial commits.
+    if (!!this.deps.transactionRunner !== !!this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories must both be provided or both be absent.",
+      );
+    }
+  }
+
+  /**
+   * WP-08-01E BLOCKER 2: Require transaction config for production mutation
+   * commands. Throws CONFIGURATION_ERROR if transactionRunner or txFactories
+   * are missing — this prevents silent non-atomic execution.
+   */
+  private requireTransactionConfig(): {
+    transactionRunner: ReturnRequestTransactionRunner;
+    txFactories: ReturnRequestTransactionScopedFactories;
+  } {
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories are required for production mutation commands. " +
+        "Without them, markSucceeded cannot be executed atomically with business writes.",
+      );
+    }
+    return {
+      transactionRunner: this.deps.transactionRunner,
+      txFactories: this.deps.txFactories,
+    };
+  }
 
   /**
    * Create a return request draft with return lines.
@@ -382,10 +421,12 @@ export class ReturnRequestService {
       txScoped: {
         returnRequestRepository: ReturnRequestRepository;
         audit: AuditTransactionHandle;
+        idempotency: IdempotencyTransactionHandle;
       } | null,
-    ): Promise<{ returnRequest: ReturnRequest }> => {
+    ): Promise<{ returnRequest: ReturnRequest; result: CreateReturnRequestResult }> => {
       const rrRepo = txScoped?.returnRequestRepository ?? this.deps.returnRequestRepository;
       const auditHandle = txScoped?.audit ?? this.deps.audit;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
 
       // Insert return request (header)
       const returnRequest = await rrRepo.insertReturnRequest({
@@ -440,49 +481,71 @@ export class ReturnRequestService {
         idempotencyKey: input.idempotencyKey,
       });
 
-      return { returnRequest };
+      // WP-08-01E BLOCKER 2: markSucceeded INSIDE the transaction so that
+      // ownership loss rolls back ALL business + audit effects atomically.
+      const result: CreateReturnRequestResult = {
+        action: "created",
+        returnRequestId: returnRequest.id,
+        docNo: returnRequest.docNo,
+        status: "draft",
+      };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: RETURN_ENTITY_TYPE,
+        entityId: returnRequest.id,
+      }, claim.record.ownerToken!, now);
+
+      return { returnRequest, result };
     };
 
-    let returnRequest: ReturnRequest;
+    // WP-08-01E BLOCKER 2: fail-closed — require transaction config for
+    // production mutation commands.
+    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    let result: CreateReturnRequestResult;
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        // Wrap header + lines + audit in a single DB transaction.
-        const txResult = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txRrRepo = this.deps.txFactories!.createReturnRequestRepository(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          return executeCreate({ returnRequestRepository: txRrRepo, audit: txAudit });
-        });
-        returnRequest = txResult.returnRequest;
-      } else {
-        // No transaction runner (unit tests).
-        const res = await executeCreate(null);
-        returnRequest = res.returnRequest;
-      }
+      const txResult = await transactionRunner(async (tx: unknown) => {
+        const txRrRepo = txFactories.createReturnRequestRepository(tx);
+        const txAudit = txFactories.createAudit(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        return executeCreate({ returnRequestRepository: txRrRepo, audit: txAudit, idempotency: txIdem });
+      });
+      result = txResult.result;
     } catch (txError) {
-      // The DB transaction rolled back — no header, no lines, no audit.
-      // Mark the idempotency claim as business-failed so the caller can
-      // retry with the SAME key (idempotency_records.responseBody is null,
-      // claimIdempotency returns "execute" on the next call).
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 500,
-        responseBody: { message: "Return request creation transaction failed and rolled back." },
-        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, claim.record.ownerToken!, now);
+      // WP-08-01E BLOCKER 2: classify post-rollback failures correctly.
+      // - IdempotencyOwnershipLostError: stale caller must NOT call
+      //   markBusinessFailed. Defensive stale markRetryableFailed must
+      //   affect 0 rows. Propagate the ownership error.
+      // - Other errors (audit/infra/transient): markRetryableFailed so
+      //   same-key retry re-executes.
+      try {
+        if (txError instanceof IdempotencyOwnershipLostError) {
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            console.error(
+              "INVARIANT VIOLATION: stale markRetryableFailed affected rows =",
+              staleAffected,
+              "for record", claim.record.id,
+            );
+          }
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseBody: { message: "Transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        }
+      } catch (markError) {
+        console.error("Failed to mark idempotency after tx rollback:", markError);
+      }
       throw txError;
     }
-
-    const result: CreateReturnRequestResult = {
-      action: "created",
-      returnRequestId: returnRequest.id,
-      docNo: returnRequest.docNo,
-      status: "draft",
-    };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: RETURN_ENTITY_TYPE,
-      entityId: returnRequest.id,
-    }, claim.record.ownerToken!, now);
 
     return result;
   }
@@ -523,6 +586,8 @@ export class ReturnRequestService {
     if (claim.action === "in_progress") throw new ReturnRequestError("OPERATION_IN_PROGRESS", `Operation in progress.`);
 
     if (rr.status !== "draft") {
+      // Durable business failure: state conflict. Mark business_failed
+      // (terminal) so same-key replay returns the same failure.
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409, responseBody: { message: `Return in status '${rr.status}'.` },
         lastErrorClass: "ReturnRequestNotApprovableError",
@@ -530,25 +595,62 @@ export class ReturnRequestService {
       throw new ReturnRequestError("STATE_CONFLICT", `Return request '${rr.id}' is in status '${rr.status}' — only 'draft' can be submitted.`);
     }
 
-    const updated = await this.deps.returnRequestRepository.updateReturnRequestStatus(
-      user.tenantId, rr.id,
-      { status: "pending_approval", approvalStatus: "pending_approval", updatedBy: user.userId },
-      ["draft"],
-    );
-    if (!updated) throw new ReturnRequestError("INTERNAL_TRANSACTION_FAILED", `Could not submit return '${rr.id}'.`);
-
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-      actionType: "return_request.submit",
-      newValuesJson: { docNo: rr.docNo, status: "pending_approval" },
-      idempotencyKey: input.idempotencyKey,
-    });
-
+    // WP-08-01E BLOCKER 2: wrap status update + audit + markSucceeded in
+    // a single transaction so they commit/rollback atomically.
+    const { transactionRunner, txFactories } = this.requireTransactionConfig();
     const result = { action: "submitted" as const, returnRequestId: rr.id, status: "pending_approval" };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-    }, claim.record.ownerToken!, now);
+    try {
+      await transactionRunner(async (tx: unknown) => {
+        const txRrRepo = txFactories.createReturnRequestRepository(tx);
+        const txAudit = txFactories.createAudit(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+
+        const updated = await txRrRepo.updateReturnRequestStatus(
+          user.tenantId, rr.id,
+          { status: "pending_approval", approvalStatus: "pending_approval", updatedBy: user.userId },
+          ["draft"],
+        );
+        if (!updated) throw new ReturnRequestError("INTERNAL_TRANSACTION_FAILED", `Could not submit return '${rr.id}'.`);
+
+        await appendAuditLog(txAudit, user.tenantId, user.userId, {
+          entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
+          actionType: "return_request.submit",
+          newValuesJson: { docNo: rr.docNo, status: "pending_approval" },
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        // markSucceeded INSIDE the transaction — atomic with business writes.
+        await markSucceeded(txIdem, claim.record.id, {
+          responseCode: 200, responseBody: result,
+          entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
+        }, claim.record.ownerToken!, now);
+      });
+    } catch (txError) {
+      // WP-08-01E BLOCKER 2: classify post-rollback failures.
+      try {
+        if (txError instanceof IdempotencyOwnershipLostError) {
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            console.error("INVARIANT VIOLATION: stale markRetryableFailed affected rows =", staleAffected);
+          }
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseBody: { message: "Transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        }
+      } catch (markError) {
+        console.error("Failed to mark idempotency after tx rollback:", markError);
+      }
+      throw txError;
+    }
     return result;
   }
 
@@ -730,14 +832,16 @@ export class ReturnRequestService {
         salesRepository: SalesRepository;
         returnRequestRepository: ReturnRequestRepository;
         audit: AuditTransactionHandle;
+        idempotency: IdempotencyTransactionHandle;
       } | null,
-    ): Promise<{ stockMovementIds: string[]; creditEntryId: string | null; snapshotId: string | null }> => {
+    ): Promise<{ stockMovementIds: string[]; creditEntryId: string | null; snapshotId: string | null; result: any }> => {
       const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
       const subledger = txScoped?.subledger ?? this.deps.subledger;
       const snapshotService = txScoped?.snapshotService ?? this.deps.snapshotService;
       const salesRepository = txScoped?.salesRepository ?? this.deps.salesRepository;
       const returnRequestRepository = txScoped?.returnRequestRepository ?? this.deps.returnRequestRepository;
       const audit = txScoped?.audit ?? this.deps.audit;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
 
       const stockMovementIds: string[] = [];
       let creditEntryId: string | null = null;
@@ -972,53 +1076,68 @@ export class ReturnRequestService {
         idempotencyKey: input.idempotencyKey,
       });
 
-      return { stockMovementIds, creditEntryId, snapshotId };
+      // WP-08-01E BLOCKER 2: markSucceeded INSIDE the transaction so that
+      // ownership loss rolls back ALL stock/credit/snapshot/audit effects
+      // atomically.
+      const result = { action: "approved" as const, returnRequestId: rr.id, status: "approved", approvedBy: user.userId, stockMovements: stockMovementIds, creditEntryId, snapshotId };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200, responseBody: result,
+        entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
+      }, claim.record.ownerToken!, now);
+
+      return { stockMovementIds, creditEntryId, snapshotId, result };
     };
 
-    let postingResult: { stockMovementIds: string[]; creditEntryId: string | null; snapshotId: string | null };
+    // WP-08-01E BLOCKER 2: fail-closed — require transaction config.
+    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    let result: any;
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        // Wrap all DB writes in a single outer transaction.
-        postingResult = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txInvLedger = this.deps.txFactories!.createInventoryLedger(tx);
-          const txSubledger = this.deps.txFactories!.createSubledger(tx);
-          const txSnapshotService = this.deps.txFactories!.createSnapshotService(tx);
-          const txSalesRepo = this.deps.txFactories!.createSalesRepository(tx);
-          const txReturnRepo = this.deps.txFactories!.createReturnRequestRepository(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          return executePosting({
-            inventoryLedger: txInvLedger,
-            subledger: txSubledger,
-            snapshotService: txSnapshotService,
-            salesRepository: txSalesRepo,
-            returnRequestRepository: txReturnRepo,
-            audit: txAudit,
-          });
+      const txResult = await transactionRunner(async (tx: unknown) => {
+        const txInvLedger = txFactories.createInventoryLedger(tx);
+        const txSubledger = txFactories.createSubledger(tx);
+        const txSnapshotService = txFactories.createSnapshotService(tx);
+        const txSalesRepo = txFactories.createSalesRepository(tx);
+        const txReturnRepo = txFactories.createReturnRequestRepository(tx);
+        const txAudit = txFactories.createAudit(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        return executePosting({
+          inventoryLedger: txInvLedger,
+          subledger: txSubledger,
+          snapshotService: txSnapshotService,
+          salesRepository: txSalesRepo,
+          returnRequestRepository: txReturnRepo,
+          audit: txAudit,
+          idempotency: txIdem,
         });
-      } else {
-        // No transaction runner (unit tests with in-memory repos).
-        postingResult = await executePosting(null);
-      }
+      });
+      result = txResult.result;
     } catch (txError) {
-      // The DB transaction rolled back. Mark idempotency as failed and re-throw.
-      // No partial DB state persists — stock_movement, inventory_balance,
-      // account_entry, return_lines, sales_profitability_snapshot,
-      // sales_orders, return_requests, audit_logs are all rolled back.
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 500,
-        responseBody: { message: "Return approval transaction failed and rolled back." },
-        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, claim.record.ownerToken!, now);
+      // WP-08-01E BLOCKER 2: classify post-rollback failures.
+      try {
+        if (txError instanceof IdempotencyOwnershipLostError) {
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            console.error("INVARIANT VIOLATION: stale markRetryableFailed affected rows =", staleAffected);
+          }
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseBody: { message: "Transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        }
+      } catch (markError) {
+        console.error("Failed to mark idempotency after tx rollback:", markError);
+      }
       throw txError;
     }
 
-    const { stockMovementIds, creditEntryId, snapshotId } = postingResult;
-
-    const result = { action: "approved" as const, returnRequestId: rr.id, status: "approved", approvedBy: user.userId, stockMovements: stockMovementIds, creditEntryId, snapshotId };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-    }, claim.record.ownerToken!, now);
     return result;
   }
 
@@ -1062,28 +1181,72 @@ export class ReturnRequestService {
     if (claim.action === "in_progress") throw new ReturnRequestError("OPERATION_IN_PROGRESS", `Operation in progress.`);
 
     if (rr.status !== "pending_approval") {
+      // WP-08-01E BLOCKER 2: fix missing markBusinessFailed on state-conflict.
+      // Previously this threw without marking, leaving the idempotency record
+      // in_progress and blocking same-key retries.
+      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        responseCode: 409, responseBody: { message: `Return in status '${rr.status}'.` },
+        lastErrorClass: "ReturnRequestNotApprovableError",
+      }, claim.record.ownerToken!, now);
       throw new ReturnRequestNotApprovableError(rr.id, rr.status);
     }
 
-    const updated = await this.deps.returnRequestRepository.updateReturnRequestStatus(
-      user.tenantId, rr.id,
-      { status: "rejected", approvalStatus: "rejected", updatedBy: user.userId },
-      ["pending_approval"],
-    );
-    if (!updated) throw new ReturnRequestError("INTERNAL_TRANSACTION_FAILED", `Could not reject return '${rr.id}'.`);
-
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-      actionType: "return_request.reject",
-      newValuesJson: { docNo: rr.docNo, status: "rejected", rejectionReason: input.rejectionReason },
-      idempotencyKey: input.idempotencyKey,
-    });
-
+    // WP-08-01E BLOCKER 2: wrap status update + audit + markSucceeded in
+    // a single transaction so they commit/rollback atomically.
+    const { transactionRunner, txFactories } = this.requireTransactionConfig();
     const result = { action: "rejected" as const, returnRequestId: rr.id, status: "rejected" };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
-    }, claim.record.ownerToken!, now);
+    try {
+      await transactionRunner(async (tx: unknown) => {
+        const txRrRepo = txFactories.createReturnRequestRepository(tx);
+        const txAudit = txFactories.createAudit(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+
+        const updated = await txRrRepo.updateReturnRequestStatus(
+          user.tenantId, rr.id,
+          { status: "rejected", approvalStatus: "rejected", updatedBy: user.userId },
+          ["pending_approval"],
+        );
+        if (!updated) throw new ReturnRequestError("INTERNAL_TRANSACTION_FAILED", `Could not reject return '${rr.id}'.`);
+
+        await appendAuditLog(txAudit, user.tenantId, user.userId, {
+          entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
+          actionType: "return_request.reject",
+          newValuesJson: { docNo: rr.docNo, status: "rejected", rejectionReason: input.rejectionReason },
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        // markSucceeded INSIDE the transaction — atomic with business writes.
+        await markSucceeded(txIdem, claim.record.id, {
+          responseCode: 200, responseBody: result,
+          entityType: RETURN_ENTITY_TYPE, entityId: rr.id,
+        }, claim.record.ownerToken!, now);
+      });
+    } catch (txError) {
+      // WP-08-01E BLOCKER 2: classify post-rollback failures.
+      try {
+        if (txError instanceof IdempotencyOwnershipLostError) {
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            console.error("INVARIANT VIOLATION: stale markRetryableFailed affected rows =", staleAffected);
+          }
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseBody: { message: "Transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        }
+      } catch (markError) {
+        console.error("Failed to mark idempotency after tx rollback:", markError);
+      }
+      throw txError;
+    }
     return result;
   }
 

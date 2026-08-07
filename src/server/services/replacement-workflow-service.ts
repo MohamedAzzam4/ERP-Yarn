@@ -65,6 +65,8 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
+  IdempotencyOwnershipLostError,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
 } from "./idempotency-service";
@@ -188,6 +190,13 @@ export interface ReplacementWorkflowTransactionScopedFactories {
   createReturnRequestRepository: (tx: unknown) => ReturnRequestRepository;
   /** Create an AuditTransactionHandle that uses the transaction-scoped `tx`. */
   createAudit: (tx: unknown) => AuditTransactionHandle;
+  /**
+   * Create an IdempotencyTransactionHandle that uses the transaction-scoped
+   * `tx`. WP-08-01E BLOCKER 2: markSucceeded must execute INSIDE the same
+   * transaction as replacement order creation + audit so that ownership
+   * loss rolls back ALL effects atomically.
+   */
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 export interface ReplacementWorkflowServiceDeps {
@@ -218,7 +227,36 @@ const REPLACEMENT_AUDIT_ENTITY = "replacement_workflow";
 // ---------------------------------------------------------------------------
 
 export class ReplacementWorkflowService {
-  constructor(private readonly deps: ReplacementWorkflowServiceDeps) {}
+  constructor(private readonly deps: ReplacementWorkflowServiceDeps) {
+    // WP-08-01E BLOCKER 2: fail-closed if transactionRunner or txFactories
+    // are missing. Production mutation commands require atomic
+    // markSucceeded-inside-transaction.
+    if (!!this.deps.transactionRunner !== !!this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories must both be provided or both be absent.",
+      );
+    }
+  }
+
+  /**
+   * WP-08-01E BLOCKER 2: Require transaction config for production mutation
+   * commands.
+   */
+  private requireTransactionConfig(): {
+    transactionRunner: ReplacementWorkflowTransactionRunner;
+    txFactories: ReplacementWorkflowTransactionScopedFactories;
+  } {
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories are required for production mutation commands. " +
+        "Without them, markSucceeded cannot be executed atomically with business writes.",
+      );
+    }
+    return {
+      transactionRunner: this.deps.transactionRunner,
+      txFactories: this.deps.txFactories,
+    };
+  }
 
   /**
    * Create a linked replacement sales order from an approved return request.
@@ -402,11 +440,13 @@ export class ReplacementWorkflowService {
         salesRepository: SalesRepository;
         returnRequestRepository: ReturnRequestRepository;
         audit: AuditTransactionHandle;
+        idempotency: IdempotencyTransactionHandle;
       } | null,
-    ): Promise<{ replacementSaleId: string; docNo: string; saleStatus: string }> => {
+    ): Promise<{ replacementSaleId: string; docNo: string; saleStatus: string; result: CreateReplacementOrderResult }> => {
       const salesRepo = txScoped?.salesRepository ?? this.deps.salesRepository;
       const returnRepo = txScoped?.returnRequestRepository ?? this.deps.returnRequestRepository;
       const audit = txScoped?.audit ?? this.deps.audit;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
 
       // Re-check for existing replacement order INSIDE the transaction.
       // This narrows the race window: the unique index is the final arbiter,
@@ -480,75 +520,97 @@ export class ReplacementWorkflowService {
         idempotencyKey: input.idempotencyKey,
       });
 
+      // WP-08-01E BLOCKER 2: markSucceeded INSIDE the transaction so that
+      // ownership loss rolls back ALL sales_order + lines + audit effects
+      // atomically.
+      const result: CreateReplacementOrderResult = {
+        action: "created",
+        replacementSaleId: replacementSale.id,
+        docNo: replacementSale.docNo,
+        saleStatus: replacementSale.saleStatus,
+        returnRequestId: rr.id,
+        originalSaleId: rr.salesOrderId,
+        lineCount: returnLinesInTx.length,
+      };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: REPLACEMENT_ENTITY_TYPE,
+        entityId: replacementSale.id,
+      }, claim.record.ownerToken!, now);
+
       return {
         replacementSaleId: replacementSale.id,
         docNo: replacementSale.docNo,
         saleStatus: replacementSale.saleStatus,
+        result,
       };
     };
 
-    let postingResult: { replacementSaleId: string; docNo: string; saleStatus: string };
+    // WP-08-01E BLOCKER 2: fail-closed — require transaction config.
+    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    let result: CreateReplacementOrderResult;
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        postingResult = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txSalesRepo = this.deps.txFactories!.createSalesRepository(tx);
-          const txReturnRepo = this.deps.txFactories!.createReturnRequestRepository(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          return executePosting({
-            salesRepository: txSalesRepo,
-            returnRequestRepository: txReturnRepo,
-            audit: txAudit,
-          });
+      const txResult = await transactionRunner(async (tx: unknown) => {
+        const txSalesRepo = txFactories.createSalesRepository(tx);
+        const txReturnRepo = txFactories.createReturnRequestRepository(tx);
+        const txAudit = txFactories.createAudit(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        return executePosting({
+          salesRepository: txSalesRepo,
+          returnRequestRepository: txReturnRepo,
+          audit: txAudit,
+          idempotency: txIdem,
         });
-      } else {
-        postingResult = await executePosting(null);
-      }
+      });
+      result = txResult.result;
     } catch (txError) {
+      // WP-08-01E BLOCKER 2: classify post-rollback failures.
       // Check if this is a unique constraint violation (concurrent duplicate).
-      // The DB-level unique partial index enforces one replacement per return request.
       const errMsg = txError instanceof Error ? txError.message : String(txError);
       const isUniqueViolation =
         errMsg.includes("sales_orders_replacement_return_unique_idx") ||
         errMsg.includes("unique constraint") ||
         errMsg.includes("duplicate key");
-      if (isUniqueViolation) {
-        // A concurrent transaction won — fetch the winning replacement order.
-        const winner = await this.deps.salesRepository.findReplacementOrderByReturnRequestId(
-          user.tenantId,
-          rr.id,
-        );
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 409,
-          responseBody: { message: `Concurrent replacement creation won by '${winner?.id ?? "unknown"}'.` },
-          lastErrorClass: "ReplacementAlreadyExistsError",
-        }, claim.record.ownerToken!, now);
-        throw new ReplacementAlreadyExistsError(rr.id, winner?.id ?? "unknown");
+      try {
+        if (txError instanceof IdempotencyOwnershipLostError) {
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            console.error("INVARIANT VIOLATION: stale markRetryableFailed affected rows =", staleAffected);
+          }
+        } else if (isUniqueViolation) {
+          // Durable business failure: concurrent duplicate.
+          const winner = await this.deps.salesRepository.findReplacementOrderByReturnRequestId(
+            user.tenantId,
+            rr.id,
+          );
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409,
+            responseBody: { message: `Concurrent replacement creation won by '${winner?.id ?? "unknown"}'.` },
+            lastErrorClass: "ReplacementAlreadyExistsError",
+          }, claim.record.ownerToken!, now);
+          throw new ReplacementAlreadyExistsError(rr.id, winner?.id ?? "unknown");
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseBody: { message: "Transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        }
+      } catch (markError) {
+        // If the markError is the ReplacementAlreadyExistsError we just
+        // threw, re-throw it — don't swallow it.
+        if (markError instanceof ReplacementAlreadyExistsError) throw markError;
+        console.error("Failed to mark idempotency after tx rollback:", markError);
       }
-      // Other error — mark idempotency as failed and re-throw.
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 500,
-        responseBody: { message: "Replacement order creation failed and rolled back." },
-        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, claim.record.ownerToken!, now);
       throw txError;
     }
-
-    const result: CreateReplacementOrderResult = {
-      action: "created",
-      replacementSaleId: postingResult.replacementSaleId,
-      docNo: postingResult.docNo,
-      saleStatus: postingResult.saleStatus,
-      returnRequestId: rr.id,
-      originalSaleId: rr.salesOrderId,
-      lineCount: returnLines.length,
-    };
-
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: REPLACEMENT_ENTITY_TYPE,
-      entityId: postingResult.replacementSaleId,
-    }, claim.record.ownerToken!, now);
 
     return result;
   }

@@ -39,12 +39,35 @@ function makeDeps() {
   const subledger = { postReturnCreditEntry: async () => ({ entryId: "ae-1" }) } as any;
   const snapshotService = { createReturnImpactSnapshot: async () => ({ id: "snap-1" }) } as any;
   const salesRepo = { findSaleById: async () => ({ id: "sale-1", customerId: "cust-1", saleStatus: "approved", tenantId: TEST_TENANT_ID, lines: [] }) } as any;
+  // WP-08-01E BLOCKER 2: simulated transaction runner with snapshot/restore
+  // for in-memory repos. Required by fail-closed requireTransactionConfig().
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    const rrSnap = returnRepo.snapshot();
+    const auditRows = [...(audit as any).getRows()];
+    try {
+      return await work({ /* mock tx */ });
+    } catch (e) {
+      returnRepo.restore(rrSnap);
+      (audit as any).clear(); for (const r of auditRows) (audit as any).insertAuditLog(r);
+      throw e;
+    }
+  };
+  const txFactories = {
+    createInventoryLedger: () => inventoryLedger,
+    createSubledger: () => subledger,
+    createSnapshotService: () => snapshotService,
+    createSalesRepository: () => salesRepo,
+    createReturnRequestRepository: () => returnRepo,
+    createAudit: () => audit,
+    createIdempotency: () => idempotency,
+  };
   const service = new ReturnRequestService({
     returnRequestRepository: returnRepo,
     salesRepository: salesRepo,
     inventoryLedger, subledger, snapshotService,
     audit, idempotency, documentSequence,
     tenantOwnershipValidator,
+    transactionRunner, txFactories,
   });
   return { returnRepo, audit, idempotency, documentSequence, service };
 }
@@ -102,14 +125,39 @@ describe("WP-08-01A return treatment default behavioral proof", () => {
     let movementCalled = false;
     let snapshotCalled = false;
     const deps = makeDeps();
+    const inventoryLedger = { postReturnReceipt: async () => { movementCalled = true; return { movementId: "sm-1" }; } } as any;
+    const subledger = { postReturnCreditEntry: async () => { creditCalled = true; return { entryId: "ae-1" }; } } as any;
+    const snapshotService = { createReturnImpactSnapshot: async () => { snapshotCalled = true; return { id: "snap-1" }; } } as any;
+    const salesRepo = { findSaleById: async () => ({ id: "sale-1", customerId: "cust-1", saleStatus: "approved", tenantId: TEST_TENANT_ID, lines: [] }) } as any;
+    // WP-08-01E BLOCKER 2: simulated transaction runner with snapshot/restore
+    // for in-memory repos. Required by fail-closed requireTransactionConfig().
+    const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+      const rrSnap = deps.returnRepo.snapshot();
+      const auditRows = [...(deps.audit as any).getRows()];
+      try {
+        return await work({ /* mock tx */ });
+      } catch (e) {
+        deps.returnRepo.restore(rrSnap);
+        (deps.audit as any).clear(); for (const r of auditRows) (deps.audit as any).insertAuditLog(r);
+        throw e;
+      }
+    };
+    const txFactories = {
+      createInventoryLedger: () => inventoryLedger,
+      createSubledger: () => subledger,
+      createSnapshotService: () => snapshotService,
+      createSalesRepository: () => salesRepo,
+      createReturnRequestRepository: () => deps.returnRepo,
+      createAudit: () => deps.audit,
+      createIdempotency: () => deps.idempotency,
+    };
     const service = new ReturnRequestService({
       returnRequestRepository: deps.returnRepo,
-      salesRepository: { findSaleById: async () => ({ id: "sale-1", customerId: "cust-1", saleStatus: "approved", tenantId: TEST_TENANT_ID, lines: [] }) } as any,
-      inventoryLedger: { postReturnReceipt: async () => { movementCalled = true; return { movementId: "sm-1" }; } } as any,
-      subledger: { postReturnCreditEntry: async () => { creditCalled = true; return { entryId: "ae-1" }; } } as any,
-      snapshotService: { createReturnImpactSnapshot: async () => { snapshotCalled = true; return { id: "snap-1" }; } } as any,
+      salesRepository: salesRepo,
+      inventoryLedger, subledger, snapshotService,
       audit: deps.audit, idempotency: deps.idempotency, documentSequence: deps.documentSequence,
       tenantOwnershipValidator: new InMemoryTenantOwnershipValidator(),
+      transactionRunner, txFactories,
     });
     await service.createReturnRequest(makeUser() as any, makeWarehouseEff() as any, makeReturnInput() as any);
     expect(creditCalled).toBe(false);

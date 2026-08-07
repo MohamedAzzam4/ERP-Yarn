@@ -289,6 +289,14 @@ describe("WP-08-01E Production Wiring + Permission Boundaries", () => {
       );
       expect(constructorMatches?.length).toBeGreaterThanOrEqual(3);
     });
+
+    it("all txFactories include createIdempotency (BLOCKER 2 atomic idempotency)", () => {
+      const actions = readFile(MGMT_RETURNS_ACTIONS);
+      // Every txFactories object must include createIdempotency so that
+      // markSucceeded can execute inside the transaction.
+      const createIdemMatches = actions.match(/createIdempotency:/g);
+      expect(createIdemMatches?.length).toBeGreaterThanOrEqual(3);
+    });
   });
 
   describe("QualityTestDbRepository is DB-backed", () => {
