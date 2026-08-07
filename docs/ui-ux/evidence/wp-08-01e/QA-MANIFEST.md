@@ -2,7 +2,7 @@
 
 **Date**: 2026-08-07
 **Branch**: `phase/08-01e-quality-complaint-return-replacement-screens`
-**Phase HEAD**: (pending commit — will be set after commit)
+**Backend evidence commit**: `0f220a8646822e01014d0fab605c69b15ded7c8d`
 **QA method**: Live PostgreSQL validation + production server-action audit + Playwright browser overflow checks
 **Database**: Local PostgreSQL 17 (Supabase-compatible schema, migrations 0000–0015)
 
@@ -26,33 +26,37 @@
      - PG-2: rejectReturnRequest ownership-loss rollback.
      - PG-3: createReplacementOrder ownership-loss rollback.
      - PG-4: createReplacementOrder retry/replay/conflict with exact DB counts.
-   - Full suite (2797 passed).
+   - Non-database suite: 2669 passed | 42 skipped (0 failed).
+   - Full suite with local PostgreSQL: 2797 passed | 44 skipped (verified in prior sessions).
 2. **Production action wiring** — all 8 actions audited, 3 defects fixed, regression tests added.
 3. **360px overflow** — FIXED, verified via Playwright at 4 viewports (scrollWidth === clientWidth).
 4. **Live PostgreSQL validation** — 318 checks pass for all 5 quality/complaint commands.
 5. **All 6 gates** — pass with exit 0.
 
-### What is NOT proven (BLOCKER 1)
-- **Authenticated browser command-success QA** is NOT proven. The environment has no
-  Supabase credentials (`NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` are unset).
-  Without Supabase Auth, the Next.js server cannot mint real sessions, and all protected
-  routes redirect to `/login`.
-- The Playwright browser QA script (`scripts/wp-08-01e-browser-qa.ts`) navigates to
-  protected routes but lands on `/login` after redirect. The overflow metrics measured
-  are therefore login-page metrics, NOT authenticated-route metrics.
-- **No real browser command-success screenshots** exist. The screenshot collection is empty.
-- **BLOCKER 3** (all 8 commands through browser forms) — NOT proven via browser.
-  Command success IS proven via live PostgreSQL validation (direct domain service calls)
-  for 5 of 8 commands (createQualityTest, recordQualityTestValue, createComplaint,
-  updateComplaint, reviewQualityTest). The return/replacement commands
-  (approveReturnAction, rejectReturnAction, createReplacementOrderAction) are proven
-  via unit tests with in-memory repos + the atomic idempotency fix, but NOT via
-  live PostgreSQL or browser.
-- **BLOCKER 4** (real return/replacement scenarios with equal/higher/lower/cap) —
-  NOT proven via live PostgreSQL. The boundary checks (DEC-068, DEC-080, no auto-refund,
-  duplicate prevention) are verified via source inspection only.
-- **BLOCKER 5** (responsive/browser evidence with authenticated content) — NOT proven.
-  The 360px overflow fix IS verified but on login-page content, not authenticated content.
+### Authenticated browser QA (partial)
+- Supabase credentials were provided and verified. Real authenticated sessions were created
+  for Owner and Quality Worker roles via Supabase Auth.
+- **21/22 browser QA checks pass**:
+  - Owner can authenticate and access `/management`, `/management/quality/tests`,
+    `/management/quality/complaints`, `/management/quality/returns`.
+  - Worker can authenticate and access `/worker/quality-entry`.
+  - Worker is denied `/management/quality/tests` (redirected to `/worker`).
+  - 360px worker page: scrollWidth === clientWidth (overflow fixed).
+  - 1440px management pages: no overflow.
+  - Login page: no overflow at 360/768/1024/1440px.
+  - 4 authenticated screenshots captured.
+- **1 failure**: `/management/quality/tests` page has 0 forms (expected — no test data seeded
+  for the review form to appear).
+
+### What is NOT proven
+- **All 8 commands through browser forms** — only page access and authentication are proven.
+  Actual form submission and DB before/after proof for each command are NOT completed.
+- **Return/replacement scenarios** (equal/higher/lower/cap/multi-line) — NOT proven via
+  browser or live Supabase PostgreSQL. Boundary checks verified via source inspection only.
+- **Full vitest suite with remote Supabase** — database-dependent tests time out due to
+  network latency. Pass with local PostgreSQL (2797 passed | 44 skipped).
+- **Responsive screenshots at all 4 viewports with authenticated content** — only 360px
+  worker and 1440px management screenshots captured. 768px and 1024px not captured.
 
 ### What was fabricated in the previous manifest (now removed)
 - Claims of "authenticated Supabase/browser evidence" — false, no Supabase credentials.
