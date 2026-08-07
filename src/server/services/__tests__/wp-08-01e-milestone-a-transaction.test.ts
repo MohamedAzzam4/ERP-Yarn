@@ -482,3 +482,173 @@ describe("WP-08-01E Milestone A — updateComplaint transaction safety", () => {
     expect(refetched!.status).toBe(statusBefore);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5. reviewQualityTest transaction safety
+// ---------------------------------------------------------------------------
+
+describe("WP-08-01E Milestone A — reviewQualityTest transaction safety", () => {
+  let repo: InMemoryQualityTestRepository;
+  let audit: InProcessAuditStore;
+  let idempotency: InProcessIdempotencyStore;
+  let docSeq: InProcessDocumentSequenceStore;
+  let service: QualityTestService;
+  let testId: string;
+
+  beforeEach(async () => {
+    repo = new InMemoryQualityTestRepository();
+    audit = new InProcessAuditStore();
+    idempotency = new InProcessIdempotencyStore();
+    docSeq = new InProcessDocumentSequenceStore();
+    const tr = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work("simulated-tx");
+    const txFactories = {
+      createQualityTestRepository: () => repo,
+      createIdempotency: () => idempotency,
+      createAudit: () => audit,
+      createDocumentSequence: () => docSeq,
+    };
+    service = new QualityTestService({
+      qualityTestRepository: repo, audit, idempotency, documentSequence: docSeq,
+      transactionRunner: tr, txFactories,
+    });
+    // Seed a quality test
+    const test = await service.createQualityTest(makeUser() as any, makeEff() as any, {
+      testDate: "2026-08-06", linkedEntityType: "inventory_item" as any, linkedEntityId: TEST_ITEM_ID, idempotencyKey: "rev-seed-d-001",
+    });
+    testId = test.qualityTestId;
+  });
+
+  function makeRevEff() {
+    return {
+      assignedRoleCodes: ["owner"],
+      permissionKeys: new Set(["quality_risk_sales.approve"]),
+      deniedFieldKeys: new Set(),
+      workerFinancialDeny: false,
+    } as any;
+  }
+
+  it("E1. valid success: 1 review audit, 1 idem succeeded", async () => {
+    const auditBefore = audit.count();
+    const result = await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+      qualityTestId: testId, testStatus: "accepted", riskClassification: "none", idempotencyKey: "rev-d-valid-001",
+    });
+    expect(result.action).toBe("reviewed");
+    expect(audit.count()).toBe(auditBefore + 1);
+    const records = idempotency.getAllRecords().filter((r) => r.operationScope === "quality_test.review");
+    expect(records.length).toBe(1);
+    expect(records[0]!.state).toBe("succeeded");
+  });
+
+  it("E2. replay: 0 new audits", async () => {
+    const input = { qualityTestId: testId, testStatus: "accepted" as const, riskClassification: "none" as const, idempotencyKey: "rev-d-rep-001" };
+    await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, input);
+    const auditBefore = audit.count();
+    const result2 = await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, input);
+    expect(result2.action).toBe("replayed");
+    expect(audit.count()).toBe(auditBefore);
+  });
+
+  it("E3. conflict: rejected, 0 new audits", async () => {
+    await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+      qualityTestId: testId, testStatus: "accepted", riskClassification: "none", idempotencyKey: "rev-d-conf-001",
+    });
+    const auditBefore = audit.count();
+    let threw = false;
+    try {
+      await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+        qualityTestId: testId, testStatus: "blocked", riskClassification: "blocked", idempotencyKey: "rev-d-conf-001",
+      });
+    } catch (e: any) { if (e.code === "IDEMPOTENCY_CONFLICT") threw = true; }
+    expect(threw).toBe(true);
+    expect(audit.count()).toBe(auditBefore);
+  });
+
+  it("E4. audit-failure rollback: 0 new audits (with tx runner)", async () => {
+    const failingAudit = new InProcessAuditStore();
+    failingAudit.setShouldFail(true);
+    const txRunner = makeSimulatedTransactionRunner(repo);
+    const txService = new QualityTestService({
+      qualityTestRepository: repo, audit: failingAudit, idempotency, documentSequence: docSeq,
+      transactionRunner: txRunner,
+      txFactories: {
+        createQualityTestRepository: () => repo, createIdempotency: () => idempotency, createAudit: () => failingAudit, createDocumentSequence: () => docSeq,
+      },
+    });
+    const auditBefore = failingAudit.count();
+    let threw = false;
+    try {
+      await txService.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+        qualityTestId: testId, testStatus: "blocked", riskClassification: "blocked", idempotencyKey: "rev-d-af-001",
+      });
+    } catch (e) { threw = true; }
+    expect(threw).toBe(true);
+    expect(failingAudit.count()).toBe(auditBefore); // 0 new
+    // Quality test status unchanged
+    const test = await repo.findQualityTestById(TEST_TENANT, testId);
+    expect(test!.testStatus).toBe("needs_review"); // unchanged from seed
+  });
+
+  it("E5. ownership-loss rollback: 0 new audits", async () => {
+    const txRunner = makeSimulatedTransactionRunner(repo);
+    const txService = new QualityTestService({
+      qualityTestRepository: repo, audit, idempotency, documentSequence: docSeq,
+      transactionRunner: txRunner,
+      txFactories: {
+        createQualityTestRepository: () => repo, createIdempotency: () => idempotency, createAudit: () => audit, createDocumentSequence: () => docSeq,
+      },
+    });
+    // Pre-claim with different owner
+    const { claimIdempotency } = await import("@/server/services/idempotency-service");
+    const claim = await claimIdempotency(idempotency, {
+      tenantId: TEST_TENANT, operationScope: "quality_test.review", idempotencyKey: "rev-d-ol-001",
+      requestBody: { qualityTestId: testId, testStatus: "blocked", riskClassification: "blocked", reviewNotes: null },
+      initiatedBy: TEST_USER_ID, leaseDurationMs: 30000, now: new Date(),
+    });
+    // Steal the lease
+    await idempotency.claimExpiredLease(claim.record.id, new Date(Date.now() + 30000), new Date(), new Date());
+
+    const auditBefore = audit.count();
+    let threw = false;
+    try {
+      await txService.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+        qualityTestId: testId, testStatus: "blocked", riskClassification: "blocked", idempotencyKey: "rev-d-ol-001",
+      });
+    } catch (e: any) { threw = true; }
+    expect(threw).toBe(true);
+    expect(audit.count()).toBe(auditBefore); // 0 new
+    // Test status unchanged
+    const test = await repo.findQualityTestById(TEST_TENANT, testId);
+    expect(test!.testStatus).toBe("needs_review"); // unchanged
+  });
+
+  it("E6. retry after rollback: succeeds, then replay = 0 new", async () => {
+    const result = await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+      qualityTestId: testId, testStatus: "accepted", riskClassification: "none", idempotencyKey: "rev-d-rt-001",
+    });
+    expect(result.action).toBe("reviewed");
+    const auditBefore = audit.count();
+    const result2 = await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+      qualityTestId: testId, testStatus: "accepted", riskClassification: "none", idempotencyKey: "rev-d-rt-001",
+    });
+    expect(result2.action).toBe("replayed");
+    expect(audit.count()).toBe(auditBefore); // 0 new
+  });
+
+  it("E7. quality-hold count: blocked review creates exactly 1 hold", async () => {
+    const holdsBefore = (await repo.listActiveQualityHoldsForEntity(TEST_TENANT, "inventory_item", TEST_ITEM_ID)).length;
+    await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+      qualityTestId: testId, testStatus: "blocked", riskClassification: "blocked", idempotencyKey: "rev-d-hold-001",
+    });
+    const holdsAfter = (await repo.listActiveQualityHoldsForEntity(TEST_TENANT, "inventory_item", TEST_ITEM_ID)).length;
+    expect(holdsAfter).toBe(holdsBefore + 1); // exactly 1 new hold
+  });
+
+  it("E8. accepted review creates 0 new holds", async () => {
+    const holdsBefore = (await repo.listActiveQualityHoldsForEntity(TEST_TENANT, "inventory_item", TEST_ITEM_ID)).length;
+    await service.reviewQualityTest(makeUser() as any, makeRevEff() as any, {
+      qualityTestId: testId, testStatus: "accepted", riskClassification: "none", idempotencyKey: "rev-d-nohold-001",
+    });
+    const holdsAfter = (await repo.listActiveQualityHoldsForEntity(TEST_TENANT, "inventory_item", TEST_ITEM_ID)).length;
+    expect(holdsAfter).toBe(holdsBefore); // 0 new holds
+  });
+});

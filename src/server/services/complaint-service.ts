@@ -52,6 +52,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   IdempotencyOwnershipLostError,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
@@ -255,6 +256,10 @@ export class ComplaintService {
       if (responseBody?.complaintId) {
         return { ...responseBody, action: "replayed" } as CreateComplaintResult;
       }
+      throw new ComplaintError(
+        "IDEMPOTENCY_REPLAY_OF_FAILURE",
+        `Idempotency key '${input.idempotencyKey}' was previously used and failed (${claim.record.lastErrorClass ?? "unknown"}). The same key cannot be reused.`,
+      );
     }
     if (claim.action === "conflict") {
       throw new ComplaintError("IDEMPOTENCY_CONFLICT", `Idempotency key '${input.idempotencyKey}' was used with a different request body.`);
@@ -357,15 +362,27 @@ export class ComplaintService {
         });
       });
     } catch (txError) {
-      if (txError instanceof IdempotencyOwnershipLostError) {
-        try {
+      // WP-08-01E: After transaction rollback, mark the idempotency record
+      // so it can be retried with the same key.
+      // - Ownership loss → markBusinessFailed (durable failure — another
+      //   claimant owns the record; the caller should not retry with the
+      //   same key without reclaiming the lease first).
+      // - Other errors (audit failure, etc.) → markRetryableFailed (NOT
+      //   durable — retry with same key re-executes the operation).
+      try {
+        if (txError instanceof IdempotencyOwnershipLostError) {
           await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-            responseCode: 409, responseBody: { message: "Ownership lost during create." },
+            responseCode: 409, responseBody: { message: "Ownership lost." },
             lastErrorClass: "IdempotencyOwnershipLostError",
           }, claim.record.ownerToken!, now);
-        } catch (markError) {
-          console.error("Failed to mark idempotency as business_failed after ownership loss:", markError);
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseBody: { message: "Transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
         }
+      } catch (markError) {
+        console.error("Failed to mark idempotency after tx rollback:", markError);
       }
       throw txError;
     }
@@ -429,6 +446,10 @@ export class ComplaintService {
       if (responseBody?.complaintId) {
         return { action: "replayed", complaintId: responseBody.complaintId, status: responseBody.status! };
       }
+      throw new ComplaintError(
+        "IDEMPOTENCY_REPLAY_OF_FAILURE",
+        `Idempotency key '${input.idempotencyKey}' was previously used and failed (${claim.record.lastErrorClass ?? "unknown"}). The same key cannot be reused.`,
+      );
     }
     if (claim.action === "conflict") {
       throw new ComplaintError("IDEMPOTENCY_CONFLICT", `Idempotency key '${input.idempotencyKey}' was used with a different request body.`);
@@ -521,15 +542,27 @@ export class ComplaintService {
         });
       });
     } catch (txError) {
-      if (txError instanceof IdempotencyOwnershipLostError) {
-        try {
+      // WP-08-01E: After transaction rollback, mark the idempotency record
+      // so it can be retried with the same key.
+      // - Ownership loss → markBusinessFailed (durable failure — another
+      //   claimant owns the record; the caller should not retry with the
+      //   same key without reclaiming the lease first).
+      // - Other errors (audit failure, etc.) → markRetryableFailed (NOT
+      //   durable — retry with same key re-executes the operation).
+      try {
+        if (txError instanceof IdempotencyOwnershipLostError) {
           await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-            responseCode: 409, responseBody: { message: "Ownership lost during update." },
+            responseCode: 409, responseBody: { message: "Ownership lost." },
             lastErrorClass: "IdempotencyOwnershipLostError",
           }, claim.record.ownerToken!, now);
-        } catch (markError) {
-          console.error("Failed to mark idempotency as business_failed after ownership loss:", markError);
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseBody: { message: "Transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
         }
+      } catch (markError) {
+        console.error("Failed to mark idempotency after tx rollback:", markError);
       }
       throw txError;
     }

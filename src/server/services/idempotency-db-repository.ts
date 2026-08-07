@@ -41,8 +41,24 @@ export class IdempotencyDbRepository implements IdempotencyTransactionHandle {
       leaseHeartbeatAt: record.leaseHeartbeatAt, leaseExpiresAt: record.leaseExpiresAt,
       lastErrorClass: record.lastErrorClass, initiatedBy: record.initiatedBy,
       completedAt: record.completedAt,
+    }).onConflictDoNothing({
+      target: [
+        idempotencyRecords.tenantId,
+        idempotencyRecords.operationScope,
+        idempotencyRecords.idempotencyKey,
+      ],
     }).returning();
-    if (!row) throw new Error("Failed to insert idempotency record");
+    if (!row) {
+      // Concurrent insert won — the record was inserted by another caller
+      // between our findByTenantScopeKey and our insert. Throw a
+      // IdempotencyConcurrentInsertError so the caller (claimIdempotency)
+      // can retry findByTenantScopeKey to pick up the existing record.
+      throw new IdempotencyConcurrentInsertError(
+        record.tenantId,
+        record.operationScope,
+        record.idempotencyKey,
+      );
+    }
     return this.mapRow(row);
   }
 
@@ -92,6 +108,25 @@ export class IdempotencyDbRepository implements IdempotencyTransactionHandle {
       leaseExpiresAt: row.leaseExpiresAt, lastErrorClass: row.lastErrorClass,
       initiatedBy: row.initiatedBy, createdAt: row.createdAt, completedAt: row.completedAt,
     };
+  }
+}
+
+/**
+ * Thrown when insert detects a concurrent insert race (ON CONFLICT DO NOTHING
+ * returned no rows). The caller (claimIdempotency) catches this and retries
+ * findByTenantScopeKey to pick up the existing record.
+ */
+export class IdempotencyConcurrentInsertError extends Error {
+  readonly code = "IDEMPOTENCY_CONCURRENT_INSERT";
+  constructor(
+    readonly tenantId: string,
+    readonly operationScope: string,
+    readonly idempotencyKey: string,
+  ) {
+    super(
+      `Concurrent insert for idempotency record (${tenantId}, ${operationScope}, ${idempotencyKey}). Retry findByTenantScopeKey.`,
+    );
+    this.name = "IdempotencyConcurrentInsertError";
   }
 }
 

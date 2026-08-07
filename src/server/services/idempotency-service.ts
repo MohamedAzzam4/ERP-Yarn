@@ -85,26 +85,71 @@ export async function claimIdempotency(
   const existing = await tx.findByTenantScopeKey(input.tenantId, input.operationScope, input.idempotencyKey);
 
   if (!existing) {
-    const record = await tx.insert({
-      tenantId: input.tenantId,
-      operationScope: input.operationScope,
-      idempotencyKey: input.idempotencyKey,
-      requestHash,
-      state: "in_progress",
-      entityType: null, entityId: null,
-      responseCode: null, responseBody: null, ownerToken: null,
-      attemptCount: 1,
-      leaseHeartbeatAt: now, leaseExpiresAt,
-      lastErrorClass: null,
-      initiatedBy: input.initiatedBy,
-      completedAt: null,
-    });
+    let record;
+    try {
+      record = await tx.insert({
+        tenantId: input.tenantId,
+        operationScope: input.operationScope,
+        idempotencyKey: input.idempotencyKey,
+        requestHash,
+        state: "in_progress",
+        entityType: null, entityId: null,
+        responseCode: null, responseBody: null, ownerToken: null,
+        attemptCount: 1,
+        leaseHeartbeatAt: now, leaseExpiresAt,
+        lastErrorClass: null,
+        initiatedBy: input.initiatedBy,
+        completedAt: null,
+      });
+    } catch (e: any) {
+      // WP-08-01E: Handle concurrent insert race. If the DB repository
+      // uses ON CONFLICT DO NOTHING, a concurrent insert by another caller
+      // causes our insert to return null/throw IdempotencyConcurrentInsertError.
+      // We retry findByTenantScopeKey to pick up the existing record and
+      // run the normal idempotency decision logic.
+      if (
+        e?.code === "IDEMPOTENCY_CONCURRENT_INSERT" ||
+        e?.name === "IdempotencyConcurrentInsertError"
+      ) {
+        const concurrentRecord = await tx.findByTenantScopeKey(
+          input.tenantId, input.operationScope, input.idempotencyKey,
+        );
+        if (concurrentRecord) {
+          // Fall through to the normal existing-record logic below
+          return resolveExistingRecord(concurrentRecord, requestHash, now, leaseExpiresAt, tx, input);
+        }
+        // If still not found, the concurrent insert was rolled back.
+        // This should be extremely rare — treat as a transient failure.
+        throw new Error(
+          "IDEMPOTENCY_RACE: Concurrent insert detected but record not found on retry. The concurrent transaction may have rolled back.",
+        );
+      }
+      // Re-throw unrelated database errors (not concurrent-insert races)
+      throw e;
+    }
     if (!record.ownerToken) {
       throw new Error("IDEMPOTENCY_INvariant_VIOLATION: insert returned null ownerToken");
     }
     return { action: "execute", record };
   }
 
+  // If we get here, existing was found — resolve it
+  return resolveExistingRecord(existing, requestHash, now, leaseExpiresAt, tx, input);
+}
+
+/**
+ * Resolve an existing idempotency record: check hash, replay/conflict/in_progress,
+ * and handle lease reclaim. Used by both the normal path and the concurrent-insert
+ * retry path.
+ */
+async function resolveExistingRecord(
+  existing: IdempotencyRecordShape,
+  requestHash: string,
+  now: Date,
+  leaseExpiresAt: Date,
+  tx: IdempotencyTransactionHandle,
+  input: IdempotencyClaimInput,
+): Promise<IdempotencyClaimResult> {
   if (!requestHashesMatch(existing.requestHash, requestHash)) {
     return { action: "conflict", record: existing };
   }
