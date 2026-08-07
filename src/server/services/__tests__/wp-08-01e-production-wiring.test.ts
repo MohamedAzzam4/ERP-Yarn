@@ -234,6 +234,63 @@ describe("WP-08-01E Production Wiring + Permission Boundaries", () => {
     });
   });
 
+  describe("Transaction runner wiring (WP-08-01E D-1/D-2/D-3 fix)", () => {
+    it("approveReturnAction wires transactionRunner + txFactories", () => {
+      const actions = readFile(MGMT_RETURNS_ACTIONS);
+      // Must contain at least 2 transactionRunner definitions (approve + reject)
+      const trMatches = actions.match(/transactionRunner/g);
+      expect(trMatches?.length).toBeGreaterThanOrEqual(2);
+      // Must contain txFactories for approve (6 factories) and reject (6 factories)
+      const txFactoriesMatches = actions.match(/txFactories/g);
+      expect(txFactoriesMatches?.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("approveReturnAction txFactories includes all 6 required factories", () => {
+      const actions = readFile(MGMT_RETURNS_ACTIONS);
+      expect(actions).toMatch(/createInventoryLedger/);
+      expect(actions).toMatch(/createSubledger/);
+      expect(actions).toMatch(/createSnapshotService/);
+      expect(actions).toMatch(/createSalesRepository/);
+      expect(actions).toMatch(/createReturnRequestRepository/);
+      expect(actions).toMatch(/createAudit/);
+    });
+
+    it("rejectReturnAction wires transactionRunner + txFactories (D-3 fix)", () => {
+      const actions = readFile(MGMT_RETURNS_ACTIONS);
+      // Split by export async function to isolate each action's body.
+      const rejectIdx = actions.indexOf("export async function rejectReturnAction");
+      const replaceIdx = actions.indexOf("export async function createReplacementOrderAction");
+      const rejectSection = rejectIdx >= 0
+        ? actions.slice(rejectIdx, replaceIdx >= 0 ? replaceIdx : undefined)
+        : "";
+      expect(rejectSection).toMatch(/transactionRunner/);
+      expect(rejectSection).toMatch(/txFactories/);
+    });
+
+    it("createReplacementOrderAction wires transactionRunner + txFactories (D-2 fix)", () => {
+      const actions = readFile(MGMT_RETURNS_ACTIONS);
+      const replaceIdx = actions.indexOf("export async function createReplacementOrderAction");
+      const replaceSection = replaceIdx >= 0
+        ? actions.slice(replaceIdx)
+        : "";
+      expect(replaceSection).toMatch(/transactionRunner/);
+      expect(replaceSection).toMatch(/txFactories/);
+      // Replacement factories: createSalesRepository, createReturnRequestRepository, createAudit
+      expect(replaceSection).toMatch(/createSalesRepository/);
+      expect(replaceSection).toMatch(/createReturnRequestRepository/);
+      expect(replaceSection).toMatch(/createAudit/);
+    });
+
+    it("all three management return actions pass transactionRunner AND txFactories to service constructor", () => {
+      const actions = readFile(MGMT_RETURNS_ACTIONS);
+      // Each service constructor must receive both transactionRunner and txFactories
+      const constructorMatches = actions.match(
+        /transactionRunner,\s*txFactories,/g,
+      );
+      expect(constructorMatches?.length).toBeGreaterThanOrEqual(3);
+    });
+  });
+
   describe("QualityTestDbRepository is DB-backed", () => {
     const repo = readFile(QUALITY_TEST_DB_REPO);
 

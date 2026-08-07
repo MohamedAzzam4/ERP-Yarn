@@ -20,7 +20,6 @@ import { WorkerShell } from "@/components/shells/worker-shell";
 import { getWorkerTasksForRole } from "@/components/shells/nav-config";
 import { signOut } from "@/app/login/actions";
 import type { RoleCode } from "@/server/security/role-codes";
-import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
@@ -78,7 +77,10 @@ export default async function WorkerQualityEntryPage() {
         await signOut();
       }}
     >
-      <Container>
+      {/* WP-08-01E: do NOT wrap in a second <Container> — WorkerShell already
+          wraps children in <Container size="md">. Double-wrapping causes
+          360px horizontal overflow (scrollWidth=362, clientWidth=360). */}
+      <div className="w-full overflow-x-hidden">
         <h1 className="text-2xl font-bold mb-6">تسجيل الجودة</h1>
 
         {!dbAvailable && (
@@ -560,7 +562,7 @@ export default async function WorkerQualityEntryPage() {
             )}
           </>
         )}
-      </Container>
+      </div>
     </WorkerShell>
   );
 }

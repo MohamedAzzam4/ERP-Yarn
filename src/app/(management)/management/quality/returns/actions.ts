@@ -154,6 +154,36 @@ export async function approveReturnAction(
   const salesRepository = new SalesDbRepository(dbInstance);
   const tenantOwnershipValidator = new DbTenantOwnershipValidator(dbInstance);
 
+  // WP-08-01E D-1 fix: wire transactionRunner + txFactories so all DB writes
+  // in approveReturnRequest (stock movement, inventory balance, account
+  // entry, return_lines credit, profitability snapshot, sales_orders state,
+  // return_requests status, audit_logs) commit/rollback atomically.
+  // Without this, a partial failure leaves inconsistent state.
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+    (dbInstance as any).transaction(async (tx: any) => work(tx));
+  const txFactories = {
+    createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
+    }),
+    createSubledger: (tx: unknown) => new SubledgerService({
+      subledger: new SubledgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
+    }),
+    createSnapshotService: (tx: unknown) => new ProfitabilitySnapshotService({
+      snapshotRepository: new ProfitabilitySnapshotDbRepository(tx as any),
+      salesRepository: new SalesDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+    }),
+    createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
+    createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+  };
+
   const service = new ReturnRequestService({
     returnRequestRepository,
     subledger,
@@ -164,6 +194,8 @@ export async function approveReturnAction(
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   await service.approveReturnRequest(authResult as any, effective, {
@@ -230,6 +262,34 @@ export async function rejectReturnAction(
   const salesRepository = new SalesDbRepository(dbInstance);
   const tenantOwnershipValidator = new DbTenantOwnershipValidator(dbInstance);
 
+  // WP-08-01E D-3 fix: wire transactionRunner + txFactories so reject's
+  // status-update + audit commit/rollback atomically (same pattern as
+  // approve, even though reject has fewer writes).
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+    (dbInstance as any).transaction(async (tx: any) => work(tx));
+  const txFactories = {
+    createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
+    }),
+    createSubledger: (tx: unknown) => new SubledgerService({
+      subledger: new SubledgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
+    }),
+    createSnapshotService: (tx: unknown) => new ProfitabilitySnapshotService({
+      snapshotRepository: new ProfitabilitySnapshotDbRepository(tx as any),
+      salesRepository: new SalesDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+    }),
+    createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
+    createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+  };
+
   const service = new ReturnRequestService({
     returnRequestRepository,
     subledger,
@@ -240,6 +300,8 @@ export async function rejectReturnAction(
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   await service.rejectReturnRequest(authResult as any, effective, {
@@ -335,12 +397,27 @@ export async function createReplacementOrderAction(
   const returnRequestRepository = new ReturnRequestDbRepository(dbInstance);
   const salesRepository = new SalesDbRepository(dbInstance);
 
+  // WP-08-01E D-2 fix: wire transactionRunner + txFactories so all DB writes
+  // in createReplacementOrder (sales_orders insert + sales_order_lines
+  // inserts + return_requests link + audit) commit/rollback atomically.
+  // Without this, a partial line-insert failure could leave an orphaned
+  // replacement order header with only a subset of lines.
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+    (dbInstance as any).transaction(async (tx: any) => work(tx));
+  const txFactories = {
+    createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
+    createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+  };
+
   const service = new ReplacementWorkflowService({
     returnRequestRepository,
     salesRepository,
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   await service.createReplacementOrder(authResult as any, effective, {
