@@ -203,7 +203,37 @@ export interface QualityTestServiceDeps {
 // ---------------------------------------------------------------------------
 
 export class QualityTestService {
-  constructor(private readonly deps: QualityTestServiceDeps) {}
+  constructor(private readonly deps: QualityTestServiceDeps) {
+    // WP-08-01E Task A: fail-closed validation — reject partial transaction
+    // configuration. If transactionRunner is provided without txFactories
+    // (or vice versa), throw immediately.
+    if (!!this.deps.transactionRunner !== !!this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories must both be provided or both be absent.",
+      );
+    }
+  }
+
+  /**
+   * Fail-closed helper: throws if a mutating command is called without
+   * transaction configuration. Production mutation commands must NOT
+   * silently fall back to root repositories.
+   */
+  private requireTransactionConfig(): {
+    transactionRunner: QualityTestTransactionRunner;
+    txFactories: QualityTestTransactionScopedFactories;
+  } {
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories are required for production mutation commands. " +
+        "Unit tests must explicitly provide a simulated transaction runner.",
+      );
+    }
+    return {
+      transactionRunner: this.deps.transactionRunner,
+      txFactories: this.deps.txFactories,
+    };
+  }
 
   /**
    * Create a quality test record.
@@ -385,22 +415,19 @@ export class QualityTestService {
 
     let result: CreateQualityTestResult;
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        result = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txRepo = this.deps.txFactories!.createQualityTestRepository(tx);
-          const txIdem = this.deps.txFactories!.createIdempotency(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
-          return executeCreate({
-            qualityTestRepository: txRepo,
-            idempotency: txIdem,
-            audit: txAudit,
-            documentSequence: txDocSeq,
-          });
+      const { transactionRunner, txFactories } = this.requireTransactionConfig();
+      result = await transactionRunner(async (tx: unknown) => {
+        const txRepo = txFactories.createQualityTestRepository(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        const txAudit = txFactories.createAudit(tx);
+        const txDocSeq = txFactories.createDocumentSequence(tx);
+        return executeCreate({
+          qualityTestRepository: txRepo,
+          idempotency: txIdem,
+          audit: txAudit,
+          documentSequence: txDocSeq,
         });
-      } else {
-        result = await executeCreate(null);
-      }
+      });
     } catch (txError) {
       // If ownership was lost during markSucceeded, the tx rolled back.
       // Mark business_failed outside the tx using the root idempotency handle.
@@ -532,20 +559,17 @@ export class QualityTestService {
 
     let result: { valueId: string; valueStatus: string };
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        result = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txRepo = this.deps.txFactories!.createQualityTestRepository(tx);
-          const txIdem = this.deps.txFactories!.createIdempotency(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          return executeRecord({
-            qualityTestRepository: txRepo,
-            idempotency: txIdem,
-            audit: txAudit,
-          });
+      const { transactionRunner, txFactories } = this.requireTransactionConfig();
+      result = await transactionRunner(async (tx: unknown) => {
+        const txRepo = txFactories.createQualityTestRepository(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        const txAudit = txFactories.createAudit(tx);
+        return executeRecord({
+          qualityTestRepository: txRepo,
+          idempotency: txIdem,
+          audit: txAudit,
         });
-      } else {
-        result = await executeRecord(null);
-      }
+      });
     } catch (txError) {
       if (txError instanceof IdempotencyOwnershipLostError) {
         try {
@@ -636,74 +660,111 @@ export class QualityTestService {
       throw new QualityTestError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
     }
 
-    // Update quality test status (from any status to any status — facts can be corrected)
-    const updated = await this.deps.qualityTestRepository.updateQualityTestStatus(
-      user.tenantId, test.id,
-      {
+    // Execute business writes + markSucceeded inside a single transaction
+    // (WP-08-01E Task B: reviewQualityTest has multiple writes — updateStatus,
+    // insertHold, audit, markSucceeded — must be atomic).
+    const executeReview = async (
+      txScoped: {
+        qualityTestRepository: QualityTestRepository;
+        idempotency: IdempotencyTransactionHandle;
+        audit: AuditTransactionHandle;
+      } | null,
+    ): Promise<ReviewQualityTestResult> => {
+      const repo = txScoped?.qualityTestRepository ?? this.deps.qualityTestRepository;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
+
+      const updated = await repo.updateQualityTestStatus(
+        user.tenantId, test.id,
+        {
+          testStatus: input.testStatus,
+          riskClassification: input.riskClassification,
+          reviewedBy: user.userId,
+          reviewedAt: now,
+          reviewNotes: input.reviewNotes ?? null,
+          updatedBy: user.userId,
+        },
+        ["accepted", "needs_review", "blocked"],
+      );
+      if (!updated) {
+        throw new QualityTestError("INTERNAL_TRANSACTION_FAILED", `Quality test '${test.id}' could not be updated.`);
+      }
+
+      const newHoldReason = this.deriveHoldReason(input.testStatus, input.riskClassification);
+      let newQualityHoldId: string | null = null;
+      if (newHoldReason) {
+        const hold = await repo.insertQualityHold({
+          tenantId: user.tenantId,
+          qualityTestId: test.id,
+          linkedEntityType: test.linkedEntityType,
+          linkedEntityId: test.linkedEntityId,
+          holdReason: newHoldReason,
+          notes: `Auto-created from quality test review ${test.testNo}`,
+          createdBy: user.userId,
+        });
+        newQualityHoldId = hold.id;
+      }
+
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
+        entityType: QUALITY_TEST_ENTITY_TYPE,
+        entityId: test.id,
+        actionType: "quality_test.review",
+        newValuesJson: {
+          testNo: test.testNo,
+          previousTestStatus: test.testStatus,
+          previousRiskClassification: test.riskClassification,
+          newTestStatus: input.testStatus,
+          newRiskClassification: input.riskClassification,
+          reviewedBy: user.userId,
+          reviewNotes: input.reviewNotes ?? null,
+          newQualityHoldId,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result: ReviewQualityTestResult = {
+        action: "reviewed",
+        qualityTestId: test.id,
         testStatus: input.testStatus,
         riskClassification: input.riskClassification,
         reviewedBy: user.userId,
-        reviewedAt: now,
-        reviewNotes: input.reviewNotes ?? null,
-        updatedBy: user.userId,
-      },
-      ["accepted", "needs_review", "blocked"],  // any status can be reviewed/corrected
-    );
-    if (!updated) {
-      throw new QualityTestError("INTERNAL_TRANSACTION_FAILED", `Quality test '${test.id}' could not be updated.`);
-    }
+      };
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: QUALITY_TEST_ENTITY_TYPE,
+        entityId: test.id,
+      }, claim.record.ownerToken!, now);
 
-    // If the NEW status is restrictive, create a quality hold.
-    // This ensures that even if a test was initially accepted and then
-    // reviewed to blocked/needs_review, the hold is created.
-    // NOTE: An accepted test does NOT clear existing holds — only the
-    // clearQualityHold method (Owner/Accountant) can do that.
-    const newHoldReason = this.deriveHoldReason(input.testStatus, input.riskClassification);
-    let newQualityHoldId: string | null = null;
-    if (newHoldReason) {
-      const hold = await this.deps.qualityTestRepository.insertQualityHold({
-        tenantId: user.tenantId,
-        qualityTestId: test.id,
-        linkedEntityType: test.linkedEntityType,
-        linkedEntityId: test.linkedEntityId,
-        holdReason: newHoldReason,
-        notes: `Auto-created from quality test review ${test.testNo}`,
-        createdBy: user.userId,
-      });
-      newQualityHoldId = hold.id;
-    }
-
-    // Audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: QUALITY_TEST_ENTITY_TYPE,
-      entityId: test.id,
-      actionType: "quality_test.review",
-      newValuesJson: {
-        testNo: test.testNo,
-        previousTestStatus: test.testStatus,
-        previousRiskClassification: test.riskClassification,
-        newTestStatus: input.testStatus,
-        newRiskClassification: input.riskClassification,
-        reviewedBy: user.userId,
-        reviewNotes: input.reviewNotes ?? null,
-        newQualityHoldId,  // null if no hold created
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
-
-    const result: ReviewQualityTestResult = {
-      action: "reviewed",
-      qualityTestId: test.id,
-      testStatus: input.testStatus,
-      riskClassification: input.riskClassification,
-      reviewedBy: user.userId,
+      return result;
     };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: QUALITY_TEST_ENTITY_TYPE,
-      entityId: test.id,
-    }, claim.record.ownerToken!, now);
+
+    let result: ReviewQualityTestResult;
+    try {
+      const { transactionRunner, txFactories } = this.requireTransactionConfig();
+      result = await transactionRunner(async (tx: unknown) => {
+        const txRepo = txFactories.createQualityTestRepository(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        const txAudit = txFactories.createAudit(tx);
+        return executeReview({
+          qualityTestRepository: txRepo,
+          idempotency: txIdem,
+          audit: txAudit,
+        });
+      });
+    } catch (txError) {
+      if (txError instanceof IdempotencyOwnershipLostError) {
+        try {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409, responseBody: { message: "Ownership lost during review." },
+            lastErrorClass: "IdempotencyOwnershipLostError",
+          }, claim.record.ownerToken!, now);
+        } catch (markError) {
+          console.error("Failed to mark idempotency as business_failed after ownership loss:", markError);
+        }
+      }
+      throw txError;
+    }
 
     return result;
   }

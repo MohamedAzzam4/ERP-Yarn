@@ -149,11 +149,24 @@ export async function reviewQualityTestAction(
 
   const qualityTestRepository = new QualityTestDbRepository(dbInstance);
 
+  // Production transaction runner + tx-scoped factories (WP-08-01E Task B)
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+    return (dbInstance as any).transaction(async (tx: any) => work(tx));
+  };
+  const txFactories = {
+    createQualityTestRepository: (tx: unknown) => new QualityTestDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+  };
+
   const service = new QualityTestService({
     qualityTestRepository,
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
 
   await service.reviewQualityTest(authResult as any, effective, {

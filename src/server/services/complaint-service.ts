@@ -164,7 +164,30 @@ export interface ComplaintServiceDeps {
 // ---------------------------------------------------------------------------
 
 export class ComplaintService {
-  constructor(private readonly deps: ComplaintServiceDeps) {}
+  constructor(private readonly deps: ComplaintServiceDeps) {
+    // WP-08-01E Task A: fail-closed validation
+    if (!!this.deps.transactionRunner !== !!this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories must both be provided or both be absent.",
+      );
+    }
+  }
+
+  private requireTransactionConfig(): {
+    transactionRunner: ComplaintTransactionRunner;
+    txFactories: ComplaintTransactionScopedFactories;
+  } {
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new Error(
+        "CONFIGURATION_ERROR: transactionRunner and txFactories are required for production mutation commands. " +
+        "Unit tests must explicitly provide a simulated transaction runner.",
+      );
+    }
+    return {
+      transactionRunner: this.deps.transactionRunner,
+      txFactories: this.deps.txFactories,
+    };
+  }
 
   /**
    * Create a complaint/investigation draft.
@@ -320,22 +343,19 @@ export class ComplaintService {
 
     let result: CreateComplaintResult;
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        result = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txRepo = this.deps.txFactories!.createComplaintRepository(tx);
-          const txIdem = this.deps.txFactories!.createIdempotency(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
-          return executeCreate({
-            complaintRepository: txRepo,
-            idempotency: txIdem,
-            audit: txAudit,
-            documentSequence: txDocSeq,
-          });
+      const { transactionRunner, txFactories } = this.requireTransactionConfig();
+      result = await transactionRunner(async (tx: unknown) => {
+        const txRepo = txFactories.createComplaintRepository(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        const txAudit = txFactories.createAudit(tx);
+        const txDocSeq = txFactories.createDocumentSequence(tx);
+        return executeCreate({
+          complaintRepository: txRepo,
+          idempotency: txIdem,
+          audit: txAudit,
+          documentSequence: txDocSeq,
         });
-      } else {
-        result = await executeCreate(null);
-      }
+      });
     } catch (txError) {
       if (txError instanceof IdempotencyOwnershipLostError) {
         try {
@@ -489,20 +509,17 @@ export class ComplaintService {
 
     let result: { action: "updated" | "replayed"; complaintId: string; status: ComplaintStatus };
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        result = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txRepo = this.deps.txFactories!.createComplaintRepository(tx);
-          const txIdem = this.deps.txFactories!.createIdempotency(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          return executeUpdate({
-            complaintRepository: txRepo,
-            idempotency: txIdem,
-            audit: txAudit,
-          });
+      const { transactionRunner, txFactories } = this.requireTransactionConfig();
+      result = await transactionRunner(async (tx: unknown) => {
+        const txRepo = txFactories.createComplaintRepository(tx);
+        const txIdem = txFactories.createIdempotency(tx);
+        const txAudit = txFactories.createAudit(tx);
+        return executeUpdate({
+          complaintRepository: txRepo,
+          idempotency: txIdem,
+          audit: txAudit,
         });
-      } else {
-        result = await executeUpdate(null);
-      }
+      });
     } catch (txError) {
       if (txError instanceof IdempotencyOwnershipLostError) {
         try {

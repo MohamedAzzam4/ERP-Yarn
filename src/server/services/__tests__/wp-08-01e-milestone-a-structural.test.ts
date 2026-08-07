@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const WORKER_ACTIONS = resolve(process.cwd(), "src/app/(worker)/worker/quality-entry/actions.ts");
+const MGMT_TESTS_ACTIONS = resolve(process.cwd(), "src/app/(management)/management/quality/tests/actions.ts");
 
 function readFile(path: string): string {
   return readFileSync(path, "utf8");
@@ -77,5 +78,42 @@ describe("WP-08-01E Milestone A — Structural production wiring", () => {
   it("updateComplaintAction requires complaints.investigate before service invocation", () => {
     const section = actions.match(/export async function updateComplaintAction[\s\S]*?await service\.updateComplaint/)?.[0] ?? "";
     expect(section).toMatch(/"complaints\.investigate"/);
+  });
+});
+
+describe("WP-08-01E Task B — Management reviewQualityTestAction transaction wiring", () => {
+  const actions = readFile(MGMT_TESTS_ACTIONS);
+
+  it("reviewQualityTestAction constructs QualityTestService with transactionRunner", () => {
+    expect(actions).toMatch(/transactionRunner/);
+  });
+
+  it("reviewQualityTestAction constructs QualityTestService with txFactories", () => {
+    expect(actions).toMatch(/txFactories/);
+  });
+
+  it("reviewQualityTestAction txFactories create tx-scoped QualityTestDbRepository", () => {
+    expect(actions).toMatch(/createQualityTestRepository:\s*\(tx: unknown\)\s*=>\s*new QualityTestDbRepository\(tx as any\)/);
+  });
+
+  it("reviewQualityTestAction txFactories create tx-scoped IdempotencyDbRepository", () => {
+    expect(actions).toMatch(/createIdempotency:\s*\(tx: unknown\)\s*=>\s*new IdempotencyDbRepository\(tx as any\)/);
+  });
+
+  it("reviewQualityTestAction txFactories create tx-scoped AuditDbRepository", () => {
+    expect(actions).toMatch(/createAudit:\s*\(tx: unknown\)\s*=>\s*new AuditDbRepository\(tx as any\)/);
+  });
+
+  it("reviewQualityTestAction requires quality_risk_sales.approve before service invocation", () => {
+    const section = actions.match(/export async function reviewQualityTestAction[\s\S]*?await service\.reviewQualityTest/)?.[0] ?? "";
+    expect(section).toMatch(/"quality_risk_sales\.approve"/);
+  });
+
+  it("reviewQualityTestAction has no InProcess stores", () => {
+    expect(actions).not.toMatch(/InProcess/);
+  });
+
+  it("reviewQualityTestAction has no InMemory repositories", () => {
+    expect(actions).not.toMatch(/InMemory/);
   });
 });

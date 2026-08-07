@@ -80,8 +80,16 @@ function makeDeps() {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work("simulated-tx");
+  const txFactories = {
+    createComplaintRepository: () => complaintRepo,
+    createIdempotency: () => idempotency,
+    createAudit: () => audit,
+    createDocumentSequence: () => documentSequence,
+  };
   const complaintService = new ComplaintService({
     complaintRepository: complaintRepo, audit, idempotency, documentSequence,
+    transactionRunner, txFactories,
   });
   return { complaintRepo, audit, idempotency, documentSequence, complaintService };
 }

@@ -57,11 +57,20 @@ function makeDeps() {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work("simulated-tx");
+  const txFactories = {
+    createQualityTestRepository: () => qualityTestRepository,
+    createIdempotency: () => idempotency,
+    createAudit: () => audit,
+    createDocumentSequence: () => documentSequence,
+  };
   const qualityTestService = new QualityTestService({
     qualityTestRepository,
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories,
   });
   return { qualityTestRepository, audit, idempotency, documentSequence, qualityTestService };
 }

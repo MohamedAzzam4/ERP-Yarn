@@ -73,6 +73,13 @@ describe("WP-08-01E Milestone A — createQualityTest transaction safety", () =>
     docSeq = new InProcessDocumentSequenceStore();
     service = new QualityTestService({
       qualityTestRepository: repo, audit, idempotency, documentSequence: docSeq,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work('simulated-tx'),
+      txFactories: {
+        createQualityTestRepository: () => repo,
+        createIdempotency: () => idempotency,
+        createAudit: () => audit,
+        createDocumentSequence: () => docSeq,
+      },
     });
   });
 
@@ -223,6 +230,13 @@ describe("WP-08-01E Milestone A — recordQualityTestValue transaction safety", 
     docSeq = new InProcessDocumentSequenceStore();
     service = new QualityTestService({
       qualityTestRepository: repo, audit, idempotency, documentSequence: docSeq,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work('simulated-tx'),
+      txFactories: {
+        createQualityTestRepository: () => repo,
+        createIdempotency: () => idempotency,
+        createAudit: () => audit,
+        createDocumentSequence: () => docSeq,
+      },
     });
     // Seed a quality test
     await service.createQualityTest(makeUser() as any, makeEff() as any, {
@@ -313,6 +327,13 @@ describe("WP-08-01E Milestone A — createComplaint transaction safety", () => {
     docSeq = new InProcessDocumentSequenceStore();
     service = new ComplaintService({
       complaintRepository: repo, audit, idempotency, documentSequence: docSeq,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work('simulated-tx'),
+      txFactories: {
+        createComplaintRepository: () => repo,
+        createIdempotency: () => idempotency,
+        createAudit: () => audit,
+        createDocumentSequence: () => docSeq,
+      },
     });
   });
 
@@ -386,6 +407,13 @@ describe("WP-08-01E Milestone A — updateComplaint transaction safety", () => {
     docSeq = new InProcessDocumentSequenceStore();
     service = new ComplaintService({
       complaintRepository: repo, audit, idempotency, documentSequence: docSeq,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work('simulated-tx'),
+      txFactories: {
+        createComplaintRepository: () => repo,
+        createIdempotency: () => idempotency,
+        createAudit: () => audit,
+        createDocumentSequence: () => docSeq,
+      },
     });
     // Seed a complaint
     await service.createComplaint(makeUser() as any, makeEff() as any, {
