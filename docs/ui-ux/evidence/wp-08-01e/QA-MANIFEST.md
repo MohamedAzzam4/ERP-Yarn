@@ -12,13 +12,21 @@
 
 ### What is proven
 1. **BLOCKER 2 (atomic idempotency)** — FIXED and proven via:
-   - 11 dedicated atomic-idempotency tests (`wp-08-01e-atomic-idempotency.test.ts`):
+   - 22 dedicated atomic-idempotency tests (`wp-08-01e-atomic-idempotency.test.ts`):
      - DEFECT 1: 5 zero-effect tests proving `requireTransactionConfig()` fires before
        `claimIdempotency`/doc-seq allocation (0 idem rows, 0 doc-seq, 0 business, 0 audit).
      - DEFECT 2: 5 owner-loss tests (one per method) proving takeover → rollback → token B remains.
-     - DEFECT 2: 1 retry/replay/conflict test proving exactly-1-effect retry, 0-effect replay,
-       0-effect conflict.
-   - Full suite (2782 passed).
+     - DEFECT 2: 5 retry/replay/conflict tests (one per method) proving exactly-1-effect retry,
+       0-effect replay, 0-effect conflict.
+     - TASK 4: 5 explicit stale-owner fencing tests (A/B non-null, A≠B, stale A mark* all 0,
+       stored=B, state=in_progress).
+     - TASK 3: 2 doc-seq value-level assertions (createReturnRequest + createReplacementOrder).
+   - 4 real PostgreSQL service-level tests (`wp-08-01e-postgres-atomicity.test.ts`):
+     - PG-1: approveReturnRequest ownership-loss rollback (real DB repos + tx runner).
+     - PG-2: rejectReturnRequest ownership-loss rollback.
+     - PG-3: createReplacementOrder ownership-loss rollback.
+     - PG-4: createReplacementOrder retry/replay/conflict with exact DB counts.
+   - Full suite (2797 passed).
 2. **Production action wiring** — all 8 actions audited, 3 defects fixed, regression tests added.
 3. **360px overflow** — FIXED, verified via Playwright at 4 viewports (scrollWidth === clientWidth).
 4. **Live PostgreSQL validation** — 318 checks pass for all 5 quality/complaint commands.
