@@ -11,7 +11,8 @@ import * as schema from "@/server/db/schema";
 import { createClient } from "@supabase/supabase-js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const describeOrSkip = DATABASE_URL?.startsWith("postgres") ? describe : describe.skip;
+const SUPABASE_AVAILABLE = !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.SUPABASE_SECRET_KEY;
+const describeOrSkip = (DATABASE_URL?.startsWith("postgres") && SUPABASE_AVAILABLE) ? describe : describe.skip;
 
 const T = "00000000-0000-0000-0000-000000082001";
 const OWNER_UID = "00000000-0000-0000-0000-000000082002";

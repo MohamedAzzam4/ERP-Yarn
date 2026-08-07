@@ -298,9 +298,14 @@ export class InProcessIdempotencyStore implements IdempotencyTransactionHandle {
   async claimExpiredLease(id: string, newLeaseExpiresAt: Date, newHeartbeatAt: Date, now: Date): Promise<boolean> {
     const existing = this.records.get(id);
     if (!existing) return false;
-    const leaseExpired = existing.leaseExpiresAt === null || existing.leaseExpiresAt.getTime() < now.getTime();
+    // Match DB predicate: state = 'retryable_failed' OR (state = 'in_progress'
+    // AND lease_expires_at IS NOT NULL AND lease_expires_at < now).
+    // business_failed and succeeded are NEVER reclaimed (terminal states).
     const isRetryableFailed = existing.state === "retryable_failed";
-    if (!leaseExpired && !isRetryableFailed) return false;
+    const isInProgressExpired = existing.state === "in_progress"
+      && existing.leaseExpiresAt !== null
+      && existing.leaseExpiresAt.getTime() < now.getTime();
+    if (!isRetryableFailed && !isInProgressExpired) return false;
     const newOwnerToken = `owner-${++this.idCounter}`;
     this.records.set(id, {
       ...existing,

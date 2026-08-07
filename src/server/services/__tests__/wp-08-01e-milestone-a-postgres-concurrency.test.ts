@@ -26,6 +26,7 @@ const describeOrSkip = DATABASE_URL?.startsWith("postgres") ? describe : describ
 const T = "00000000-0000-0000-0000-000000081e20";
 const U = "00000000-0000-0000-0000-000000081e21";
 const ITEM = "00000000-0000-4000-8000-cccc000e0020";
+const CUST = "00000000-0000-4000-8000-cccc000e0021";
 
 let sql: ReturnType<typeof postgres>;
 let db: any;
@@ -45,6 +46,7 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
     await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status) VALUES (${T}, ${"E2"}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${U}, ${T}, ${"e2"}, ${"E2"}, ${"e2@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO inventory_items (id, tenant_id, item_code, display_name_ar, item_kind, status) VALUES (${ITEM}, ${T}, ${"ITEM-E2"}, ${"Test Item"}, ${"raw_material"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
+    await sql`INSERT INTO customers (id, tenant_id, customer_code, name_ar, normalized_name, status) VALUES (${CUST}, ${T}, ${"CUST-E2"}, ${"Test Customer"}, ${"test customer"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
   }, 30000);
 
   afterAll(async () => {
@@ -250,7 +252,7 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
       const auditBefore = await countAudit("complaint", "complaint.create");
       const svc = makeCompService();
       const r = await svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), {
-        complaintDate: "2026-08-06", subject: "Test", customerId: ITEM, idempotencyKey: "pg-comp-001",
+        complaintDate: "2026-08-06", subject: "Test", customerId: CUST, idempotencyKey: "pg-comp-001",
       });
       expect(r.action).toBe("created");
       expect(await countRows("complaints")).toBe(1);
@@ -261,11 +263,11 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
     it("B. replay: 0 new", async () => {
       const svc = makeCompService();
       await svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), {
-        complaintDate: "2026-08-06", subject: "Test", customerId: ITEM, idempotencyKey: "pg-comp-rep-001",
+        complaintDate: "2026-08-06", subject: "Test", customerId: CUST, idempotencyKey: "pg-comp-rep-001",
       });
       const auditBefore = await countAudit("complaint", "complaint.create");
       const r2 = await svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), {
-        complaintDate: "2026-08-06", subject: "Test", customerId: ITEM, idempotencyKey: "pg-comp-rep-001",
+        complaintDate: "2026-08-06", subject: "Test", customerId: CUST, idempotencyKey: "pg-comp-rep-001",
       });
       expect(r2.action).toBe("replayed");
       expect(await countRows("complaints")).toBe(1);
@@ -275,13 +277,13 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
     it("C. conflict: rejected, 0 new", async () => {
       const svc = makeCompService();
       await svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), {
-        complaintDate: "2026-08-06", subject: "Test", customerId: ITEM, idempotencyKey: "pg-comp-conf-001",
+        complaintDate: "2026-08-06", subject: "Test", customerId: CUST, idempotencyKey: "pg-comp-conf-001",
       });
       const before = await countRows("complaints");
       let threw = false;
       try {
         await svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), {
-          complaintDate: "2026-08-06", subject: "Different", customerId: ITEM, idempotencyKey: "pg-comp-conf-001",
+          complaintDate: "2026-08-06", subject: "Different", customerId: CUST, idempotencyKey: "pg-comp-conf-001",
         });
       } catch (e: any) { if (e.code === "IDEMPOTENCY_CONFLICT") threw = true; }
       expect(threw).toBe(true);
@@ -296,7 +298,7 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
     it("A. success: 1 new audit, 1 idem succeeded", async () => {
       const svc = makeCompService();
       const c = await svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), {
-        complaintDate: "2026-08-06", subject: "Test", customerId: ITEM, idempotencyKey: "pg-upd-seed-001",
+        complaintDate: "2026-08-06", subject: "Test", customerId: CUST, idempotencyKey: "pg-upd-seed-001",
       });
       const auditBefore = await countAudit("complaint", "complaint.update");
       const r = await svc.updateComplaint(makeUser(), makeEff(["complaints.investigate"]), {
@@ -310,7 +312,7 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
     it("B. replay: 0 new", async () => {
       const svc = makeCompService();
       const c = await svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), {
-        complaintDate: "2026-08-06", subject: "Test", customerId: ITEM, idempotencyKey: "pg-upd-rep-seed-001",
+        complaintDate: "2026-08-06", subject: "Test", customerId: CUST, idempotencyKey: "pg-upd-rep-seed-001",
       });
       const input = { complaintId: c.complaintId, status: "investigating" as const, idempotencyKey: "pg-upd-rep-001" };
       await svc.updateComplaint(makeUser(), makeEff(["complaints.investigate"]), input);
@@ -364,11 +366,13 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
         svc.createQualityTest(makeUser(), makeEff(["quality_tests.create"]), input),
         svc.createQualityTest(makeUser(), makeEff(["quality_tests.create"]), input),
       ]);
-      // All must either succeed (first + replays) or be rejected with idempotency outcome
+      // WP-08-01E race-fix regression: only fulfilled and OPERATION_IN_PROGRESS
+      // are allowed. IDEMPOTENCY_CONFLICT, IDEMPOTENCY_OWNERSHIP_LOST, raw
+      // SQL/Drizzle errors, and unknown rejections are forbidden.
       for (const r of results) {
         if (r.status === "rejected") {
           const err = (r as any).reason;
-          expect(["OPERATION_IN_PROGRESS", "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_OWNERSHIP_LOST"]).toContain(err?.code);
+          expect(err?.code).toBe("OPERATION_IN_PROGRESS");
         }
       }
       expect(await countRows("quality_tests")).toBe(1);
@@ -381,7 +385,7 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
 
     it("createComplaint: 2 concurrent same-key calls → 1 effective result", async () => {
       const svc = makeCompService();
-      const input = { complaintDate: "2026-08-06", subject: "Concurrent", customerId: ITEM, idempotencyKey: "pg-conc-comp-001" };
+      const input = { complaintDate: "2026-08-06", subject: "Concurrent", customerId: CUST, idempotencyKey: "pg-conc-comp-001" };
       const results = await Promise.allSettled([
         svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), input),
         svc.createComplaint(makeUser(), makeEff(["complaints.investigate"]), input),
@@ -389,7 +393,7 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
       for (const r of results) {
         if (r.status === "rejected") {
           const err = (r as any).reason;
-          expect(["OPERATION_IN_PROGRESS", "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_OWNERSHIP_LOST"]).toContain(err?.code);
+          expect(err?.code).toBe("OPERATION_IN_PROGRESS");
         }
       }
       expect(await countRows("complaints")).toBe(1);
@@ -411,7 +415,7 @@ describeOrSkip("WP-08-01E PostgreSQL Atomicity Proof", () => {
       for (const r of results) {
         if (r.status === "rejected") {
           const err = (r as any).reason;
-          expect(["OPERATION_IN_PROGRESS", "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_OWNERSHIP_LOST"]).toContain(err?.code);
+          expect(err?.code).toBe("OPERATION_IN_PROGRESS");
         }
       }
       expect(await countRows("quality_test_values")).toBe(1);

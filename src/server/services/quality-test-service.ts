@@ -436,19 +436,47 @@ export class QualityTestService {
         });
       });
     } catch (txError) {
-      // WP-08-01E: After transaction rollback, mark the idempotency record
-      // so it can be retried with the same key.
-      // - Ownership loss → markBusinessFailed (durable failure — another
-      //   claimant owns the record; the caller should not retry with the
-      //   same key without reclaiming the lease first).
-      // - Other errors (audit failure, etc.) → markRetryableFailed (NOT
-      //   durable — retry with same key re-executes the operation).
+      // WP-08-01E CORRECTION: After transaction rollback, classify the failure.
+      //
+      // Ownership loss (IdempotencyOwnershipLostError) means this caller no
+      // longer owns the record — another claimant has taken over the lease.
+      // The stale caller MUST NOT call markBusinessFailed (the affected-row
+      // count would be zero, and even if non-zero it would be wrong to
+      // poison the reclaimed record with a durable-failure state). The
+      // stale caller must propagate the ownership error after rollback.
+      //
+      // Other transaction failures (audit/infrastructure/transient) are
+      // classified as retryable_failed: same-key retry will re-execute.
+      // Durable business/domain failures are NOT handled here — they are
+      // raised explicitly from the transaction body via markBusinessFailed
+      // inside the transaction (so the durable failure is atomic with the
+      // business write rollback).
       try {
         if (txError instanceof IdempotencyOwnershipLostError) {
-          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-            responseCode: 409, responseBody: { message: "Ownership lost." },
-            lastErrorClass: "IdempotencyOwnershipLostError",
-          }, claim.record.ownerToken!, now);
+          // Defensive stale update: attempt markRetryableFailed with the
+          // stale expectedOwnerToken. This MUST affect zero rows because
+          // the owner_token has been replaced by the reclaiming caller.
+          // We never describe this as durable business_failed.
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            // Invariant violation: stale owner token still matched. This
+            // means our ownership-loss detection is wrong, or another
+            // path is mutating owner_token without going through
+            // claimExpiredLease. Log loudly but DO NOT mutate further.
+            console.error(
+              "INVARIANT VIOLATION: stale markRetryableFailed affected rows =",
+              staleAffected,
+              "for record", claim.record.id,
+              "— expected 0 because IdempotencyOwnershipLostError was thrown.",
+            );
+          }
         } else {
           await markRetryableFailed(this.deps.idempotency, claim.record.id, {
             responseBody: { message: "Transaction failed and rolled back." },
@@ -592,14 +620,33 @@ export class QualityTestService {
         });
       });
     } catch (txError) {
-      // WP-08-01E: After transaction rollback, mark the idempotency record
-      // so it can be retried with the same key.
+      // WP-08-01E CORRECTION: After transaction rollback, classify the failure.
+      //
+      // Ownership loss (IdempotencyOwnershipLostError) means this caller no
+      // longer owns the record — another claimant has taken over the lease.
+      // The stale caller MUST NOT call markBusinessFailed. Defensive stale
+      // markRetryableFailed must affect zero rows.
+      //
+      // Other transaction failures (audit/infrastructure/transient) are
+      // retryable_failed: same-key retry will re-execute.
       try {
         if (txError instanceof IdempotencyOwnershipLostError) {
-          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-            responseCode: 409, responseBody: { message: "Ownership lost." },
-            lastErrorClass: "IdempotencyOwnershipLostError",
-          }, claim.record.ownerToken!, now);
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            console.error(
+              "INVARIANT VIOLATION: stale markRetryableFailed affected rows =",
+              staleAffected,
+              "for record", claim.record.id,
+              "— expected 0 because IdempotencyOwnershipLostError was thrown.",
+            );
+          }
         } else {
           await markRetryableFailed(this.deps.idempotency, claim.record.id, {
             responseBody: { message: "Transaction failed and rolled back." },
@@ -785,14 +832,33 @@ export class QualityTestService {
         });
       });
     } catch (txError) {
-      // WP-08-01E: After transaction rollback, mark the idempotency record
-      // so it can be retried with the same key.
+      // WP-08-01E CORRECTION: After transaction rollback, classify the failure.
+      //
+      // Ownership loss (IdempotencyOwnershipLostError) means this caller no
+      // longer owns the record — another claimant has taken over the lease.
+      // The stale caller MUST NOT call markBusinessFailed. Defensive stale
+      // markRetryableFailed must affect zero rows.
+      //
+      // Other transaction failures (audit/infrastructure/transient) are
+      // retryable_failed: same-key retry will re-execute.
       try {
         if (txError instanceof IdempotencyOwnershipLostError) {
-          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-            responseCode: 409, responseBody: { message: "Ownership lost." },
-            lastErrorClass: "IdempotencyOwnershipLostError",
-          }, claim.record.ownerToken!, now);
+          const staleAffected = await markRetryableFailed(
+            this.deps.idempotency, claim.record.id,
+            {
+              responseBody: { message: "Ownership lost; stale caller cannot mark." },
+              lastErrorClass: "IdempotencyOwnershipLostError",
+            },
+            claim.record.ownerToken!, now,
+          );
+          if (staleAffected !== 0) {
+            console.error(
+              "INVARIANT VIOLATION: stale markRetryableFailed affected rows =",
+              staleAffected,
+              "for record", claim.record.id,
+              "— expected 0 because IdempotencyOwnershipLostError was thrown.",
+            );
+          }
         } else {
           await markRetryableFailed(this.deps.idempotency, claim.record.id, {
             responseBody: { message: "Transaction failed and rolled back." },
