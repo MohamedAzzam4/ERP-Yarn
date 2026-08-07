@@ -358,6 +358,12 @@ export class ReturnRequestService {
       await this.deps.tenantOwnershipValidator.validateLocationBelongsToTenant(user.tenantId, line.returnLocationId);
     }
 
+    // WP-08-01E DEFECT 1: Require transaction configuration BEFORE
+    // claimIdempotency and document-number allocation. Missing config
+    // must produce zero idempotency rows, zero doc-seq change, zero
+    // business writes, zero audit rows.
+    const { transactionRunner: txRunner, txFactories: txFacs } = this.requireTransactionConfig();
+
     // Claim idempotency
     const now = new Date();
     const idempotencyInput: IdempotencyClaimInput = {
@@ -499,15 +505,14 @@ export class ReturnRequestService {
       return { returnRequest, result };
     };
 
-    // WP-08-01E BLOCKER 2: fail-closed — require transaction config for
-    // production mutation commands.
-    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    // WP-08-01E DEFECT 1: transaction config already required above
+    // (before claimIdempotency). Use the pre-acquired variables.
     let result: CreateReturnRequestResult;
     try {
-      const txResult = await transactionRunner(async (tx: unknown) => {
-        const txRrRepo = txFactories.createReturnRequestRepository(tx);
-        const txAudit = txFactories.createAudit(tx);
-        const txIdem = txFactories.createIdempotency(tx);
+      const txResult = await txRunner(async (tx: unknown) => {
+        const txRrRepo = txFacs.createReturnRequestRepository(tx);
+        const txAudit = txFacs.createAudit(tx);
+        const txIdem = txFacs.createIdempotency(tx);
         return executeCreate({ returnRequestRepository: txRrRepo, audit: txAudit, idempotency: txIdem });
       });
       result = txResult.result;
@@ -567,6 +572,10 @@ export class ReturnRequestService {
     if (!rr) throw new ReturnRequestNotFoundError(input.returnRequestId);
     requireTenantMatch(user, rr.tenantId);
 
+    // WP-08-01E DEFECT 1: Require transaction configuration BEFORE
+    // claimIdempotency. Missing config must produce zero idempotency rows.
+    const { transactionRunner: txRunner, txFactories: txFacs } = this.requireTransactionConfig();
+
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -595,15 +604,14 @@ export class ReturnRequestService {
       throw new ReturnRequestError("STATE_CONFLICT", `Return request '${rr.id}' is in status '${rr.status}' — only 'draft' can be submitted.`);
     }
 
-    // WP-08-01E BLOCKER 2: wrap status update + audit + markSucceeded in
-    // a single transaction so they commit/rollback atomically.
-    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    // WP-08-01E DEFECT 1: transaction config already required above
+    // (before claimIdempotency). Use the pre-acquired variables.
     const result = { action: "submitted" as const, returnRequestId: rr.id, status: "pending_approval" };
     try {
-      await transactionRunner(async (tx: unknown) => {
-        const txRrRepo = txFactories.createReturnRequestRepository(tx);
-        const txAudit = txFactories.createAudit(tx);
-        const txIdem = txFactories.createIdempotency(tx);
+      await txRunner(async (tx: unknown) => {
+        const txRrRepo = txFacs.createReturnRequestRepository(tx);
+        const txAudit = txFacs.createAudit(tx);
+        const txIdem = txFacs.createIdempotency(tx);
 
         const updated = await txRrRepo.updateReturnRequestStatus(
           user.tenantId, rr.id,
@@ -695,6 +703,11 @@ export class ReturnRequestService {
     const rr = await this.deps.returnRequestRepository.findReturnRequestById(user.tenantId, input.returnRequestId);
     if (!rr) throw new ReturnRequestNotFoundError(input.returnRequestId);
     requireTenantMatch(user, rr.tenantId);
+
+    // WP-08-01E DEFECT 1: Require transaction configuration BEFORE
+    // claimIdempotency and lockReturnRequest. Missing config must
+    // produce zero idempotency rows, zero business writes, zero audit.
+    const { transactionRunner: txRunner, txFactories: txFacs } = this.requireTransactionConfig();
 
     await this.deps.returnRequestRepository.lockReturnRequest(user.tenantId, rr.id);
 
@@ -1088,18 +1101,18 @@ export class ReturnRequestService {
       return { stockMovementIds, creditEntryId, snapshotId, result };
     };
 
-    // WP-08-01E BLOCKER 2: fail-closed — require transaction config.
-    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    // WP-08-01E DEFECT 1: transaction config already required above
+    // (before claimIdempotency). Use the pre-acquired variables.
     let result: any;
     try {
-      const txResult = await transactionRunner(async (tx: unknown) => {
-        const txInvLedger = txFactories.createInventoryLedger(tx);
-        const txSubledger = txFactories.createSubledger(tx);
-        const txSnapshotService = txFactories.createSnapshotService(tx);
-        const txSalesRepo = txFactories.createSalesRepository(tx);
-        const txReturnRepo = txFactories.createReturnRequestRepository(tx);
-        const txAudit = txFactories.createAudit(tx);
-        const txIdem = txFactories.createIdempotency(tx);
+      const txResult = await txRunner(async (tx: unknown) => {
+        const txInvLedger = txFacs.createInventoryLedger(tx);
+        const txSubledger = txFacs.createSubledger(tx);
+        const txSnapshotService = txFacs.createSnapshotService(tx);
+        const txSalesRepo = txFacs.createSalesRepository(tx);
+        const txReturnRepo = txFacs.createReturnRequestRepository(tx);
+        const txAudit = txFacs.createAudit(tx);
+        const txIdem = txFacs.createIdempotency(tx);
         return executePosting({
           inventoryLedger: txInvLedger,
           subledger: txSubledger,
@@ -1162,6 +1175,10 @@ export class ReturnRequestService {
     if (!rr) throw new ReturnRequestNotFoundError(input.returnRequestId);
     requireTenantMatch(user, rr.tenantId);
 
+    // WP-08-01E DEFECT 1: Require transaction configuration BEFORE
+    // claimIdempotency. Missing config must produce zero idempotency rows.
+    const { transactionRunner: txRunner, txFactories: txFacs } = this.requireTransactionConfig();
+
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -1191,15 +1208,14 @@ export class ReturnRequestService {
       throw new ReturnRequestNotApprovableError(rr.id, rr.status);
     }
 
-    // WP-08-01E BLOCKER 2: wrap status update + audit + markSucceeded in
-    // a single transaction so they commit/rollback atomically.
-    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    // WP-08-01E DEFECT 1: transaction config already required above
+    // (before claimIdempotency). Use the pre-acquired variables.
     const result = { action: "rejected" as const, returnRequestId: rr.id, status: "rejected" };
     try {
-      await transactionRunner(async (tx: unknown) => {
-        const txRrRepo = txFactories.createReturnRequestRepository(tx);
-        const txAudit = txFactories.createAudit(tx);
-        const txIdem = txFactories.createIdempotency(tx);
+      await txRunner(async (tx: unknown) => {
+        const txRrRepo = txFacs.createReturnRequestRepository(tx);
+        const txAudit = txFacs.createAudit(tx);
+        const txIdem = txFacs.createIdempotency(tx);
 
         const updated = await txRrRepo.updateReturnRequestStatus(
           user.tenantId, rr.id,

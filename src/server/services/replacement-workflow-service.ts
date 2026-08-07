@@ -324,6 +324,12 @@ export class ReplacementWorkflowService {
     if (!rr) throw new ReturnRequestNotFoundForReplacementError(input.returnRequestId);
     requireTenantMatch(user, rr.tenantId);
 
+    // WP-08-01E DEFECT 1: Require transaction configuration BEFORE
+    // claimIdempotency and document-number allocation. Missing config
+    // must produce zero idempotency rows, zero doc-seq change, zero
+    // business writes, zero audit rows.
+    const { transactionRunner: txRunner, txFactories: txFacs } = this.requireTransactionConfig();
+
     // Claim idempotency
     const now = new Date();
     const idempotencyInput: IdempotencyClaimInput = {
@@ -547,15 +553,15 @@ export class ReplacementWorkflowService {
       };
     };
 
-    // WP-08-01E BLOCKER 2: fail-closed — require transaction config.
-    const { transactionRunner, txFactories } = this.requireTransactionConfig();
+    // WP-08-01E DEFECT 1: transaction config already required above
+    // (before claimIdempotency). Use the pre-acquired variables.
     let result: CreateReplacementOrderResult;
     try {
-      const txResult = await transactionRunner(async (tx: unknown) => {
-        const txSalesRepo = txFactories.createSalesRepository(tx);
-        const txReturnRepo = txFactories.createReturnRequestRepository(tx);
-        const txAudit = txFactories.createAudit(tx);
-        const txIdem = txFactories.createIdempotency(tx);
+      const txResult = await txRunner(async (tx: unknown) => {
+        const txSalesRepo = txFacs.createSalesRepository(tx);
+        const txReturnRepo = txFacs.createReturnRequestRepository(tx);
+        const txAudit = txFacs.createAudit(tx);
+        const txIdem = txFacs.createIdempotency(tx);
         return executePosting({
           salesRepository: txSalesRepo,
           returnRequestRepository: txReturnRepo,
