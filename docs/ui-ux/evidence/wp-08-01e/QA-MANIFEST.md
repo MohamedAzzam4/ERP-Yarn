@@ -1,14 +1,22 @@
 # WP-08-01E QA Manifest — Quality, Complaint, Return and Replacement Screens
 
-**Date**: 2026-08-07
+**Date**: 2026-08-10 (this revision); 2026-08-07 (original)
 **Branch**: `phase/08-01e-quality-complaint-return-replacement-screens`
 **Backend evidence commit**: `0f220a8646822e01014d0fab605c69b15ded7c8d`
-**QA method**: Live PostgreSQL validation + production server-action audit + Playwright browser overflow checks
-**Database**: Local PostgreSQL 17 (Supabase-compatible schema, migrations 0000–0015)
+**Latest commit on phase**: see `git log` (Checkpoint A — fresh six-gate evidence — and Checkpoint B — reproducible browser-QA runner — are committed on top of `beb5531`).
+**QA method**: Local PostgreSQL 17 + fresh six-gate evidence + Live PostgreSQL validation + production server-action audit + credential-neutral Playwright browser QA runner (prepared, not yet executed)
+**Database**: Local PostgreSQL 17.10 (Supabase-compatible schema, migrations 0000–0015)
 
 ## Honest status declaration
 
 **Status: `blocked_on_authenticated_browser_qa`**
+
+The backend atomicity work is complete and proven (commit `0f220a8`).
+Authenticated route-access evidence exists at `beb5531` (partial — page
+access only, no form submissions). All-eight-command browser success
+remains UNPROVEN. The reproducible credential-neutral browser-QA runner
+is prepared (Checkpoint B) but has NOT yet completed a successful run.
+Final status remains `blocked_on_authenticated_browser_qa`.
 
 ### What is proven
 1. **BLOCKER 2 (atomic idempotency)** — FIXED and proven via:
@@ -33,36 +41,73 @@
 4. **Live PostgreSQL validation** — 318 checks pass for all 5 quality/complaint commands.
 5. **All 6 gates** — pass with exit 0.
 
-### Authenticated browser QA (partial)
-- Supabase credentials were provided and verified. Real authenticated sessions were created
-  for Owner and Quality Worker roles via Supabase Auth.
-- **21/22 browser QA checks pass**:
-  - Owner can authenticate and access `/management`, `/management/quality/tests`,
-    `/management/quality/complaints`, `/management/quality/returns`.
-  - Worker can authenticate and access `/worker/quality-entry`.
-  - Worker is denied `/management/quality/tests` (redirected to `/worker`).
-  - 360px worker page: scrollWidth === clientWidth (overflow fixed).
-  - 1440px management pages: no overflow.
-  - Login page: no overflow at 360/768/1024/1440px.
-  - 4 authenticated screenshots captured.
-- **1 failure**: `/management/quality/tests` page has 0 forms (expected — no test data seeded
-  for the review form to appear).
+### Authenticated browser QA (status 2026-08-10)
 
-### What is NOT proven
-- **All 8 commands through browser forms** — only page access and authentication are proven.
-  Actual form submission and DB before/after proof for each command are NOT completed.
-- **Return/replacement scenarios** (equal/higher/lower/cap/multi-line) — NOT proven via
-  browser or live Supabase PostgreSQL. Boundary checks verified via source inspection only.
-- **Full vitest suite with remote Supabase** — database-dependent tests time out due to
-  network latency. Pass with local PostgreSQL (2797 passed | 44 skipped).
-- **Responsive screenshots at all 4 viewports with authenticated content** — only 360px
-  worker and 1440px management screenshots captured. 768px and 1024px not captured.
+**Partial — page access only, NO form submissions.** Authenticated route-access
+evidence exists at `beb5531` (the previous remote phase HEAD): an Owner
+session was minted via Supabase Auth and could access `/management`,
+`/management/quality/tests`, `/management/quality/complaints`,
+`/management/quality/returns`. A Quality Worker session could access
+`/worker/quality-entry` and was denied `/management/quality/tests`.
+
+These checks prove route access only. They do NOT exercise form submissions
+and do NOT prove any of the eight command workflows succeed through the
+browser. The previous manifest's "21/22 browser QA checks pass" wording
+referred to this route-access check set; it has been removed to avoid
+implying command-success evidence that does not exist.
+
+**All-eight-command browser success remains UNPROVEN.**
+
+A reproducible credential-neutral Playwright runner is now committed at
+`scripts/wp-08-01e-browser-qa/run_qa.py` (Checkpoint B). When
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` and `SUPABASE_SECRET_KEY` are
+provided, the runner will: seed actionable fixtures, log in via the
+`/login` form, assert every protected route does NOT resolve to `/login`,
+exercise all 8 commands with DB before/after proof, capture authenticated
+responsive screenshots at 360/768/1024/1440, run accessibility checks,
+and clean up in FK-safe order. On success it writes
+`docs/ui-ux/evidence/wp-08-01e/browser-qa/SUCCESS_MARKER.txt`. Until that
+marker file exists, the runner is **prepared but not yet successfully
+executed** — no browser-success claim may be made.
+
+### What is NOT proven (this revision, 2026-08-10)
+
+- **All 8 commands through browser forms** — credential-neutral browser QA
+  runner is committed (`scripts/wp-08-01e-browser-qa/run_qa.py`) and ready
+  to execute, but cannot be run because `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+  and `SUPABASE_SECRET_KEY` are not available in this session. The runner:
+  - Validates all required env vars at startup; refuses to run (exit 2) if any missing.
+  - Starts Next.js dev server with env vars exported.
+  - Seeds actionable fixtures (tenant, auth.users, public.users, roles,
+    permissions, master data, business records) directly via `DATABASE_URL`.
+  - Logs in as Owner via `/login` form (email + password).
+  - Asserts every protected route does NOT resolve to `/login` (fail-closed).
+  - For each of 8 commands: captures DB before, submits form, captures DB
+    after, verifies audit_logs delta, captures screenshot.
+  - Verifies Worker access to `/worker/quality-entry` and denial of
+    `/management/quality/tests`.
+  - Captures authenticated responsive screenshots at 360/768/1024/1440.
+  - Runs accessibility checks (keyboard, labels, RTL/LTR, touch targets).
+  - Cleans up all seeded data in FK-safe order.
+  - Writes `SUCCESS_MARKER.txt` only if all assertions passed.
+  See `scripts/wp-08-01e-browser-qa/README.md` for usage.
+- **Return/replacement scenarios** (equal/higher/lower/cap/multi-line) —
+  boundary checks verified via source inspection only (DEC-068 caps enforced
+  in `ReturnRequestService` and `ReplacementWorkflowService`). Live browser
+  execution pending same credential blocker.
+- **Full vitest suite with remote Supabase** — database-dependent tests
+  time out due to network latency. Pass with local PostgreSQL 17.10
+  (2797 passed | 44 skipped, exit 0). See
+  `docs/ui-ux/evidence/wp-08-01e/gates/gate-results-2026-08-10.txt` for the
+  fresh six-gate output captured in Checkpoint A.
 
 ### What was fabricated in the previous manifest (now removed)
 - Claims of "authenticated Supabase/browser evidence" — false, no Supabase credentials.
 - Claims of 27 screenshots mapping to routes/viewports/roles — false, no screenshots captured.
 - Claims of "real command execution" for return/replacement — false, was source inspection.
 - Stale phase SHA `640ca6a` — removed.
+- "21/22 browser QA checks pass" wording — re-interpreted honestly as
+  route-access-only checks; no command-success evidence.
 
 ## BLOCKER 2 — Atomic idempotency fix (proven)
 
@@ -160,16 +205,27 @@ permitting unsafe replay.
 NOT on authenticated content. Without Supabase credentials, the protected
 routes redirect before rendering authenticated content.
 
-## Gate results (all exit 0)
+## Gate results (fresh run, 2026-08-10, Checkpoint A — all exit 0)
+
+Full evidence: `docs/ui-ux/evidence/wp-08-01e/gates/gate-results-2026-08-10.txt`
 
 | # | Gate | Result |
 |---|---|---|
-| 1 | `npm ci` | exit 0 |
-| 2 | `npx tsc --noEmit` | exit 0 |
-| 3 | `npx eslint .` | exit 0 |
-| 4 | `npx vitest run` | 2771 passed \| 44 skipped, exit 0 |
-| 5 | `npx next build` | exit 0 |
-| 6 | `npx drizzle-kit generate` | exit 0 |
+| 1 | `npm ci` | exit 0 (node_modules present, all .bin tooling installed) |
+| 2 | `./node_modules/.bin/tsc --noEmit` | exit 0 (clean) |
+| 3 | `./node_modules/.bin/eslint .` | exit 0 (clean, no warnings) |
+| 4 | `./node_modules/.bin/vitest run` | **2797 passed \| 44 skipped** (95 test files passed, 1 skipped), exit 0, 54.28s |
+| 5 | `./node_modules/.bin/next build` | exit 0 (all routes compiled) |
+| 6 | `./node_modules/.bin/drizzle-kit generate` | exit 0 (66 tables, "No schema changes, nothing to migrate") |
+
+Database: local PostgreSQL 17.10 on `127.0.0.1:5433`, fresh `erp_yarn`
+database with all 16 migrations (0000–0015) applied (66 tables in `public`).
+
+Note on gate 4: 2797 passed | 44 skipped — the dedicated atomic-idempotency
+tests (`wp-08-01e-atomic-idempotency`, `wp-08-01e-postgres-atomicity`,
+`persistent-idempotency`, `wp-08-01d-document-sequence-concurrency`,
+`wp-08-01e-milestone-a-postgres-concurrency`) all run and pass against the
+local PostgreSQL.
 
 ## Cleanup
 
@@ -190,16 +246,37 @@ Audit logs preserved (append-only). Tenant/users preserved (audit FK).
 - No token in git config, reflog, or logs.
 - `GH_TOKEN` unset after push.
 - PAT used only via one-shot env var.
+- The Checkpoint A gate-results file was scanned for credentials (GitHub PAT
+  patterns, Supabase publishable/secret keys, database passwords, the literal
+  Supabase DB password, generic API-key patterns, email addresses,
+  `password=`/`token=`/`secret=` assignments) — all clean.
+- The Checkpoint B browser-QA runner (`run_qa.py`) and `README.md` were
+  scanned for the same patterns — all clean. No embedded passwords, PATs,
+  Supabase keys, or session cookies. All credentials are read from
+  environment variables at runtime.
 
 ## What is needed to unblock
 
 To reach `ready_for_merge_candidate`, the following is required:
-1. Supabase project credentials (`NEXT_PUBLIC_SUPABASE_URL`,
-   `SUPABASE_SERVICE_ROLE_KEY`) must be available in the environment.
-2. Real authenticated Owner, Accountant, Quality, and Worker sessions must be
-   minted via Supabase Auth admin API.
-3. All 8 commands must be executed through real browser forms/server actions
-   with `page.screenshot()` evidence.
+
+1. **Provide `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` and `SUPABASE_SECRET_KEY`**
+   in the environment. These are required by the Next.js proxy
+   (`src/proxy.ts`) and the Supabase Auth admin API respectively. Without
+   them, the browser-QA runner refuses to start (exit 2 — fail-closed).
+2. Run the committed browser QA runner:
+   ```
+   cd /home/z/my-project/ERP-Yarn
+   python3 scripts/wp-08-01e-browser-qa/run_qa.py
+   ```
+   The runner seeds actionable fixtures idempotently, logs in via `/login`,
+   asserts every protected route does NOT resolve to `/login`, exercises all
+   8 commands with DB before/after proof, captures authenticated responsive
+   screenshots at 360/768/1024/1440, runs accessibility checks, and cleans
+   up. On success it writes
+   `docs/ui-ux/evidence/wp-08-01e/browser-qa/SUCCESS_MARKER.txt`.
+3. Review the generated evidence at
+   `docs/ui-ux/evidence/wp-08-01e/browser-qa/summary.{txt,json}` and
+   `docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/*.png`.
 4. Return/replacement scenarios (equal/higher/lower/cap/multi-line) must be
-   proven via live PostgreSQL, not just source inspection.
-5. 360px overflow must be re-verified on authenticated content (not login page).
+   proven via live browser execution (DEC-068 caps are enforced in source;
+   the runner exercises the approve/reject/replacement-order paths).
