@@ -1,0 +1,560 @@
+{
+  "started_at": "2026-08-09T22:57:33.070801+00:00",
+  "finished_at": "2026-08-09T23:01:39.437352+00:00",
+  "tenant_id": "00000000-0000-0000-0000-000000081e50",
+  "seed_counts": {
+    "tenants": 1,
+    "auth_users": 2,
+    "public_users": 2,
+    "roles": 2,
+    "permissions": 4,
+    "role_permissions": 6,
+    "user_roles": 2,
+    "master_data": 4,
+    "inventory_and_yarn": 2,
+    "sales_orders_and_lines": 2,
+    "business_records": 6,
+    "profitability_snapshot": 1
+  },
+  "route_assertions": [
+    {
+      "route": "/management/quality/tests",
+      "role": "owner",
+      "not_on_login": true,
+      "actual_url": "http://127.0.0.1:3210/management/quality/tests"
+    },
+    {
+      "route": "/management/quality/complaints",
+      "role": "owner",
+      "not_on_login": true,
+      "actual_url": "http://127.0.0.1:3210/management/quality/complaints"
+    },
+    {
+      "route": "/management/quality/returns",
+      "role": "owner",
+      "not_on_login": true,
+      "actual_url": "http://127.0.0.1:3210/management/quality/returns"
+    },
+    {
+      "route": "/worker/quality-entry",
+      "role": "worker",
+      "not_on_login": true,
+      "actual_url": "http://127.0.0.1:3210/worker/quality-entry"
+    }
+  ],
+  "commands": [
+    {
+      "action": "createQualityTestAction",
+      "route": "/worker/quality-entry",
+      "role": "worker",
+      "status": "OK",
+      "before": {
+        "quality_tests": 6,
+        "quality_test_values": 5,
+        "quality_holds": 5,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 97,
+        "idempotency_records": 25,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 5,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 98,
+        "idempotency_records": 26,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "audit_delta": 1,
+      "filled": {
+        "testDate": "2026-08-10",
+        "linkedEntityType": "yarn_lot",
+        "linkedEntityId": "00000000-0000-0000-0000-000000081e84",
+        "testStatus": "needs_review",
+        "riskClassification": "needs_review",
+        "notes": "QA browser runner createQualityTest"
+      }
+    },
+    {
+      "action": "createComplaintAction",
+      "route": "/worker/quality-entry",
+      "role": "worker",
+      "status": "NO_AUDIT_DELTA",
+      "before": {
+        "quality_tests": 7,
+        "quality_test_values": 5,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 98,
+        "idempotency_records": 26,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 5,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 98,
+        "idempotency_records": 26,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "audit_delta": 0,
+      "filled": {
+        "complaintDate": "2026-08-10",
+        "subject": "QA browser runner complaint",
+        "priority": "normal",
+        "description": "QA browser runner createComplaint description"
+      }
+    },
+    {
+      "action": "recordQualityTestValueAction",
+      "route": "/worker/quality-entry",
+      "role": "worker",
+      "status": "OK",
+      "before": {
+        "quality_tests": 7,
+        "quality_test_values": 5,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 98,
+        "idempotency_records": 26,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 99,
+        "idempotency_records": 27,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "audit_delta": 1,
+      "filled": {
+        "qualityTestId": "00000000-0000-0000-0000-000000081e93",
+        "parameterName": "Twist",
+        "parameterCode": "TWIST",
+        "measuredValue": "850",
+        "valueStatus": "pass",
+        "notes": "QA browser runner recordValue"
+      }
+    },
+    {
+      "action": "updateComplaintAction",
+      "route": "/worker/quality-entry",
+      "role": "worker",
+      "status": "OK",
+      "before": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 99,
+        "idempotency_records": 27,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 100,
+        "idempotency_records": 28,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "audit_delta": 1,
+      "filled": {
+        "complaintId": "00000000-0000-0000-0000-000000081e94",
+        "status": "investigating",
+        "priority": "high",
+        "investigationNotes": "QA browser runner updateComplaint"
+      }
+    },
+    {
+      "action": "reviewQualityTestAction",
+      "route": "/management/quality/tests",
+      "role": "owner",
+      "status": "OK",
+      "before": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 100,
+        "idempotency_records": 28,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 101,
+        "idempotency_records": 29,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "audit_delta": 1,
+      "filled": {
+        "qualityTestId": "00000000-0000-0000-0000-000000081e93",
+        "testStatus": "accepted",
+        "riskClassification": "none",
+        "reviewNotes": "QA browser runner reviewQualityTest"
+      }
+    },
+    {
+      "action": "approveReturnAction",
+      "route": "/management/quality/returns",
+      "role": "owner",
+      "status": "OK",
+      "before": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 101,
+        "idempotency_records": 29,
+        "document_sequences": 4,
+        "stock_movements": 0,
+        "inventory_balances": 0,
+        "account_entries": 0,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 105,
+        "idempotency_records": 31,
+        "document_sequences": 4,
+        "stock_movements": 1,
+        "inventory_balances": 1,
+        "account_entries": 1,
+        "sales_orders": 2
+      },
+      "audit_delta": 4,
+      "filled": {
+        "financialTreatment": "customer_credit",
+        "decisionReason": "QA browser runner approveReturn"
+      }
+    },
+    {
+      "action": "rejectReturnAction",
+      "route": "/management/quality/returns",
+      "role": "owner",
+      "status": "OK",
+      "before": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 105,
+        "idempotency_records": 31,
+        "document_sequences": 4,
+        "stock_movements": 1,
+        "inventory_balances": 1,
+        "account_entries": 1,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 106,
+        "idempotency_records": 32,
+        "document_sequences": 4,
+        "stock_movements": 1,
+        "inventory_balances": 1,
+        "account_entries": 1,
+        "sales_orders": 2
+      },
+      "audit_delta": 1,
+      "filled": {
+        "decisionReason": "QA browser runner rejectReturn"
+      }
+    },
+    {
+      "action": "createReplacementOrderAction",
+      "route": "/management/quality/returns",
+      "role": "owner",
+      "status": "NO_AUDIT_DELTA",
+      "before": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 106,
+        "idempotency_records": 32,
+        "document_sequences": 4,
+        "stock_movements": 1,
+        "inventory_balances": 1,
+        "account_entries": 1,
+        "sales_orders": 2
+      },
+      "after": {
+        "quality_tests": 7,
+        "quality_test_values": 6,
+        "quality_holds": 6,
+        "complaints": 1,
+        "return_requests": 2,
+        "return_lines": 2,
+        "audit_logs": 106,
+        "idempotency_records": 33,
+        "document_sequences": 4,
+        "stock_movements": 1,
+        "inventory_balances": 1,
+        "account_entries": 1,
+        "sales_orders": 2
+      },
+      "audit_delta": 0,
+      "filled": {
+        "saleDate": "2026-08-10",
+        "decisionNotes": "QA browser runner createReplacementOrder"
+      }
+    }
+  ],
+  "responsive_screenshots": [
+    {
+      "viewport": "360",
+      "route": "/management/quality/tests",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-360_management_quality_tests.png",
+      "on_login": false,
+      "overflow_metrics": {
+        "scrollWidth": 360,
+        "clientWidth": 360
+      }
+    },
+    {
+      "viewport": "360",
+      "route": "/management/quality/complaints",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-360_management_quality_complaints.png",
+      "on_login": false,
+      "overflow_metrics": {
+        "scrollWidth": 360,
+        "clientWidth": 360
+      }
+    },
+    {
+      "viewport": "360",
+      "route": "/management/quality/returns",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-360_management_quality_returns.png",
+      "on_login": false,
+      "overflow_metrics": {
+        "scrollWidth": 360,
+        "clientWidth": 360
+      }
+    },
+    {
+      "viewport": "360",
+      "route": "/worker/quality-entry",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-360_worker_quality-entry.png",
+      "on_login": false,
+      "overflow_metrics": {
+        "scrollWidth": 360,
+        "clientWidth": 360
+      }
+    },
+    {
+      "viewport": "768",
+      "route": "/management/quality/tests",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-768_management_quality_tests.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "768",
+      "route": "/management/quality/complaints",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-768_management_quality_complaints.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "768",
+      "route": "/management/quality/returns",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-768_management_quality_returns.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "768",
+      "route": "/worker/quality-entry",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-768_worker_quality-entry.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1024",
+      "route": "/management/quality/tests",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1024_management_quality_tests.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1024",
+      "route": "/management/quality/complaints",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1024_management_quality_complaints.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1024",
+      "route": "/management/quality/returns",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1024_management_quality_returns.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1024",
+      "route": "/worker/quality-entry",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1024_worker_quality-entry.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1440",
+      "route": "/management/quality/tests",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1440_management_quality_tests.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1440",
+      "route": "/management/quality/complaints",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1440_management_quality_complaints.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1440",
+      "route": "/management/quality/returns",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1440_management_quality_returns.png",
+      "on_login": false,
+      "overflow_metrics": null
+    },
+    {
+      "viewport": "1440",
+      "route": "/worker/quality-entry",
+      "screenshot": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/resp-1440_worker_quality-entry.png",
+      "on_login": false,
+      "overflow_metrics": null
+    }
+  ],
+  "worker_access_ok": true,
+  "worker_denied_ok": true,
+  "accessibility": {
+    "keyboard_tab_moves_focus": true,
+    "form_labels": {
+      "labeled": 0,
+      "unlabeled": 0
+    },
+    "direction": {
+      "html_dir": "rtl",
+      "body_dir": "ltr",
+      "is_rtl": true
+    },
+    "touch_targets_44px": {
+      "checked": 13,
+      "too_small": 9
+    }
+  },
+  "cleanup": {
+    "audit_logs.user_id_nulled_error": "audit_logs is append-only: UPDATE and DELETE are not permitted (Contract 03 \u00a77.7). Action: UPDATE, U",
+    "public.return_lines": 2,
+    "public.return_requests": 2,
+    "public.complaints": 1,
+    "public.quality_test_values": 6,
+    "public.quality_holds": 6,
+    "public.quality_tests": 7,
+    "public.sales_profitability_snapshots": 2,
+    "public.sales_order_lines": 2,
+    "public.sales_orders": 2,
+    "public.yarn_lots": 1,
+    "public.inventory_items_error": "update or delete on table \"inventory_items\" violates foreign key constraint \"inventory_balances_item",
+    "public.locations_error": "update or delete on table \"locations\" violates foreign key constraint \"inventory_balances_location_i",
+    "public.customers": 2,
+    "public.product_types": 1,
+    "public.fiber_types": 1,
+    "public.user_roles": 2,
+    "public.role_permissions": 6,
+    "public.permissions": 4,
+    "public.roles": 2,
+    "public.document_sequences": 4,
+    "public.idempotency_records": 33,
+    "public.users_error": "update or delete on table \"users\" violates foreign key constraint \"audit_logs_user_id_users_id_fk\" o",
+    "public.tenants_error": "column \"tenant_id\" does not exist\nLINE 1: DELETE FROM public.tenants WHERE tenant_id = '00000000-000",
+    "auth.users": 2
+  },
+  "overall_success": false
+}

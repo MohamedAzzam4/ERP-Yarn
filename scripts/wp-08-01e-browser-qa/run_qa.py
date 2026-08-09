@@ -557,6 +557,23 @@ def seed_fixtures(env: dict[str, str]) -> dict[str, Any]:
         )
         counts["business_records"] = 6
 
+        # Profitability snapshot — approveReturn calls createReturnImpactSnapshot
+        # which requires an active snapshot to exist for the sale order.
+        SNAPSHOT_ID = "00000000-0000-0000-0000-000000081e99"
+        cur.execute(
+            """
+            INSERT INTO public.sales_profitability_snapshots (
+                id, tenant_id, sales_order_id, version, is_active,
+                revenue_snapshot, profit_amount, profit_margin_percent,
+                calculated_at, calculated_by, created_at, created_by
+            )
+            VALUES (%s, %s, %s, 1, 'active', 1000.00, 200.00, 20.000000, now(), %s, now(), %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (SNAPSHOT_ID, TENANT_ID, SALES_ORDER_ID, OWNER_USER_ID, OWNER_USER_ID),
+        )
+        counts["profitability_snapshot"] = 1
+
     return counts
 
 
@@ -645,21 +662,25 @@ def exercise_command(page, base_url: str, env: dict[str, str], action: str, rout
 
     # Inject hidden fields if any (e.g. customerId for createComplaint)
     for name, value in hidden_fields.items():
-        # Only inject if the form doesn't already have this field
         existing = form.locator(f"input[name='{name}'], select[name='{name}'], textarea[name='{name}']").count()
         if existing == 0:
-            form.evaluate(
+            # Use page.evaluate with the form's index to inject a hidden input
+            page.evaluate(
                 """(args) => {
-                    const form = args[0];
+                    const formIdx = args[0];
                     const name = args[1];
                     const value = args[2];
+                    const forms = document.querySelectorAll('form');
+                    const form = forms[formIdx];
+                    if (!form) return false;
                     const input = document.createElement('input');
                     input.type = 'hidden';
                     input.name = name;
                     input.value = value;
                     form.appendChild(input);
+                    return true;
                 }""",
-                [form.element_handle(), name, value],
+                [form_index, name, value],
             )
 
     filled = fill_form(form, fill_strategy)
@@ -768,6 +789,7 @@ def cleanup(env: dict[str, str]) -> dict[str, int]:
         # children of return_requests/sales_orders/etc.
         "return_lines", "return_requests", "complaints",
         "quality_test_values", "quality_holds", "quality_tests",
+        "sales_profitability_snapshots",
         "sales_order_lines", "sales_orders",
         "yarn_lots", "inventory_items",
         "locations", "customers", "product_types", "fiber_types",
@@ -786,18 +808,27 @@ def cleanup(env: dict[str, str]) -> dict[str, int]:
         try:
             cur.execute("UPDATE public.audit_logs SET user_id = NULL WHERE tenant_id = %s", (TENANT_ID,))
             deleted["audit_logs.user_id_nulled"] = cur.rowcount
+            conn.commit()
         except Exception as e:
-            # If UPDATE is also blocked by the trigger, skip — we'll handle
-            # the FK violation on user deletion by setting ON DELETE SET NULL
-            # or by leaving the users in place (soft cleanup).
+            conn.rollback()
             deleted["audit_logs.user_id_nulled_error"] = str(e)[:100]
 
         for table in tables_children_first:
-            cur.execute(f"DELETE FROM public.{table} WHERE tenant_id = %s", (TENANT_ID,))
-            deleted[f"public.{table}"] = cur.rowcount
+            try:
+                cur.execute(f"DELETE FROM public.{table} WHERE tenant_id = %s", (TENANT_ID,))
+                deleted[f"public.{table}"] = cur.rowcount
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                deleted[f"public.{table}_error"] = str(e)[:100]
         # Now delete auth.users (independent schema, no FK from public.*)
-        cur.execute("DELETE FROM auth.users WHERE id IN (%s, %s)", (OWNER_AUTH_ID, WORKER_AUTH_ID))
-        deleted["auth.users"] = cur.rowcount
+        try:
+            cur.execute("DELETE FROM auth.users WHERE id IN (%s, %s)", (OWNER_AUTH_ID, WORKER_AUTH_ID))
+            deleted["auth.users"] = cur.rowcount
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            deleted["auth.users_error"] = str(e)[:100]
     return deleted
 
 
