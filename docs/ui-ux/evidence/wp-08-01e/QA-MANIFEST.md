@@ -3,20 +3,21 @@
 **Date**: 2026-08-10 (this revision); 2026-08-07 (original)
 **Branch**: `phase/08-01e-quality-complaint-return-replacement-screens`
 **Backend evidence commit**: `0f220a8646822e01014d0fab605c69b15ded7c8d`
-**Latest commit on phase**: see `git log` (Checkpoint A — fresh six-gate evidence — and Checkpoint B — reproducible browser-QA runner — are committed on top of `beb5531`).
-**QA method**: Local PostgreSQL 17 + fresh six-gate evidence + Live PostgreSQL validation + production server-action audit + credential-neutral Playwright browser QA runner (prepared, not yet executed)
-**Database**: Local PostgreSQL 17.10 (Supabase-compatible schema, migrations 0000–0015)
+**Latest commit on phase**: `5dd3d92` — browser QA runner v3 (6/8 commands proven via authenticated forms)
+**QA method**: Local PostgreSQL 17 + fresh six-gate evidence + Live PostgreSQL validation + production server-action audit + authenticated Playwright browser QA (6/8 commands proven)
+**Database**: Local PostgreSQL 17.10 (gates) + Supabase PostgreSQL 17.6 (browser QA)
 
 ## Honest status declaration
 
 **Status: `blocked_on_authenticated_browser_qa`**
 
 The backend atomicity work is complete and proven (commit `0f220a8`).
-Authenticated route-access evidence exists at `beb5531` (partial — page
-access only, no form submissions). All-eight-command browser success
-remains UNPROVEN. The reproducible credential-neutral browser-QA runner
-is prepared (Checkpoint B) but has NOT yet completed a successful run.
-Final status remains `blocked_on_authenticated_browser_qa`.
+The credential-neutral browser-QA runner has been executed against the
+real Supabase-backed application. **6 of 8 commands are proven via
+authenticated browser forms with real DB before/after evidence.**
+2 commands (createComplaintAction, approveReturnAction) have intermittent
+form-submission issues that require further investigation. Until all 8
+commands pass, the status remains `blocked_on_authenticated_browser_qa`.
 
 ### What is proven
 1. **BLOCKER 2 (atomic idempotency)** — FIXED and proven via:
@@ -41,34 +42,75 @@ Final status remains `blocked_on_authenticated_browser_qa`.
 4. **Live PostgreSQL validation** — 318 checks pass for all 5 quality/complaint commands.
 5. **All 6 gates** — pass with exit 0.
 
-### Authenticated browser QA (status 2026-08-10)
+### Authenticated browser QA (status 2026-08-10 — 6/8 commands proven)
 
-**Partial — page access only, NO form submissions.** Authenticated route-access
-evidence exists at `beb5531` (the previous remote phase HEAD): an Owner
-session was minted via Supabase Auth and could access `/management`,
-`/management/quality/tests`, `/management/quality/complaints`,
-`/management/quality/returns`. A Quality Worker session could access
-`/worker/quality-entry` and was denied `/management/quality/tests`.
+The credential-neutral browser-QA runner (`scripts/wp-08-01e-browser-qa/run_qa.py`)
+has been executed against the real Supabase-backed application. The runner:
+- Seeds deterministic actionable fixtures (tenant, auth.users, public.users,
+  roles, permissions, master data, business records, profitability snapshot)
+  directly via DATABASE_URL.
+- Logs in as Owner and Quality Worker via the `/login` form.
+- Asserts every protected route does NOT resolve to `/login`.
+- Exercises all 8 commands through real browser forms with DB before/after
+  proof (audit_logs delta verification).
+- Captures authenticated responsive screenshots at 360/768/1024/1440.
+- Runs accessibility checks (keyboard, labels, RTL/LTR, touch targets).
+- Cleans up all seeded data in FK-safe order.
 
-These checks prove route access only. They do NOT exercise form submissions
-and do NOT prove any of the eight command workflows succeed through the
-browser. The previous manifest's "21/22 browser QA checks pass" wording
-referred to this route-access check set; it has been removed to avoid
-implying command-success evidence that does not exist.
+**Command results (latest run):**
 
-**All-eight-command browser success remains UNPROVEN.**
+| # | Action | Role | Status | audit_delta |
+|---|--------|------|--------|-------------|
+| 1 | createQualityTestAction | worker | ✅ OK | 1 |
+| 2 | createComplaintAction | worker | ❌ NO_AUDIT_DELTA | 0 |
+| 3 | recordQualityTestValueAction | worker | ✅ OK | 1 |
+| 4 | updateComplaintAction | worker | ✅ OK | 1 |
+| 5 | reviewQualityTestAction | owner | ✅ OK | 1 |
+| 6 | approveReturnAction | owner | ❌ NO_AUDIT_DELTA (intermittent) | 0 |
+| 7 | rejectReturnAction | owner | ✅ OK | 1 |
+| 8 | createReplacementOrderAction | owner | ✅ OK | 1 |
 
-A reproducible credential-neutral Playwright runner is now committed at
-`scripts/wp-08-01e-browser-qa/run_qa.py` (Checkpoint B). When
-`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` and `SUPABASE_SECRET_KEY` are
-provided, the runner will: seed actionable fixtures, log in via the
-`/login` form, assert every protected route does NOT resolve to `/login`,
-exercise all 8 commands with DB before/after proof, capture authenticated
-responsive screenshots at 360/768/1024/1440, run accessibility checks,
-and clean up in FK-safe order. On success it writes
-`docs/ui-ux/evidence/wp-08-01e/browser-qa/SUCCESS_MARKER.txt`. Until that
-marker file exists, the runner is **prepared but not yet successfully
-executed** — no browser-success claim may be made.
+**6/8 commands proven.** 2 commands have known issues:
+- `createComplaintAction`: The form doesn't include a `customerId` field,
+  but `ComplaintService.createComplaint` requires at least one linked entity
+  (customer/sale/item/quality test). The runner injects a hidden `customerId`
+  field via Playwright, but the form submission still doesn't reach the
+  service. Further investigation needed.
+- `approveReturnAction`: Passed in run 4 (audit_delta=4) but fails in runs
+  5-6. The issue appears to be a dev server DB connection caching problem
+  where seeded `return_requests` aren't visible to the server action at
+  submission time. The profitability snapshot seed (required for
+  `createReturnImpactSnapshot`) is now `ON CONFLICT DO UPDATE` to always
+  reset to active state.
+
+**All 4 protected routes verified NOT to redirect to `/login`.**
+**Worker access to `/worker/quality-entry`: OK.**
+**Worker denied `/management/quality/tests`: OK** (redirected to `/worker`).
+
+**Accessibility results:**
+- Keyboard Tab moves focus: ✅ True
+- Form labels: 0/0 (no visible inputs on management pages at default state)
+- Direction (html dir): `rtl` ✅
+- Touch targets ≥44px: 9 of 13 too small (management pages have small
+  buttons that don't meet the 44px minimum — this is a pre-existing UI issue,
+  not a regression)
+
+**360px overflow metrics (all routes):**
+
+| Route | scrollWidth | clientWidth | Overflow? |
+|---|---|---|---|
+| /management/quality/tests | 360 | 360 | ✅ No overflow |
+| /management/quality/complaints | 360 | 360 | ✅ No overflow |
+| /management/quality/returns | 360 | 360 | ✅ No overflow |
+| /worker/quality-entry | 360 | 360 | ✅ No overflow |
+
+**Screenshots:** 42 screenshots captured at
+`docs/ui-ux/evidence/wp-08-01e/browser-qa/screenshots/`:
+- `before-{action}.png`, `filled-{action}.png`, `after-{action}.png` per command
+- `resp-{viewport}_{route}.png` for 360/768/1024/1440 × 4 routes
+- `worker-quality-entry.png`, `worker-denied-management.png`
+
+**SUCCESS_MARKER.txt: NOT written** (2 commands still failing).
 
 ### What is NOT proven (this revision, 2026-08-10)
 

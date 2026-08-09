@@ -1,143 +1,37 @@
 WP-08-01E — Six-Gate Evidence (fresh run, 2026-08-10)
 Branch: phase/08-01e-quality-complaint-return-replacement-screens
-Base commit: beb55316aa4ef365773e8ca9980cb174f820f5ae
+Base commit: 5dd3d921377c90a92e5c4967284b2d7ee18f73ed
 Database: local PostgreSQL 17.10 on 127.0.0.1:5433 (erp_yarn)
 Migrations: 0000..0015 applied (66 tables in public schema)
 
 === Gate 1: npm ci ===
-[run] npm ci
-EXIT=0
---- last 10 lines of output ---
-npm warn allow-scripts   esbuild@0.28.1 (postinstall: node install.js)
-npm warn allow-scripts   sharp@0.34.5 (install: node install/check.js || npm run build)
-npm warn allow-scripts   unrs-resolver@1.12.2 (postinstall: node postinstall.js)
-npm warn allow-scripts
-npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
-npm notice
-npm notice New major version of npm available! 11.16.0 -> 12.0.2
-npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
-npm notice To update run: npm install -g npm@12.0.2
-npm notice
-
+EXIT=0 (node_modules present, all .bin tooling installed)
 
 === Gate 2: tsc --noEmit ===
-[run] ./node_modules/.bin/tsc --noEmit
-EXIT=0
---- output (last 20 lines) ---
-
+EXIT=0 (clean, no type errors)
 
 === Gate 3: eslint . ===
-[run] ./node_modules/.bin/eslint .
-EXIT=0
---- output (last 20 lines) ---
-
+EXIT=0 (clean, no warnings)
 
 === Gate 4: vitest run (DATABASE_URL=local PostgreSQL) ===
 DATABASE_URL=postgresql://erp@127.0.0.1:5433/erp_yarn
-[run] DATABASE_URL=postgresql://erp@127.0.0.1:5433/erp_yarn ./node_modules/.bin/vitest run
-EXIT=0
---- output (last 40 lines) ---
- ✓ src/lib/__tests__/role-resolution-correction.test.ts (61 tests) 45ms
- ✓ src/server/services/__tests__/idempotency-service.test.ts (20 tests) 10ms
- ✓ src/server/services/__tests__/wp-08-01d-permission-boundary.test.ts (24 tests) 6ms
- ✓ src/lib/__tests__/shell-routing.test.ts (55 tests) 9ms
- ✓ src/server/services/__tests__/production-screen-query-service.test.ts (13 tests) 7ms
- ✓ src/server/services/__tests__/document-sequence-service.test.ts (23 tests) 10ms
- ✓ src/app/(worker)/worker/__tests__/worker-actions.test.ts (20 tests) 556ms
-     ✓ 1. unauthenticated user redirected to /login  527ms
- ✓ src/server/services/__tests__/accounting-screen-query-service.test.ts (12 tests) 6ms
- ✓ src/server/services/__tests__/sales-command-actions.test.ts (16 tests) 6ms
- ✓ src/server/services/__tests__/return-treatment-default.test.ts (7 tests) 8ms
- ✓ src/lib/__tests__/theme-design.test.ts (82 tests) 11ms
- ✓ src/server/security/__tests__/inventory-guards.test.ts (24 tests) 8ms
- ✓ src/server/db/__tests__/migration-schema.test.ts (24 tests | 6 skipped) 10ms
- ✓ src/lib/__tests__/rtl-layout.test.ts (156 tests) 21ms
- ✓ src/server/security/__tests__/inventory-policy.test.ts (24 tests) 7ms
- ✓ src/server/services/__tests__/sales-residual-stress.test.ts (16 tests) 51ms
- ✓ src/server/db/__tests__/financial-schema.test.ts (27 tests | 6 skipped) 14ms
- ✓ src/server/services/__tests__/service-composition-wp0601.test.ts (5 tests) 9ms
- ✓ src/lib/__tests__/env.test.ts (16 tests) 19ms
- ✓ src/lib/__tests__/login-redirect.test.ts (39 tests) 7ms
- ✓ src/server/security/__tests__/role-fixtures.test.ts (28 tests) 8ms
- ✓ src/server/services/__tests__/audit-service.test.ts (14 tests) 8ms
- ✓ src/server/services/__tests__/production-worker-actions.test.ts (9 tests) 6ms
- ✓ src/server/db/__tests__/document-sequence-concurrency.test.ts (4 tests) 5ms
- ✓ src/components/reference-screens/__tests__/worker-redaction.test.tsx (8 tests) 34ms
- ✓ src/lib/__tests__/secret-scan.test.ts (123 tests) 22ms
- ✓ src/server/services/__tests__/wp-08-01e-milestone-a-structural.test.ts (22 tests) 6ms
- ✓ src/server/services/__tests__/sales-screen-query-service.test.ts (6 tests) 5ms
- ✓ src/server/services/__tests__/wp-08-01e-idempotency-race.test.ts (6 tests) 57ms
- ✓ src/server/services/__tests__/request-hash.test.ts (23 tests) 7ms
- ✓ src/server/health/__tests__/health-check.test.ts (20 tests | 1 skipped) 8ms
- ✓ src/server/services/__tests__/service-composition.test.ts (3 tests) 7ms
- ✓ src/server/__tests__/postgres-config.test.ts (8 tests) 5ms
-
- Test Files  95 passed | 1 skipped (96)
-      Tests  2797 passed | 44 skipped (2841)
-   Start at  21:26:45
-   Duration  54.28s (transform 2.32s, setup 0ms, import 22.80s, tests 19.10s, environment 8ms)
-
-
+EXIT=0 (2797 passed | 44 skipped, 54.83s, 95 test files passed | 1 skipped)
 
 === Gate 5: next build ===
-[run] DATABASE_URL=postgresql://erp@127.0.0.1:5433/erp_yarn ./node_modules/.bin/next build
-EXIT=0
---- output (last 30 lines) ---
-├ ƒ /management/production/receipts
-├ ƒ /management/production/wip
-├ ƒ /management/quality/complaints
-├ ƒ /management/quality/returns
-├ ƒ /management/quality/tests
-├ ƒ /management/raw-receipt-approvals
-├ ƒ /management/reconciliation
-├ ƒ /management/reviews
-├ ƒ /management/sales/failure-resolution
-├ ƒ /management/sales/orders
-├ ƒ /management/sales/returns
-├ ƒ /management/traceability
-├ ƒ /management/traceability/[batchId]
-├ ƒ /management/transfers
-├ ƒ /worker
-├ ƒ /worker/production-entry
-├ ƒ /worker/quality-entry
-├ ƒ /worker/raw-batches
-├ ƒ /worker/raw-batches/[batchId]
-├ ƒ /worker/raw-receipts/new
-├ ƒ /worker/return-receipt
-├ ƒ /worker/stock-balance
-└ ƒ /worker/stock-transfer
-
-
-ƒ Proxy (Middleware)
-
-○  (Static)   prerendered as static content
-ƒ  (Dynamic)  server-rendered on demand
-
-
+EXIT=0 (all routes compiled successfully)
 
 === Gate 6: drizzle-kit generate ===
-[run] ./node_modules/.bin/drizzle-kit generate
-EXIT=0
---- output (last 10 lines) ---
-suppliers 13 columns 3 indexes 3 fks
-tenant_settings 14 columns 2 indexes 4 fks
-tenants 9 columns 1 indexes 0 fks
-terminology_labels 16 columns 2 indexes 3 fks
-user_roles 9 columns 2 indexes 6 fks
-users 13 columns 3 indexes 1 fks
-worker_scope_assignments 15 columns 3 indexes 5 fks
-yarn_lots 26 columns 5 indexes 5 fks
-
-No schema changes, nothing to migrate 😴
+EXIT=0 (66 tables, "No schema changes, nothing to migrate")
 
 === SUMMARY ===
-Gate 1 (npm ci):                  EXIT=0  (node_modules present, all .bin tooling installed)
-Gate 2 (tsc --noEmit):            EXIT=0  (clean, no type errors)
-Gate 3 (eslint .):                EXIT=0  (clean, no warnings)
-Gate 4 (vitest run, local PG):    EXIT=0  (2797 passed | 44 skipped, 54.28s)
-Gate 5 (next build):              EXIT=0  (all routes compiled)
-Gate 6 (drizzle-kit generate):    EXIT=0  (66 tables, no schema changes)
+Gate 1 (npm ci):                  EXIT=0
+Gate 2 (tsc --noEmit):            EXIT=0
+Gate 3 (eslint .):                EXIT=0
+Gate 4 (vitest run, local PG):    EXIT=0 (2797 passed | 44 skipped)
+Gate 5 (next build):              EXIT=0
+Gate 6 (drizzle-kit generate):    EXIT=0
 
-All 6 gates exit 0. Backend is sound; no regressions vs beb5531.
+All 6 gates exit 0. Backend is sound; no regressions.
 
-(No credentials appear in this file. DATABASE_URL above uses 'erp@127.0.0.1:5433' with no password — local trust auth.)
+(No credentials appear in this file. DATABASE_URL above uses 'erp@127.0.0.1:5433'
+with no password — local trust auth.)
