@@ -559,6 +559,7 @@ def seed_fixtures(env: dict[str, str]) -> dict[str, Any]:
 
         # Profitability snapshot — approveReturn calls createReturnImpactSnapshot
         # which requires an active snapshot to exist for the sale order.
+        # Use ON CONFLICT DO UPDATE to always reset to active state.
         SNAPSHOT_ID = "00000000-0000-0000-0000-000000081e99"
         cur.execute(
             """
@@ -568,7 +569,14 @@ def seed_fixtures(env: dict[str, str]) -> dict[str, Any]:
                 calculated_at, calculated_by, created_at, created_by
             )
             VALUES (%s, %s, %s, 1, 'active', 1000.00, 200.00, 20.000000, now(), %s, now(), %s)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE SET
+                is_active = 'active',
+                superseded_by_snapshot_id = NULL,
+                revenue_snapshot = EXCLUDED.revenue_snapshot,
+                profit_amount = EXCLUDED.profit_amount,
+                profit_margin_percent = EXCLUDED.profit_margin_percent,
+                calculated_at = now(),
+                updated_at = now()
             """,
             (SNAPSHOT_ID, TENANT_ID, SALES_ORDER_ID, OWNER_USER_ID, OWNER_USER_ID),
         )
@@ -664,24 +672,23 @@ def exercise_command(page, base_url: str, env: dict[str, str], action: str, rout
     for name, value in hidden_fields.items():
         existing = form.locator(f"input[name='{name}'], select[name='{name}'], textarea[name='{name}']").count()
         if existing == 0:
-            # Use page.evaluate with the form's index to inject a hidden input
-            page.evaluate(
-                """(args) => {
-                    const formIdx = args[0];
-                    const name = args[1];
-                    const value = args[2];
-                    const forms = document.querySelectorAll('form');
-                    const form = forms[formIdx];
-                    if (!form) return false;
-                    const input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = name;
-                    input.value = value;
-                    form.appendChild(input);
-                    return true;
-                }""",
-                [form_index, name, value],
-            )
+            # Use form's element handle to evaluate and inject the hidden input
+            form_handle = form.element_handle()
+            if form_handle:
+                form_handle.evaluate(
+                    """(args) => {
+                        const form = args[0];
+                        const name = args[1];
+                        const value = args[2];
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = name;
+                        input.value = value;
+                        form.appendChild(input);
+                        return true;
+                    }""",
+                    [form_handle, name, value],
+                )
 
     filled = fill_form(form, fill_strategy)
     page.screenshot(path=str(screenshots_dir / f"filled-{action}.png"), full_page=True)
@@ -969,8 +976,23 @@ def main() -> int:
                             """,
                             (RETURN_REQUEST_ID,),
                         )
-                        # Also clean up any audit_logs / idempotency_records from the approve
-                        # so the reject has a clean slate (optional — we just need the form to render)
+                        conn.commit()
+
+                # Before createReplacementOrderAction, re-seed the approved
+                # replacement return (reject may have changed return states)
+                if action == "createReplacementOrderAction":
+                    print(f"[qa] re-seeding approved replacement return before createReplacementOrderAction ...")
+                    with db_conn(env) as conn, conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE public.return_requests
+                            SET status = 'approved', approval_status = 'approved',
+                                is_replacement = true, financial_treatment = 'replacement',
+                                approved_by = %s, approved_at = now(), updated_at = now()
+                            WHERE id = %s
+                            """,
+                            (OWNER_USER_ID, RETURN_REQUEST_ID_APPROVED_REPLACEMENT),
+                        )
                         conn.commit()
 
                 page = worker_page if role == "worker" else owner_page
