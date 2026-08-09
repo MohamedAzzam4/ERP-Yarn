@@ -217,8 +217,15 @@ export class ComplaintService {
     if (!input.complaintDate?.trim()) throw new ComplaintError("VALIDATION_FAILED", "complaintDate is required.");
     if (!input.idempotencyKey?.trim()) throw new ComplaintError("VALIDATION_FAILED", "idempotencyKey is required.");
     // At least one linked entity should be provided
-    if (!input.customerId && !input.saleId && !input.itemId && !input.qualityTestId) {
-      throw new ComplaintError("VALIDATION_FAILED", "At least one linked entity (customer/sale/item/quality test) is required.");
+    if (
+      !input.customerId &&
+      !input.saleId &&
+      !input.itemId &&
+      !input.qualityTestId &&
+      !input.yarnLotId &&
+      !input.rawMaterialBatchId
+    ) {
+      throw new ComplaintError("VALIDATION_FAILED", "At least one linked entity (customer/sale/item/quality test/yarn lot/raw material batch) is required.");
     }
 
     const priority: ComplaintPriority = input.priority ?? "normal";

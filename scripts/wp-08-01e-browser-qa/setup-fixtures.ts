@@ -19,7 +19,6 @@
  *
  * Outputs JSON with the created fixture IDs to stdout.
  */
-import "server-only";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "../../src/server/db/schema/index";
@@ -62,45 +61,46 @@ const pgSql = postgres(DATABASE_URL, {
 const db = drizzle(pgSql, { schema });
 
 const ownerUser = {
+  authenticated: true as const,
   userId: OWNER_USER_ID,
   tenantId: TENANT_ID,
   authId: "qa-browser-owner",
   name: "QA Browser Owner",
   email: "qa-browser-owner@erp-yarn.test",
-  roles: ["owner"] as const,
-  locale: "ar" as const,
 };
 
 const workerUser = {
+  authenticated: true as const,
   userId: WORKER_USER_ID,
   tenantId: TENANT_ID,
   authId: "qa-browser-worker",
   name: "QA Browser Worker",
   email: "qa-browser-worker@erp-yarn.test",
-  roles: ["quality_employee"] as const,
-  locale: "ar" as const,
 };
 
 const ownerEff = {
-  tenantId: TENANT_ID,
-  userId: OWNER_USER_ID,
-  role: "owner" as const,
-  permissions: new Set([
+  assignedRoleCodes: ["owner"] as const,
+  permissionKeys: new Set([
     "returns.approve",
     "quality_tests.create",
     "quality_risk_sales.approve",
     "complaints.investigate",
+    "inventory.receive.create",
+    "inventory.receive.approve",
+    "inventory.correct",
+    "inventory.view_quantity",
   ]),
+  workerFinancialDeny: { enforced: false, deniedKeys: [] },
 };
 
 const workerEff = {
-  tenantId: TENANT_ID,
-  userId: WORKER_USER_ID,
-  role: "quality_employee" as const,
-  permissions: new Set([
+  assignedRoleCodes: ["quality_employee"] as const,
+  permissionKeys: new Set([
     "quality_tests.create",
     "complaints.investigate",
+    "returns.create",
   ]),
+  workerFinancialDeny: { enforced: true, deniedKeys: [] },
 };
 
 async function main() {
@@ -156,7 +156,7 @@ async function main() {
       salesRepository: new SalesDbRepository(tx as any),
       audit: new AuditDbRepository(tx as any),
     }),
-    createReturnRequestRepositoryReadOnly: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
+    createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
     createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
