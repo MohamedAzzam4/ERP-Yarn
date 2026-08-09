@@ -130,6 +130,7 @@ export default async function ManagementReturnsPage() {
                       <div className="flex flex-wrap gap-3">
                         {/* Approve form */}
                         <form
+                          data-action="approve-return"
                           action={approveReturnAction}
                           className="inline-flex flex-wrap gap-2 items-center"
                         >
@@ -182,6 +183,7 @@ export default async function ManagementReturnsPage() {
 
                         {/* Reject form */}
                         <form
+                          data-action="reject-return"
                           action={rejectReturnAction}
                           className="inline-flex flex-wrap gap-2 items-center"
                         >
@@ -229,6 +231,7 @@ export default async function ManagementReturnsPage() {
                 </CardHeader>
                 <CardContent>
                   <form
+                    data-action="create-replacement-order"
                     action={createReplacementOrderAction}
                     className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                   >

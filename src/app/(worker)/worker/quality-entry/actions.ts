@@ -31,7 +31,7 @@ import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import { QualityTestService } from "@/server/services/quality-test-service";
 import { ComplaintService } from "@/server/services/complaint-service";
-import type { UpdateComplaintInput } from "@/server/services/complaint-service";
+import type { UpdateComplaintInput, ComplaintPriority } from "@/server/services/complaint-service";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
@@ -198,6 +198,7 @@ export async function createComplaintAction(
     ? String(formData.get("description"))
     : null;
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+  const linkedEntityId = String(formData.get("linkedEntityId") ?? "").trim();
 
   if (!complaintDate || !subject || !idempotencyKey) {
     throw new Error(
@@ -205,8 +206,78 @@ export async function createComplaintAction(
     );
   }
 
+  if (!linkedEntityId) {
+    throw new Error(
+      "VALIDATION_FAILED: linkedEntityId is required (at least one linked entity: customer/sale/item/quality test/yarn lot).",
+    );
+  }
+
   const { db: dbInstance, audit, idempotency, documentSequence } =
     getSharedDeps();
+
+  // Resolve which entity type the linkedEntityId refers to.
+  // The form submits a single entity ID; we check each tenant-scoped table
+  // to determine the type. This is a ownership validation: cross-tenant
+  // entity IDs will not be found and will be rejected.
+  const { QualityReturnScreenQueryService } = await import(
+    "@/server/services/quality-return-screen-query-service"
+  );
+  const queryService = new QualityReturnScreenQueryService(dbInstance);
+  const linkedEntities = await queryService.listLinkedEntitiesForWorker(
+    authResult.tenantId,
+  );
+  const matched = linkedEntities.find((e) => e.entityId === linkedEntityId);
+  if (!matched) {
+    throw new Error(
+      "VALIDATION_FAILED: linkedEntityId not found in tenant scope (cross-tenant or invalid entity).",
+    );
+  }
+
+  // Map entity type to the ComplaintService input fields
+  const complaintInput: {
+    complaintDate: string;
+    subject: string;
+    description: string | null;
+    priority: ComplaintPriority;
+    idempotencyKey: string;
+    customerId?: string;
+    saleId?: string;
+    itemId?: string;
+    qualityTestId?: string;
+    yarnLotId?: string;
+    rawMaterialBatchId?: string;
+  } = {
+    complaintDate,
+    subject,
+    description,
+    priority: priority as ComplaintPriority,
+    idempotencyKey,
+  };
+
+  switch (matched.entityType) {
+    case "customer":
+      complaintInput.customerId = matched.entityId;
+      break;
+    case "sale":
+      complaintInput.saleId = matched.entityId;
+      break;
+    case "item":
+      complaintInput.itemId = matched.entityId;
+      break;
+    case "quality_test":
+      complaintInput.qualityTestId = matched.entityId;
+      break;
+    case "yarn_lot":
+      complaintInput.yarnLotId = matched.entityId;
+      break;
+    case "raw_material_batch":
+      complaintInput.rawMaterialBatchId = matched.entityId;
+      break;
+    default:
+      throw new Error(
+        `VALIDATION_FAILED: unsupported linked entity type '${matched.entityType}'.`,
+      );
+  }
 
   const complaintRepository = new ComplaintDbRepository(dbInstance);
 
@@ -230,13 +301,7 @@ export async function createComplaintAction(
     txFactories,
   });
 
-  await service.createComplaint(authResult as any, effective, {
-    complaintDate,
-    subject,
-    description,
-    priority: priority as any,
-    idempotencyKey,
-  });
+  await service.createComplaint(authResult as any, effective, complaintInput);
 
   revalidatePath("/worker/quality-entry");
 }

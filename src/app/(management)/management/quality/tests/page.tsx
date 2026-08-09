@@ -91,6 +91,7 @@ export default async function ManagementQualityTestsPage() {
               </CardHeader>
               <CardContent>
                 <form
+                  data-action="review-quality-test"
                   action={reviewQualityTestAction}
                   className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                 >

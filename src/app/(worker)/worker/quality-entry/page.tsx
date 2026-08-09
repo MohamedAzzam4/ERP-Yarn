@@ -51,6 +51,9 @@ export default async function WorkerQualityEntryPage() {
   let complaints: Awaited<
     ReturnType<QualityReturnScreenQueryService["listComplaintsForWorker"]>
   > = [];
+  let linkedEntities: Awaited<
+    ReturnType<QualityReturnScreenQueryService["listLinkedEntitiesForWorker"]>
+  > = [];
   let dbAvailable = false;
 
   if (db) {
@@ -60,6 +63,9 @@ export default async function WorkerQualityEntryPage() {
         authResult.tenantId,
       );
       complaints = await queryService.listComplaintsForWorker(
+        authResult.tenantId,
+      );
+      linkedEntities = await queryService.listLinkedEntitiesForWorker(
         authResult.tenantId,
       );
       dbAvailable = true;
@@ -100,6 +106,7 @@ export default async function WorkerQualityEntryPage() {
               </CardHeader>
               <CardContent>
                 <form
+                  data-action="create-quality-test"
                   action={createQualityTestAction}
                   className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                 >
@@ -217,6 +224,7 @@ export default async function WorkerQualityEntryPage() {
               </CardHeader>
               <CardContent>
                 <form
+                  data-action="create-complaint"
                   action={createComplaintAction}
                   className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                 >
@@ -263,6 +271,26 @@ export default async function WorkerQualityEntryPage() {
                       <option value="urgent">عاجلة</option>
                     </select>
                   </label>
+                  {/* Linked entity selection — Contract 10 §7.3 requires at least
+                      one linked entity (customer/sale/item/quality test/yarn lot). */}
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">
+                      الكيان المرتبط:
+                    </span>
+                    <select
+                      name="linkedEntityId"
+                      required
+                      className="px-2 py-1 border rounded text-sm bg-background"
+                      style={{ minHeight: "44px" }}
+                    >
+                      <option value="">— اختر الكيان —</option>
+                      {linkedEntities.map((e) => (
+                        <option key={`${e.entityType}-${e.entityId}`} value={e.entityId}>
+                          {e.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="flex flex-col gap-1 text-sm sm:col-span-2 lg:col-span-3">
                     <span className="text-muted-foreground">الوصف:</span>
                     <textarea
@@ -293,6 +321,7 @@ export default async function WorkerQualityEntryPage() {
                 </CardHeader>
                 <CardContent>
                   <form
+                    data-action="record-quality-test-value"
                     action={recordQualityTestValueAction}
                     className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                   >
@@ -405,6 +434,7 @@ export default async function WorkerQualityEntryPage() {
                 </CardHeader>
                 <CardContent>
                   <form
+                    data-action="update-complaint"
                     action={updateComplaintAction}
                     className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                   >

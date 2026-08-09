@@ -24,7 +24,7 @@ import {
   returnRequests,
   returnLines,
 } from "@/server/db/schema/returns";
-import { salesOrders, customers } from "@/server/db/schema";
+import { salesOrders, customers, inventoryItems, yarnLots } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 
 type Db = NonNullable<typeof DbType>;
@@ -72,6 +72,18 @@ export interface WorkerComplaintDto {
   investigatedAt: string | null;
   investigationNotes: string | null;
   notes: string | null;
+}
+
+/**
+ * Linked Entity DTO — for complaint linked-entity selection.
+ * Workers select exactly one linked entity (customer, sale, item, quality test,
+ * yarn lot, or raw material batch) when creating a complaint.
+ * Contract 10 §7.3: Complaints must be linked to at least one entity.
+ */
+export interface LinkedEntityOptionDto {
+  entityType: "customer" | "sale" | "item" | "quality_test" | "yarn_lot" | "raw_material_batch";
+  entityId: string;
+  label: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +189,70 @@ export class QualityReturnScreenQueryService {
       .limit(50);
 
     return results.map((r) => this.mapWorkerComplaint(r));
+  }
+
+  /**
+   * List linkable entities for a worker complaint form.
+   * Returns tenant-scoped options for customers, sales orders, inventory items,
+   * quality tests, and yarn lots. Workers select one when creating a complaint.
+   * Contract 10 §7.3: Complaints must be linked to at least one entity.
+   */
+  async listLinkedEntitiesForWorker(
+    tenantId: string,
+  ): Promise<LinkedEntityOptionDto[]> {
+    const options: LinkedEntityOptionDto[] = [];
+
+    // Customers
+    const customerRows = await this.db
+      .select({ id: customers.id, code: customers.customerCode, nameAr: customers.nameAr })
+      .from(customers)
+      .where(and(eq(customers.tenantId, tenantId), eq(customers.status, "active")))
+      .limit(50);
+    for (const c of customerRows) {
+      options.push({ entityType: "customer", entityId: c.id, label: `${c.code} — ${c.nameAr}` });
+    }
+
+    // Sales orders (doc_no only — no financial fields per Contract 11 §8)
+    const saleRows = await this.db
+      .select({ id: salesOrders.id, docNo: salesOrders.docNo })
+      .from(salesOrders)
+      .where(eq(salesOrders.tenantId, tenantId))
+      .limit(50);
+    for (const s of saleRows) {
+      options.push({ entityType: "sale", entityId: s.id, label: `أمر بيع: ${s.docNo}` });
+    }
+
+    // Inventory items
+    const itemRows = await this.db
+      .select({ id: inventoryItems.id, code: inventoryItems.itemCode, nameAr: inventoryItems.displayNameAr })
+      .from(inventoryItems)
+      .where(and(eq(inventoryItems.tenantId, tenantId), eq(inventoryItems.status, "active")))
+      .limit(50);
+    for (const i of itemRows) {
+      options.push({ entityType: "item", entityId: i.id, label: `${i.code} — ${i.nameAr}` });
+    }
+
+    // Quality tests
+    const qtRows = await this.db
+      .select({ id: qualityTests.id, testNo: qualityTests.testNo })
+      .from(qualityTests)
+      .where(eq(qualityTests.tenantId, tenantId))
+      .limit(50);
+    for (const t of qtRows) {
+      options.push({ entityType: "quality_test", entityId: t.id, label: `اختبار: ${t.testNo}` });
+    }
+
+    // Yarn lots
+    const yarnRows = await this.db
+      .select({ id: yarnLots.id, lotNo: yarnLots.lotNo })
+      .from(yarnLots)
+      .where(eq(yarnLots.tenantId, tenantId))
+      .limit(50);
+    for (const y of yarnRows) {
+      options.push({ entityType: "yarn_lot", entityId: y.id, label: `لوط: ${y.lotNo}` });
+    }
+
+    return options;
   }
 
   // -------------------------------------------------------------------------
