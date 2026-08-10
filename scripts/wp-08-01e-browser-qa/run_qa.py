@@ -815,13 +815,15 @@ def main() -> int:
     print(f"[qa] tenant_id={TENANT_ID}")
     print(f"[qa] run_id={run_id}")
 
-    print("[qa] seeding auth users + master data...")
-    seed_counts = seed_auth_users(env)
-    print(f"[qa] seeded: {seed_counts}")
-
     print("[qa] running setup-fixtures.ts (real domain lifecycle)...")
     fixture_ids = run_setup_fixtures(env, run_id)
     print(f"[qa] fixture IDs: {fixture_ids}")
+
+    # Seed auth users + master data + seed complaint/quality_test AFTER
+    # setup-fixtures.ts cleanup, so the seeds survive for the browser commands.
+    print("[qa] seeding auth users + master data + seed records...")
+    seed_counts = seed_auth_users(env)
+    print(f"[qa] seeded: {seed_counts}")
 
     port = int(os.environ.get("BROWSER_QA_PORT", "3210"))
     base_url = f"http://127.0.0.1:{port}"
