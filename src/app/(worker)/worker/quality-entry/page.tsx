@@ -272,7 +272,28 @@ export default async function WorkerQualityEntryPage() {
                     </select>
                   </label>
                   {/* Linked entity selection — Contract 10 §7.3 requires at least
-                      one linked entity (customer/sale/item/quality test/yarn lot). */}
+                      one linked entity (customer/sale/item/quality test/yarn lot).
+                      Submits BOTH linkedEntityType AND linkedEntityId so the action
+                      can validate the type/ID pair without scanning unrelated tables. */}
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">
+                      نوع الكيان المرتبط:
+                    </span>
+                    <select
+                      name="linkedEntityType"
+                      required
+                      defaultValue=""
+                      className="px-2 py-1 border rounded text-sm bg-background"
+                      style={{ minHeight: "44px" }}
+                    >
+                      <option value="">— اختر النوع —</option>
+                      <option value="customer">عميل</option>
+                      <option value="sale">أمر بيع</option>
+                      <option value="item">صنف مخزون</option>
+                      <option value="quality_test">اختبار جودة</option>
+                      <option value="yarn_lot">لوط خيوط</option>
+                    </select>
+                  </label>
                   <label className="flex flex-col gap-1 text-sm">
                     <span className="text-muted-foreground">
                       الكيان المرتبط:
@@ -280,12 +301,13 @@ export default async function WorkerQualityEntryPage() {
                     <select
                       name="linkedEntityId"
                       required
+                      defaultValue=""
                       className="px-2 py-1 border rounded text-sm bg-background"
                       style={{ minHeight: "44px" }}
                     >
                       <option value="">— اختر الكيان —</option>
                       {linkedEntities.map((e) => (
-                        <option key={`${e.entityType}-${e.entityId}`} value={e.entityId}>
+                        <option key={`${e.entityType}-${e.entityId}`} value={`${e.entityType}:${e.entityId}`}>
                           {e.label}
                         </option>
                       ))}

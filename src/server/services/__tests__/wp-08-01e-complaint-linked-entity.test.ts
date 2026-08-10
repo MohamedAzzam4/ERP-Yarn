@@ -142,6 +142,94 @@ describe("WP-08-01E — Complaint linked-entity validation (production path)", (
     expect(complaint!.itemId).toBe(itemId);
   });
 
+  it("valid linked complaint succeeds with quality_test link", async () => {
+    const qualityTestId = "00000000-0000-0000-0000-000000081e93";
+    const input: CreateComplaintInput = {
+      complaintDate: "2026-08-10",
+      subject: "QA complaint with quality test link",
+      qualityTestId,
+      idempotencyKey: "qa-complaint-valid-qt-001",
+    };
+
+    const result = await deps.service.createComplaint(
+      makeUser() as any,
+      makeEff() as any,
+      input,
+    );
+
+    const complaint = await deps.complaintRepository.findComplaintById(TENANT_A, result.complaintId);
+    expect(complaint!.qualityTestId).toBe(qualityTestId);
+  });
+
+  it("valid linked complaint succeeds with yarn_lot link", async () => {
+    const yarnLotId = "00000000-0000-0000-0000-000000081e84";
+    const input: CreateComplaintInput = {
+      complaintDate: "2026-08-10",
+      subject: "QA complaint with yarn lot link",
+      yarnLotId,
+      idempotencyKey: "qa-complaint-valid-yarn-001",
+    };
+
+    const result = await deps.service.createComplaint(
+      makeUser() as any,
+      makeEff() as any,
+      input,
+    );
+
+    const complaint = await deps.complaintRepository.findComplaintById(TENANT_A, result.complaintId);
+    expect(complaint!.yarnLotId).toBe(yarnLotId);
+  });
+
+  it("valid linked complaint succeeds with raw_material_batch link", async () => {
+    const rawMaterialBatchId = "00000000-0000-0000-0000-000000081e90";
+    const input: CreateComplaintInput = {
+      complaintDate: "2026-08-10",
+      subject: "QA complaint with raw material batch link",
+      rawMaterialBatchId,
+      idempotencyKey: "qa-complaint-valid-rmb-001",
+    };
+
+    const result = await deps.service.createComplaint(
+      makeUser() as any,
+      makeEff() as any,
+      input,
+    );
+
+    const complaint = await deps.complaintRepository.findComplaintById(TENANT_A, result.complaintId);
+    expect(complaint!.rawMaterialBatchId).toBe(rawMaterialBatchId);
+  });
+
+  it("all entity types exposed by the form are supported by the service", async () => {
+    // The form exposes: customer, sale, item, quality_test, yarn_lot
+    // The service must accept all of these + raw_material_batch
+    const entityTypes = [
+      { type: "customer", id: "cust-1", field: "customerId" },
+      { type: "sale", id: "sale-1", field: "saleId" },
+      { type: "item", id: "item-1", field: "itemId" },
+      { type: "quality_test", id: "qt-1", field: "qualityTestId" },
+      { type: "yarn_lot", id: "yl-1", field: "yarnLotId" },
+      { type: "raw_material_batch", id: "rmb-1", field: "rawMaterialBatchId" },
+    ];
+
+    for (const { type, id, field } of entityTypes) {
+      const input: CreateComplaintInput = {
+        complaintDate: "2026-08-10",
+        subject: `QA complaint ${type} link`,
+        idempotencyKey: `qa-complaint-${type}-${id}`,
+        [field]: id,
+      } as CreateComplaintInput;
+
+      const result = await deps.service.createComplaint(
+        makeUser() as any,
+        makeEff() as any,
+        input,
+      );
+
+      const complaint = await deps.complaintRepository.findComplaintById(TENANT_A, result.complaintId);
+      expect((complaint! as any)[field]).toBe(id);
+    }
+  });
+
   it("missing linked entity is rejected with zero effects", async () => {
     const input: CreateComplaintInput = {
       complaintDate: "2026-08-10",

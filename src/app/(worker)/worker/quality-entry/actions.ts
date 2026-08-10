@@ -198,7 +198,10 @@ export async function createComplaintAction(
     ? String(formData.get("description"))
     : null;
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-  const linkedEntityId = String(formData.get("linkedEntityId") ?? "").trim();
+  const linkedEntityType = String(formData.get("linkedEntityType") ?? "").trim();
+  // linkedEntityId is submitted as "type:id" from the form's <option> value
+  // so the action can validate the type/ID pair without scanning tables.
+  const linkedEntityIdRaw = String(formData.get("linkedEntityId") ?? "").trim();
 
   if (!complaintDate || !subject || !idempotencyKey) {
     throw new Error(
@@ -206,19 +209,56 @@ export async function createComplaintAction(
     );
   }
 
-  if (!linkedEntityId) {
+  if (!linkedEntityType) {
     throw new Error(
-      "VALIDATION_FAILED: linkedEntityId is required (at least one linked entity: customer/sale/item/quality test/yarn lot).",
+      "VALIDATION_FAILED: linkedEntityType is required.",
+    );
+  }
+
+  if (!linkedEntityIdRaw) {
+    throw new Error(
+      "VALIDATION_FAILED: linkedEntityId is required.",
+    );
+  }
+
+  // Validate linkedEntityType is supported
+  const SUPPORTED_ENTITY_TYPES = ["customer", "sale", "item", "quality_test", "yarn_lot"] as const;
+  type SupportedEntityType = (typeof SUPPORTED_ENTITY_TYPES)[number];
+  if (!SUPPORTED_ENTITY_TYPES.includes(linkedEntityType as SupportedEntityType)) {
+    throw new Error(
+      `VALIDATION_FAILED: unsupported linkedEntityType '${linkedEntityType}'. Supported: ${SUPPORTED_ENTITY_TYPES.join(", ")}.`,
+    );
+  }
+
+  // Parse the "type:id" format from the form's <option> value
+  const colonIdx = linkedEntityIdRaw.indexOf(":");
+  if (colonIdx < 0) {
+    throw new Error(
+      "VALIDATION_FAILED: linkedEntityId must be in 'type:id' format.",
+    );
+  }
+  const submittedType = linkedEntityIdRaw.substring(0, colonIdx);
+  const submittedId = linkedEntityIdRaw.substring(colonIdx + 1);
+
+  // Type/ID mismatch: the submitted linkedEntityType must match the type
+  // embedded in the linkedEntityId value
+  if (submittedType !== linkedEntityType) {
+    throw new Error(
+      `VALIDATION_FAILED: linkedEntityType '${linkedEntityType}' does not match the entity ID type '${submittedType}'.`,
+    );
+  }
+
+  if (!submittedId) {
+    throw new Error(
+      "VALIDATION_FAILED: linkedEntityId contains an empty ID.",
     );
   }
 
   const { db: dbInstance, audit, idempotency, documentSequence } =
     getSharedDeps();
 
-  // Resolve which entity type the linkedEntityId refers to.
-  // The form submits a single entity ID; we check each tenant-scoped table
-  // to determine the type. This is a ownership validation: cross-tenant
-  // entity IDs will not be found and will be rejected.
+  // Validate that the type/ID pair exists in the tenant scope.
+  // This is an ownership validation: cross-tenant or nonexistent IDs are rejected.
   const { QualityReturnScreenQueryService } = await import(
     "@/server/services/quality-return-screen-query-service"
   );
@@ -226,10 +266,12 @@ export async function createComplaintAction(
   const linkedEntities = await queryService.listLinkedEntitiesForWorker(
     authResult.tenantId,
   );
-  const matched = linkedEntities.find((e) => e.entityId === linkedEntityId);
+  const matched = linkedEntities.find(
+    (e) => e.entityType === submittedType && e.entityId === submittedId,
+  );
   if (!matched) {
     throw new Error(
-      "VALIDATION_FAILED: linkedEntityId not found in tenant scope (cross-tenant or invalid entity).",
+      "VALIDATION_FAILED: linkedEntityId not found in tenant scope for the given type (cross-tenant, nonexistent, or type mismatch).",
     );
   }
 
@@ -254,7 +296,8 @@ export async function createComplaintAction(
     idempotencyKey,
   };
 
-  switch (matched.entityType) {
+  const entityType = matched.entityType as SupportedEntityType;
+  switch (entityType) {
     case "customer":
       complaintInput.customerId = matched.entityId;
       break;
@@ -269,9 +312,6 @@ export async function createComplaintAction(
       break;
     case "yarn_lot":
       complaintInput.yarnLotId = matched.entityId;
-      break;
-    case "raw_material_batch":
-      complaintInput.rawMaterialBatchId = matched.entityId;
       break;
     default:
       throw new Error(
