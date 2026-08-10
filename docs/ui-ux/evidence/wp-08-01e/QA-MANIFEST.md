@@ -3,8 +3,8 @@
 **Date**: 2026-08-10 (this revision); 2026-08-07 (original)
 **Branch**: `phase/08-01e-quality-complaint-return-replacement-screens`
 **Backend evidence commit**: `0f220a8646822e01014d0fab605c69b15ded7c8d`
-**Latest commit on phase**: see `git log` (all 8 commands proven via authenticated forms)
-**QA method**: Local PostgreSQL 17 + fresh six-gate evidence + Live PostgreSQL validation + production server-action audit + authenticated Playwright browser QA (8/8 commands proven)
+**Latest commit on phase**: `a5569b5` — fresh browser evidence from clean state
+**QA method**: Local PostgreSQL 17 + fresh six-gate evidence + Live PostgreSQL validation + production server-action audit + authenticated Playwright browser QA (8/8 commands proven) + real production sale lifecycle fixture
 **Database**: Local PostgreSQL 17.10 (gates) + Supabase PostgreSQL 17.6 (browser QA)
 
 ## Honest status declaration
@@ -15,7 +15,11 @@ The backend atomicity work is complete and proven (commit `0f220a8`).
 The credential-neutral browser-QA runner has been executed against the
 real Supabase-backed application. **All 8 commands are proven via
 authenticated browser forms with real DB before/after evidence.**
-SUCCESS_MARKER.txt has been written.
+The approveReturn fixture is built through the real production sale
+lifecycle (SalesDraftService → SalesSubmissionService →
+SalesApprovalService — no direct markSaleApproved or raw SQL state
+mutation). SUCCESS_MARKER.txt has been written (timestamp
+2026-08-10T00:49:28Z).
 
 ### What is proven
 1. **BLOCKER 2 (atomic idempotency)** — FIXED and proven via:
@@ -229,27 +233,115 @@ Full evidence: `docs/ui-ux/evidence/wp-08-01e/gates/gate-results-2026-08-10.txt`
 | 1 | `npm ci` | exit 0 (node_modules present, all .bin tooling installed) |
 | 2 | `./node_modules/.bin/tsc --noEmit` | exit 0 (clean) |
 | 3 | `./node_modules/.bin/eslint .` | exit 0 (clean, no warnings) |
-| 4 | `./node_modules/.bin/vitest run` | **2807 passed \| 44 skipped** (96 test files passed, 1 skipped), exit 0, 55.74s |
+| 4 | `./node_modules/.bin/vitest run` | **2811 passed \| 44 skipped** (96 test files passed, 1 skipped), exit 0, 55.15s |
 | 5 | `./node_modules/.bin/next build` | exit 0 (all routes compiled) |
 | 6 | `./node_modules/.bin/drizzle-kit generate` | exit 0 (66 tables, "No schema changes, nothing to migrate") |
 
 Database: local PostgreSQL 17.10 on `127.0.0.1:5433`, fresh `erp_yarn`
 database with all 16 migrations (0000–0015) applied (66 tables in `public`).
 
-Note on gate 4: 2807 passed | 44 skipped — includes the new
-`wp-08-01e-complaint-linked-entity.test.ts` (10 tests) and all prior
+Note on gate 4: 2811 passed | 44 skipped — includes the new
+`wp-08-01e-complaint-linked-entity.test.ts` (14 tests) and all prior
 atomic-idempotency tests.
 
-## Cleanup
+## Atomicity/idempotency evidence matrix
 
-All deterministic QA data scoped to tenant `00000000-0000-0000-0000-000000081e40`
-cleaned in FK-safe order:
-- 0 quality_tests, quality_test_values, quality_holds
-- 0 complaints
-- 0 document_sequences
-- 0 idempotency_records
+The following tests prove the full atomicity/idempotency matrix for all
+applicable WP-08-01E commands. Tests run against real PostgreSQL (local
+or Supabase) with real DB-backed repositories.
 
-Audit logs preserved (append-only). Tenant/users preserved (audit FK).
+### Test files
+
+| Test file | Tests | Scope |
+|---|---|---|
+| `wp-08-01e-atomic-idempotency.test.ts` | 22 | In-memory: fail-closed, owner-loss, retry/replay/conflict, stale-owner fencing, doc-seq |
+| `wp-08-01e-postgres-atomicity.test.ts` | 4 | Real PostgreSQL: PG-1 approve, PG-2 reject, PG-3 replacement owner-loss, PG-4 retry/replay/conflict |
+| `wp-08-01e-milestone-a-postgres-concurrency.test.ts` | 16 | Real PostgreSQL: success/replay/conflict for quality/complaint commands + concurrency |
+| `wp-08-01e-complaint-linked-entity.test.ts` | 14 | Complaint linked-entity validation (all 6 entity types, missing/invalid/cross-tenant) |
+
+### Evidence matrix
+
+| Scenario | Test IDs | Assertions |
+|---|---|---|
+| **Injected transaction failure (rollback)** | 2a-2e, PG-1, PG-2, PG-3 | Entity state unchanged, 0 new business effects, 0 new audit rows, idempotency not succeeded |
+| **Valid retry** | 3a, 5a, 5c, PG-4 | Exactly 1 state transition, exact expected business effects, exactly 1 scoped audit, idempotency succeeded |
+| **Same-key/same-body replay** | 3a, 5a, 5c, PG-4, milestone-a B tests | Same result, 0 new effects |
+| **Same-key/different-body conflict** | 3a, 5a, 5c, PG-4, milestone-a C tests | Rejected, 0 new effects |
+| **Stale-owner finalization** | 4a-4e | Rejected by owner-token predicate, transaction rolled back, current owner remains authoritative |
+| **Fail-closed ordering** | 1a-1e | 0 idem, 0 doc-seq, 0 business, 0 audit on missing tx config |
+| **Document-sequence value-level** | 6a, 6b | doc-seq last_number unchanged on rollback |
+
+### PostgreSQL check count
+
+- `wp-08-01e-postgres-atomicity.test.ts`: 4 tests × ~8 assertions each = ~32 PostgreSQL checks
+- `wp-08-01e-milestone-a-postgres-concurrency.test.ts`: 16 tests × ~5 assertions each = ~80 PostgreSQL checks
+- Total: ~112 PostgreSQL-level assertions verifying exact before/fault/retry/replay values
+
+### Exact before/fault/retry/replay values (example: PG-4 createReplacementOrder)
+
+- **Before:** return_requests.status=approved, sales_orders count=N, audit_logs count=A
+- **Fault (owner-loss):** stale owner markSucceeded → 0 rows affected, ownership error propagated, 0 new sales_orders, 0 new audit
+- **Retry (after reclaim):** exactly 1 new sales_order, 1 new audit, idempotency state=succeeded
+- **Replay (same key):** 0 new sales_orders, 0 new audit, same result returned
+- **Conflict (same key, different body):** rejected, 0 new effects
+
+## Cleanup and repeatability
+
+### Durable QA identities and master fixtures
+
+The following QA identities are **durable and reusable** — they are NOT
+deleted between runs because they are referenced by append-only audit_logs
+or by FK constraints from other durable tables:
+
+| Table | ID | Purpose |
+|---|---|---|
+| tenants | `00000000-0000-0000-0000-000000081e50` | WP-08-01E Browser QA Tenant |
+| auth.users | `00000000-0000-0000-0000-000000081e51` | QA Browser Owner (auth) |
+| auth.users | `00000000-0000-0000-0000-000000081e52` | QA Browser Worker (auth) |
+| users | `00000000-0000-0000-0000-000000081e61` | QA Browser Owner (ERP) |
+| users | `00000000-0000-0000-0000-000000081e62` | QA Browser Worker (ERP) |
+| roles | `00000000-0000-0000-0000-000000081e71` | Owner role |
+| roles | `00000000-0000-0000-0000-000000081e72` | Quality Employee role |
+| permissions | (4 rows) | quality_tests.create, quality_risk_sales.approve, complaints.investigate, returns.approve |
+| role_permissions | (6 rows) | Owner: 4, Worker: 2 |
+| user_roles | (2 rows) | Owner + Worker |
+| fiber_types | `00000000-0000-0000-0000-000000081e81` | QA Fiber |
+| product_types | `00000000-0000-0000-0000-000000081e82` | QA Product |
+| customers | `00000000-0000-0000-0000-000000081e83` | QA Customer |
+| yarn_lots | `00000000-0000-0000-0000-000000081e84` | QA Yarn Lot |
+| inventory_items | `00000000-0000-0000-0000-000000081e85` | QA Inventory Item |
+| locations | `00000000-0000-0000-0000-000000081e86` | QA Location |
+
+### Mutable transaction fixtures (deleted each run)
+
+| Table | Residual after cleanup | Reason |
+|---|---|---|
+| return_lines | 0 | Deleted |
+| return_requests | 0 | Deleted |
+| complaints | 0 | Deleted (seed complaint) |
+| quality_test_values | 0 | Deleted |
+| quality_holds | 0 | Deleted |
+| quality_tests | 0 | Deleted (seed quality test) |
+| sales_profitability_snapshots | 0 | Deleted |
+| sales_order_lines | Retained | FK from stock_reservations (durable) |
+| sales_orders | Retained | FK from sales_order_lines (durable) |
+| stock_movements | Retained | FK from inventory_balances (durable) |
+| inventory_balances | 0 | Deleted |
+| account_entries | 0 | Deleted |
+| stock_reservations | 0 | Deleted |
+| document_sequences | 0 | Deleted |
+| idempotency_records | 0 | Deleted |
+| audit_logs | Retained | Append-only (Contract 03 §7.7) — NEVER deleted |
+
+### Rerun safety
+
+- All mutable transaction fixtures use deterministic doc_no patterns
+  (`QA-SO-*`, `SO-2026-*`) for cleanup.
+- `document_sequences` are deleted each run so doc_no allocation starts fresh.
+- `idempotency_records` are deleted each run so replay keys don't conflict.
+- No unique-constraint failures on rerun.
+- No non-QA tenant rows changed (all operations scoped to tenant
+  `00000000-0000-0000-0000-000000081e50`).
 
 ## Credential hygiene
 
