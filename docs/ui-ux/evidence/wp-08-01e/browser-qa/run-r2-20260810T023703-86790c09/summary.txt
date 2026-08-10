@@ -1,0 +1,53 @@
+WP-08-01E Browser QA Summary
+Started: 2026-08-10T02:37:04.076379+00:00
+Finished: 2026-08-10T02:43:42.296706+00:00
+Tenant: 00000000-0000-0000-0000-000000081e50
+
+=== Protected route assertions ===
+  /management/quality/tests                not_on_login=True
+  /management/quality/complaints           not_on_login=True
+  /management/quality/returns              not_on_login=True
+  /worker/quality-entry                    not_on_login=True
+
+=== Commands ===
+  createQualityTestAction             OK (audit_delta=1)
+  createComplaintAction               OK (audit_delta=1)
+  recordQualityTestValueAction        OK (audit_delta=1)
+  updateComplaintAction               OK (audit_delta=1)
+  reviewQualityTestAction             OK (audit_delta=1)
+  approveReturnAction                 OK (audit_delta=4)
+  rejectReturnAction                  OK (audit_delta=1)
+  createReplacementOrderAction        OK (audit_delta=1)
+
+Worker access /worker/quality-entry: OK
+Worker denied /management/quality/tests: OK
+
+=== Accessibility ===
+  Keyboard Tab moves focus: True
+  Form labels: 4/4 labelled; 0 unlabelled
+  Direction (html dir): rtl
+  Touch targets too small (of 13 checked): 0
+
+=== 360px overflow metrics ===
+  /management/quality/tests: scrollWidth=360 clientWidth=360 overflow=False
+  /management/quality/complaints: scrollWidth=360 clientWidth=360 overflow=False
+  /management/quality/returns: scrollWidth=360 clientWidth=360 overflow=False
+  /worker/quality-entry: scrollWidth=360 clientWidth=360 overflow=False
+
+=== Cleanup ===
+  public.inventory_adjustments: 0
+  public.inventory_balances: 1
+  public.stock_reservations: 2
+  public.sales_profitability_snapshots: 4
+  public.account_entries: 4
+  public.return_lines: 2
+  public.return_requests: 2
+  public.complaints: 1
+  public.quality_test_values: 1
+  public.quality_holds: 1
+  public.quality_tests: 1
+  public.sales_order_lines: 3
+  public.sales_orders: 3
+  public.stock_movements: 5
+
+Overall success: True
