@@ -727,15 +727,15 @@ def cleanup(env: dict[str, str]) -> dict[str, int]:
         # Delete return_requests BEFORE sales_orders (FK)
         ("return_requests", "DELETE FROM public.return_requests WHERE tenant_id = %s"),
         # Delete complaints (seed complaint — mutable)
-        ("complaints", "DELETE FROM public.complaints WHERE tenant_id = %s AND complaint_no LIKE 'QA-%'"),
+        ("complaints", "DELETE FROM public.complaints WHERE tenant_id = %s AND complaint_no LIKE 'QA-%%'"),
         # Delete quality_test_values BEFORE quality_tests (FK)
         ("quality_test_values", "DELETE FROM public.quality_test_values WHERE tenant_id = %s"),
         ("quality_holds", "DELETE FROM public.quality_holds WHERE tenant_id = %s"),
-        ("quality_tests", "DELETE FROM public.quality_tests WHERE tenant_id = %s AND test_no LIKE 'QA-%'"),
+        ("quality_tests", "DELETE FROM public.quality_tests WHERE tenant_id = %s AND test_no LIKE 'QA-%%'"),
         # Delete sales_order_lines BEFORE sales_orders (FK)
         ("sales_order_lines", "DELETE FROM public.sales_order_lines WHERE tenant_id = %s"),
         # Delete sales_orders (now safe — no more FK references)
-        ("sales_orders", "DELETE FROM public.sales_orders WHERE tenant_id = %s AND (doc_no LIKE 'QA-SO-%' OR doc_no LIKE 'SO-2026-%')"),
+        ("sales_orders", "DELETE FROM public.sales_orders WHERE tenant_id = %s AND (doc_no LIKE 'QA-SO-%%' OR doc_no LIKE 'SO-2026-%%')"),
         # Delete stock_movements (now safe — inventory_balances already deleted)
         ("stock_movements", "DELETE FROM public.stock_movements WHERE tenant_id = %s AND source_document_type IN ('return_line', 'return_request', 'test_seed', 'sales_order_line')"),
         # NOTE: document_sequences are NOT deleted — they must remain monotonic.

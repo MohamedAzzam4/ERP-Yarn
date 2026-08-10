@@ -1,6 +1,6 @@
 WP-08-01E Browser QA Summary
-Started: 2026-08-10T01:33:38.905059+00:00
-Finished: 2026-08-10T01:40:28.125464+00:00
+Started: 2026-08-10T02:06:24.210540+00:00
+Finished: 2026-08-10T02:13:08.387990+00:00
 Tenant: 00000000-0000-0000-0000-000000081e50
 
 === Protected route assertions ===
@@ -35,7 +35,7 @@ Worker denied /management/quality/tests: OK
   /worker/quality-entry: scrollWidth=360 clientWidth=360 overflow=False
 
 === Cleanup ===
-  public.inventory_adjustments_error: tuple index out of range
+  public.inventory_adjustments: 0
   public.inventory_balances: 1
   public.stock_reservations: 2
   public.sales_profitability_snapshots: 4
@@ -49,7 +49,5 @@ Worker denied /management/quality/tests: OK
   public.sales_order_lines: 3
   public.sales_orders_error: tuple index out of range
   public.stock_movements: 5
-  public.idempotency_records: 20
-  public.document_sequences: 4
 
 Overall success: True
