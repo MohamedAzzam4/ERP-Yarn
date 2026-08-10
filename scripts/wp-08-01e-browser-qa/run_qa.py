@@ -937,7 +937,8 @@ def main() -> int:
         lines.append("")
         lines.append("=== Accessibility ===")
         lines.append(f"  Keyboard Tab moves focus: {a11y.get('keyboard_tab_moves_focus')}")
-        lines.append(f"  Form labels (labeled/unlabeled): {a11y['form_labels']['labeled']}/{a11y['form_labels']['unlabeled']}")
+        total_inputs = a11y['form_labels']['labeled'] + a11y['form_labels']['unlabeled']
+        lines.append(f"  Form labels: {a11y['form_labels']['labeled']}/{total_inputs} labelled; {a11y['form_labels']['unlabeled']} unlabelled")
         lines.append(f"  Direction (html dir): {a11y['direction']['html_dir']}")
         lines.append(f"  Touch targets too small (of {a11y['touch_targets_44px']['checked']} checked): {a11y['touch_targets_44px']['too_small']}")
         lines.append("")

@@ -1,6 +1,6 @@
 WP-08-01E Browser QA Summary
-Started: 2026-08-10T00:12:21.342888+00:00
-Finished: 2026-08-10T00:18:29.039488+00:00
+Started: 2026-08-10T00:42:34.104791+00:00
+Finished: 2026-08-10T00:49:28.167810+00:00
 Tenant: 00000000-0000-0000-0000-000000081e50
 
 === Protected route assertions ===
@@ -24,7 +24,7 @@ Worker denied /management/quality/tests: OK
 
 === Accessibility ===
   Keyboard Tab moves focus: True
-  Form labels (labeled/unlabeled): 4/0
+  Form labels: 4/4 labelled; 0 unlabelled
   Direction (html dir): rtl
   Touch targets too small (of 13 checked): 0
 
@@ -42,18 +42,18 @@ Worker denied /management/quality/tests: OK
   public.quality_holds: 1
   public.quality_tests: 2
   public.sales_profitability_snapshots: 4
-  public.sales_order_lines: 3
-  public.sales_orders: 3
+  public.sales_order_lines_error: update or delete on table "sales_order_lines" violates foreign key constraint "stock_reservations_sa
+  public.sales_orders_error: update or delete on table "sales_orders" violates foreign key constraint "sales_order_lines_sales_or
   public.yarn_lots: 1
   public.inventory_items_error: update or delete on table "inventory_items" violates foreign key constraint "inventory_balances_item
   public.stock_movements_error: update or delete on table "stock_movements" violates foreign key constraint "inventory_balances_last
   public.inventory_balances: 1
-  public.account_entries: 2
-  public.locations_error: update or delete on table "locations" violates foreign key constraint "stock_movements_to_location_i
-  public.customers: 1
+  public.account_entries: 4
+  public.locations_error: update or delete on table "locations" violates foreign key constraint "stock_movements_from_location
+  public.customers_error: update or delete on table "customers" violates foreign key constraint "sales_orders_customer_id_cust
   public.product_types: 1
   public.fiber_types: 1
-  public.document_sequences: 7
-  public.idempotency_records: 16
+  public.document_sequences: 8
+  public.idempotency_records: 20
 
 Overall success: True
