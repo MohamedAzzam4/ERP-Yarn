@@ -199,8 +199,6 @@ export async function createComplaintAction(
     : null;
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
   const linkedEntityType = String(formData.get("linkedEntityType") ?? "").trim();
-  // linkedEntityId is submitted as "type:id" from the form's <option> value
-  // so the action can validate the type/ID pair without scanning tables.
   const linkedEntityIdRaw = String(formData.get("linkedEntityId") ?? "").trim();
 
   if (!complaintDate || !subject || !idempotencyKey) {
@@ -209,56 +207,16 @@ export async function createComplaintAction(
     );
   }
 
-  if (!linkedEntityType) {
-    throw new Error(
-      "VALIDATION_FAILED: linkedEntityType is required.",
-    );
-  }
-
-  if (!linkedEntityIdRaw) {
-    throw new Error(
-      "VALIDATION_FAILED: linkedEntityId is required.",
-    );
-  }
-
-  // Validate linkedEntityType is supported
-  const SUPPORTED_ENTITY_TYPES = ["customer", "sale", "item", "quality_test", "yarn_lot"] as const;
-  type SupportedEntityType = (typeof SUPPORTED_ENTITY_TYPES)[number];
-  if (!SUPPORTED_ENTITY_TYPES.includes(linkedEntityType as SupportedEntityType)) {
-    throw new Error(
-      `VALIDATION_FAILED: unsupported linkedEntityType '${linkedEntityType}'. Supported: ${SUPPORTED_ENTITY_TYPES.join(", ")}.`,
-    );
-  }
-
-  // Parse the "type:id" format from the form's <option> value
-  const colonIdx = linkedEntityIdRaw.indexOf(":");
-  if (colonIdx < 0) {
-    throw new Error(
-      "VALIDATION_FAILED: linkedEntityId must be in 'type:id' format.",
-    );
-  }
-  const submittedType = linkedEntityIdRaw.substring(0, colonIdx);
-  const submittedId = linkedEntityIdRaw.substring(colonIdx + 1);
-
-  // Type/ID mismatch: the submitted linkedEntityType must match the type
-  // embedded in the linkedEntityId value
-  if (submittedType !== linkedEntityType) {
-    throw new Error(
-      `VALIDATION_FAILED: linkedEntityType '${linkedEntityType}' does not match the entity ID type '${submittedType}'.`,
-    );
-  }
-
-  if (!submittedId) {
-    throw new Error(
-      "VALIDATION_FAILED: linkedEntityId contains an empty ID.",
-    );
-  }
+  // Parse + validate the linkedEntityType / linkedEntityId pair.
+  // This runs BEFORE any idempotency claim or DB write — zero effects on failure.
+  const { parseComplaintLink, resolveComplaintLink, applyResolvedLinkToInput } =
+    await import("@/server/services/complaint-link-resolver");
+  const parsed = parseComplaintLink(linkedEntityType, linkedEntityIdRaw);
 
   const { db: dbInstance, audit, idempotency, documentSequence } =
     getSharedDeps();
 
-  // Validate that the type/ID pair exists in the tenant scope.
-  // This is an ownership validation: cross-tenant or nonexistent IDs are rejected.
+  // Resolve the parsed type/ID against the tenant-scoped linked entities.
   const { QualityReturnScreenQueryService } = await import(
     "@/server/services/quality-return-screen-query-service"
   );
@@ -266,58 +224,19 @@ export async function createComplaintAction(
   const linkedEntities = await queryService.listLinkedEntitiesForWorker(
     authResult.tenantId,
   );
-  const matched = linkedEntities.find(
-    (e) => e.entityType === submittedType && e.entityId === submittedId,
+  const resolved = resolveComplaintLink(parsed, linkedEntities);
+
+  // Build the ComplaintService input with only the matching field set
+  const complaintInput = applyResolvedLinkToInput(
+    {
+      complaintDate,
+      subject,
+      description,
+      priority: priority as ComplaintPriority,
+      idempotencyKey,
+    },
+    resolved,
   );
-  if (!matched) {
-    throw new Error(
-      "VALIDATION_FAILED: linkedEntityId not found in tenant scope for the given type (cross-tenant, nonexistent, or type mismatch).",
-    );
-  }
-
-  // Map entity type to the ComplaintService input fields
-  const complaintInput: {
-    complaintDate: string;
-    subject: string;
-    description: string | null;
-    priority: ComplaintPriority;
-    idempotencyKey: string;
-    customerId?: string;
-    saleId?: string;
-    itemId?: string;
-    qualityTestId?: string;
-    yarnLotId?: string;
-    rawMaterialBatchId?: string;
-  } = {
-    complaintDate,
-    subject,
-    description,
-    priority: priority as ComplaintPriority,
-    idempotencyKey,
-  };
-
-  const entityType = matched.entityType as SupportedEntityType;
-  switch (entityType) {
-    case "customer":
-      complaintInput.customerId = matched.entityId;
-      break;
-    case "sale":
-      complaintInput.saleId = matched.entityId;
-      break;
-    case "item":
-      complaintInput.itemId = matched.entityId;
-      break;
-    case "quality_test":
-      complaintInput.qualityTestId = matched.entityId;
-      break;
-    case "yarn_lot":
-      complaintInput.yarnLotId = matched.entityId;
-      break;
-    default:
-      throw new Error(
-        `VALIDATION_FAILED: unsupported linked entity type '${matched.entityType}'.`,
-      );
-  }
 
   const complaintRepository = new ComplaintDbRepository(dbInstance);
 
