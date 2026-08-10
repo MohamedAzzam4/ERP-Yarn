@@ -125,19 +125,37 @@ const workerEff = {
 async function main() {
   console.log("=== WP-08-01E Browser QA Fixture Setup (Production Path v2) ===");
 
-  // Clean up mutable fixtures from previous runs (FK-safe, inside a transaction)
+  // Clean up mutable fixtures from previous runs (FK-safe, inside a transaction).
+  // Order: children first, parents last.
+  // stock_reservations → sales_order_lines → sales_orders
+  // inventory_balances → stock_movements (last_movement_id FK)
+  // return_lines → return_requests → sales_orders
+  // audit_logs: NEVER deleted (append-only per Contract 03 §7.7)
   console.log("[setup] Cleaning up previous run's mutable fixtures...");
   await pgSql.begin(async (tx) => {
-    await tx`DELETE FROM sales_profitability_snapshots WHERE tenant_id = ${TENANT_ID}`;
-    await tx`DELETE FROM account_entries WHERE tenant_id = ${TENANT_ID}`;
-    await tx`DELETE FROM stock_reservations WHERE tenant_id = ${TENANT_ID}`;
-    await tx`DELETE FROM return_lines WHERE tenant_id = ${TENANT_ID}`;
-    await tx`DELETE FROM return_requests WHERE tenant_id = ${TENANT_ID}`;
-    await tx`DELETE FROM sales_order_lines WHERE tenant_id = ${TENANT_ID}`;
-    await tx`DELETE FROM sales_orders WHERE tenant_id = ${TENANT_ID} AND (doc_no LIKE 'QA-SO-%' OR doc_no LIKE 'SO-2026-%')`;
+    // Delete children of stock_movements first
+    await tx`DELETE FROM inventory_adjustments WHERE tenant_id = ${TENANT_ID} AND posted_movement_id IN (SELECT id FROM stock_movements WHERE tenant_id = ${TENANT_ID})`;
+    // Delete inventory_balances (references stock_movements via last_movement_id)
     await tx`DELETE FROM inventory_balances WHERE tenant_id = ${TENANT_ID} AND item_id = ${INVENTORY_ITEM_ID}`;
+    // Delete stock_reservations (references sales_order_lines)
+    await tx`DELETE FROM stock_reservations WHERE tenant_id = ${TENANT_ID}`;
+    // Delete sales_profitability_snapshots (references sales_orders)
+    await tx`DELETE FROM sales_profitability_snapshots WHERE tenant_id = ${TENANT_ID}`;
+    // Delete account_entries
+    await tx`DELETE FROM account_entries WHERE tenant_id = ${TENANT_ID}`;
+    // Delete return_lines (references return_requests + sales_order_lines)
+    await tx`DELETE FROM return_lines WHERE tenant_id = ${TENANT_ID}`;
+    // Delete return_requests (references sales_orders)
+    await tx`DELETE FROM return_requests WHERE tenant_id = ${TENANT_ID}`;
+    // Delete sales_order_lines (references sales_orders + stock_reservations)
+    await tx`DELETE FROM sales_order_lines WHERE tenant_id = ${TENANT_ID}`;
+    // Delete sales_orders (now safe — no more FK references)
+    await tx`DELETE FROM sales_orders WHERE tenant_id = ${TENANT_ID} AND (doc_no LIKE 'QA-SO-%' OR doc_no LIKE 'SO-2026-%')`;
+    // Delete stock_movements (now safe — inventory_balances already deleted)
     await tx`DELETE FROM stock_movements WHERE tenant_id = ${TENANT_ID} AND source_document_type IN ('return_line', 'return_request', 'test_seed', 'sales_order_line')`;
+    // Delete idempotency_records
     await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TENANT_ID}`;
+    // Delete document_sequences (ensures doc_no allocation starts fresh each run)
     await tx`DELETE FROM document_sequences WHERE tenant_id = ${TENANT_ID} AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order', 'stock_movement', 'stock_reservation')`;
   });
   console.log("[setup] Cleanup complete.");

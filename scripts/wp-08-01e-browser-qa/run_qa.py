@@ -700,31 +700,60 @@ def run_accessibility_checks(page, base_url: str) -> dict[str, Any]:
 def cleanup(env: dict[str, str]) -> dict[str, int]:
     """Delete mutable QA fixtures in FK-safe order.
     Preserves immutable audit_logs (append-only per Contract 03 §7.7).
-    Preserves QA tenant/users (durable — referenced by audit_logs)."""
+    Preserves QA tenant/users (durable — referenced by audit_logs).
+
+    FK-safe order (children first, parents last):
+    - stock_reservations → sales_order_lines → sales_orders
+    - inventory_balances → stock_movements (last_movement_id FK)
+    - return_lines → return_requests → sales_orders
+    - audit_logs: NEVER deleted (append-only)
+    """
     deleted: dict[str, int] = {}
-    tables_children_first = [
-        "return_lines", "return_requests", "complaints",
-        "quality_test_values", "quality_holds", "quality_tests",
-        "sales_profitability_snapshots",
-        "sales_order_lines", "sales_orders",
-        "yarn_lots", "inventory_items",
-        "stock_movements",
-        "inventory_balances",
-        "account_entries",
-        "locations", "customers", "product_types", "fiber_types",
-        "document_sequences", "idempotency_records",
-        # NOTE: users, roles, permissions, tenants are NOT deleted — they are
-        # durable QA fixtures referenced by audit_logs. Reuse on next run.
+    # Ordered cleanup statements with specific WHERE clauses for FK safety
+    cleanup_statements = [
+        # Delete inventory_adjustments that reference stock_movements
+        ("inventory_adjustments", "DELETE FROM public.inventory_adjustments WHERE tenant_id = %s AND posted_movement_id IN (SELECT id FROM public.stock_movements WHERE tenant_id = %s)"),
+        # Delete inventory_balances BEFORE stock_movements (FK: last_movement_id)
+        ("inventory_balances", "DELETE FROM public.inventory_balances WHERE tenant_id = %s AND item_id = %s"),
+        # Delete stock_reservations BEFORE sales_order_lines (FK)
+        ("stock_reservations", "DELETE FROM public.stock_reservations WHERE tenant_id = %s"),
+        # Delete sales_profitability_snapshots BEFORE sales_orders (FK)
+        ("sales_profitability_snapshots", "DELETE FROM public.sales_profitability_snapshots WHERE tenant_id = %s"),
+        # Delete account_entries
+        ("account_entries", "DELETE FROM public.account_entries WHERE tenant_id = %s"),
+        # Delete return_lines BEFORE return_requests + sales_order_lines (FK)
+        ("return_lines", "DELETE FROM public.return_lines WHERE tenant_id = %s"),
+        # Delete return_requests BEFORE sales_orders (FK)
+        ("return_requests", "DELETE FROM public.return_requests WHERE tenant_id = %s"),
+        # Delete complaints (seed complaint — mutable)
+        ("complaints", "DELETE FROM public.complaints WHERE tenant_id = %s AND complaint_no LIKE 'QA-%'"),
+        # Delete quality_test_values BEFORE quality_tests (FK)
+        ("quality_test_values", "DELETE FROM public.quality_test_values WHERE tenant_id = %s"),
+        ("quality_holds", "DELETE FROM public.quality_holds WHERE tenant_id = %s"),
+        ("quality_tests", "DELETE FROM public.quality_tests WHERE tenant_id = %s AND test_no LIKE 'QA-%'"),
+        # Delete sales_order_lines BEFORE sales_orders (FK)
+        ("sales_order_lines", "DELETE FROM public.sales_order_lines WHERE tenant_id = %s"),
+        # Delete sales_orders (now safe — no more FK references)
+        ("sales_orders", "DELETE FROM public.sales_orders WHERE tenant_id = %s AND (doc_no LIKE 'QA-SO-%' OR doc_no LIKE 'SO-2026-%')"),
+        # Delete stock_movements (now safe — inventory_balances already deleted)
+        ("stock_movements", "DELETE FROM public.stock_movements WHERE tenant_id = %s AND source_document_type IN ('return_line', 'return_request', 'test_seed', 'sales_order_line')"),
+        # Delete idempotency_records
+        ("idempotency_records", "DELETE FROM public.idempotency_records WHERE tenant_id = %s"),
+        # Delete document_sequences (ensures doc_no allocation starts fresh)
+        ("document_sequences", "DELETE FROM public.document_sequences WHERE tenant_id = %s AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order', 'stock_movement', 'stock_reservation')"),
     ]
     with db_conn(env) as conn, conn.cursor() as cur:
-        for table in tables_children_first:
+        for table_name, sql in cleanup_statements:
             try:
-                cur.execute(f"DELETE FROM public.{table} WHERE tenant_id = %s", (TENANT_ID,))
-                deleted[f"public.{table}"] = cur.rowcount
+                if "item_id = %s" in sql:
+                    cur.execute(sql, (TENANT_ID, INVENTORY_ITEM_ID))
+                else:
+                    cur.execute(sql, (TENANT_ID,))
+                deleted[f"public.{table_name}"] = cur.rowcount
                 conn.commit()
             except Exception as e:
                 conn.rollback()
-                deleted[f"public.{table}_error"] = str(e)[:100]
+                deleted[f"public.{table_name}_error"] = str(e)[:100]
     return deleted
 
 
