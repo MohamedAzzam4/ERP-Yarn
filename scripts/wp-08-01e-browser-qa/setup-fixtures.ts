@@ -156,6 +156,13 @@ async function main() {
     await tx`DELETE FROM return_lines WHERE tenant_id = ${TENANT_ID}`;
     // Delete return_requests (references sales_orders)
     await tx`DELETE FROM return_requests WHERE tenant_id = ${TENANT_ID}`;
+    // Delete ALL complaints for QA tenant (both seed and command-created)
+    await tx`DELETE FROM complaints WHERE tenant_id = ${TENANT_ID}`;
+    // Delete quality_test_values + quality_holds BEFORE quality_tests
+    await tx`DELETE FROM quality_test_values WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM quality_holds WHERE tenant_id = ${TENANT_ID}`;
+    // Delete ALL quality_tests for QA tenant (both seed and command-created)
+    await tx`DELETE FROM quality_tests WHERE tenant_id = ${TENANT_ID}`;
     // Delete sales_order_lines (references sales_orders + stock_reservations)
     await tx`DELETE FROM sales_order_lines WHERE tenant_id = ${TENANT_ID}`;
     // Delete sales_orders (now safe — no more FK references)

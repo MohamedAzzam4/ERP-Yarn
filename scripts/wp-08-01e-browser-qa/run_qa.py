@@ -726,12 +726,13 @@ def cleanup(env: dict[str, str]) -> dict[str, int]:
         ("return_lines", "DELETE FROM public.return_lines WHERE tenant_id = %s"),
         # Delete return_requests BEFORE sales_orders (FK)
         ("return_requests", "DELETE FROM public.return_requests WHERE tenant_id = %s"),
-        # Delete complaints (seed complaint — mutable)
-        ("complaints", "DELETE FROM public.complaints WHERE tenant_id = %s AND complaint_no LIKE 'QA-%%'"),
-        # Delete quality_test_values BEFORE quality_tests (FK)
+        # Delete ALL complaints for QA tenant (both seed QA-COMPL-* and command-created CMP-2026-*)
+        ("complaints", "DELETE FROM public.complaints WHERE tenant_id = %s"),
+        # Delete quality_test_values BEFORE quality_tests (no FK from other tables)
         ("quality_test_values", "DELETE FROM public.quality_test_values WHERE tenant_id = %s"),
         ("quality_holds", "DELETE FROM public.quality_holds WHERE tenant_id = %s"),
-        ("quality_tests", "DELETE FROM public.quality_tests WHERE tenant_id = %s AND test_no LIKE 'QA-%%'"),
+        # Delete ALL quality_tests for QA tenant (both seed QA-QT-* and command-created QT-2026-*)
+        ("quality_tests", "DELETE FROM public.quality_tests WHERE tenant_id = %s"),
         # Delete sales_order_lines BEFORE sales_orders (FK)
         ("sales_order_lines", "DELETE FROM public.sales_order_lines WHERE tenant_id = %s"),
         # Delete sales_orders (now safe — no more FK references)
