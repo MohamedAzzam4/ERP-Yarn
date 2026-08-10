@@ -1,6 +1,6 @@
 {
-  "started_at": "2026-08-09T23:08:02.472066+00:00",
-  "finished_at": "2026-08-09T23:12:01.514021+00:00",
+  "started_at": "2026-08-10T00:12:21.342888+00:00",
+  "finished_at": "2026-08-10T00:18:29.039488+00:00",
   "tenant_id": "00000000-0000-0000-0000-000000081e50",
   "seed_counts": {
     "tenants": 1,
@@ -10,11 +10,22 @@
     "permissions": 4,
     "role_permissions": 6,
     "user_roles": 2,
-    "master_data": 4,
-    "inventory_and_yarn": 2,
-    "sales_orders_and_lines": 2,
-    "business_records": 6,
-    "profitability_snapshot": 1
+    "master_data": 6,
+    "business_fixtures": 2
+  },
+  "fixture_ids": {
+    "saleId": "c7270886-d941-4e01-9e47-8d0737db0572",
+    "saleDocNo": "QA-SO-msmh9blo",
+    "saleLineId": "e094745c-0bef-4435-9122-f6e90abc936a",
+    "returnRequestId": "a35d9e12-c719-4a7c-97a8-15a9031488de",
+    "replacementSaleId": "3578b9be-9a83-44b6-b6c7-89dbeb4e95ea",
+    "replacementReturnRequestId": "e70d1519-5814-4bc2-9e53-c2d294e403c1",
+    "tenantId": "00000000-0000-0000-0000-000000081e50",
+    "customerId": "00000000-0000-0000-0000-000000081e83",
+    "itemId": "00000000-0000-0000-0000-000000081e85",
+    "locationId": "00000000-0000-0000-0000-000000081e86",
+    "ownerUserId": "00000000-0000-0000-0000-000000081e61",
+    "workerUserId": "00000000-0000-0000-0000-000000081e62"
   },
   "route_assertions": [
     {
@@ -55,13 +66,15 @@
         "complaints": 1,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 112,
-        "idempotency_records": 0,
-        "document_sequences": 0,
-        "stock_movements": 1,
+        "audit_logs": 204,
+        "idempotency_records": 7,
+        "document_sequences": 4,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "after": {
         "quality_tests": 2,
@@ -70,13 +83,15 @@
         "complaints": 1,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 113,
-        "idempotency_records": 1,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 205,
+        "idempotency_records": 8,
+        "document_sequences": 5,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "audit_delta": 1,
       "filled": {
@@ -86,13 +101,14 @@
         "testStatus": "needs_review",
         "riskClassification": "needs_review",
         "notes": "QA browser runner createQualityTest"
-      }
+      },
+      "entity_status": null
     },
     {
       "action": "createComplaintAction",
       "route": "/worker/quality-entry",
       "role": "worker",
-      "status": "NO_AUDIT_DELTA",
+      "status": "OK",
       "before": {
         "quality_tests": 2,
         "quality_test_values": 0,
@@ -100,36 +116,42 @@
         "complaints": 1,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 113,
-        "idempotency_records": 1,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 205,
+        "idempotency_records": 8,
+        "document_sequences": 5,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "after": {
         "quality_tests": 2,
         "quality_test_values": 0,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 113,
-        "idempotency_records": 1,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 206,
+        "idempotency_records": 9,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
-      "audit_delta": 0,
+      "audit_delta": 1,
       "filled": {
         "complaintDate": "2026-08-10",
         "subject": "QA browser runner complaint",
         "priority": "normal",
+        "linkedEntityId": "00000000-0000-0000-0000-000000081e83",
         "description": "QA browser runner createComplaint description"
-      }
+      },
+      "entity_status": null
     },
     {
       "action": "recordQualityTestValueAction",
@@ -140,31 +162,35 @@
         "quality_tests": 2,
         "quality_test_values": 0,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 113,
-        "idempotency_records": 1,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 206,
+        "idempotency_records": 9,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "after": {
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 114,
-        "idempotency_records": 2,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 207,
+        "idempotency_records": 10,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "audit_delta": 1,
       "filled": {
@@ -174,7 +200,8 @@
         "measuredValue": "850",
         "valueStatus": "pass",
         "notes": "QA browser runner recordValue"
-      }
+      },
+      "entity_status": null
     },
     {
       "action": "updateComplaintAction",
@@ -185,31 +212,35 @@
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 114,
-        "idempotency_records": 2,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 207,
+        "idempotency_records": 10,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "after": {
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 115,
-        "idempotency_records": 3,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 208,
+        "idempotency_records": 11,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "audit_delta": 1,
       "filled": {
@@ -217,7 +248,8 @@
         "status": "investigating",
         "priority": "high",
         "investigationNotes": "QA browser runner updateComplaint"
-      }
+      },
+      "entity_status": "investigating"
     },
     {
       "action": "reviewQualityTestAction",
@@ -228,31 +260,35 @@
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 115,
-        "idempotency_records": 3,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 208,
+        "idempotency_records": 11,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "after": {
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 116,
-        "idempotency_records": 4,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 209,
+        "idempotency_records": 12,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "audit_delta": 1,
       "filled": {
@@ -260,48 +296,54 @@
         "testStatus": "accepted",
         "riskClassification": "none",
         "reviewNotes": "QA browser runner reviewQualityTest"
-      }
+      },
+      "entity_status": "accepted"
     },
     {
       "action": "approveReturnAction",
       "route": "/management/quality/returns",
       "role": "owner",
-      "status": "NO_AUDIT_DELTA",
+      "status": "OK",
       "before": {
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 116,
-        "idempotency_records": 4,
-        "document_sequences": 1,
-        "stock_movements": 1,
+        "audit_logs": 209,
+        "idempotency_records": 12,
+        "document_sequences": 6,
+        "stock_movements": 2,
         "inventory_balances": 1,
         "account_entries": 1,
-        "sales_orders": 1
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 3
       },
       "after": {
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 116,
-        "idempotency_records": 5,
-        "document_sequences": 2,
-        "stock_movements": 1,
+        "audit_logs": 213,
+        "idempotency_records": 14,
+        "document_sequences": 6,
+        "stock_movements": 3,
         "inventory_balances": 1,
-        "account_entries": 1,
-        "sales_orders": 1
+        "account_entries": 2,
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 4
       },
-      "audit_delta": 0,
+      "audit_delta": 4,
       "filled": {
         "financialTreatment": "customer_credit",
         "decisionReason": "QA browser runner approveReturn"
-      }
+      },
+      "entity_status": "approved"
     },
     {
       "action": "rejectReturnAction",
@@ -312,36 +354,41 @@
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 116,
-        "idempotency_records": 5,
-        "document_sequences": 2,
-        "stock_movements": 1,
+        "audit_logs": 213,
+        "idempotency_records": 14,
+        "document_sequences": 6,
+        "stock_movements": 3,
         "inventory_balances": 1,
-        "account_entries": 1,
-        "sales_orders": 1
+        "account_entries": 2,
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 4
       },
       "after": {
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 117,
-        "idempotency_records": 6,
-        "document_sequences": 2,
-        "stock_movements": 1,
+        "audit_logs": 214,
+        "idempotency_records": 15,
+        "document_sequences": 6,
+        "stock_movements": 3,
         "inventory_balances": 1,
-        "account_entries": 1,
-        "sales_orders": 1
+        "account_entries": 2,
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 4
       },
       "audit_delta": 1,
       "filled": {
         "decisionReason": "QA browser runner rejectReturn"
-      }
+      },
+      "entity_status": "rejected"
     },
     {
       "action": "createReplacementOrderAction",
@@ -352,37 +399,42 @@
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 117,
-        "idempotency_records": 6,
-        "document_sequences": 2,
-        "stock_movements": 1,
+        "audit_logs": 214,
+        "idempotency_records": 15,
+        "document_sequences": 6,
+        "stock_movements": 3,
         "inventory_balances": 1,
-        "account_entries": 1,
-        "sales_orders": 1
+        "account_entries": 2,
+        "sales_orders": 2,
+        "sales_order_lines": 2,
+        "sales_profitability_snapshots": 4
       },
       "after": {
         "quality_tests": 2,
         "quality_test_values": 1,
         "quality_holds": 1,
-        "complaints": 1,
+        "complaints": 2,
         "return_requests": 2,
         "return_lines": 2,
-        "audit_logs": 118,
-        "idempotency_records": 7,
-        "document_sequences": 3,
-        "stock_movements": 1,
+        "audit_logs": 215,
+        "idempotency_records": 16,
+        "document_sequences": 7,
+        "stock_movements": 3,
         "inventory_balances": 1,
-        "account_entries": 1,
-        "sales_orders": 2
+        "account_entries": 2,
+        "sales_orders": 3,
+        "sales_order_lines": 3,
+        "sales_profitability_snapshots": 4
       },
       "audit_delta": 1,
       "filled": {
         "saleDate": "2026-08-10",
         "decisionNotes": "QA browser runner createReplacementOrder"
-      }
+      },
+      "entity_status": null
     }
   ],
   "responsive_screenshots": [
@@ -516,45 +568,39 @@
   "accessibility": {
     "keyboard_tab_moves_focus": true,
     "form_labels": {
-      "labeled": 0,
+      "labeled": 4,
       "unlabeled": 0
     },
     "direction": {
       "html_dir": "rtl",
-      "body_dir": "ltr",
       "is_rtl": true
     },
     "touch_targets_44px": {
       "checked": 13,
-      "too_small": 9
+      "too_small": 0
     }
   },
   "cleanup": {
-    "audit_logs.user_id_nulled_error": "audit_logs is append-only: UPDATE and DELETE are not permitted (Contract 03 \u00a77.7). Action: UPDATE, U",
     "public.return_lines": 2,
     "public.return_requests": 2,
-    "public.complaints": 1,
+    "public.complaints": 2,
     "public.quality_test_values": 1,
     "public.quality_holds": 1,
     "public.quality_tests": 2,
-    "public.sales_profitability_snapshots": 1,
-    "public.sales_order_lines": 2,
-    "public.sales_orders": 2,
+    "public.sales_profitability_snapshots": 4,
+    "public.sales_order_lines": 3,
+    "public.sales_orders": 3,
     "public.yarn_lots": 1,
     "public.inventory_items_error": "update or delete on table \"inventory_items\" violates foreign key constraint \"inventory_balances_item",
-    "public.locations_error": "update or delete on table \"locations\" violates foreign key constraint \"inventory_balances_location_i",
+    "public.stock_movements_error": "update or delete on table \"stock_movements\" violates foreign key constraint \"inventory_balances_last",
+    "public.inventory_balances": 1,
+    "public.account_entries": 2,
+    "public.locations_error": "update or delete on table \"locations\" violates foreign key constraint \"stock_movements_to_location_i",
     "public.customers": 1,
     "public.product_types": 1,
     "public.fiber_types": 1,
-    "public.user_roles": 2,
-    "public.role_permissions": 6,
-    "public.permissions": 4,
-    "public.roles": 2,
-    "public.document_sequences": 3,
-    "public.idempotency_records": 7,
-    "public.users_error": "update or delete on table \"users\" violates foreign key constraint \"audit_logs_user_id_users_id_fk\" o",
-    "public.tenants_error": "column \"tenant_id\" does not exist\nLINE 1: DELETE FROM public.tenants WHERE tenant_id = '00000000-000",
-    "auth.users": 2
+    "public.document_sequences": 7,
+    "public.idempotency_records": 16
   },
-  "overall_success": false
+  "overall_success": true
 }

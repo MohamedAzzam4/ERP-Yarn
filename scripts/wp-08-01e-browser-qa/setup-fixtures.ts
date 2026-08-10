@@ -90,7 +90,7 @@ const ownerEff = {
     "inventory.correct",
     "inventory.view_quantity",
   ]),
-  workerFinancialDeny: { enforced: false, deniedKeys: [] },
+  workerFinancialDeny: { enforced: false, deniedPermissionKeys: new Set(), deniedFieldKeys: new Set() },
 };
 
 const workerEff = {
@@ -100,11 +100,27 @@ const workerEff = {
     "complaints.investigate",
     "returns.create",
   ]),
-  workerFinancialDeny: { enforced: true, deniedKeys: [] },
+  workerFinancialDeny: { enforced: true, deniedPermissionKeys: new Set(), deniedFieldKeys: new Set() },
 };
 
 async function main() {
   console.log("=== WP-08-01E Browser QA Fixture Setup (Production Path) ===");
+
+  // Clean up mutable fixtures from previous runs (FK-safe, inside a transaction)
+  console.log("[setup] Cleaning up previous run's mutable fixtures...");
+  await pgSql.begin(async (tx) => {
+    await tx`DELETE FROM sales_profitability_snapshots WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM account_entries WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM return_lines WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM return_requests WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM sales_order_lines WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM sales_orders WHERE tenant_id = ${TENANT_ID} AND doc_no LIKE 'QA-SO-%'`;
+    await tx`DELETE FROM inventory_balances WHERE tenant_id = ${TENANT_ID} AND item_id = ${INVENTORY_ITEM_ID}`;
+    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TENANT_ID} AND source_document_type IN ('return_line', 'return_request', 'test_seed')`;
+    await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TENANT_ID} AND operation_scope LIKE '%return%' OR operation_scope LIKE '%inventory%'`;
+    await tx`DELETE FROM document_sequences WHERE tenant_id = ${TENANT_ID} AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order')`;
+  });
+  console.log("[setup] Cleanup complete.");
 
   // Wire services with real DB-backed repositories
   const auditDbRepo = new AuditDbRepository(db);

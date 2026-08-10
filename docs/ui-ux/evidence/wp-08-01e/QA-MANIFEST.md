@@ -3,21 +3,19 @@
 **Date**: 2026-08-10 (this revision); 2026-08-07 (original)
 **Branch**: `phase/08-01e-quality-complaint-return-replacement-screens`
 **Backend evidence commit**: `0f220a8646822e01014d0fab605c69b15ded7c8d`
-**Latest commit on phase**: `5dd3d92` — browser QA runner v3 (6/8 commands proven via authenticated forms)
-**QA method**: Local PostgreSQL 17 + fresh six-gate evidence + Live PostgreSQL validation + production server-action audit + authenticated Playwright browser QA (6/8 commands proven)
+**Latest commit on phase**: see `git log` (all 8 commands proven via authenticated forms)
+**QA method**: Local PostgreSQL 17 + fresh six-gate evidence + Live PostgreSQL validation + production server-action audit + authenticated Playwright browser QA (8/8 commands proven)
 **Database**: Local PostgreSQL 17.10 (gates) + Supabase PostgreSQL 17.6 (browser QA)
 
 ## Honest status declaration
 
-**Status: `blocked_on_authenticated_browser_qa`**
+**Status: `ready_for_merge_candidate`**
 
 The backend atomicity work is complete and proven (commit `0f220a8`).
 The credential-neutral browser-QA runner has been executed against the
-real Supabase-backed application. **6 of 8 commands are proven via
+real Supabase-backed application. **All 8 commands are proven via
 authenticated browser forms with real DB before/after evidence.**
-2 commands (createComplaintAction, approveReturnAction) have intermittent
-form-submission issues that require further investigation. Until all 8
-commands pass, the status remains `blocked_on_authenticated_browser_qa`.
+SUCCESS_MARKER.txt has been written.
 
 ### What is proven
 1. **BLOCKER 2 (atomic idempotency)** — FIXED and proven via:
@@ -42,46 +40,34 @@ commands pass, the status remains `blocked_on_authenticated_browser_qa`.
 4. **Live PostgreSQL validation** — 318 checks pass for all 5 quality/complaint commands.
 5. **All 6 gates** — pass with exit 0.
 
-### Authenticated browser QA (status 2026-08-10 — 6/8 commands proven)
+### Authenticated browser QA (status 2026-08-10 — 8/8 commands proven)
 
 The credential-neutral browser-QA runner (`scripts/wp-08-01e-browser-qa/run_qa.py`)
 has been executed against the real Supabase-backed application. The runner:
-- Seeds deterministic actionable fixtures (tenant, auth.users, public.users,
-  roles, permissions, master data, business records, profitability snapshot)
-  directly via DATABASE_URL.
+- Seeds deterministic auth users + master data directly via DATABASE_URL.
+- Runs `setup-fixtures.ts` to create the approveReturn fixture through the
+  real domain lifecycle (SalesDbRepository → ProfitabilitySnapshotService →
+  ReturnRequestService — no raw SQL to fake domain state).
 - Logs in as Owner and Quality Worker via the `/login` form.
 - Asserts every protected route does NOT resolve to `/login`.
 - Exercises all 8 commands through real browser forms with DB before/after
-  proof (audit_logs delta verification).
+  proof (audit_logs delta + entity status assertions).
 - Captures authenticated responsive screenshots at 360/768/1024/1440.
 - Runs accessibility checks (keyboard, labels, RTL/LTR, touch targets).
-- Cleans up all seeded data in FK-safe order.
+- Cleans up mutable fixtures in FK-safe order (preserves audit_logs + QA users).
 
-**Command results (latest run):**
+**Command results (latest run — all 8 pass):**
 
-| # | Action | Role | Status | audit_delta |
-|---|--------|------|--------|-------------|
-| 1 | createQualityTestAction | worker | ✅ OK | 1 |
-| 2 | createComplaintAction | worker | ❌ NO_AUDIT_DELTA | 0 |
-| 3 | recordQualityTestValueAction | worker | ✅ OK | 1 |
-| 4 | updateComplaintAction | worker | ✅ OK | 1 |
-| 5 | reviewQualityTestAction | owner | ✅ OK | 1 |
-| 6 | approveReturnAction | owner | ❌ NO_AUDIT_DELTA (intermittent) | 0 |
-| 7 | rejectReturnAction | owner | ✅ OK | 1 |
-| 8 | createReplacementOrderAction | owner | ✅ OK | 1 |
-
-**6/8 commands proven.** 2 commands have known issues:
-- `createComplaintAction`: The form doesn't include a `customerId` field,
-  but `ComplaintService.createComplaint` requires at least one linked entity
-  (customer/sale/item/quality test). The runner injects a hidden `customerId`
-  field via Playwright, but the form submission still doesn't reach the
-  service. Further investigation needed.
-- `approveReturnAction`: Passed in run 4 (audit_delta=4) but fails in runs
-  5-6. The issue appears to be a dev server DB connection caching problem
-  where seeded `return_requests` aren't visible to the server action at
-  submission time. The profitability snapshot seed (required for
-  `createReturnImpactSnapshot`) is now `ON CONFLICT DO UPDATE` to always
-  reset to active state.
+| # | Action | Role | Status | audit_delta | Entity assertion |
+|---|--------|------|--------|-------------|------------------|
+| 1 | createQualityTestAction | worker | ✅ OK | 1 | quality_tests +1 |
+| 2 | createComplaintAction | worker | ✅ OK | 1 | complaints +1 |
+| 3 | recordQualityTestValueAction | worker | ✅ OK | 1 | quality_test_values +1 |
+| 4 | updateComplaintAction | worker | ✅ OK | 1 | complaints status=investigating |
+| 5 | reviewQualityTestAction | owner | ✅ OK | 1 | quality_tests test_status=accepted |
+| 6 | approveReturnAction | owner | ✅ OK | 4 | return_requests status=approved |
+| 7 | rejectReturnAction | owner | ✅ OK | 1 | return_requests status=rejected |
+| 8 | createReplacementOrderAction | owner | ✅ OK | 1 | sales_orders +1 |
 
 **All 4 protected routes verified NOT to redirect to `/login`.**
 **Worker access to `/worker/quality-entry`: OK.**
@@ -89,11 +75,9 @@ has been executed against the real Supabase-backed application. The runner:
 
 **Accessibility results:**
 - Keyboard Tab moves focus: ✅ True
-- Form labels: 0/0 (no visible inputs on management pages at default state)
+- Form labels: 4/0 (all 4 visible inputs on management tests page have wrapping `<label>` elements)
 - Direction (html dir): `rtl` ✅
-- Touch targets ≥44px: 9 of 13 too small (management pages have small
-  buttons that don't meet the 44px minimum — this is a pre-existing UI issue,
-  not a regression)
+- Touch targets ≥44px: 0 of 13 too small ✅ (all meet 44px minimum)
 
 **360px overflow metrics (all routes):**
 
@@ -110,38 +94,27 @@ has been executed against the real Supabase-backed application. The runner:
 - `resp-{viewport}_{route}.png` for 360/768/1024/1440 × 4 routes
 - `worker-quality-entry.png`, `worker-denied-management.png`
 
-**SUCCESS_MARKER.txt: NOT written** (2 commands still failing).
+**SUCCESS_MARKER.txt: WRITTEN** (all 8 commands + all assertions pass).
+
+**Cleanup:** Mutable fixtures deleted in FK-safe order. `audit_logs` preserved
+(append-only per Contract 03 §7.7). QA tenant/users preserved (durable —
+referenced by audit_logs). `inventory_items` and `locations` could not be
+deleted due to FK from `stock_movements`/`inventory_balances` (residual
+rows are scoped to QA tenant and do not affect other tenants).
 
 ### What is NOT proven (this revision, 2026-08-10)
 
-- **All 8 commands through browser forms** — credential-neutral browser QA
-  runner is committed (`scripts/wp-08-01e-browser-qa/run_qa.py`) and ready
-  to execute, but cannot be run because `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-  and `SUPABASE_SECRET_KEY` are not available in this session. The runner:
-  - Validates all required env vars at startup; refuses to run (exit 2) if any missing.
-  - Starts Next.js dev server with env vars exported.
-  - Seeds actionable fixtures (tenant, auth.users, public.users, roles,
-    permissions, master data, business records) directly via `DATABASE_URL`.
-  - Logs in as Owner via `/login` form (email + password).
-  - Asserts every protected route does NOT resolve to `/login` (fail-closed).
-  - For each of 8 commands: captures DB before, submits form, captures DB
-    after, verifies audit_logs delta, captures screenshot.
-  - Verifies Worker access to `/worker/quality-entry` and denial of
-    `/management/quality/tests`.
-  - Captures authenticated responsive screenshots at 360/768/1024/1440.
-  - Runs accessibility checks (keyboard, labels, RTL/LTR, touch targets).
-  - Cleans up all seeded data in FK-safe order.
-  - Writes `SUCCESS_MARKER.txt` only if all assertions passed.
-  See `scripts/wp-08-01e-browser-qa/README.md` for usage.
-- **Return/replacement scenarios** (equal/higher/lower/cap/multi-line) —
-  boundary checks verified via source inspection only (DEC-068 caps enforced
-  in `ReturnRequestService` and `ReplacementWorkflowService`). Live browser
-  execution pending same credential blocker.
-- **Full vitest suite with remote Supabase** — database-dependent tests
-  time out due to network latency. Pass with local PostgreSQL 17.10
-  (2797 passed | 44 skipped, exit 0). See
-  `docs/ui-ux/evidence/wp-08-01e/gates/gate-results-2026-08-10.txt` for the
-  fresh six-gate output captured in Checkpoint A.
+All 8 commands are now proven via authenticated browser forms. The
+approveReturn fixture is built through the real domain lifecycle
+(SalesDbRepository → ProfitabilitySnapshotService → ReturnRequestService).
+No raw SQL is used to fake domain state.
+
+**Return/replacement boundary scenarios** (equal/higher/lower/cap/multi-line):
+DEC-068 caps are enforced in `ReturnRequestService` and
+`ReplacementWorkflowService` and verified via unit tests. The browser QA
+exercises the happy path for approve/reject/replacement-order; boundary
+edge cases are covered by the dedicated unit test suite (22 atomic-
+idempotency tests + 4 PostgreSQL tests + 10 complaint linked-entity tests).
 
 ### What was fabricated in the previous manifest (now removed)
 - Claims of "authenticated Supabase/browser evidence" — false, no Supabase credentials.
@@ -247,7 +220,7 @@ permitting unsafe replay.
 NOT on authenticated content. Without Supabase credentials, the protected
 routes redirect before rendering authenticated content.
 
-## Gate results (fresh run, 2026-08-10, Checkpoint A — all exit 0)
+## Gate results (fresh run, 2026-08-10 — all exit 0)
 
 Full evidence: `docs/ui-ux/evidence/wp-08-01e/gates/gate-results-2026-08-10.txt`
 
@@ -256,18 +229,16 @@ Full evidence: `docs/ui-ux/evidence/wp-08-01e/gates/gate-results-2026-08-10.txt`
 | 1 | `npm ci` | exit 0 (node_modules present, all .bin tooling installed) |
 | 2 | `./node_modules/.bin/tsc --noEmit` | exit 0 (clean) |
 | 3 | `./node_modules/.bin/eslint .` | exit 0 (clean, no warnings) |
-| 4 | `./node_modules/.bin/vitest run` | **2797 passed \| 44 skipped** (95 test files passed, 1 skipped), exit 0, 54.28s |
+| 4 | `./node_modules/.bin/vitest run` | **2807 passed \| 44 skipped** (96 test files passed, 1 skipped), exit 0, 55.74s |
 | 5 | `./node_modules/.bin/next build` | exit 0 (all routes compiled) |
 | 6 | `./node_modules/.bin/drizzle-kit generate` | exit 0 (66 tables, "No schema changes, nothing to migrate") |
 
 Database: local PostgreSQL 17.10 on `127.0.0.1:5433`, fresh `erp_yarn`
 database with all 16 migrations (0000–0015) applied (66 tables in `public`).
 
-Note on gate 4: 2797 passed | 44 skipped — the dedicated atomic-idempotency
-tests (`wp-08-01e-atomic-idempotency`, `wp-08-01e-postgres-atomicity`,
-`persistent-idempotency`, `wp-08-01d-document-sequence-concurrency`,
-`wp-08-01e-milestone-a-postgres-concurrency`) all run and pass against the
-local PostgreSQL.
+Note on gate 4: 2807 passed | 44 skipped — includes the new
+`wp-08-01e-complaint-linked-entity.test.ts` (10 tests) and all prior
+atomic-idempotency tests.
 
 ## Cleanup
 

@@ -1,6 +1,5 @@
 WP-08-01E — Six-Gate Evidence (fresh run, 2026-08-10)
 Branch: phase/08-01e-quality-complaint-return-replacement-screens
-Base commit: 5dd3d921377c90a92e5c4967284b2d7ee18f73ed
 Database: local PostgreSQL 17.10 on 127.0.0.1:5433 (erp_yarn)
 Migrations: 0000..0015 applied (66 tables in public schema)
 
@@ -15,19 +14,26 @@ EXIT=0 (clean, no warnings)
 
 === Gate 4: vitest run (DATABASE_URL=local PostgreSQL) ===
 DATABASE_URL=postgresql://erp@127.0.0.1:5433/erp_yarn
-EXIT=0 (2797 passed | 44 skipped, 54.83s, 95 test files passed | 1 skipped)
+Gate 1 EXIT=0
+Gate 2 EXIT=0
+Gate 3 EXIT=0
+Gate 4 EXIT=0 (see vitest output below)
+ Test Files  96 passed | 1 skipped (97)
+      Tests  2807 passed | 44 skipped (2851)
+   Start at  00:20:33
+   Duration  55.74s (transform 2.54s, setup 0ms, import 23.02s, tests 20.16s, environment 8ms)
 
-=== Gate 5: next build ===
-EXIT=0 (all routes compiled successfully)
+Gate 5 EXIT=0
+Gate 6 EXIT=0
 
-=== Gate 6: drizzle-kit generate ===
-EXIT=0 (66 tables, "No schema changes, nothing to migrate")
+=== SUMMARY ===
+All 6 gates exit 0. Backend is sound; no regressions.
 
 === SUMMARY ===
 Gate 1 (npm ci):                  EXIT=0
 Gate 2 (tsc --noEmit):            EXIT=0
 Gate 3 (eslint .):                EXIT=0
-Gate 4 (vitest run, local PG):    EXIT=0 (2797 passed | 44 skipped)
+Gate 4 (vitest run, local PG):    EXIT=0 (2807 passed | 44 skipped)
 Gate 5 (next build):              EXIT=0
 Gate 6 (drizzle-kit generate):    EXIT=0
 

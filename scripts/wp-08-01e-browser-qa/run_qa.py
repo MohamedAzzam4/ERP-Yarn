@@ -173,7 +173,7 @@ COMMANDS = [
         "approveReturnAction",
         "/management/quality/returns",
         "owner",
-        "form[data-action='approve-return']:first-of-type",
+        "form[data-action='approve-return']",
         {
             "financialTreatment": "customer_credit",
             "decisionReason": "QA browser runner approveReturn",
@@ -184,7 +184,7 @@ COMMANDS = [
         "rejectReturnAction",
         "/management/quality/returns",
         "owner",
-        "form[data-action='reject-return']:first-of-type",
+        "form[data-action='reject-return']",
         {
             "decisionReason": "QA browser runner rejectReturn",
         },
@@ -497,10 +497,25 @@ def capture_db_counts(env: dict[str, str]) -> dict[str, int]:
 
 
 def get_entity_status(env: dict[str, str], table: str, entity_id: str) -> str | None:
-    """Get the status of a specific entity by ID."""
+    """Get the status of a specific entity by ID.
+    Different tables use different status column names:
+    - quality_tests: test_status
+    - return_requests: status
+    - complaints: status
+    - sales_orders: sale_status
+    """
+    status_col = "status"
+    if table == "quality_tests":
+        status_col = "test_status"
+    elif table == "sales_orders":
+        status_col = "sale_status"
+    elif table == "return_requests":
+        status_col = "status"
+    elif table == "complaints":
+        status_col = "status"
     with db_conn(env) as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT status FROM public.{table} WHERE id = %s AND tenant_id = %s",
+            f"SELECT {status_col} FROM public.{table} WHERE id = %s AND tenant_id = %s",
             (entity_id, TENANT_ID),
         )
         row = cur.fetchone()
@@ -652,9 +667,11 @@ def run_accessibility_checks(page, base_url: str) -> dict[str, Any]:
         inp = inputs.nth(i)
         inp_id = inp.get_attribute("id")
         aria_label = inp.get_attribute("aria-label")
-        if inp_id and page.locator(f"label[for='{inp_id}']").count() > 0:
-            labeled += 1
-        elif aria_label:
+        # Check for label[for=id] association
+        has_label_for = inp_id and page.locator(f"label[for='{inp_id}']").count() > 0
+        # Check for wrapping <label> (input is inside a <label> element)
+        has_wrapping_label = inp.evaluate("el => el.closest('label') !== null")
+        if has_label_for or aria_label or has_wrapping_label:
             labeled += 1
         elif inp.get_attribute("type") in ("submit", "button", "hidden", "checkbox"):
             labeled += 1
