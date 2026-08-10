@@ -1,0 +1,37 @@
+WP-08-01E Browser QA SUCCESS — Two Complete Authenticated Cycles (Stability-Corrected)
+
+Run A: rA-20260810T035557-e87c0c4c
+  Exit code: 0
+  Commands: 8/8 OK (audit_delta: 1,1,1,1,1,4,1,1)
+  Screenshots: 42
+  Cleanup: zero errors
+  Post-cleanup: complaints=0, quality_tests=0, sales_orders=0, stock_movements=0
+
+Run B: rB-20260810T040456-94fc277c
+  Exit code: 0
+  Commands: 8/8 OK (audit_delta: 1,1,1,1,1,4,1,1)
+  Screenshots: 42
+  Cleanup: zero errors
+  Post-cleanup: complaints=0, quality_tests=0, sales_orders=0, stock_movements=0
+
+Sequence values (sales_order / return_request / complaint / quality_test):
+  Before Run A: 20 / 8 / 5 / 5
+  After Run A:  30 / 12 / 7 / 7
+  After Run B:  35 / 14 / 8 / 8
+  Monotonicity: STRICT
+
+Idempotency preservation:
+  Before Run A: 80
+  After Run A:  120 (+40)
+  After Run B:  140 (+20)
+  Run-A records preserved after Run B: YES
+
+Non-QA tenant unchanged:
+  sales_orders: 30 (constant)
+  idempotency_records: 4 (constant)
+
+document_sequences NEVER deleted.
+idempotency_records NEVER deleted.
+audit_logs NEVER deleted.
+
+All mutable workflow tables return to 0 after each run cleanup.
