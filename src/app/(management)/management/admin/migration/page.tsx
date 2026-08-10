@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { MigrationScreenQueryService } from "@/server/services/migration-screen-query-service";
+import { createMigrationBatchAction } from "./actions";
 
 export default async function MigrationBatchListPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -88,6 +89,60 @@ export default async function MigrationBatchListPage() {
           <Card>
             <CardContent className="py-8 text-center text-muted-foreground">
               لا توجد دفعات ترحيل.
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Create batch form — shown when DB is available */}
+        {dbAvailable && (
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>إنشاء دفعة ترحيل جديدة</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form data-action="create-migration-batch" action={createMigrationBatchAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <input type="hidden" name="idempotencyKey" value={`batch-${crypto.randomUUID()}`} />
+                <input type="hidden" name="cutoverImportMode" value="opening_balance" />
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">وصف المصدر:</span>
+                  <input
+                    type="text"
+                    name="sourceDescription"
+                    placeholder="وصف مصدر البيانات"
+                    className="px-2 py-1 border rounded text-sm"
+                    style={{ minHeight: "44px" }}
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">اسم القالب:</span>
+                  <input
+                    type="text"
+                    name="templateName"
+                    placeholder="اسم القالب"
+                    className="px-2 py-1 border rounded text-sm"
+                    style={{ minHeight: "44px" }}
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">إصدار القالب:</span>
+                  <input
+                    type="text"
+                    name="templateVersion"
+                    placeholder="إصدار القالب"
+                    className="px-2 py-1 border rounded text-sm"
+                    style={{ minHeight: "44px" }}
+                  />
+                </label>
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm"
+                    style={{ minHeight: "44px" }}
+                  >
+                    إنشاء الدفعة
+                  </button>
+                </div>
+              </form>
             </CardContent>
           </Card>
         )}

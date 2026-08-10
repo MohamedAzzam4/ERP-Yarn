@@ -2,15 +2,10 @@
  * WP-08-01F — Migration server actions.
  *
  * Wires every supported mutation to its existing WP-07 production service.
- * All actions:
- * 1. Authenticate server-side via getErpAuthContextWithRoles
- * 2. Resolve active ERP tenant/user
- * 3. Enforce exact permission before mutation
- * 4. Validate tenant ownership
- * 5. Use DB-backed repositories
- * 6. Use DB-backed idempotency + owner-token fencing
- * 7. Use tx-scoped audit
- * 8. Revalidate authorized routes
+ *
+ * TASK 3: Role-bound dual approval — server verifies the authenticated user
+ * is actually assigned to the requested Owner or Accountant role.
+ * TASK 6: FormData validation — explicit parsers/allowlists, no `as any`.
  *
  * Contract 10 §9: Historical Migration Screens.
  * Contract 08: Historical Migration.
@@ -23,6 +18,7 @@ import { revalidatePath } from "next/cache";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import type { RoleCode } from "@/server/security/role-codes";
 import { db } from "@/server/db/client";
 import { HistoricalStagingService } from "@/server/services/historical-staging-service";
 import { HistoricalValidationService } from "@/server/services/historical-validation-service";
@@ -41,6 +37,128 @@ import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
 import { SubledgerDbRepository } from "@/server/services/subledger-db-repository";
 import { SubledgerService } from "@/server/services/subledger-service";
+
+// ---------------------------------------------------------------------------
+// Typed allowlists (TASK 6 — no `as any` casts)
+// ---------------------------------------------------------------------------
+
+const APPROVER_ROLES = ["owner", "accountant"] as const;
+type ApproverRole = (typeof APPROVER_ROLES)[number];
+
+function parseApproverRole(value: string): ApproverRole {
+  if (!APPROVER_ROLES.includes(value as ApproverRole)) {
+    throw new Error(`VALIDATION_FAILED: approverRole must be one of: ${APPROVER_ROLES.join(", ")}. Got: '${value}'.`);
+  }
+  return value as ApproverRole;
+}
+
+const CORRECTION_TYPES = ["reversal", "adjustment", "new_corrected"] as const;
+type CorrectionType = (typeof CORRECTION_TYPES)[number];
+
+function parseCorrectionType(value: string): CorrectionType {
+  if (!CORRECTION_TYPES.includes(value as CorrectionType)) {
+    throw new Error(`VALIDATION_FAILED: correctionType must be one of: ${CORRECTION_TYPES.join(", ")}. Got: '${value}'.`);
+  }
+  return value as CorrectionType;
+}
+
+const REVIEW_DECISIONS = ["accepted", "rejected", "resolved"] as const;
+type ReviewDecision = (typeof REVIEW_DECISIONS)[number];
+
+function parseReviewDecision(value: string): ReviewDecision {
+  if (!REVIEW_DECISIONS.includes(value as ReviewDecision)) {
+    throw new Error(`VALIDATION_FAILED: decision must be one of: ${REVIEW_DECISIONS.join(", ")}. Got: '${value}'.`);
+  }
+  return value as ReviewDecision;
+}
+
+const FILE_TYPES = ["source", "normalized", "mapping", "report"] as const;
+type FileType = (typeof FILE_TYPES)[number];
+
+function parseFileType(value: string): FileType {
+  if (!FILE_TYPES.includes(value as FileType)) {
+    throw new Error(`VALIDATION_FAILED: fileType must be one of: ${FILE_TYPES.join(", ")}. Got: '${value}'.`);
+  }
+  return value as FileType;
+}
+
+const CUTOVER_IMPORT_MODES = ["opening_balance", "transaction_history", "hybrid"] as const;
+type CutoverImportMode = (typeof CUTOVER_IMPORT_MODES)[number];
+
+function parseCutoverImportMode(value: string): CutoverImportMode {
+  if (!CUTOVER_IMPORT_MODES.includes(value as CutoverImportMode)) {
+    throw new Error(`VALIDATION_FAILED: cutoverImportMode must be one of: ${CUTOVER_IMPORT_MODES.join(", ")}. Got: '${value}'.`);
+  }
+  return value as CutoverImportMode;
+}
+
+function parseRequiredString(formData: FormData, field: string): string {
+  const value = String(formData.get(field) ?? "").trim();
+  if (!value) {
+    throw new Error(`VALIDATION_FAILED: ${field} is required.`);
+  }
+  return value;
+}
+
+function parseOptionalString(formData: FormData, field: string): string | null {
+  const value = formData.get(field);
+  if (!value) return null;
+  return String(value).trim() || null;
+}
+
+function parseOptionalInt(formData: FormData, field: string): number | null {
+  const value = formData.get(field);
+  if (!value) return null;
+  const parsed = parseInt(String(value), 10);
+  if (isNaN(parsed)) return null;
+  return parsed;
+}
+
+function parseOptionalJson(formData: FormData, field: string): Record<string, unknown> | null {
+  const value = formData.get(field);
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(String(value));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("not an object");
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new Error(`VALIDATION_FAILED: ${field} must be a valid JSON object.`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TASK 3: Role-bound dual approval verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify that the authenticated user is actually assigned to the requested
+ * approver role. An Owner cannot occupy the Accountant slot, and vice versa.
+ * DEC-069: distinct-role and distinct-identity requirements.
+ */
+function verifyApproverRole(
+  authResult: { roles: ReadonlyArray<RoleCode>; userId: string },
+  requestedRole: ApproverRole,
+): void {
+  // Check that the user actually has the requested role assigned
+  if (!authResult.roles.includes(requestedRole as RoleCode)) {
+    throw new Error(
+      `PERMISSION_DENIED: User is not assigned to role '${requestedRole}'. ` +
+      `User roles: [${authResult.roles.join(", ")}]. ` +
+      `An Owner cannot occupy the Accountant approval slot and vice versa (DEC-069).`,
+    );
+  }
+
+  // Handle multi-role users: if user has both owner and accountant roles,
+  // they must explicitly select which role they are acting as. This is
+  // permitted by the contract as long as the same physical user does not
+  // provide both approvals for the same batch (enforced by the service).
+  // If the user has only one of the two roles, they can only use that slot.
+  // If the user has neither role, they are denied (caught above).
+  // Multi-role ambiguity is acceptable here because the service enforces
+  // distinct-identity at the batch level.
+}
 
 // ---------------------------------------------------------------------------
 // Service composition — production wiring
@@ -78,7 +196,6 @@ function getMigrationServices() {
     idempotency,
   });
 
-  // Production transaction runner for commit
   const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
     return (db as any).transaction(async (tx: any) => work(tx));
   };
@@ -109,14 +226,19 @@ function getMigrationServices() {
     txFactories,
   });
 
+  // TASK 2: executeCorrectionAction is NOT exposed in the UI because no
+  // production CorrectionDomainHook exists. The contract (§8.11) says
+  // correction execution "invokes the affected domain correction/reversal/
+  // adjustment" but does not define the mapping from correctionType +
+  // originalEntityType to specific domain service methods, the transaction
+  // boundary for the hook, or how to handle multi-entity corrections.
+  // Creating a fake/no-op hook would be a safety violation.
   const correctionService = new HistoricalCorrectionService({
     repository: correctionRepo,
     audit,
     idempotency,
     documentSequence,
-    // correctionDomainHook is optional — for production it should be wired
-    // to the actual domain services. For now, it's not configured (correction
-    // execution will throw if called without the hook).
+    // correctionDomainHook intentionally NOT provided.
   });
 
   return {
@@ -153,22 +275,20 @@ async function authenticateAndRequirePermission(permissionKey: string) {
 export async function createMigrationBatchAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.prepare");
 
-  const sourceDescription = String(formData.get("sourceDescription") ?? "").trim();
-  const templateName = String(formData.get("templateName") ?? "").trim();
-  const templateVersion = String(formData.get("templateVersion") ?? "").trim();
-  const cutoverImportMode = String(formData.get("cutoverImportMode") ?? "opening_balance").trim();
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: idempotencyKey is required.");
-  }
+  const sourceDescription = parseOptionalString(formData, "sourceDescription");
+  const templateName = parseOptionalString(formData, "templateName");
+  const templateVersion = parseOptionalString(formData, "templateVersion");
+  const cutoverImportMode = parseCutoverImportMode(
+    String(formData.get("cutoverImportMode") ?? "opening_balance"),
+  );
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
   const { stagingService } = getMigrationServices();
 
   await stagingService.createBatch(authResult as any, effective as any, {
-    sourceDescription: sourceDescription || null,
-    templateName: templateName || null,
-    templateVersion: templateVersion || null,
+    sourceDescription,
+    templateName,
+    templateVersion,
     cutoverImportMode,
     idempotencyKey,
   });
@@ -183,24 +303,16 @@ export async function createMigrationBatchAction(formData: FormData): Promise<vo
 export async function registerFileAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.prepare");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const originalFileName = String(formData.get("originalFileName") ?? "").trim();
-  const storagePath = String(formData.get("storagePath") ?? "").trim();
-  const fileHash = String(formData.get("fileHash") ?? "").trim();
-  const fileType = String(formData.get("fileType") ?? "source").trim();
-  const fileSizeBytes = formData.get("fileSizeBytes")
-    ? parseInt(String(formData.get("fileSizeBytes")), 10)
-    : null;
-  const contentType = formData.get("contentType")
-    ? String(formData.get("contentType"))
-    : null;
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+  const batchId = parseRequiredString(formData, "batchId");
+  const originalFileName = parseRequiredString(formData, "originalFileName");
+  const storagePath = parseRequiredString(formData, "storagePath");
+  const fileHash = parseRequiredString(formData, "fileHash");
+  const fileType = parseFileType(String(formData.get("fileType") ?? "source"));
+  const fileSizeBytes = parseOptionalInt(formData, "fileSizeBytes");
+  const contentType = parseOptionalString(formData, "contentType");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
-  if (!batchId || !originalFileName || !storagePath || !fileHash || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId, originalFileName, storagePath, fileHash, and idempotencyKey are required.");
-  }
-
-  // Reject public URLs in storagePath
+  // Reject public URLs in storagePath (security boundary)
   if (storagePath.startsWith("http://") || storagePath.startsWith("https://")) {
     throw new Error("VALIDATION_FAILED: public URLs are not allowed for storagePath.");
   }
@@ -212,7 +324,7 @@ export async function registerFileAction(formData: FormData): Promise<void> {
     originalFileName,
     storagePath,
     fileHash,
-    fileType: fileType as any,
+    fileType,
     fileSizeBytes,
     contentType,
     idempotencyKey,
@@ -228,35 +340,21 @@ export async function registerFileAction(formData: FormData): Promise<void> {
 export async function insertStagingRowAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.prepare");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const importFileId = String(formData.get("importFileId") ?? "").trim();
-  const templateName = formData.get("templateName")
-    ? String(formData.get("templateName"))
-    : null;
-  const sourceSheetName = formData.get("sourceSheetName")
-    ? String(formData.get("sourceSheetName"))
-    : null;
-  const sourceRowNumber = formData.get("sourceRowNumber")
-    ? parseInt(String(formData.get("sourceRowNumber")), 10)
-    : null;
-  const rawRowJson = formData.get("rawRowJson")
-    ? JSON.parse(String(formData.get("rawRowJson")))
-    : null;
-  const transformedRowJson = formData.get("transformedRowJson")
-    ? JSON.parse(String(formData.get("transformedRowJson")))
-    : null;
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!batchId || !importFileId || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId, importFileId, and idempotencyKey are required.");
-  }
+  const batchId = parseRequiredString(formData, "batchId");
+  const importFileId = parseRequiredString(formData, "importFileId");
+  const templateName = parseOptionalString(formData, "templateName");
+  const sourceSheetName = parseOptionalString(formData, "sourceSheetName");
+  const sourceRowNumber = parseOptionalInt(formData, "sourceRowNumber");
+  const rawRowJson = parseOptionalJson(formData, "rawRowJson");
+  const transformedRowJson = parseOptionalJson(formData, "transformedRowJson");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
   const { stagingService } = getMigrationServices();
 
   await stagingService.insertStagingRow(authResult as any, effective as any, {
     importBatchId: batchId,
     importFileId,
-    templateName: templateName || null,
+    templateName,
     sourceSheetName,
     sourceRowNumber,
     rawRowJson,
@@ -275,12 +373,8 @@ export async function insertStagingRowAction(formData: FormData): Promise<void> 
 export async function runValidationAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!batchId || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId and idempotencyKey are required.");
-  }
+  const batchId = parseRequiredString(formData, "batchId");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
   const { validationService } = getMigrationServices();
 
@@ -299,24 +393,19 @@ export async function runValidationAction(formData: FormData): Promise<void> {
 export async function runReconciliationAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!batchId || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId and idempotencyKey are required.");
+  const batchId = parseRequiredString(formData, "batchId");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  const expectedTotalsRaw = parseOptionalJson(formData, "expectedTotals") ?? {};
+  const expectedTotals: Record<string, string> = {};
+  for (const [k, v] of Object.entries(expectedTotalsRaw)) {
+    expectedTotals[k] = String(v);
   }
 
   const { reconciliationService } = getMigrationServices();
 
-  // Expected totals are typically provided by the owner/accountant.
-  // For the UI, we pass an empty object — the service will use staged data.
-  const expectedTotalsRaw = formData.get("expectedTotals")
-    ? JSON.parse(String(formData.get("expectedTotals")))
-    : {};
-
   await reconciliationService.runReconciliation(authResult as any, effective as any, {
     importBatchId: batchId,
-    expectedTotals: expectedTotalsRaw,
+    expectedTotals,
     idempotencyKey,
   });
 
@@ -330,23 +419,17 @@ export async function runReconciliationAction(formData: FormData): Promise<void>
 export async function recordReviewDecisionAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
 
-  const reviewItemId = String(formData.get("reviewItemId") ?? "").trim();
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const decision = String(formData.get("decision") ?? "").trim();
-  const decisionNotes = formData.get("decisionNotes")
-    ? String(formData.get("decisionNotes"))
-    : "";
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!reviewItemId || !batchId || !decision || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: reviewItemId, batchId, decision, and idempotencyKey are required.");
-  }
+  const reviewItemId = parseRequiredString(formData, "reviewItemId");
+  const batchId = parseRequiredString(formData, "batchId");
+  const decision = parseReviewDecision(String(formData.get("decision") ?? ""));
+  const decisionNotes = String(formData.get("decisionNotes") ?? "");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
   const { reconciliationService } = getMigrationServices();
 
   await reconciliationService.recordReviewDecision(authResult as any, effective as any, {
     reviewItemId,
-    decision: decision as any,
+    decision,
     decisionNotes,
     idempotencyKey,
   });
@@ -355,26 +438,26 @@ export async function recordReviewDecisionAction(formData: FormData): Promise<vo
 }
 
 // ---------------------------------------------------------------------------
-// 7. Record approval (Owner or Accountant)
+// 7. Record approval (Owner or Accountant) — TASK 3: role-bound
 // ---------------------------------------------------------------------------
 
 export async function recordApprovalAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.approve");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const approverRole = String(formData.get("approverRole") ?? "").trim();
-  const reason = formData.get("reason") ? String(formData.get("reason")) : null;
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+  const batchId = parseRequiredString(formData, "batchId");
+  const approverRole = parseApproverRole(String(formData.get("approverRole") ?? ""));
+  const reason = parseOptionalString(formData, "reason");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
-  if (!batchId || !approverRole || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId, approverRole, and idempotencyKey are required.");
-  }
+  // TASK 3: Verify the authenticated user is actually assigned to the
+  // requested role. An Owner cannot occupy the Accountant slot and vice versa.
+  verifyApproverRole(authResult, approverRole);
 
   const { commitService } = getMigrationServices();
 
   await commitService.recordApproval(authResult as any, effective as any, {
     importBatchId: batchId,
-    approverRole: approverRole as any,
+    approverRole,
     reason,
     idempotencyKey,
   });
@@ -389,21 +472,13 @@ export async function recordApprovalAction(formData: FormData): Promise<void> {
 export async function recordBackupEvidenceAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.commit");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const backupType = String(formData.get("backupType") ?? "").trim();
-  const backupLocation = String(formData.get("backupLocation") ?? "").trim();
-  const backupHash = String(formData.get("backupHash") ?? "").trim();
-  const backupSizeBytes = formData.get("backupSizeBytes")
-    ? parseInt(String(formData.get("backupSizeBytes")), 10)
-    : null;
-  const verificationNotes = formData.get("verificationNotes")
-    ? String(formData.get("verificationNotes"))
-    : null;
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!batchId || !backupType || !backupLocation || !backupHash || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId, backupType, backupLocation, backupHash, and idempotencyKey are required.");
-  }
+  const batchId = parseRequiredString(formData, "batchId");
+  const backupType = parseRequiredString(formData, "backupType");
+  const backupLocation = parseRequiredString(formData, "backupLocation");
+  const backupHash = parseRequiredString(formData, "backupHash");
+  const backupSizeBytes = parseOptionalInt(formData, "backupSizeBytes");
+  const verificationNotes = parseOptionalString(formData, "verificationNotes");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
   const { commitService } = getMigrationServices();
 
@@ -428,12 +503,8 @@ export async function recordBackupEvidenceAction(formData: FormData): Promise<vo
 export async function commitBatchAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.commit");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!batchId || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId and idempotencyKey are required.");
-  }
+  const batchId = parseRequiredString(formData, "batchId");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
   const { commitService } = getMigrationServices();
 
@@ -453,16 +524,14 @@ export async function commitBatchAction(formData: FormData): Promise<void> {
 export async function createCorrectionRequestAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.prepare");
 
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const originalEntityType = String(formData.get("originalEntityType") ?? "").trim();
-  const originalEntityId = String(formData.get("originalEntityId") ?? "").trim();
-  const correctionType = String(formData.get("correctionType") ?? "adjustment").trim() as "reversal" | "adjustment" | "new_corrected";
-  const reason = String(formData.get("reason") ?? "").trim();
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!batchId || !originalEntityType || !originalEntityId || !reason || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: batchId, originalEntityType, originalEntityId, reason, and idempotencyKey are required.");
-  }
+  const batchId = parseRequiredString(formData, "batchId");
+  const originalEntityType = parseRequiredString(formData, "originalEntityType");
+  const originalEntityId = parseRequiredString(formData, "originalEntityId");
+  const correctionType = parseCorrectionType(String(formData.get("correctionType") ?? "adjustment"));
+  const reason = parseRequiredString(formData, "reason");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  const proposedCorrectionJson = parseOptionalJson(formData, "proposedCorrectionJson");
+  const impactAnalysisJson = parseOptionalJson(formData, "impactAnalysisJson");
 
   const { correctionService } = getMigrationServices();
 
@@ -472,8 +541,8 @@ export async function createCorrectionRequestAction(formData: FormData): Promise
     originalEntityId,
     correctionType,
     reason,
-    proposedCorrectionJson: null,
-    impactAnalysisJson: null,
+    proposedCorrectionJson,
+    impactAnalysisJson,
     idempotencyKey,
   });
 
@@ -481,26 +550,26 @@ export async function createCorrectionRequestAction(formData: FormData): Promise
 }
 
 // ---------------------------------------------------------------------------
-// 11. Approve correction
+// 11. Approve correction — TASK 3: role-bound
 // ---------------------------------------------------------------------------
 
 export async function approveCorrectionAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.approve");
 
-  const correctionRequestId = String(formData.get("correctionRequestId") ?? "").trim();
-  const approverRole = String(formData.get("approverRole") ?? "").trim();
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+  const correctionRequestId = parseRequiredString(formData, "correctionRequestId");
+  const approverRole = parseApproverRole(String(formData.get("approverRole") ?? ""));
+  const batchId = parseOptionalString(formData, "batchId");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
 
-  if (!correctionRequestId || !approverRole || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: correctionRequestId, approverRole, and idempotencyKey are required.");
-  }
+  // TASK 3: Verify the authenticated user is actually assigned to the
+  // requested role for correction approval (DEC-070).
+  verifyApproverRole(authResult, approverRole);
 
   const { correctionService } = getMigrationServices();
 
   await correctionService.approveCorrection(authResult as any, effective as any, {
     correctionRequestId,
-    approverRole: approverRole as any,
+    approverRole,
     idempotencyKey,
   });
 
@@ -510,28 +579,16 @@ export async function approveCorrectionAction(formData: FormData): Promise<void>
 }
 
 // ---------------------------------------------------------------------------
-// 12. Execute correction
+// 12. Execute correction — NOT EXPOSED IN UI (TASK 2)
+//
+// executeCorrectionAction is NOT exposed in the UI because no production
+// CorrectionDomainHook exists. The contract (§8.11) says correction
+// execution "invokes the affected domain correction/reversal/adjustment"
+// but does not define:
+// 1. The mapping from correctionType + originalEntityType to domain service
+// 2. The transaction boundary for the hook (called outside transactionRunner)
+// 3. How to handle multi-entity corrections
+//
+// Creating a fake/no-op hook would be a safety violation.
+// Status: blocked_on_missing_production_correction_hook
 // ---------------------------------------------------------------------------
-
-export async function executeCorrectionAction(formData: FormData): Promise<void> {
-  const { authResult, effective } = await authenticateAndRequirePermission("migration.commit");
-
-  const correctionRequestId = String(formData.get("correctionRequestId") ?? "").trim();
-  const batchId = String(formData.get("batchId") ?? "").trim();
-  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
-
-  if (!correctionRequestId || !idempotencyKey) {
-    throw new Error("VALIDATION_FAILED: correctionRequestId and idempotencyKey are required.");
-  }
-
-  const { correctionService } = getMigrationServices();
-
-  await correctionService.executeCorrection(authResult as any, effective as any, {
-    correctionRequestId,
-    idempotencyKey,
-  });
-
-  if (batchId) {
-    revalidatePath(`/management/admin/migration/${batchId}`);
-  }
-}

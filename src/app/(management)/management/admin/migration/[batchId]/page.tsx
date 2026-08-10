@@ -20,6 +20,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { MigrationScreenQueryService } from "@/server/services/migration-screen-query-service";
+import {
+  registerFileAction,
+  insertStagingRowAction,
+  runValidationAction,
+  runReconciliationAction,
+  recordReviewDecisionAction,
+  recordApprovalAction,
+  recordBackupEvidenceAction,
+  commitBatchAction,
+  createCorrectionRequestAction,
+  approveCorrectionAction,
+} from "../actions";
 
 export default async function MigrationBatchDetailPage({
   params,
@@ -182,6 +194,133 @@ export default async function MigrationBatchDetailPage({
             </dl>
           </CardContent>
         </Card>
+
+        {/* Lifecycle action forms — shown only in valid states */}
+        {b.status !== "committed" && b.status !== "rejected" && b.status !== "cancelled" && (
+          <Card className="mb-6">
+            <CardHeader><CardTitle>إجراءات دورة الحياة</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+
+              {/* Register file — allowed in draft/source_uploaded/staged */}
+              <form data-action="register-file" action={registerFileAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <input type="hidden" name="batchId" value={b.id} />
+                <input type="hidden" name="idempotencyKey" value={`file-${crypto.randomUUID()}`} />
+                <input type="hidden" name="fileType" value="source" />
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">اسم الملف:</span>
+                  <input type="text" name="originalFileName" required placeholder="data.xlsx" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">مسار التخزين (خاص):</span>
+                  <input type="text" name="storagePath" required placeholder="s3://bucket/key" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">بصمة الملف (SHA-256):</span>
+                  <input type="text" name="fileHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل ملف</button>
+                </div>
+              </form>
+
+              {/* Run validation — allowed in staged */}
+              <form data-action="run-validation" action={runValidationAction} className="flex gap-3 items-center">
+                <input type="hidden" name="batchId" value={b.id} />
+                <input type="hidden" name="idempotencyKey" value={`val-${crypto.randomUUID()}`} />
+                <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل التحقق</button>
+              </form>
+
+              {/* Run reconciliation — allowed after validation */}
+              <form data-action="run-reconciliation" action={runReconciliationAction} className="flex gap-3 items-center">
+                <input type="hidden" name="batchId" value={b.id} />
+                <input type="hidden" name="idempotencyKey" value={`recon-${crypto.randomUUID()}`} />
+                <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل المطابقة</button>
+              </form>
+
+              {/* Owner approval */}
+              <form data-action="record-owner-approval" action={recordApprovalAction} className="flex gap-3 items-center">
+                <input type="hidden" name="batchId" value={b.id} />
+                <input type="hidden" name="approverRole" value="owner" />
+                <input type="hidden" name="idempotencyKey" value={`appr-owner-${crypto.randomUUID()}`} />
+                <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المالك</button>
+              </form>
+
+              {/* Accountant approval */}
+              <form data-action="record-accountant-approval" action={recordApprovalAction} className="flex gap-3 items-center">
+                <input type="hidden" name="batchId" value={b.id} />
+                <input type="hidden" name="approverRole" value="accountant" />
+                <input type="hidden" name="idempotencyKey" value={`appr-acct-${crypto.randomUUID()}`} />
+                <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
+              </form>
+
+              {/* Record backup evidence */}
+              <form data-action="record-backup-evidence" action={recordBackupEvidenceAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <input type="hidden" name="batchId" value={b.id} />
+                <input type="hidden" name="idempotencyKey" value={`backup-${crypto.randomUUID()}`} />
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">نوع النسخة:</span>
+                  <input type="text" name="backupType" required placeholder="full" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">موقع النسخة (خاص):</span>
+                  <input type="text" name="backupLocation" required placeholder="s3://bucket/backup" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">بصمة النسخة:</span>
+                  <input type="text" name="backupHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل دليل النسخ الاحتياطي</button>
+                </div>
+              </form>
+
+              {/* Atomic commit — only when approved_for_commit */}
+              {b.status === "approved_for_commit" && (
+                <form data-action="commit-batch" action={commitBatchAction} className="flex gap-3 items-center">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`commit-${crypto.randomUUID()}`} />
+                  <button type="submit" className="px-4 py-2 bg-destructive text-destructive-foreground rounded text-sm font-semibold" style={{ minHeight: "44px" }}>ترحيل نهائي (غير قابل للتراجع)</button>
+                </form>
+              )}
+
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Committed batch — correction workflow only */}
+        {b.status === "committed" && (
+          <Card className="mb-6">
+            <CardHeader><CardTitle>التصحيحات</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div role="status" className="text-sm text-muted-foreground">
+                هذه الدفعة مُرحَّلة ومقفولة. لا يمكن تعديل البيانات المرحَّلة.
+                يمكن طلب تصحيح من خلال المسؤول.
+              </div>
+              <form data-action="create-correction-request" action={createCorrectionRequestAction} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input type="hidden" name="batchId" value={b.id} />
+                <input type="hidden" name="idempotencyKey" value={`corr-${crypto.randomUUID()}`} />
+                <input type="hidden" name="correctionType" value="adjustment" />
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">نوع الكيان:</span>
+                  <input type="text" name="originalEntityType" required placeholder="stock_movement" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="text-muted-foreground">معرف الكيان:</span>
+                  <input type="text" name="originalEntityId" required placeholder="uuid" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <label className="flex flex-col gap-1 text-sm sm:col-span-2">
+                  <span className="text-muted-foreground">السبب:</span>
+                  <input type="text" name="reason" required placeholder="سبب التصحيح" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                </label>
+                <div className="sm:col-span-2">
+                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>طلب تصحيح</button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Files */}
         {detail.files.length > 0 && (
@@ -368,17 +507,6 @@ export default async function MigrationBatchDetailPage({
           </Card>
         )}
 
-        {/* Correction requests */}
-        {detail.batch.status === "committed" && (
-          <Card className="mb-6">
-            <CardHeader><CardTitle>التصحيحات</CardTitle></CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                الدفعة مُرحَّلة ومقفلة. يمكن طلب تصحيح من خلال المسؤول.
-              </p>
-            </CardContent>
-          </Card>
-        )}
       </Container>
     </ManagementShell>
   );
