@@ -446,22 +446,23 @@ def seed_auth_users(env: dict[str, str]) -> dict[str, int]:
     return counts
 
 
-def run_setup_fixtures(env: dict[str, str]) -> dict[str, Any]:
+def run_setup_fixtures(env: dict[str, str], run_id: str) -> dict[str, Any]:
     """Run the TypeScript setup-fixtures.ts script to create the approveReturn
-    fixture through the real domain lifecycle (sale → snapshot → return)."""
+    fixture through the real domain lifecycle (sale → snapshot → return).
+    Passes QA_RUN_ID so idempotency keys are run-scoped."""
     repo = Path(env["ERP_YARN_REPO"])
-    # Use --conditions react-server to allow importing server-only in scripts
     cmd = ["npx", "tsx", "--tsconfig", "tsconfig.json", "scripts/wp-08-01e-browser-qa/setup-fixtures.ts"]
     child_env = os.environ.copy()
     child_env["DATABASE_URL"] = env["DATABASE_URL"]
     child_env["NODE_OPTIONS"] = "--conditions react-server"
+    child_env["QA_RUN_ID"] = run_id
     result = subprocess.run(
         cmd,
         cwd=str(repo),
         env=child_env,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=180,
     )
     if result.returncode != 0:
         print(f"FATAL: setup-fixtures.ts failed (exit {result.returncode})", file=sys.stderr)
@@ -737,10 +738,12 @@ def cleanup(env: dict[str, str]) -> dict[str, int]:
         ("sales_orders", "DELETE FROM public.sales_orders WHERE tenant_id = %s AND (doc_no LIKE 'QA-SO-%' OR doc_no LIKE 'SO-2026-%')"),
         # Delete stock_movements (now safe — inventory_balances already deleted)
         ("stock_movements", "DELETE FROM public.stock_movements WHERE tenant_id = %s AND source_document_type IN ('return_line', 'return_request', 'test_seed', 'sales_order_line')"),
-        # Delete idempotency_records
-        ("idempotency_records", "DELETE FROM public.idempotency_records WHERE tenant_id = %s"),
-        # Delete document_sequences (ensures doc_no allocation starts fresh)
-        ("document_sequences", "DELETE FROM public.document_sequences WHERE tenant_id = %s AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order', 'stock_movement', 'stock_reservation')"),
+        # NOTE: document_sequences are NOT deleted — they must remain monotonic.
+        # New runs allocate new, higher document numbers through the production
+        # DocumentSequenceDbRepository path.
+        # NOTE: idempotency_records are NOT deleted — prior succeeded records
+        # are preserved. Run-scoped idempotency keys prevent replay conflicts.
+        # NOTE: audit_logs are NEVER deleted (append-only per Contract 03 §7.7).
     ]
     with db_conn(env) as conn, conn.cursor() as cur:
         for table_name, sql in cleanup_statements:
@@ -798,20 +801,25 @@ def main() -> int:
     env = validate_env()
     repo = Path(env["ERP_YARN_REPO"])
     evidence_dir = repo / "docs" / "ui-ux" / "evidence" / "wp-08-01e" / "browser-qa"
-    screenshots_dir = evidence_dir / "screenshots"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
+
+    # Run-scoped ID for idempotency keys and screenshot directory
+    run_id = os.environ.get("QA_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    run_dir = evidence_dir / f"run-{run_id}"
+    screenshots_dir = run_dir / "screenshots"
+    run_dir.mkdir(parents=True, exist_ok=True)
     screenshots_dir.mkdir(exist_ok=True)
 
     started_at = datetime.now(timezone.utc).isoformat()
     print(f"[qa] started at {started_at}")
     print(f"[qa] tenant_id={TENANT_ID}")
+    print(f"[qa] run_id={run_id}")
 
     print("[qa] seeding auth users + master data...")
     seed_counts = seed_auth_users(env)
     print(f"[qa] seeded: {seed_counts}")
 
     print("[qa] running setup-fixtures.ts (real domain lifecycle)...")
-    fixture_ids = run_setup_fixtures(env)
+    fixture_ids = run_setup_fixtures(env, run_id)
     print(f"[qa] fixture IDs: {fixture_ids}")
 
     port = int(os.environ.get("BROWSER_QA_PORT", "3210"))
@@ -956,7 +964,7 @@ def main() -> int:
             "cleanup": deleted,
             "overall_success": success,
         }
-        (evidence_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
 
         lines = ["WP-08-01E Browser QA Summary", f"Started: {started_at}", f"Finished: {finished_at}", f"Tenant: {TENANT_ID}", ""]
         lines.append("=== Protected route assertions ===")
@@ -988,7 +996,7 @@ def main() -> int:
             lines.append(f"  {k}: {v}")
         lines.append("")
         lines.append(f"Overall success: {success}")
-        (evidence_dir / "summary.txt").write_text("\n".join(lines))
+        (run_dir / "summary.txt").write_text("\n".join(lines))
         print("\n".join(lines))
 
         if success:

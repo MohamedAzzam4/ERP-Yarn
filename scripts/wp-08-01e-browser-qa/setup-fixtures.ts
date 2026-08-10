@@ -125,12 +125,21 @@ const workerEff = {
 async function main() {
   console.log("=== WP-08-01E Browser QA Fixture Setup (Production Path v2) ===");
 
+  // Run-scoped ID for idempotency keys — ensures each run uses unique keys
+  // and cannot replay a prior run's idempotency record.
+  const RUN_ID = process.env.QA_RUN_ID || Date.now().toString(36);
+  console.log(`[setup] Run ID: ${RUN_ID}`);
+
   // Clean up mutable fixtures from previous runs (FK-safe, inside a transaction).
   // Order: children first, parents last.
   // stock_reservations → sales_order_lines → sales_orders
   // inventory_balances → stock_movements (last_movement_id FK)
   // return_lines → return_requests → sales_orders
-  // audit_logs: NEVER deleted (append-only per Contract 03 §7.7)
+  //
+  // NEVER delete:
+  // - audit_logs (append-only per Contract 03 §7.7)
+  // - document_sequences (must remain monotonic and durable)
+  // - idempotency_records (preserve prior succeeded records for replay safety)
   console.log("[setup] Cleaning up previous run's mutable fixtures...");
   await pgSql.begin(async (tx) => {
     // Delete children of stock_movements first
@@ -153,10 +162,11 @@ async function main() {
     await tx`DELETE FROM sales_orders WHERE tenant_id = ${TENANT_ID} AND (doc_no LIKE 'QA-SO-%' OR doc_no LIKE 'SO-2026-%')`;
     // Delete stock_movements (now safe — inventory_balances already deleted)
     await tx`DELETE FROM stock_movements WHERE tenant_id = ${TENANT_ID} AND source_document_type IN ('return_line', 'return_request', 'test_seed', 'sales_order_line')`;
-    // Delete idempotency_records
-    await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TENANT_ID}`;
-    // Delete document_sequences (ensures doc_no allocation starts fresh each run)
-    await tx`DELETE FROM document_sequences WHERE tenant_id = ${TENANT_ID} AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order', 'stock_movement', 'stock_reservation')`;
+    // NOTE: document_sequences are NOT deleted — they must remain monotonic.
+    // New runs allocate new, higher document numbers through the production
+    // DocumentSequenceDbRepository path.
+    // NOTE: idempotency_records are NOT deleted — prior succeeded records
+    // are preserved. Run-scoped idempotency keys prevent replay conflicts.
   });
   console.log("[setup] Cleanup complete.");
 
@@ -322,7 +332,7 @@ async function main() {
     movementDate: "2026-08-10",
     sourceDocumentType: "test_seed",
     sourceDocumentId: randomUUID(),
-    idempotencyKey: "qa-browser-seed-stock-" + Date.now(),
+    idempotencyKey: `qa-browser-seed-stock-${RUN_ID}`,
   });
 
   // ===== Step 2: Create sale draft via SalesDraftService =====
@@ -355,7 +365,7 @@ async function main() {
   console.log("[setup] Step 4: Submit sale via SalesDraftService.submitSale (→ SalesSubmissionService)...");
   await draftService.submitSale(workerUser as any, workerEff as any, {
     saleId,
-    idempotencyKey: "qa-browser-sale-submit-" + Date.now(),
+    idempotencyKey: `qa-browser-sale-submit-${RUN_ID}`,
   });
 
   // ===== Step 5: Approve sale via SalesApprovalService.approveSale =====
@@ -363,7 +373,7 @@ async function main() {
   console.log("[setup] Step 5: Approve sale via SalesApprovalService.approveSale (approver=owner)...");
   await approvalService.approveSale(ownerUser as any, ownerEff as any, {
     saleId,
-    idempotencyKey: "qa-browser-sale-approve-" + Date.now(),
+    idempotencyKey: `qa-browser-sale-approve-${RUN_ID}`,
   });
 
   // ===== Step 6: Verify active profitability snapshot exists =====
@@ -392,14 +402,14 @@ async function main() {
       returnedStockStatus: "return_received",
       originalSaleLineNetUnitValue: "0.080000",
     }],
-    idempotencyKey: "qa-browser-return-create-" + Date.now(),
+    idempotencyKey: `qa-browser-return-create-${RUN_ID}`,
   });
 
   // ===== Step 8: Submit return request (→ pending_approval) =====
   console.log("[setup] Step 8: Submit return request...");
   await returnService.submitReturnRequest(workerUser as any, workerEff as any, {
     returnRequestId: create.returnRequestId,
-    idempotencyKey: "qa-browser-return-submit-" + Date.now(),
+    idempotencyKey: `qa-browser-return-submit-${RUN_ID}`,
   });
 
   // ===== Step 9: Create approved replacement return for createReplacementOrderAction =====
@@ -420,11 +430,11 @@ async function main() {
   });
   await draftService.submitSale(workerUser as any, workerEff as any, {
     saleId: replDraft.saleId,
-    idempotencyKey: "qa-browser-repl-sale-submit-" + Date.now(),
+    idempotencyKey: `qa-browser-repl-sale-submit-${RUN_ID}`,
   });
   await approvalService.approveSale(ownerUser as any, ownerEff as any, {
     saleId: replDraft.saleId,
-    idempotencyKey: "qa-browser-repl-sale-approve-" + Date.now(),
+    idempotencyKey: `qa-browser-repl-sale-approve-${RUN_ID}`,
   });
 
   const replacementReturn = await returnService.createReturnRequest(workerUser as any, workerEff as any, {
@@ -442,16 +452,16 @@ async function main() {
       returnedStockStatus: "return_received",
       originalSaleLineNetUnitValue: "0.080000",
     }],
-    idempotencyKey: "qa-browser-replacement-create-" + Date.now(),
+    idempotencyKey: `qa-browser-replacement-create-${RUN_ID}`,
   });
   await returnService.submitReturnRequest(workerUser as any, workerEff as any, {
     returnRequestId: replacementReturn.returnRequestId,
-    idempotencyKey: "qa-browser-replacement-submit-" + Date.now(),
+    idempotencyKey: `qa-browser-replacement-submit-${RUN_ID}`,
   });
   // Approve the replacement return so is_replacement=true and status=approved
   await returnService.approveReturnRequest(ownerUser as any, ownerEff as any, {
     returnRequestId: replacementReturn.returnRequestId,
-    idempotencyKey: "qa-browser-replacement-approve-" + Date.now(),
+    idempotencyKey: `qa-browser-replacement-approve-${RUN_ID}`,
   });
 
   // Output fixture IDs as JSON for the runner to use
@@ -463,6 +473,7 @@ async function main() {
     replacementSaleId: replDraft.saleId,
     replacementReturnRequestId: replacementReturn.returnRequestId,
     activeSnapshotId: activeSnapshot.id,
+    runId: RUN_ID,
     tenantId: TENANT_ID,
     customerId: CUSTOMER_ID,
     itemId: INVENTORY_ITEM_ID,
