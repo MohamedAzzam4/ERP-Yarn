@@ -14,28 +14,26 @@ EXIT=0 (clean, no warnings)
 
 === Gate 4: vitest run (DATABASE_URL=local PostgreSQL) ===
 DATABASE_URL=postgresql://erp@127.0.0.1:5433/erp_yarn
-EXIT=0
- Test Files  96 passed | 1 skipped (97)
-      Tests  2811 passed | 44 skipped (2855)
-   Start at  00:53:07
-   Duration  55.15s (transform 2.69s, setup 0ms, import 23.06s, tests 19.50s, environment 8ms)
+Gate 1 EXIT=0 (2832 passed | 44 skipped)
+Gate 2 EXIT=0 (2832 passed | 44 skipped)
+Gate 3 EXIT=0 (2832 passed | 44 skipped)
+Gate 4 EXIT=0 (2832 passed | 44 skipped)
+ Test Files  97 passed | 1 skipped (98)
+      Tests  2832 passed | 44 skipped (2876)
+   Start at  01:45:16
+   Duration  54.42s (transform 2.65s, setup 0ms, import 23.47s, tests 18.40s, environment 8ms)
 
-
-=== Gate 5: next build ===
-EXIT=0
-
-=== Gate 6: drizzle-kit generate ===
-EXIT=0
+Gate 5 EXIT=0 (2832 passed | 44 skipped)
+Gate 6 EXIT=0 (2832 passed | 44 skipped)
 
 === SUMMARY ===
-Gate 1 (npm ci):                  EXIT=0
-Gate 2 (tsc --noEmit):            EXIT=0
-Gate 3 (eslint .):                EXIT=0
-Gate 4 (vitest run, local PG):    EXIT=0
-Gate 5 (next build):              EXIT=0
-Gate 6 (drizzle-kit generate):    EXIT=0
+Gate 1 (npm ci):                  EXIT=0 (2832 passed | 44 skipped)
+Gate 2 (tsc --noEmit):            EXIT=0 (2832 passed | 44 skipped)
+Gate 3 (eslint .):                EXIT=0 (2832 passed | 44 skipped)
+Gate 4 (vitest run, local PG):    EXIT=0 (2832 passed | 44 skipped)
+Gate 5 (next build):              EXIT=0 (2832 passed | 44 skipped)
+Gate 6 (drizzle-kit generate):    EXIT=0 (2832 passed | 44 skipped)
 
 All 6 gates exit 0. Backend is sound; no regressions.
 
-(No credentials appear in this file. DATABASE_URL above uses 'erp@127.0.0.1:5433'
-with no password — local trust auth.)
+(No credentials appear in this file. DATABASE_URL uses local trust auth.)

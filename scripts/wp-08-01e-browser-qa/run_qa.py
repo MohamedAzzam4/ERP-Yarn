@@ -745,9 +745,15 @@ def cleanup(env: dict[str, str]) -> dict[str, int]:
     with db_conn(env) as conn, conn.cursor() as cur:
         for table_name, sql in cleanup_statements:
             try:
-                if "item_id = %s" in sql:
+                # Handle specific parameter requirements per statement
+                if table_name == "inventory_adjustments":
+                    # 2 placeholders: tenant_id, tenant_id (subquery)
+                    cur.execute(sql, (TENANT_ID, TENANT_ID))
+                elif table_name == "inventory_balances":
+                    # 2 placeholders: tenant_id, item_id
                     cur.execute(sql, (TENANT_ID, INVENTORY_ITEM_ID))
                 else:
+                    # 1 placeholder: tenant_id
                     cur.execute(sql, (TENANT_ID,))
                 deleted[f"public.{table_name}"] = cur.rowcount
                 conn.commit()

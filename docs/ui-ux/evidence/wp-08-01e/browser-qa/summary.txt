@@ -1,6 +1,6 @@
 WP-08-01E Browser QA Summary
-Started: 2026-08-10T00:42:34.104791+00:00
-Finished: 2026-08-10T00:49:28.167810+00:00
+Started: 2026-08-10T01:33:38.905059+00:00
+Finished: 2026-08-10T01:40:28.125464+00:00
 Tenant: 00000000-0000-0000-0000-000000081e50
 
 === Protected route assertions ===
@@ -35,25 +35,21 @@ Worker denied /management/quality/tests: OK
   /worker/quality-entry: scrollWidth=360 clientWidth=360 overflow=False
 
 === Cleanup ===
+  public.inventory_adjustments_error: tuple index out of range
+  public.inventory_balances: 1
+  public.stock_reservations: 2
+  public.sales_profitability_snapshots: 4
+  public.account_entries: 4
   public.return_lines: 2
   public.return_requests: 2
-  public.complaints: 2
+  public.complaints_error: tuple index out of range
   public.quality_test_values: 1
   public.quality_holds: 1
-  public.quality_tests: 2
-  public.sales_profitability_snapshots: 4
-  public.sales_order_lines_error: update or delete on table "sales_order_lines" violates foreign key constraint "stock_reservations_sa
-  public.sales_orders_error: update or delete on table "sales_orders" violates foreign key constraint "sales_order_lines_sales_or
-  public.yarn_lots: 1
-  public.inventory_items_error: update or delete on table "inventory_items" violates foreign key constraint "inventory_balances_item
-  public.stock_movements_error: update or delete on table "stock_movements" violates foreign key constraint "inventory_balances_last
-  public.inventory_balances: 1
-  public.account_entries: 4
-  public.locations_error: update or delete on table "locations" violates foreign key constraint "stock_movements_from_location
-  public.customers_error: update or delete on table "customers" violates foreign key constraint "sales_orders_customer_id_cust
-  public.product_types: 1
-  public.fiber_types: 1
-  public.document_sequences: 8
+  public.quality_tests_error: tuple index out of range
+  public.sales_order_lines: 3
+  public.sales_orders_error: tuple index out of range
+  public.stock_movements: 5
   public.idempotency_records: 20
+  public.document_sequences: 4
 
 Overall success: True
