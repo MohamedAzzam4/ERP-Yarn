@@ -1,19 +1,22 @@
 /**
- * WP-08-01E — Browser QA Fixture Setup Script.
+ * WP-08-01E — Browser QA Fixture Setup Script (v2 — full production lifecycle).
  *
- * Sets up the approveReturn fixture through the REAL domain lifecycle:
+ * Sets up the approveReturn fixture through the REAL production lifecycle:
  * 1. Post raw receipt (stock) via InventoryLedgerService.postRawReceipt.
- * 2. Insert sale draft via SalesDbRepository.insertSaleDraft.
- * 3. Insert sale line via SalesDbRepository.insertSaleLine.
- * 4. Update commercial totals via SalesDbRepository.updateSaleCommercialTotals.
- * 5. Update line commercial totals via SalesDbRepository.updateLineCommercialTotals.
- * 6. Mark sale approved via SalesDbRepository.markSaleApproved.
- * 7. Create V1 profitability snapshot via ProfitabilitySnapshotService.createVersion1Snapshot.
- * 8. Create return request via ReturnRequestService.createReturnRequest (requester = worker).
- * 9. Submit return request via ReturnRequestService.submitReturnRequest.
+ * 2. Create sale draft via SalesDraftService.createDraft.
+ * 3. Complete commercial totals via SalesDraftService.completeCommercialTotals.
+ * 4. Submit sale via SalesDraftService.submitSale (delegates to SalesSubmissionService).
+ * 5. Approve sale via SalesApprovalService.approveSale (with requester/approver
+ *    separation, subject-hash validation, reservation checks, tx-scoped audit,
+ *    DB-backed idempotency, profitability snapshot creation).
+ * 6. Verify active profitability snapshot exists through the real service path.
+ * 7. Create return request via ReturnRequestService.createReturnRequest (requester=worker).
+ * 8. Submit return request via ReturnRequestService.submitReturnRequest.
  *
- * This script does NOT use raw SQL to fake domain state. All writes go
- * through the real production services.
+ * This script does NOT call markSaleApproved directly. It does NOT use raw SQL
+ * to patch sale status, reservation status, profitability snapshots, stock
+ * movements, account entries, or subject hashes. All writes go through the
+ * real production services.
  *
  * Usage: DATABASE_URL=<supabase-pooler> npx tsx scripts/wp-08-01e-browser-qa/setup-fixtures.ts
  *
@@ -32,10 +35,16 @@ import { InventoryLedgerService } from "../../src/server/services/inventory-ledg
 import { SubledgerDbRepository } from "../../src/server/services/subledger-db-repository";
 import { SubledgerService } from "../../src/server/services/subledger-service";
 import { SalesDbRepository } from "../../src/server/services/sales-db-repository";
+import { StockReservationDbRepository } from "../../src/server/services/stock-reservation-db-repository";
 import { ProfitabilitySnapshotDbRepository } from "../../src/server/services/profitability-snapshot-db-repository";
 import { ProfitabilitySnapshotService } from "../../src/server/services/profitability-snapshot-service";
+import { SalesSubmissionService } from "../../src/server/services/sales-submission-service";
+import { SalesDraftService } from "../../src/server/services/sales-draft-service";
+import { SalesApprovalService } from "../../src/server/services/sales-approval-service";
 import { IdempotencyDbRepository } from "../../src/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "../../src/server/services/document-sequence-db-repository";
+import { inventoryItems } from "../../src/server/db/schema";
+import { eq, and } from "drizzle-orm";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -89,6 +98,14 @@ const ownerEff = {
     "inventory.receive.approve",
     "inventory.correct",
     "inventory.view_quantity",
+    "sales.create",
+    "sales.view_price",
+    "sales.submit",
+    "sales.approve",
+    "balances.view_customer",
+    "balances.view_supplier_factory",
+    "master_data.view",
+    "master_data.view_names",
   ]),
   workerFinancialDeny: { enforced: false, deniedPermissionKeys: new Set(), deniedFieldKeys: new Set() },
 };
@@ -99,26 +116,29 @@ const workerEff = {
     "quality_tests.create",
     "complaints.investigate",
     "returns.create",
+    "sales.create",
+    "sales.submit",
   ]),
   workerFinancialDeny: { enforced: true, deniedPermissionKeys: new Set(), deniedFieldKeys: new Set() },
 };
 
 async function main() {
-  console.log("=== WP-08-01E Browser QA Fixture Setup (Production Path) ===");
+  console.log("=== WP-08-01E Browser QA Fixture Setup (Production Path v2) ===");
 
   // Clean up mutable fixtures from previous runs (FK-safe, inside a transaction)
   console.log("[setup] Cleaning up previous run's mutable fixtures...");
   await pgSql.begin(async (tx) => {
     await tx`DELETE FROM sales_profitability_snapshots WHERE tenant_id = ${TENANT_ID}`;
     await tx`DELETE FROM account_entries WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM stock_reservations WHERE tenant_id = ${TENANT_ID}`;
     await tx`DELETE FROM return_lines WHERE tenant_id = ${TENANT_ID}`;
     await tx`DELETE FROM return_requests WHERE tenant_id = ${TENANT_ID}`;
     await tx`DELETE FROM sales_order_lines WHERE tenant_id = ${TENANT_ID}`;
-    await tx`DELETE FROM sales_orders WHERE tenant_id = ${TENANT_ID} AND doc_no LIKE 'QA-SO-%'`;
+    await tx`DELETE FROM sales_orders WHERE tenant_id = ${TENANT_ID} AND (doc_no LIKE 'QA-SO-%' OR doc_no LIKE 'SO-2026-%')`;
     await tx`DELETE FROM inventory_balances WHERE tenant_id = ${TENANT_ID} AND item_id = ${INVENTORY_ITEM_ID}`;
-    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TENANT_ID} AND source_document_type IN ('return_line', 'return_request', 'test_seed')`;
-    await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TENANT_ID} AND operation_scope LIKE '%return%' OR operation_scope LIKE '%inventory%'`;
-    await tx`DELETE FROM document_sequences WHERE tenant_id = ${TENANT_ID} AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order')`;
+    await tx`DELETE FROM stock_movements WHERE tenant_id = ${TENANT_ID} AND source_document_type IN ('return_line', 'return_request', 'test_seed', 'sales_order_line')`;
+    await tx`DELETE FROM idempotency_records WHERE tenant_id = ${TENANT_ID}`;
+    await tx`DELETE FROM document_sequences WHERE tenant_id = ${TENANT_ID} AND document_type IN ('return_request', 'return_receipt', 'account_entry', 'sales_order', 'stock_movement', 'stock_reservation')`;
   });
   console.log("[setup] Cleanup complete.");
 
@@ -131,6 +151,7 @@ async function main() {
   const salesDbRepo = new SalesDbRepository(db);
   const snapshotDbRepo = new ProfitabilitySnapshotDbRepository(db);
   const returnDbRepo = new ReturnRequestDbRepository(db);
+  const reservationDbRepo = new StockReservationDbRepository(db);
 
   const inventoryLedger = new InventoryLedgerService({
     ledger: ledgerDbRepo,
@@ -153,7 +174,89 @@ async function main() {
   const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
     return (db as any).transaction(async (tx: any) => work(tx));
   };
-  const txFactories = {
+
+  // txFactories for SalesSubmissionService
+  const submissionTxFactories = {
+    createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
+    createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
+    createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
+    }),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+  };
+
+  // findItem function for DEC-065 eligibility check
+  const findItem = async (tenantId: string, itemId: string) => {
+    const rows = await db.select().from(inventoryItems).where(
+      and(eq(inventoryItems.tenantId, tenantId), eq(inventoryItems.id, itemId))
+    ).limit(1);
+    return rows[0] ?? null;
+  };
+
+  const submissionService = new SalesSubmissionService({
+    salesRepository: salesDbRepo,
+    reservationRepository: reservationDbRepo,
+    inventoryLedger,
+    audit: auditDbRepo,
+    idempotency: idempotencyDbRepo,
+    documentSequence: docSeqDbRepo,
+    transactionRunner,
+    txFactories: submissionTxFactories,
+    findItem,
+  });
+
+  const draftService = new SalesDraftService({
+    salesRepository: salesDbRepo,
+    audit: auditDbRepo,
+    documentSequence: docSeqDbRepo,
+    submissionService,
+  });
+
+  // txFactories for SalesApprovalService
+  const approvalTxFactories = {
+    createSalesRepository: (tx: unknown) => new SalesDbRepository(tx as any),
+    createReservationRepository: (tx: unknown) => new StockReservationDbRepository(tx as any),
+    createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
+      ledger: new InventoryLedgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
+    }),
+    createSubledger: (tx: unknown) => new SubledgerService({
+      subledger: new SubledgerDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+      idempotency: new IdempotencyDbRepository(tx as any),
+      documentSequence: new DocumentSequenceDbRepository(tx as any),
+    }),
+    createSnapshotService: (tx: unknown) => new ProfitabilitySnapshotService({
+      snapshotRepository: new ProfitabilitySnapshotDbRepository(tx as any),
+      salesRepository: new SalesDbRepository(tx as any),
+      audit: new AuditDbRepository(tx as any),
+    }),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+  };
+
+  const approvalService = new SalesApprovalService({
+    salesRepository: salesDbRepo,
+    reservationRepository: reservationDbRepo,
+    inventoryLedger,
+    subledger,
+    snapshotService,
+    audit: auditDbRepo,
+    idempotency: idempotencyDbRepo,
+    documentSequence: docSeqDbRepo,
+    transactionRunner,
+    txFactories: approvalTxFactories,
+  });
+
+  // txFactories for ReturnRequestService
+  const returnTxFactories = {
     createReturnRequestRepository: (tx: unknown) => new ReturnRequestDbRepository(tx as any),
     createSubledger: (tx: unknown) => new SubledgerService({
       subledger: new SubledgerDbRepository(tx as any),
@@ -189,11 +292,11 @@ async function main() {
     documentSequence: docSeqDbRepo,
     tenantOwnershipValidator: new DbTenantOwnershipValidator(db),
     transactionRunner,
-    txFactories,
+    txFactories: returnTxFactories,
   });
 
-  // Step 1: Post raw receipt (stock) — gives the item inventory
-  console.log("[setup] Step 1: Post raw receipt (stock)...");
+  // ===== Step 1: Post raw receipt (stock) =====
+  console.log("[setup] Step 1: Post raw receipt (stock) via InventoryLedgerService...");
   await inventoryLedger.postRawReceipt(ownerUser as any, ownerEff as any, {
     itemId: INVENTORY_ITEM_ID,
     toLocationId: LOCATION_ID,
@@ -204,79 +307,66 @@ async function main() {
     idempotencyKey: "qa-browser-seed-stock-" + Date.now(),
   });
 
-  // Step 2: Create sale draft
-  console.log("[setup] Step 2: Create sale draft...");
+  // ===== Step 2: Create sale draft via SalesDraftService =====
+  console.log("[setup] Step 2: Create sale draft via SalesDraftService.createDraft...");
   const saleDocNo = "QA-SO-" + Date.now().toString(36);
-  const sale = await salesDbRepo.insertSaleDraft({
-    tenantId: TENANT_ID,
-    docNo: saleDocNo,
+  const draftResult = await draftService.createDraft(workerUser as any, workerEff as any, {
     customerId: CUSTOMER_ID,
     saleDate: "2026-08-10",
-    createdBy: OWNER_USER_ID,
+    lines: [{
+      itemId: INVENTORY_ITEM_ID,
+      locationId: LOCATION_ID,
+      quantityKg: "1000.000",
+    }],
+  });
+  const saleId = draftResult.saleId;
+
+  // ===== Step 3: Complete commercial totals via SalesDraftService =====
+  console.log("[setup] Step 3: Complete commercial totals via SalesDraftService...");
+  const saleLines = await salesDbRepo.findSaleLines(TENANT_ID, saleId);
+  const saleLineId = saleLines[0]!.id;
+  await draftService.completeCommercialTotals(ownerUser as any, ownerEff as any, {
+    saleId,
+    linePrices: [{
+      lineId: saleLineId,
+      pricePerTon: "80.00",
+    }],
   });
 
-  // Step 3: Insert sale line
-  console.log("[setup] Step 3: Insert sale line...");
-  await salesDbRepo.insertSaleLine({
-    tenantId: TENANT_ID,
-    salesOrderId: sale.id,
-    lineNo: 1,
-    itemId: INVENTORY_ITEM_ID,
-    locationId: LOCATION_ID,
-    quantityKg: "1000.000",
-    pricePerTon: "80.00",
+  // ===== Step 4: Submit sale via SalesDraftService.submitSale =====
+  console.log("[setup] Step 4: Submit sale via SalesDraftService.submitSale (→ SalesSubmissionService)...");
+  await draftService.submitSale(workerUser as any, workerEff as any, {
+    saleId,
+    idempotencyKey: "qa-browser-sale-submit-" + Date.now(),
   });
 
-  // Step 4: Update commercial totals
-  console.log("[setup] Step 4: Update sale commercial totals...");
-  await salesDbRepo.updateSaleCommercialTotals(TENANT_ID, sale.id, {
-    totalGrossRevenue: "80.00",
-    orderDiscountTotal: "0.00",
-    documentTotalPosted: "80.00",
+  // ===== Step 5: Approve sale via SalesApprovalService.approveSale =====
+  // DEC-080: requester (worker) cannot approve — approver must be owner
+  console.log("[setup] Step 5: Approve sale via SalesApprovalService.approveSale (approver=owner)...");
+  await approvalService.approveSale(ownerUser as any, ownerEff as any, {
+    saleId,
+    idempotencyKey: "qa-browser-sale-approve-" + Date.now(),
   });
 
-  // Step 5: Update line commercial totals
-  console.log("[setup] Step 5: Update line commercial totals...");
-  const lines = await salesDbRepo.findSaleLines(TENANT_ID, sale.id);
-  const saleLineId = lines[0]!.id;
-  await salesDbRepo.updateLineCommercialTotals(TENANT_ID, saleLineId, {
-    lineGrossRevenue: "80.00",
-    lineAllocatedDiscountPrecise: "0.00",
-    lineAllocatedDiscountPosted: "0.00",
-    lineNetRevenuePrecise: "80.00",
-    lineNetRevenuePosted: "80.00",
-    roundingAdjustment: "0.00",
-  });
+  // ===== Step 6: Verify active profitability snapshot exists =====
+  console.log("[setup] Step 6: Verify active profitability snapshot exists...");
+  const activeSnapshot = await snapshotDbRepo.findActiveSnapshot(TENANT_ID, saleId);
+  if (!activeSnapshot) {
+    console.error("FATAL: No active profitability snapshot found after sale approval.");
+    process.exit(1);
+  }
+  console.log(`[setup] Active snapshot verified: version=${activeSnapshot.version}, id=${activeSnapshot.id}`);
 
-  // Step 6: Mark sale approved
-  console.log("[setup] Step 6: Mark sale approved...");
-  await salesDbRepo.markSaleApproved(TENANT_ID, sale.id, {
-    approvedBy: OWNER_USER_ID,
-    approvedAt: new Date(),
-  }, ["draft"]);
-
-  // Set subject_hash (required by snapshot service)
-  await pgSql`UPDATE sales_orders SET subject_hash = ${"hash-" + Date.now()}, subject_version = 1 WHERE id = ${sale.id} AND tenant_id = ${TENANT_ID}`;
-
-  // Step 7: Create V1 profitability snapshot via real service
-  console.log("[setup] Step 7: Create V1 profitability snapshot...");
-  await snapshotService.createVersion1Snapshot(ownerUser as any, {
-    salesOrderId: sale.id,
-    rawCost: "30.00",
-    singleProductionCost: "20.00",
-  });
-
-  // Step 8: Create return request via real service (requester = worker)
-  console.log("[setup] Step 8: Create return request (requester=worker)...");
-  const returnDocNo = "QA-RET-" + Date.now().toString(36);
+  // ===== Step 7: Create return request via ReturnRequestService (requester=worker) =====
+  console.log("[setup] Step 7: Create return request via ReturnRequestService (requester=worker)...");
   const create = await returnService.createReturnRequest(workerUser as any, workerEff as any, {
-    salesOrderId: sale.id,
+    salesOrderId: saleId,
     customerId: CUSTOMER_ID,
     returnDate: "2026-08-10",
     returnReason: "QA browser fixture return",
     financialTreatment: "customer_credit",
     lines: [{
-      originalSaleOrderId: sale.id,
+      originalSaleOrderId: saleId,
       originalSaleLineId: saleLineId,
       itemId: INVENTORY_ITEM_ID,
       quantityKg: "100.000",
@@ -287,64 +377,46 @@ async function main() {
     idempotencyKey: "qa-browser-return-create-" + Date.now(),
   });
 
-  // Step 9: Submit return request (transitions to pending_approval)
-  console.log("[setup] Step 9: Submit return request...");
+  // ===== Step 8: Submit return request (→ pending_approval) =====
+  console.log("[setup] Step 8: Submit return request...");
   await returnService.submitReturnRequest(workerUser as any, workerEff as any, {
     returnRequestId: create.returnRequestId,
     idempotencyKey: "qa-browser-return-submit-" + Date.now(),
   });
 
-  // Also create an approved replacement return for createReplacementOrderAction
-  console.log("[setup] Step 10: Create approved replacement return...");
-  const replacementSale = await salesDbRepo.insertSaleDraft({
-    tenantId: TENANT_ID,
-    docNo: "QA-SO-REPL-" + Date.now().toString(36),
+  // ===== Step 9: Create approved replacement return for createReplacementOrderAction =====
+  console.log("[setup] Step 9: Create approved replacement return (full lifecycle)...");
+  const replDraft = await draftService.createDraft(workerUser as any, workerEff as any, {
     customerId: CUSTOMER_ID,
     saleDate: "2026-08-10",
-    createdBy: OWNER_USER_ID,
+    lines: [{
+      itemId: INVENTORY_ITEM_ID,
+      locationId: LOCATION_ID,
+      quantityKg: "500.000",
+    }],
   });
-  await salesDbRepo.insertSaleLine({
-    tenantId: TENANT_ID,
-    salesOrderId: replacementSale.id,
-    lineNo: 1,
-    itemId: INVENTORY_ITEM_ID,
-    locationId: LOCATION_ID,
-    quantityKg: "500.000",
-    pricePerTon: "80.00",
+  const replLines = await salesDbRepo.findSaleLines(TENANT_ID, replDraft.saleId);
+  await draftService.completeCommercialTotals(ownerUser as any, ownerEff as any, {
+    saleId: replDraft.saleId,
+    linePrices: [{ lineId: replLines[0]!.id, pricePerTon: "80.00" }],
   });
-  await salesDbRepo.updateSaleCommercialTotals(TENANT_ID, replacementSale.id, {
-    totalGrossRevenue: "40.00",
-    orderDiscountTotal: "0.00",
-    documentTotalPosted: "40.00",
+  await draftService.submitSale(workerUser as any, workerEff as any, {
+    saleId: replDraft.saleId,
+    idempotencyKey: "qa-browser-repl-sale-submit-" + Date.now(),
   });
-  const replLines = await salesDbRepo.findSaleLines(TENANT_ID, replacementSale.id);
-  await salesDbRepo.updateLineCommercialTotals(TENANT_ID, replLines[0]!.id, {
-    lineGrossRevenue: "40.00",
-    lineAllocatedDiscountPrecise: "0.00",
-    lineAllocatedDiscountPosted: "0.00",
-    lineNetRevenuePrecise: "40.00",
-    lineNetRevenuePosted: "40.00",
-    roundingAdjustment: "0.00",
-  });
-  await salesDbRepo.markSaleApproved(TENANT_ID, replacementSale.id, {
-    approvedBy: OWNER_USER_ID,
-    approvedAt: new Date(),
-  }, ["draft"]);
-  await pgSql`UPDATE sales_orders SET subject_hash = ${"hash-repl-" + Date.now()}, subject_version = 1 WHERE id = ${replacementSale.id} AND tenant_id = ${TENANT_ID}`;
-  await snapshotService.createVersion1Snapshot(ownerUser as any, {
-    salesOrderId: replacementSale.id,
-    rawCost: "15.00",
-    singleProductionCost: "10.00",
+  await approvalService.approveSale(ownerUser as any, ownerEff as any, {
+    saleId: replDraft.saleId,
+    idempotencyKey: "qa-browser-repl-sale-approve-" + Date.now(),
   });
 
   const replacementReturn = await returnService.createReturnRequest(workerUser as any, workerEff as any, {
-    salesOrderId: replacementSale.id,
+    salesOrderId: replDraft.saleId,
     customerId: CUSTOMER_ID,
     returnDate: "2026-08-10",
     returnReason: "QA browser approved replacement return",
     financialTreatment: "replacement",
     lines: [{
-      originalSaleOrderId: replacementSale.id,
+      originalSaleOrderId: replDraft.saleId,
       originalSaleLineId: replLines[0]!.id,
       itemId: INVENTORY_ITEM_ID,
       quantityKg: "50.000",
@@ -366,12 +438,13 @@ async function main() {
 
   // Output fixture IDs as JSON for the runner to use
   const fixtures = {
-    saleId: sale.id,
-    saleDocNo: saleDocNo,
-    saleLineId: saleLineId,
+    saleId,
+    saleDocNo,
+    saleLineId,
     returnRequestId: create.returnRequestId,
-    replacementSaleId: replacementSale.id,
+    replacementSaleId: replDraft.saleId,
     replacementReturnRequestId: replacementReturn.returnRequestId,
+    activeSnapshotId: activeSnapshot.id,
     tenantId: TENANT_ID,
     customerId: CUSTOMER_ID,
     itemId: INVENTORY_ITEM_ID,
