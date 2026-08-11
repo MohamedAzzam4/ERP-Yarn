@@ -78,9 +78,7 @@ function getMigrationServices() {
   const validationService = new HistoricalValidationService({ repository: validationRepo, audit, idempotency });
   // DEFECT 1: reconciliation service now needs commitRepository for
   // submitForApproval (backup evidence + blocking-validation lookups).
-  const reconciliationService = new HistoricalReconciliationService({
-    repository: reconciliationRepo, audit, idempotency, commitRepository: commitRepo,
-  });
+  // DEFECT 3/4: transactionRunner + txFactories for atomic submit/rework.
   const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
     (db as any).transaction(async (tx: any) => work(tx));
   const txFactories = {
@@ -96,6 +94,14 @@ function getMigrationServices() {
     }),
     createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
   };
+  const reconciliationService = new HistoricalReconciliationService({
+    repository: reconciliationRepo, audit, idempotency, commitRepository: commitRepo,
+    transactionRunner,
+    createCommitRepository: txFactories.createCommitRepository,
+    createAudit: txFactories.createAudit,
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+  });
   const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency, transactionRunner, txFactories });
   const correctionService = new HistoricalCorrectionService({ repository: correctionRepo, audit, idempotency, documentSequence });
   return { stagingService, validationService, reconciliationService, commitService, correctionService };

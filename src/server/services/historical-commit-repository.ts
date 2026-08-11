@@ -123,13 +123,24 @@ export interface HistoricalCommitRepository {
     approverRole: "owner" | "accountant",
   ): Promise<ImportBatchApproval | null>;
   /**
-   * WP-08-01F DEFECT 2: Invalidate (delete) all approval records for a batch.
-   * Used by the rework command when transitioning back to a preparation state.
-   * The original approval audit entries remain in audit_logs (immutable) —
-   * only the approval rows themselves are removed so new approvals can be
-   * recorded against the new hashes/versions. Returns the count of deleted rows.
+   * WP-08-01F DEFECT 2: Invalidate (mark is_current=false) all CURRENT
+   * approval records for a batch. Used by the rework command. Prior approval
+   * rows are preserved (append-only) with is_current=false, invalidated_at,
+   * invalidated_by, and invalidation_reason set. New approvals create new
+   * rows with is_current=true. Returns the count of invalidated rows.
    */
-  invalidateApprovalsForBatch(tenantId: string, importBatchId: string): Promise<number>;
+  invalidateCurrentApprovalsForBatch(
+    tenantId: string,
+    importBatchId: string,
+    invalidatedBy: string,
+    invalidationReason: string,
+  ): Promise<number>;
+
+  /**
+   * Find only CURRENT approvals (is_current=true) for a batch.
+   * Used by submitForApproval and commitBatch to check the current approval state.
+   */
+  findCurrentApprovalsForBatch(tenantId: string, importBatchId: string): Promise<ImportBatchApproval[]>;
 
   // ---- Backup evidence ----
   insertBackupEvidence(row: NewBackupEvidenceInput): Promise<ImportBackupEvidence>;

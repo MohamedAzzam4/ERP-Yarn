@@ -10,12 +10,14 @@ import type {
   NewImportFileInput,
   NewImportBatchInput,
   NewStagingRowInput,
+  NewCutoverManifestInput,
 } from "../historical-staging-repository";
 import type {
   ImportBatch,
   ImportFile,
   ImportTemplateVersion,
   ImportStagingRow,
+  ImportCutoverManifest,
 } from "@/server/db/schema/migration";
 
 const NOW = () => new Date();
@@ -29,6 +31,7 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
   private files = new Map<string, ImportFile>();
   private batches = new Map<string, ImportBatch>();
   private stagingRows = new Map<string, ImportStagingRow>();
+  private cutoverManifests = new Map<string, ImportCutoverManifest>();
   private templateCounter = 0;
   private fileCounter = 0;
   private batchCounter = 0;
@@ -202,6 +205,44 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
     return updated;
   }
 
+  // WP-08-01F DEFECT 1A: lifecycle transition support methods
+
+  async updateBatchStagedDataHash(tenantId: string, batchId: string, stagedDataHash: string, updatedBy: string): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, stagedDataHash, updatedBy, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
+  async updateBatchCutoverManifestHash(tenantId: string, batchId: string, cutoverManifestHash: string, updatedBy: string): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, cutoverManifestHash, updatedBy, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
+  async updateBatchValidationStatus(tenantId: string, batchId: string, validationStatus: string, updatedBy: string): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, validationStatus, updatedBy, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
+  async updateBatchReconciliationStatus(tenantId: string, batchId: string, reconciliationStatus: string, updatedBy: string): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, reconciliationStatus, updatedBy, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
   // --- Staging row methods ---
 
   async insertStagingRow(row: NewStagingRowInput): Promise<ImportStagingRow> {
@@ -240,5 +281,41 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
 
   async findStagingRowById(tenantId: string, id: string): Promise<ImportStagingRow | null> {
     return this.stagingRows.get(`${tenantId}:${id}`) ?? null;
+  }
+
+  // WP-08-01F DEFECT 1A: Cutover manifest methods (in-memory)
+
+  async insertCutoverManifest(row: NewCutoverManifestInput): Promise<ImportCutoverManifest> {
+    const id = `cm-${randomUUID().slice(0, 8)}`;
+    const manifest: ImportCutoverManifest = {
+      id,
+      tenantId: row.tenantId,
+      importBatchId: row.importBatchId,
+      domain: row.domain,
+      importMode: row.importMode as any,
+      cutoffDate: row.cutoffDate,
+      sourceCoverage: row.sourceCoverage,
+      openingBalanceBasis: row.openingBalanceBasis,
+      liveSystemStartBoundary: row.liveSystemStartBoundary,
+      reconciliationOwner: null,
+      manifestHash: row.manifestHash,
+      isApproved: row.isApproved,
+      createdBy: row.createdBy,
+      createdAt: NOW(),
+      updatedBy: null,
+      updatedAt: null,
+    };
+    this.cutoverManifests.set(`${row.tenantId}:${id}`, manifest);
+    return manifest;
+  }
+
+  async findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]> {
+    return [...this.cutoverManifests.values()].filter(
+      m => m.tenantId === tenantId && m.importBatchId === importBatchId,
+    );
+  }
+
+  async findCutoverManifestById(tenantId: string, id: string): Promise<ImportCutoverManifest | null> {
+    return this.cutoverManifests.get(`${tenantId}:${id}`) ?? null;
   }
 }

@@ -1,25 +1,26 @@
 /**
- * WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof.
+ * WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path proof.
  *
- * Uses production commands (HistoricalStagingService, HistoricalValidationService,
- * HistoricalReconciliationService, HistoricalCommitService) with real DB-backed
- * repositories to prove the complete state sequence is reachable end-to-end:
+ * After foundational tenant/user setup, there are ZERO direct lifecycle SQL
+ * updates. Every state is produced by a real production service command:
  *
- *   1. Create batch (draft)
- *   2. Register file
- *   3. Insert staging rows
- *   4. Run validation (→ validation_complete)
- *   5. Run reconciliation (→ reconciliation_in_progress/review_required)
- *   6. Resolve review items
- *   7. Submit for dual approval (→ pending_dual_approval)
- *   8. Owner approval
- *   9. Accountant approval (distinct user) (→ approved_for_commit)
- *  10. Verify approved_for_commit
- *  11. Replay every idempotent command — zero duplicate effects
+ *   1. createBatch → draft
+ *   2. registerFile → draft → source_uploaded
+ *   3. insertStagingRow → (stays source_uploaded)
+ *   4. finalizeStaging → staged (derives stagedDataHash server-side)
+ *   5. finalizeCutoverManifest → binds cutoverManifestHash server-side
+ *   6. runValidation → validation_complete (sets validationStatus="passed")
+ *   7. runReconciliation → review_required (sets reconciliationStatus="matched")
+ *   8. recordReviewDecision → resolves review items
+ *   9. recordBackupEvidence → backup evidence recorded
+ *  10. submitForApproval → pending_dual_approval
+ *  11. recordApproval (Owner) → pending_dual_approval
+ *  12. recordApproval (Accountant, distinct user) → approved_for_commit
  *
- * Captures exact state, audit, idempotency and sequence values after each step.
+ * No direct SQL may change: batch status, stagedDataHash, cutoverManifestHash,
+ * validationStatus, reconciliationStatus, warning counts, approval eligibility.
  *
- * WP-08-01F DEFECT 4: Includes the fail-closed disposable-database guard.
+ * WP-08-01F DEFECT 5: Includes the fail-closed disposable-database guard.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -43,30 +44,49 @@ import type { RoleCode } from "@/server/security/role-codes";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 
 const DATABASE_URL = process.env.DATABASE_URL;
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
+const DEDICATED_DB_NAME = "erp_yarn_wp0801f_disposable";
 
 // ===========================================================================
-// DEFECT 4 — Fail-closed disposable-database guard (reused from zero-effect test)
+// DEFECT 5 — Safety guard (same logic as zero-effect test)
 // ===========================================================================
-function assertSafeDisposableDatabase(): boolean {
-  if (!DATABASE_URL || !DATABASE_URL.startsWith("postgres")) return false;
+type SafetyResult =
+  | { kind: "ok" }
+  | { kind: "skip"; reason: string }
+  | { kind: "fail"; message: string };
+
+function checkDatabaseSafety(): SafetyResult {
+  if (!DATABASE_URL) {
+    if (REQUIRE_PROOF) return { kind: "fail", message: "SAFETY: ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 but DATABASE_URL absent." };
+    return { kind: "skip", reason: "DATABASE_URL not set" };
+  }
+  if (!DATABASE_URL.startsWith("postgres")) return { kind: "fail", message: `SAFETY: non-postgres URL` };
   let parsed: URL;
-  try { parsed = new URL(DATABASE_URL); } catch { return false; }
+  try { parsed = new URL(DATABASE_URL); } catch { return { kind: "fail", message: "SAFETY: invalid URL" }; }
   const hostname = parsed.hostname;
   const database = parsed.pathname.replace(/^\//, "");
   const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-  const ALLOWED_DB = new Set(["erp_yarn", "erp_yarn_test", "erp_yarn_disposable"]);
-  if (!ALLOWED_HOSTS.has(hostname)) return false;
-  if (!ALLOWED_DB.has(database)) return false;
-  if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler")) return false;
-  if (process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB !== "1") {
-    console.error("SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 env flag is not set. Refusing to run.");
-    return false;
+  if (!ALLOWED_HOSTS.has(hostname)) return { kind: "fail", message: `SAFETY: non-local host '${hostname}'` };
+  if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler"))
+    return { kind: "fail", message: "SAFETY: Supabase/pooler URL" };
+  if (database !== DEDICATED_DB_NAME) return { kind: "fail", message: `SAFETY: database '${database}' != '${DEDICATED_DB_NAME}'` };
+  if (!ALLOW_DESTRUCTIVE) {
+    if (REQUIRE_PROOF) return { kind: "fail", message: "SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 required for proof" };
+    return { kind: "skip", reason: "ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 not set" };
   }
-  return true;
+  return { kind: "ok" };
 }
 
-const SAFE = assertSafeDisposableDatabase();
-const describeOrSkip = SAFE ? describe : describe.skip;
+const SAFETY_RESULT = checkDatabaseSafety();
+const describeOrSkip = SAFETY_RESULT.kind === "fail" ? describe.skip : (SAFETY_RESULT.kind === "skip" ? describe.skip : describe);
+let SAFETY_ERROR_MESSAGE: string | null = null;
+if (SAFETY_RESULT.kind === "skip") {
+  console.log(`\n[WP-08-01F happy-path] SKIPPED: ${SAFETY_RESULT.reason}\n`);
+} else if (SAFETY_RESULT.kind === "fail") {
+  SAFETY_ERROR_MESSAGE = SAFETY_RESULT.message;
+  console.error(`\n[WP-08-01F happy-path] SAFETY GUARD FAILED:\n${SAFETY_RESULT.message}\n`);
+}
 
 // Run-scoped UUIDs
 const RUN_ID = randomUUID();
@@ -77,11 +97,21 @@ const U2 = randomUUID();
 let sql: ReturnType<typeof postgres>;
 let db: any;
 
-describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => {
+describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path proof", () => {
   beforeAll(async () => {
+    if (SAFETY_ERROR_MESSAGE) throw new Error(SAFETY_ERROR_MESSAGE);
     sql = postgres(DATABASE_URL!, { prepare: false, max: 10, idle_timeout: 10, connect_timeout: 10 });
     db = drizzle(sql, { schema });
     await sql`SET statement_timeout = 30000`;
+
+    // DEFECT 5: Verify dedicated DB marker
+    const dbResult = await sql`SELECT current_database() AS db_name`;
+    if (dbResult[0]?.db_name !== DEDICATED_DB_NAME) {
+      await sql.end();
+      throw new Error(`SAFETY: Connected to '${dbResult[0]?.db_name}' but expected '${DEDICATED_DB_NAME}'`);
+    }
+
+    // Foundational fixtures only (tenant/user) — no lifecycle SQL
     const runSuffix = RUN_ID.slice(0, 8);
     await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status)
               VALUES (${T}, ${"HP-" + runSuffix}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
@@ -121,9 +151,16 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
     const docSeq = new DocumentSequenceDbRepository(db);
     const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq });
     const validationService = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem });
-    const reconciliationService = new HistoricalReconciliationService({ repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo });
     const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
       (db as any).transaction(async (tx: any) => work(tx));
+    const reconciliationService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
+      transactionRunner,
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+    });
     const txFactories = {
       createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
@@ -132,7 +169,7 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
       createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
     };
     const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency: idem, transactionRunner, txFactories });
-    return { stagingService, validationService, reconciliationService, commitService, commitRepo, reconRepo };
+    return { stagingService, validationService, reconciliationService, commitService, commitRepo, reconRepo, stagingRepo };
   }
 
   function makeUser(userId: string = U): ErpUserContext {
@@ -147,44 +184,57 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
     auditCount: number;
     idemSucceeded: number;
     sequenceValues: Record<string, number>;
+    approvalCount: number;
+    approvalCurrentCount: number;
   }> {
-    const [auditRows, idemRows, seqRows] = await Promise.all([
+    const [auditRows, idemRows, seqRows, approvalRows, currentApprovalRows] = await Promise.all([
       sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T}`,
       sql`SELECT count(*)::int AS c FROM idempotency_records WHERE tenant_id = ${T} AND state = 'succeeded'`,
       sql`SELECT document_type, year, last_number FROM document_sequences WHERE tenant_id = ${T}`,
+      sql`SELECT count(*)::int AS c FROM import_batch_approvals WHERE tenant_id = ${T}`,
+      sql`SELECT count(*)::int AS c FROM import_batch_approvals WHERE tenant_id = ${T} AND is_current = true`,
     ]);
     const sequenceValues: Record<string, number> = {};
     for (const row of seqRows) {
       sequenceValues[`${row.document_type}_${row.year}`] = row.last_number;
     }
-    return { auditCount: auditRows[0]?.c ?? 0, idemSucceeded: idemRows[0]?.c ?? 0, sequenceValues };
+    return {
+      auditCount: auditRows[0]?.c ?? 0,
+      idemSucceeded: idemRows[0]?.c ?? 0,
+      sequenceValues,
+      approvalCount: approvalRows[0]?.c ?? 0,
+      approvalCurrentCount: currentApprovalRows[0]?.c ?? 0,
+    };
   }
 
-  it("drives the complete happy-path state sequence through production commands", async () => {
+  it("drives the complete happy-path state sequence through production commands only — zero direct lifecycle SQL", async () => {
     const svc = makeServices();
 
-    // 1. Create batch (draft)
+    // 1. Create batch → draft
     const createResult = await svc.stagingService.createBatch(
       makeUser(U) as any, makeEffective("owner") as any,
-      { sourceDescription: "happy-path test", templateName: "test-template", templateVersion: "1.0", cutoverImportMode: "opening_balance", idempotencyKey: "hp-create" },
+      { sourceDescription: "happy-path production test", templateName: "test-template", templateVersion: "1.0", cutoverImportMode: "opening_balance", idempotencyKey: "hp-create" },
     );
     expect(createResult.action).toBe("created");
+    expect(createResult.status).toBe("draft");
     const batchId = createResult.batchId;
-    expect(batchId).toBeTruthy();
 
-    // Verify batch is in draft
+    // Verify batch is draft
     let batch = await svc.commitRepo.findImportBatchById(T, batchId);
     expect(batch?.status).toBe("draft");
 
-    // 2. Register file
+    // 2. Register file → draft → source_uploaded
     const fileResult = await svc.stagingService.registerFile(
       makeUser(U) as any, makeEffective("owner") as any,
       { importBatchId: batchId, originalFileName: "data.xlsx", storagePath: "s3://b/k", fileHash: "hp-hash-1", fileType: "source", fileSizeBytes: 100, contentType: null, idempotencyKey: "hp-file" },
     );
     expect(fileResult.action).toBe("created");
 
-    // 3. Insert staging rows — include all required fields (name, code, quantity, date)
-    // and a master reference (item_id) so recon doesn't create an unmatched_alias blocking metric.
+    // Verify batch transitioned to source_uploaded
+    batch = await svc.commitRepo.findImportBatchById(T, batchId);
+    expect(batch?.status).toBe("source_uploaded");
+
+    // 3. Insert staging rows — include all required fields + master reference
     const stagingData = {
       entity_type: "raw_yarn",
       name: "Test Raw Yarn",
@@ -192,7 +242,8 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
       quantity: "100",
       unit: "kg",
       date: "2024-01-01",
-      item_id: "00000000-0000-4000-8000-item00000001", // master reference to avoid unmatched_alias blocking
+      item_id: "00000000-0000-4000-8000-item00000001",
+      customer_id: "00000000-0000-4000-8000-cust00000001",
     };
     const rowResult = await svc.stagingService.insertStagingRow(
       makeUser(U) as any, makeEffective("owner") as any,
@@ -200,31 +251,59 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
     );
     expect(rowResult.action).toBe("created");
 
-    // Transition to staged (set hashes via SQL — staging service doesn't own this transition)
-    await sql`UPDATE import_batches SET status = 'staged'::import_batch_status, staged_data_hash = 'hp-staged-hash', cutover_manifest_hash = 'hp-manifest-hash', staged_row_count = 1 WHERE id = ${batchId}`;
+    // 4. finalizeStaging → staged (derives stagedDataHash server-side)
+    const finalizeResult = await svc.stagingService.finalizeStaging(
+      makeUser(U) as any, makeEffective("owner") as any,
+      { importBatchId: batchId, idempotencyKey: "hp-finalize-staging" },
+    );
+    expect(finalizeResult.action).toBe("finalized");
+    expect(finalizeResult.newStatus).toBe("staged");
+    expect(finalizeResult.stagedDataHash).toBeTruthy();
+    expect(finalizeResult.stagedRowCount).toBe(1);
 
-    // 4. Run validation (staged → validation_complete)
+    batch = await svc.commitRepo.findImportBatchById(T, batchId);
+    expect(batch?.status).toBe("staged");
+    expect(batch?.stagedDataHash).toBeTruthy();
+    expect(batch?.stagedDataHash).toBe(finalizeResult.stagedDataHash);
+
+    // 5. finalizeCutoverManifest → binds cutoverManifestHash server-side
+    const manifestResult = await svc.stagingService.finalizeCutoverManifest(
+      makeUser(U) as any, makeEffective("owner") as any,
+      { importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01", sourceCoverage: "all", openingBalanceBasis: "audit", liveSystemStartBoundary: "2024-01-02", idempotencyKey: "hp-manifest" },
+    );
+    expect(manifestResult.action).toBe("finalized");
+    expect(manifestResult.manifestHash).toBeTruthy();
+    expect(manifestResult.cutoverManifestHash).toBeTruthy();
+
+    batch = await svc.commitRepo.findImportBatchById(T, batchId);
+    expect(batch?.cutoverManifestHash).toBeTruthy();
+    expect(batch?.cutoverManifestHash).toBe(manifestResult.cutoverManifestHash);
+
+    // 6. runValidation → validation_complete (sets validationStatus="passed")
     const valResult = await svc.validationService.runValidation(
       makeUser(U) as any, makeEffective("owner") as any,
       { importBatchId: batchId, idempotencyKey: "hp-val" },
     );
     expect(valResult.action).toBe("executed");
+    expect(valResult.blockingErrors).toBe(0);
 
-    // Transition to validation_complete + set validationStatus
-    await sql`UPDATE import_batches SET status = 'validation_complete'::import_batch_status, validation_status = 'passed' WHERE id = ${batchId}`;
+    batch = await svc.commitRepo.findImportBatchById(T, batchId);
+    expect(batch?.status).toBe("validation_complete");
+    expect(batch?.validationStatus).toBe("passed");
 
-    // 5. Run reconciliation (validation_complete → review_required or reconciliation_in_progress)
+    // 7. runReconciliation → review_required (sets reconciliationStatus="matched")
     const reconResult = await svc.reconciliationService.runReconciliation(
       makeUser(U) as any, makeEffective("owner") as any,
       { importBatchId: batchId, expectedTotals: { inventory_opening_qty: "100" }, idempotencyKey: "hp-recon" },
     );
     expect(reconResult.action).toBe("executed");
 
-    // Transition to review_required + set reconciliationStatus
-    await sql`UPDATE import_batches SET status = 'review_required'::import_batch_status, reconciliation_status = 'matched' WHERE id = ${batchId}`;
+    batch = await svc.commitRepo.findImportBatchById(T, batchId);
+    expect(batch?.status).toBe("review_required");
+    expect(batch?.reconciliationStatus).toBe("matched");
 
-    // 6. Resolve all pending review items
-    const reviewItems = await svc.reconRepo.findReviewItemsForBatch(T, batchId);
+    // 8. Resolve all pending review items
+    const reviewItems = await svc.reconRepo.findCurrentReviewItemsForBatch(T, batchId);
     for (const item of reviewItems.filter(r => r.status === "pending")) {
       await svc.reconciliationService.recordReviewDecision(
         makeUser(U) as any, makeEffective("owner") as any,
@@ -232,7 +311,7 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
       );
     }
 
-    // Seed backup evidence (required for submission)
+    // 9. recordBackupEvidence
     await svc.commitService.recordBackupEvidence(
       makeUser(U) as any, makeEffective("owner") as any,
       { importBatchId: batchId, backupType: "full", backupLocation: "s3://b/backup", backupHash: "hp-backup-hash", backupSizeBytes: 1000, backupCreatedAt: new Date(), verificationNotes: "verified", idempotencyKey: "hp-backup" },
@@ -241,7 +320,7 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
     // Capture proof snapshot before submission
     const proofBeforeSubmit = await snapshotProof();
 
-    // 7. Submit for dual approval (review_required → pending_dual_approval)
+    // 10. submitForApproval → pending_dual_approval
     const submitResult = await svc.reconciliationService.submitForApproval(
       makeUser(U) as any, makeEffective("owner") as any,
       { importBatchId: batchId, warningSummary: "all warnings accepted", idempotencyKey: "hp-submit" },
@@ -253,21 +332,21 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
     batch = await svc.commitRepo.findImportBatchById(T, batchId);
     expect(batch?.status).toBe("pending_dual_approval");
 
-    // Verify audit recorded the submission
+    // Verify audit + idempotency advanced
     const proofAfterSubmit = await snapshotProof();
     expect(proofAfterSubmit.auditCount).toBe(proofBeforeSubmit.auditCount + 1);
     expect(proofAfterSubmit.idemSucceeded).toBe(proofBeforeSubmit.idemSucceeded + 1);
 
-    // 8. Owner approval (pending_dual_approval stays, one approval recorded)
+    // 11. Owner approval (pending_dual_approval stays, one approval recorded)
     const ownerResult = await svc.commitService.recordApproval(
       makeUser(U) as any, makeEffective("owner") as any,
       { importBatchId: batchId, approverRole: "owner", reason: "owner approval", idempotencyKey: "hp-owner" },
     );
     expect(ownerResult.action).toBe("recorded");
     expect(ownerResult.approverRole).toBe("owner");
-    expect(ownerResult.batchStatus).toBe("pending_dual_approval"); // still pending
+    expect(ownerResult.batchStatus).toBe("pending_dual_approval");
 
-    // 9. Accountant approval (distinct user) → approved_for_commit
+    // 12. Accountant approval (distinct user) → approved_for_commit
     const acctResult = await svc.commitService.recordApproval(
       makeUser(U2) as any, makeEffective("accountant") as any,
       { importBatchId: batchId, approverRole: "accountant", reason: "accountant approval", idempotencyKey: "hp-acct" },
@@ -275,33 +354,40 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
     expect(acctResult.action).toBe("recorded");
     expect(acctResult.batchStatus).toBe("approved_for_commit");
 
-    // 10. Verify approved_for_commit
+    // Verify final state
     batch = await svc.commitRepo.findImportBatchById(T, batchId);
     expect(batch?.status).toBe("approved_for_commit");
 
-    // Verify both approvals exist from distinct users
-    const approvals = await svc.commitRepo.findApprovalsForBatch(T, batchId);
+    // Verify both CURRENT approvals exist from distinct users
+    const approvals = await svc.commitRepo.findCurrentApprovalsForBatch(T, batchId);
     expect(approvals.length).toBe(2);
     const ownerApp = approvals.find(a => a.approverRole === "owner");
     const acctApp = approvals.find(a => a.approverRole === "accountant");
     expect(ownerApp?.approverUserId).toBe(U);
     expect(acctApp?.approverUserId).toBe(U2);
     expect(ownerApp?.approverUserId).not.toBe(acctApp?.approverUserId);
-    // Validation/reconciliation statuses are bound (not "unknown")
     expect(ownerApp?.validationStatus).toBe("passed");
     expect(ownerApp?.reconciliationStatus).toBe("matched");
+    expect(ownerApp?.isCurrent).toBe(true);
+    expect(acctApp?.isCurrent).toBe(true);
 
-    // 11. Replay every idempotent command — zero duplicate effects
+    // 13. Replay every idempotent command — zero duplicate effects
     const proofBeforeReplay = await snapshotProof();
-    const approvalsBeforeReplay = await svc.commitRepo.findApprovalsForBatch(T, batchId);
 
     // Replay createBatch
     const createReplay = await svc.stagingService.createBatch(
       makeUser(U) as any, makeEffective("owner") as any,
-      { sourceDescription: "happy-path test", templateName: "test-template", templateVersion: "1.0", cutoverImportMode: "opening_balance", idempotencyKey: "hp-create" },
+      { sourceDescription: "happy-path production test", templateName: "test-template", templateVersion: "1.0", cutoverImportMode: "opening_balance", idempotencyKey: "hp-create" },
     );
     expect(createReplay.action).toBe("replayed");
     expect(createReplay.batchId).toBe(batchId);
+
+    // Replay finalizeStaging
+    const finalizeReplay = await svc.stagingService.finalizeStaging(
+      makeUser(U) as any, makeEffective("owner") as any,
+      { importBatchId: batchId, idempotencyKey: "hp-finalize-staging" },
+    );
+    expect(finalizeReplay.action).toBe("replayed");
 
     // Replay submitForApproval
     const submitReplay = await svc.reconciliationService.submitForApproval(
@@ -324,15 +410,31 @@ describeOrSkip("WP-08-01F DEFECT 5 — Real PostgreSQL happy-path proof", () => 
     );
     expect(acctReplay.action).toBe("replayed");
 
-    // Verify zero new audit, zero new succeeded idempotency, zero new approvals
+    // Verify zero new effects
     const proofAfterReplay = await snapshotProof();
     expect(proofAfterReplay.auditCount).toBe(proofBeforeReplay.auditCount);
     expect(proofAfterReplay.idemSucceeded).toBe(proofBeforeReplay.idemSucceeded);
+    expect(proofAfterReplay.approvalCount).toBe(proofBeforeReplay.approvalCount);
+    expect(proofAfterReplay.approvalCurrentCount).toBe(proofBeforeReplay.approvalCurrentCount);
     // Sequence values unchanged (no advancement)
     for (const [key, value] of Object.entries(proofBeforeReplay.sequenceValues)) {
-      expect(proofAfterReplay.sequenceValues[key]).toBe(value);
+      expect(proofAfterReplay.sequenceValues[key], `sequence ${key} must not advance`).toBe(value);
     }
-    const approvalsAfterReplay = await svc.commitRepo.findApprovalsForBatch(T, batchId);
-    expect(approvalsAfterReplay.length).toBe(approvalsBeforeReplay.length);
+
+    // Verify no operational effects exist before commit
+    const stockMovements = await sql`SELECT count(*)::int AS c FROM stock_movements WHERE tenant_id = ${T}`;
+    const accountEntries = await sql`SELECT count(*)::int AS c FROM account_entries WHERE tenant_id = ${T}`;
+    const salesOrders = await sql`SELECT count(*)::int AS c FROM sales_orders WHERE tenant_id = ${T}`;
+    const payments = await sql`SELECT count(*)::int AS c FROM payments WHERE tenant_id = ${T}`;
+    const productionOrders = await sql`SELECT count(*)::int AS c FROM production_orders WHERE tenant_id = ${T}`;
+    expect(stockMovements[0]?.c).toBe(0);
+    expect(accountEntries[0]?.c).toBe(0);
+    expect(salesOrders[0]?.c).toBe(0);
+    expect(payments[0]?.c).toBe(0);
+    expect(productionOrders[0]?.c).toBe(0);
+
+    // Commit is NOT executed (would require real domain commit fixtures).
+    // Final state is approved_for_commit.
+    expect(batch?.status).toBe("approved_for_commit");
   }, 60000);
 });

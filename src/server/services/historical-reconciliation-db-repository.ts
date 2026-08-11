@@ -131,15 +131,41 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
   }
 
   async invalidatePendingReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<number> {
-    // Delete only PENDING review items — resolved items are preserved for audit.
-    // (Resolved items have decision/decidedBy populated; pending items do not.)
-    const result = await this.db.delete(importHumanReviewItems)
+    // WP-08-01F DEFECT 2: This method is kept for backward compatibility but
+    // now delegates to supersedeReviewItemsForBatch. Pending items are
+    // superseded (is_current=false), not deleted.
+    return this.supersedeReviewItemsForBatch(tenantId, importBatchId, "system", "rework invalidation");
+  }
+
+  async supersedeReviewItemsForBatch(
+    tenantId: string,
+    importBatchId: string,
+    supersededBy: string,
+    supersededReason: string,
+  ): Promise<number> {
+    const result = await this.db.update(importHumanReviewItems)
+      .set({
+        isCurrent: false,
+        supersededAt: new Date(),
+        supersededBy,
+        supersededReason,
+        updatedAt: new Date(),
+      })
       .where(and(
         eq(importHumanReviewItems.tenantId, tenantId),
         eq(importHumanReviewItems.importBatchId, importBatchId),
-        eq(importHumanReviewItems.status, "pending" as any),
+        eq(importHumanReviewItems.isCurrent, true),
       ));
     return (result as any)?.length ?? (result as any)?.rowCount ?? 0;
+  }
+
+  async findCurrentReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<ImportHumanReviewItem[]> {
+    return this.db.select().from(importHumanReviewItems)
+      .where(and(
+        eq(importHumanReviewItems.tenantId, tenantId),
+        eq(importHumanReviewItems.importBatchId, importBatchId),
+        eq(importHumanReviewItems.isCurrent, true),
+      ));
   }
 
   async findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
@@ -170,6 +196,19 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
         reconciliationStatus: null,
         updatedAt: new Date(),
       })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
+    return result ?? null;
+  }
+
+  async updateBatchReconciliationStatus(
+    tenantId: string,
+    batchId: string,
+    reconciliationStatus: string,
+    updatedBy: string,
+  ): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({ reconciliationStatus, updatedBy, updatedAt: new Date() })
       .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
       .returning();
     return result ?? null;

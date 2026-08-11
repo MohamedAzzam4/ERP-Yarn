@@ -69,13 +69,23 @@ export interface HistoricalReconciliationRepository {
     decidedBy: string;
   }): Promise<ImportHumanReviewItem | null>;
   /**
-   * WP-08-01F DEFECT 2: Invalidate (delete) all pending review items for a
-   * batch. Used by the rework command — old review items are tied to the old
-   * reconciliation report version and must be cleared so re-reconciliation
-   * can create fresh items. Resolved items remain in audit_logs.
-   * Returns the count of deleted items.
+   * WP-08-01F DEFECT 2: Supersede (mark is_current=false) all CURRENT review
+   * items for a batch. Used by the rework command — old review items are tied
+   * to the old reconciliation report version and are superseded (not deleted).
+   * Resolved items remain as historical evidence with is_current=false.
+   * Returns the count of superseded items.
    */
-  invalidatePendingReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<number>;
+  supersedeReviewItemsForBatch(
+    tenantId: string,
+    importBatchId: string,
+    supersededBy: string,
+    supersededReason: string,
+  ): Promise<number>;
+
+  /**
+   * Find only CURRENT review items (is_current=true) for a batch.
+   */
+  findCurrentReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<ImportHumanReviewItem[]>;
 
   // Staging row access (read-only)
   findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
@@ -92,6 +102,16 @@ export interface HistoricalReconciliationRepository {
   resetBatchValidationAndReconciliationStatuses(
     tenantId: string,
     batchId: string,
+  ): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 1A: Set the reconciliationStatus on the batch.
+   * Used by runReconciliation to set "matched" / "difference" / "blocking".
+   */
+  updateBatchReconciliationStatus(
+    tenantId: string,
+    batchId: string,
+    reconciliationStatus: string,
+    updatedBy: string,
   ): Promise<ImportBatch | null>;
 }
 

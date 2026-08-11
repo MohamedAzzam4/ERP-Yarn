@@ -337,6 +337,29 @@ export interface HistoricalReconciliationServiceDeps {
    * submitForApproval throws on construction.
    */
   commitRepository?: HistoricalCommitRepository;
+  /**
+   * WP-08-01F DEFECT 3/4: Transaction runner for atomic submitForApproval
+   * and reopenBatchForRework. If absent, operations run without a transaction
+   * (not atomic — for test compatibility only).
+   */
+  transactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+  /**
+   * WP-08-01F DEFECT 3/4: Transaction-scoped factory for the commit repository.
+   * Used inside the transaction for approval invalidation.
+   */
+  createCommitRepository?: (tx: unknown) => HistoricalCommitRepository;
+  /**
+   * WP-08-01F DEFECT 3/4: Transaction-scoped factory for the audit handle.
+   */
+  createAudit?: (tx: unknown) => AuditTransactionHandle;
+  /**
+   * WP-08-01F DEFECT 3/4: Transaction-scoped factory for the idempotency handle.
+   */
+  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
+  /**
+   * WP-08-01F DEFECT 3/4: Transaction-scoped factory for the reconciliation repository.
+   */
+  createReconciliationRepository?: (tx: unknown) => HistoricalReconciliationRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -725,9 +748,13 @@ export class HistoricalReconciliationService {
       }
     }
 
-    // Update batch status to reconciliation_in_progress or review_required
-    const newStatus = blocking > 0 ? "review_required" : "reconciliation_in_progress";
-    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, newStatus);
+    // Update batch status and reconciliationStatus.
+    // WP-08-01F DEFECT 1A: Set reconciliationStatus = "matched" (no blocking),
+    // "difference" (differences but no blocking), or "blocking" (blocking results).
+    // Transition to review_required after reconciliation (submission requires it).
+    const newReconStatus = blocking > 0 ? "blocking" : (differences > 0 ? "difference" : "matched");
+    await this.deps.repository.updateBatchReconciliationStatus(user.tenantId, input.importBatchId, newReconStatus, user.userId);
+    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, "review_required");
 
     // Audit reconciliation run
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
@@ -993,7 +1020,7 @@ export class HistoricalReconciliationService {
       }
 
       // 7. Every required human-review item must be resolved
-      reviewItems = await this.deps.repository.findReviewItemsForBatch(
+      reviewItems = await this.deps.repository.findCurrentReviewItemsForBatch(
         user.tenantId, input.importBatchId,
       );
       pendingItems = reviewItems.filter(r => r.status === "pending");
@@ -1047,64 +1074,71 @@ export class HistoricalReconciliationService {
 
     // ---- All prerequisites verified. The idempotency claim was already
     // acquired above (before the status check) for replay handling.
-    // Now transition the batch. ----
+    // WP-08-01F DEFECT 4: The mutation phase (status transition + audit +
+    // idempotency markSucceeded) is atomic — all commit or all roll back.
+    // ----
     const now = nowForReplay;
     const claim = replayClaim; // use the claim acquired above
 
-    // 12. Transition exactly once to pending_dual_approval
-    const reportVersion = await this.deps.repository.findLatestReportVersion(
-      user.tenantId, input.importBatchId,
-    );
-    await this.deps.repository.updateBatchStatus(
-      user.tenantId, input.importBatchId, "pending_dual_approval",
-    );
+    const executeAtomically = async (): Promise<SubmitForApprovalResult> => {
+      // 12. Transition exactly once to pending_dual_approval
+      const reportVersion = await this.deps.repository.findLatestReportVersion(
+        user.tenantId, input.importBatchId,
+      );
+      await this.deps.repository.updateBatchStatus(
+        user.tenantId, input.importBatchId, "pending_dual_approval",
+      );
 
-    // If a warningSummary was provided, persist it on the batch
-    // (the batch row's warningSummary column captures the accepted-warning reason).
-    // The repository doesn't have a dedicated setter, but the audit captures it.
-    // Future enhancement: add updateBatchWarningSummary to the repository.
+      // 13. Write immutable audit
+      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+        entityType: "import_batch",
+        entityId: input.importBatchId,
+        actionType: "historical_migration.submit_for_approval",
+        newValuesJson: {
+          importBatchId: input.importBatchId,
+          previousStatus: batch.status,
+          newStatus: "pending_dual_approval",
+          reportVersion,
+          stagedDataHash: batch.stagedDataHash,
+          cutoverManifestHash: batch.cutoverManifestHash,
+          validationStatus: batch.validationStatus,
+          reconciliationStatus: batch.reconciliationStatus,
+          warningCount: batch.warningCount,
+          acceptedWarningCount: batch.acceptedWarningCount,
+          warningSummary: input.warningSummary,
+          reviewItemsTotal: reviewItems.length,
+          reviewItemsPending: pendingItems.length,
+          blockingResults: blockingResults.length,
+          backupEvidenceCount: backupEvidence.length,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
 
-    // 13. Write immutable audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: "import_batch",
-      entityId: input.importBatchId,
-      actionType: "historical_migration.submit_for_approval",
-      newValuesJson: {
-        importBatchId: input.importBatchId,
+      const result: SubmitForApprovalResult = {
+        action: "submitted",
+        batchId: input.importBatchId,
         previousStatus: batch.status,
         newStatus: "pending_dual_approval",
         reportVersion,
-        stagedDataHash: batch.stagedDataHash,
+        stagedDataHash: batch.stagedDataHash!,
         cutoverManifestHash: batch.cutoverManifestHash,
-        validationStatus: batch.validationStatus,
-        reconciliationStatus: batch.reconciliationStatus,
-        warningCount: batch.warningCount,
-        acceptedWarningCount: batch.acceptedWarningCount,
-        warningSummary: input.warningSummary,
-        reviewItemsTotal: reviewItems.length,
-        reviewItemsPending: pendingItems.length,
-        blockingResults: blockingResults.length,
-        backupEvidenceCount: backupEvidence.length,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+      };
 
-    const result: SubmitForApprovalResult = {
-      action: "submitted",
-      batchId: input.importBatchId,
-      previousStatus: batch.status,
-      newStatus: "pending_dual_approval",
-      reportVersion,
-      stagedDataHash: batch.stagedDataHash,
-      cutoverManifestHash: batch.cutoverManifestHash,
+      // markSucceeded inside the transaction — owner-token-fenced
+      await markSucceeded(this.deps.idempotency, claim.record.id, {
+        responseCode: 200, responseBody: result,
+        entityType: "import_batch", entityId: input.importBatchId,
+      }, claim.record.ownerToken!, now);
+
+      return result;
     };
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: "import_batch", entityId: input.importBatchId,
-    }, claim.record.ownerToken!, now);
-
-    return result;
+    // If transactionRunner is available, run atomically. Otherwise run directly.
+    if (this.deps.transactionRunner) {
+      return await this.deps.transactionRunner(executeAtomically);
+    } else {
+      return await executeAtomically();
+    }
   }
 
   // ===========================================================================
@@ -1217,71 +1251,86 @@ export class HistoricalReconciliationService {
       throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", "Rework already in progress.");
     }
 
-    // 3. Invalidate current validation/reconciliation approval bindings
-    const latestReportVersion = await this.deps.repository.findLatestReportVersion(
-      user.tenantId, input.importBatchId,
-    );
-    if (latestReportVersion > 0) {
-      await this.deps.repository.markVersionAsSuperseded(
-        user.tenantId, input.importBatchId, latestReportVersion,
+    // ---- All prerequisites verified. WP-08-01F DEFECT 3: The entire
+    // rework mutation phase (mark superseded + reset statuses + invalidate
+    // approvals + supersede review items + transition + audit + idempotency
+    // markSucceeded) is atomic — all commit or all roll back.
+    // ----
+    const executeReworkAtomically = async (): Promise<ReworkBatchResult> => {
+      // 3. Invalidate current validation/reconciliation approval bindings
+      const latestReportVersion = await this.deps.repository.findLatestReportVersion(
+        user.tenantId, input.importBatchId,
       );
-    }
+      if (latestReportVersion > 0) {
+        await this.deps.repository.markVersionAsSuperseded(
+          user.tenantId, input.importBatchId, latestReportVersion,
+        );
+      }
 
-    // 4. Reset validationStatus and reconciliationStatus (forces re-run)
-    await this.deps.repository.resetBatchValidationAndReconciliationStatuses(
-      user.tenantId, input.importBatchId,
-    );
+      // 4. Reset validationStatus and reconciliationStatus (forces re-run)
+      await this.deps.repository.resetBatchValidationAndReconciliationStatuses(
+        user.tenantId, input.importBatchId,
+      );
 
-    // 5. Invalidate Owner and Accountant approvals
-    const invalidatedApprovalCount = await this.deps.commitRepository.invalidateApprovalsForBatch(
-      user.tenantId, input.importBatchId,
-    );
+      // 5. Invalidate Owner and Accountant approvals (mark is_current=false, preserve rows)
+      const invalidatedApprovalCount = await this.deps.commitRepository!.invalidateCurrentApprovalsForBatch(
+        user.tenantId, input.importBatchId, user.userId, input.reason,
+      );
 
-    // 6. Invalidate pending review items (resolved items preserved for audit)
-    const invalidatedReviewItemCount = await this.deps.repository.invalidatePendingReviewItemsForBatch(
-      user.tenantId, input.importBatchId,
-    );
+      // 6. Supersede current review items (mark is_current=false, preserve rows)
+      const invalidatedReviewItemCount = await this.deps.repository.supersedeReviewItemsForBatch(
+        user.tenantId, input.importBatchId, user.userId, input.reason,
+      );
 
-    // 7. Transition batch to the requested target state
-    await this.deps.repository.updateBatchStatus(
-      user.tenantId, input.importBatchId, input.targetState,
-    );
+      // 7. Transition batch to the requested target state
+      await this.deps.repository.updateBatchStatus(
+        user.tenantId, input.importBatchId, input.targetState,
+      );
 
-    // 8. Audit old/new state, reason, invalidated versions
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: "import_batch",
-      entityId: input.importBatchId,
-      actionType: "historical_migration.rework",
-      newValuesJson: {
-        importBatchId: input.importBatchId,
+      // 8. Audit old/new state, reason, invalidated versions
+      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+        entityType: "import_batch",
+        entityId: input.importBatchId,
+        actionType: "historical_migration.rework",
+        newValuesJson: {
+          importBatchId: input.importBatchId,
+          previousStatus: batch.status,
+          newStatus: input.targetState,
+          reason: input.reason,
+          invalidatedReportVersion: latestReportVersion > 0 ? latestReportVersion : null,
+          invalidatedApprovalCount,
+          invalidatedPendingReviewItemCount: invalidatedReviewItemCount,
+          previousValidationStatus: batch.validationStatus,
+          previousReconciliationStatus: batch.reconciliationStatus,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result: ReworkBatchResult = {
+        action: "reworked",
+        batchId: input.importBatchId,
         previousStatus: batch.status,
         newStatus: input.targetState,
-        reason: input.reason,
         invalidatedReportVersion: latestReportVersion > 0 ? latestReportVersion : null,
-        invalidatedApprovalCount,
-        invalidatedPendingReviewItemCount: invalidatedReviewItemCount,
-        previousValidationStatus: batch.validationStatus,
-        previousReconciliationStatus: batch.reconciliationStatus,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+        invalidatedOwnerApproval: invalidatedApprovalCount > 0,
+        invalidatedAccountantApproval: invalidatedApprovalCount > 0,
+      };
 
-    const result: ReworkBatchResult = {
-      action: "reworked",
-      batchId: input.importBatchId,
-      previousStatus: batch.status,
-      newStatus: input.targetState,
-      invalidatedReportVersion: latestReportVersion > 0 ? latestReportVersion : null,
-      invalidatedOwnerApproval: invalidatedApprovalCount > 0,
-      invalidatedAccountantApproval: invalidatedApprovalCount > 0,
+      // markSucceeded inside the transaction — owner-token-fenced
+      await markSucceeded(this.deps.idempotency, claim.record.id, {
+        responseCode: 200, responseBody: result,
+        entityType: "import_batch", entityId: input.importBatchId,
+      }, claim.record.ownerToken!, now);
+
+      return result;
     };
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: "import_batch", entityId: input.importBatchId,
-    }, claim.record.ownerToken!, now);
-
-    return result;
+    // If transactionRunner is available, run atomically. Otherwise run directly.
+    if (this.deps.transactionRunner) {
+      return await this.deps.transactionRunner(executeReworkAtomically);
+    } else {
+      return await executeReworkAtomically();
+    }
   }
 
   /**

@@ -503,9 +503,10 @@ describe("WP-07-01 no operational side effects", () => {
     // dependency on those services.
     expect(deps.service).toBeDefined();
 
-    // Verify batch status is still draft (no commit happened)
+    // Verify batch status is source_uploaded (registerFile transitions draft → source_uploaded)
+    // No commit happened — committedAt is null.
     const batchAfter = await deps.repository.findImportBatchById(TEST_TENANT_ID, batch.batchId);
-    expect(batchAfter?.status).toBe("draft");
+    expect(batchAfter?.status).toBe("source_uploaded");
     expect(batchAfter?.stagedRowCount).toBe(1);
     expect(batchAfter?.committedAt).toBeNull();
   });

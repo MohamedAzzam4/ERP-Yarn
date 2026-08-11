@@ -558,9 +558,16 @@ export class HistoricalValidationService {
       }
     }
 
-    // Update batch status based on findings
-    const newStatus = blockingErrors > 0 ? "validation_complete" : "validation_complete";
-    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, newStatus);
+    // Update batch status based on findings.
+    // WP-08-01F DEFECT 1A: Set validationStatus = "passed" (no blocking errors)
+    // or "failed" (blocking errors > 0). Transition to validation_complete
+    // only when validationStatus = "passed". When blocking errors exist,
+    // remain in validation_in_progress so the user can fix and re-run.
+    const newValidationStatus = blockingErrors > 0 ? "failed" : "passed";
+    const newBatchStatus = blockingErrors > 0 ? "validation_in_progress" : "validation_complete";
+    await this.deps.repository.updateBatchValidationStatus(user.tenantId, input.importBatchId, newValidationStatus, user.userId);
+    await this.deps.repository.updateBatchErrorCounts(user.tenantId, input.importBatchId, blockingErrors, warnings, user.userId);
+    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, newBatchStatus);
 
     // Audit
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {

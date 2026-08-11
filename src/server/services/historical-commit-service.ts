@@ -414,7 +414,7 @@ export class HistoricalCommitService {
 
     // DEC-069: Check that this user has NOT already provided the OTHER role's approval.
     // The same user/person/identity must not approve both sides.
-    const existingApprovals = await this.deps.repository.findApprovalsForBatch(
+    const existingApprovals = await this.deps.repository.findCurrentApprovalsForBatch(
       user.tenantId, input.importBatchId,
     );
     const otherRole = input.approverRole === "owner" ? "accountant" : "owner";
@@ -544,7 +544,7 @@ export class HistoricalCommitService {
     });
 
     // Check if both approvals now exist → update batch status
-    const allApprovals = await this.deps.repository.findApprovalsForBatch(
+    const allApprovals = await this.deps.repository.findCurrentApprovalsForBatch(
       user.tenantId, input.importBatchId,
     );
     const hasOwner = allApprovals.some(a => a.approverRole === "owner");
@@ -794,7 +794,7 @@ export class HistoricalCommitService {
     // Verify both approvals exist and are from distinct users (check BEFORE
     // any write so we give the more specific IncompleteDualApprovalError
     // when only one approval has been recorded). This is a read-only check.
-    const approvals = await this.deps.repository.findApprovalsForBatch(
+    const approvals = await this.deps.repository.findCurrentApprovalsForBatch(
       user.tenantId, input.importBatchId,
     );
     const ownerApproval = approvals.find(a => a.approverRole === "owner");
@@ -1233,9 +1233,9 @@ export class HistoricalCommitService {
           cutoverImportMode: batch.cutoverImportMode,
           stagedDataHash: batch.stagedDataHash,
           cutoverManifestHash: batch.cutoverManifestHash,
-          ownerApproverId: (await repo.findApprovalsForBatch(user.tenantId, batch.id))
+          ownerApproverId: (await repo.findCurrentApprovalsForBatch(user.tenantId, batch.id))
             .find(a => a.approverRole === "owner")?.approverUserId,
-          accountantApproverId: (await repo.findApprovalsForBatch(user.tenantId, batch.id))
+          accountantApproverId: (await repo.findCurrentApprovalsForBatch(user.tenantId, batch.id))
             .find(a => a.approverRole === "accountant")?.approverUserId,
         },
         idempotencyKey: input.idempotencyKey,
@@ -1365,7 +1365,7 @@ export class HistoricalCommitService {
     batchId: string,
   ): Promise<ImportBatchApproval[]> {
     requirePermission(effective, "migration.review");
-    return this.deps.repository.findApprovalsForBatch(user.tenantId, batchId);
+    return this.deps.repository.findCurrentApprovalsForBatch(user.tenantId, batchId);
   }
 
   async listBackupEvidence(

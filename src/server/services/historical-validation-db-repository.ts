@@ -187,6 +187,24 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       .returning();
     return result ?? null;
   }
+
+  // WP-08-01F DEFECT 1A: lifecycle transition support
+
+  async updateBatchValidationStatus(tenantId: string, batchId: string, validationStatus: string, updatedBy: string): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({ validationStatus, updatedBy, updatedAt: new Date() })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
+    return result ?? null;
+  }
+
+  async updateBatchErrorCounts(tenantId: string, batchId: string, blockingErrorCount: number, warningCount: number, updatedBy: string): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({ blockingErrorCount, warningCount, updatedBy, updatedAt: new Date() })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
+    return result ?? null;
+  }
 }
 
 export function createHistoricalValidationDbRepository(db: Db): HistoricalValidationDbRepository {

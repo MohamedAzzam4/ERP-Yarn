@@ -91,6 +91,12 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
       warningSummary: approval.warningSummary ?? null,
       approvedAt: NOW(),
       reason: approval.reason ?? null,
+      approvalVersion: 1,
+      isCurrent: true,
+      invalidatedAt: null,
+      invalidatedBy: null,
+      invalidationReason: null,
+      supersededByApprovalId: null,
       createdBy: approval.createdBy ?? approval.approverUserId,
       createdAt: NOW(),
       updatedBy: null,
@@ -209,6 +215,12 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
       warningSummary: row.warningSummary,
       approvedAt: NOW(),
       reason: row.reason,
+      approvalVersion: 1,
+      isCurrent: true,
+      invalidatedAt: null,
+      invalidatedBy: null,
+      invalidationReason: null,
+      supersededByApprovalId: null,
       createdBy: row.createdBy,
       createdAt: NOW(),
       updatedBy: null,
@@ -235,18 +247,40 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   }
 
   /**
-   * WP-08-01F DEFECT 2: Invalidate (delete) all approval records for a batch.
-   * Used by the rework command.
+   * WP-08-01F DEFECT 2: Invalidate (mark is_current=false) all CURRENT
+   * approval records for a batch. Prior approval rows are preserved.
    */
-  async invalidateApprovalsForBatch(tenantId: string, importBatchId: string): Promise<number> {
-    let deleted = 0;
+  async invalidateCurrentApprovalsForBatch(
+    tenantId: string,
+    importBatchId: string,
+    invalidatedBy: string,
+    invalidationReason: string,
+  ): Promise<number> {
+    let invalidated = 0;
     for (const [key, a] of this.approvals.entries()) {
-      if (a.tenantId === tenantId && a.importBatchId === importBatchId) {
-        this.approvals.delete(key);
-        deleted++;
+      if (a.tenantId === tenantId && a.importBatchId === importBatchId && a.isCurrent) {
+        const updated: ImportBatchApproval = {
+          ...a,
+          isCurrent: false,
+          invalidatedAt: NOW(),
+          invalidatedBy,
+          invalidationReason,
+          updatedAt: NOW(),
+        };
+        this.approvals.set(key, updated);
+        invalidated++;
       }
     }
-    return deleted;
+    return invalidated;
+  }
+
+  /**
+   * Find only CURRENT approvals (is_current=true) for a batch.
+   */
+  async findCurrentApprovalsForBatch(tenantId: string, importBatchId: string): Promise<ImportBatchApproval[]> {
+    return [...this.approvals.values()].filter(
+      a => a.tenantId === tenantId && a.importBatchId === importBatchId && a.isCurrent,
+    );
   }
 
   // ---- Backup evidence ----

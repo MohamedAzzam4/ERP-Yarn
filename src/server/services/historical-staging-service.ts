@@ -125,6 +125,45 @@ export interface InsertStagingRowResult {
   importBatchId: string;
 }
 
+// WP-08-01F DEFECT 1A — finalizeStaging command
+export interface FinalizeStagingInput {
+  importBatchId: string;
+  idempotencyKey: string;
+}
+
+export interface FinalizeStagingResult {
+  action: "finalized" | "replayed";
+  batchId: string;
+  previousStatus: string;
+  newStatus: "staged";
+  stagedDataHash: string;
+  stagedRowCount: number;
+}
+
+// WP-08-01F DEFECT 1A — finalizeCutoverManifest command
+export interface FinalizeCutoverManifestInput {
+  importBatchId: string;
+  /** Domain for the manifest (e.g. 'inventory', 'customer_balances'). */
+  domain: string;
+  /** Cutoff date for the cutover (ISO date string). */
+  cutoffDate: string | null;
+  /** Source coverage description. */
+  sourceCoverage: string | null;
+  /** Opening balance basis description. */
+  openingBalanceBasis: string | null;
+  /** Live system start boundary (ISO date string). */
+  liveSystemStartBoundary: string | null;
+  idempotencyKey: string;
+}
+
+export interface FinalizeCutoverManifestResult {
+  action: "finalized" | "replayed";
+  batchId: string;
+  manifestId: string;
+  manifestHash: string;
+  cutoverManifestHash: string;
+}
+
 // ---------------------------------------------------------------------------
 // Errors.
 // ---------------------------------------------------------------------------
@@ -364,6 +403,12 @@ export class HistoricalStagingService {
       createdBy: user.userId,
     });
 
+    // WP-08-01F DEFECT 1A: registerFile transitions draft → source_uploaded.
+    // Contract 08 §9: draft → source_uploaded is the first lifecycle transition.
+    if (batch.status === "draft") {
+      await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, "source_uploaded");
+    }
+
     await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
       entityType: FILE_ENTITY_TYPE,
       entityId: file.id,
@@ -374,6 +419,7 @@ export class HistoricalStagingService {
         fileHash: file.fileHash,
         fileType: file.fileType,
         storagePath: file.storagePath,
+        batchStatusTransition: batch.status === "draft" ? "draft → source_uploaded" : "unchanged",
       },
       idempotencyKey: input.idempotencyKey,
     });
@@ -551,6 +597,219 @@ export class HistoricalStagingService {
     await markSucceeded(this.deps.idempotency, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: STAGING_ROW_ENTITY_TYPE, entityId: stagingRow.id,
+    }, claim.record.ownerToken!, now);
+
+    return result;
+  }
+
+  // ===========================================================================
+  // WP-08-01F DEFECT 1A — finalizeStaging
+  //
+  // Explicit idempotent command that:
+  //   - requires migration.prepare permission
+  //   - derives tenant/actor server-side
+  //   - requires exact predecessor state (source_uploaded or normalized)
+  //   - calculates stagedDataHash server-side from persisted staging rows
+  //   - transitions batch to 'staged'
+  //   - writes audit
+  //   - uses DB-backed idempotency with owner-token fencing
+  //   - produces zero operational effects
+  // ===========================================================================
+
+  async finalizeStaging(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: FinalizeStagingInput,
+  ): Promise<FinalizeStagingResult> {
+    requirePermission(effective, "migration.prepare");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!input.importBatchId?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "importBatchId is required.");
+    if (!input.idempotencyKey?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "idempotencyKey is required.");
+
+    // Check for idempotent replay FIRST (before status check) — if this
+    // finalize already succeeded, return the existing result even if the
+    // batch has since transitioned to a later state.
+    const nowForReplay = new Date();
+    const replayClaim = await claimIdempotency(this.deps.idempotency, {
+      tenantId: user.tenantId,
+      operationScope: "historical_staging.finalize",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: { importBatchId: input.importBatchId } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now: nowForReplay,
+    });
+    if (replayClaim.action === "replay") {
+      const responseBody = replayClaim.record.responseBody as Partial<FinalizeStagingResult> | null;
+      if (responseBody?.batchId) return { ...responseBody, action: "replayed" } as FinalizeStagingResult;
+    }
+    if (replayClaim.action === "conflict") throw new HistoricalStagingError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
+    if (replayClaim.action === "in_progress") throw new HistoricalStagingError("OPERATION_IN_PROGRESS", "Operation in progress.");
+
+    const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
+    if (!batch) throw new BatchNotFoundError(input.importBatchId);
+    requireTenantMatch(user, batch.tenantId);
+
+    // Require exact predecessor state: source_uploaded or normalized
+    if (batch.status !== "source_uploaded" && batch.status !== "normalized") {
+      throw new HistoricalStagingError(
+        "INVALID_BATCH_STATUS",
+        `Cannot finalize staging on batch '${input.importBatchId}' in status '${batch.status}'. ` +
+          `Must be 'source_uploaded' or 'normalized'.`,
+      );
+    }
+
+    // Require at least one staging row
+    const rows = await this.deps.repository.findStagingRowsForBatch(user.tenantId, input.importBatchId);
+    if (rows.length === 0) {
+      throw new HistoricalStagingError("VALIDATION_FAILED", "Cannot finalize staging — no staging rows found.");
+    }
+
+    const claim = replayClaim; // use the claim acquired above
+
+    // Server-side hash derivation: SHA-256 of all staging row IDs + transformed JSON
+    const crypto = await import("node:crypto");
+    const hashInput = rows
+      .map(r => `${r.id}:${JSON.stringify(r.transformedRowJson ?? r.rawRowJson)}`)
+      .sort()
+      .join("|");
+    const stagedDataHash = crypto.createHash("sha256").update(hashInput).digest("hex");
+
+    // Update batch: set stagedDataHash + status = staged + stagedRowCount
+    await this.deps.repository.updateBatchStagedDataHash(user.tenantId, input.importBatchId, stagedDataHash, user.userId);
+    await this.deps.repository.updateBatchStagedRowCount(user.tenantId, input.importBatchId, rows.length);
+    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, "staged");
+
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: ENTITY_TYPE,
+      entityId: input.importBatchId,
+      actionType: "historical_staging.finalize",
+      newValuesJson: {
+        previousStatus: batch.status,
+        newStatus: "staged",
+        stagedDataHash,
+        stagedRowCount: rows.length,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    const result: FinalizeStagingResult = {
+      action: "finalized",
+      batchId: input.importBatchId,
+      previousStatus: batch.status,
+      newStatus: "staged",
+      stagedDataHash,
+      stagedRowCount: rows.length,
+    };
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200, responseBody: result,
+      entityType: ENTITY_TYPE, entityId: input.importBatchId,
+    }, claim.record.ownerToken!, nowForReplay);
+
+    return result;
+  }
+
+  // ===========================================================================
+  // WP-08-01F DEFECT 1A — finalizeCutoverManifest
+  //
+  // Explicit idempotent command that:
+  //   - requires migration.prepare permission
+  //   - derives tenant/actor server-side
+  //   - creates a cutover manifest with server-derived manifestHash
+  //   - binds the manifestHash to the batch (cutoverManifestHash)
+  //   - writes audit
+  //   - uses DB-backed idempotency
+  //   - produces zero operational effects
+  // ===========================================================================
+
+  async finalizeCutoverManifest(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: FinalizeCutoverManifestInput,
+  ): Promise<FinalizeCutoverManifestResult> {
+    requirePermission(effective, "migration.prepare");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!input.importBatchId?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "importBatchId is required.");
+    if (!input.domain?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "domain is required.");
+    if (!input.idempotencyKey?.trim()) throw new HistoricalStagingError("VALIDATION_FAILED", "idempotencyKey is required.");
+
+    const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
+    if (!batch) throw new BatchNotFoundError(input.importBatchId);
+    requireTenantMatch(user, batch.tenantId);
+
+    // Claim idempotency
+    const now = new Date();
+    const claim = await claimIdempotency(this.deps.idempotency, {
+      tenantId: user.tenantId,
+      operationScope: "historical_cutover_manifest.finalize",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        importBatchId: input.importBatchId,
+        domain: input.domain,
+        cutoffDate: input.cutoffDate,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    });
+    if (claim.action === "replay") {
+      const responseBody = claim.record.responseBody as Partial<FinalizeCutoverManifestResult> | null;
+      if (responseBody?.batchId) return { ...responseBody, action: "replayed" } as FinalizeCutoverManifestResult;
+    }
+    if (claim.action === "conflict") throw new HistoricalStagingError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
+    if (claim.action === "in_progress") throw new HistoricalStagingError("OPERATION_IN_PROGRESS", "Operation in progress.");
+
+    // Server-side manifest hash derivation: SHA-256 of domain + batchId + cutoffDate + sourceCoverage
+    const crypto = await import("node:crypto");
+    const manifestHashInput = `${input.domain}:${input.importBatchId}:${input.cutoffDate ?? ""}:${input.sourceCoverage ?? ""}:${input.openingBalanceBasis ?? ""}`;
+    const manifestHash = crypto.createHash("sha256").update(manifestHashInput).digest("hex");
+
+    // Insert cutover manifest
+    const manifest = await this.deps.repository.insertCutoverManifest({
+      tenantId: user.tenantId,
+      importBatchId: input.importBatchId,
+      domain: input.domain,
+      importMode: "opening_balance",
+      cutoffDate: input.cutoffDate,
+      sourceCoverage: input.sourceCoverage,
+      openingBalanceBasis: input.openingBalanceBasis,
+      liveSystemStartBoundary: input.liveSystemStartBoundary,
+      manifestHash,
+      isApproved: true,
+      createdBy: user.userId,
+    });
+
+    // Bind manifest hash to batch
+    await this.deps.repository.updateBatchCutoverManifestHash(user.tenantId, input.importBatchId, manifestHash, user.userId);
+
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: "import_cutover_manifest",
+      entityId: manifest.id,
+      actionType: "historical_cutover_manifest.finalize",
+      newValuesJson: {
+        importBatchId: input.importBatchId,
+        domain: input.domain,
+        manifestHash,
+        cutoverManifestHash: manifestHash,
+        cutoffDate: input.cutoffDate,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    const result: FinalizeCutoverManifestResult = {
+      action: "finalized",
+      batchId: input.importBatchId,
+      manifestId: manifest.id,
+      manifestHash,
+      cutoverManifestHash: manifestHash,
+    };
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200, responseBody: result,
+      entityType: "import_cutover_manifest", entityId: manifest.id,
     }, claim.record.ownerToken!, now);
 
     return result;

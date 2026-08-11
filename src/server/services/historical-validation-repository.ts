@@ -85,6 +85,15 @@ export interface HistoricalValidationRepository {
   // Batch access (read-only — for status update after validation)
   findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null>;
   updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 1A: Update validation status on the batch.
+   * Sets validationStatus = "passed" (no blocking errors) or "failed" (blocking errors).
+   */
+  updateBatchValidationStatus(tenantId: string, batchId: string, validationStatus: string, updatedBy: string): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 1A: Update blocking error count and warning count on the batch.
+   */
+  updateBatchErrorCounts(tenantId: string, batchId: string, blockingErrorCount: number, warningCount: number, updatedBy: string): Promise<ImportBatch | null>;
 }
 
 export type {

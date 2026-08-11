@@ -15,6 +15,7 @@ import type {
   ImportFile,
   ImportTemplateVersion,
   ImportStagingRow,
+  ImportCutoverManifest,
 } from "@/server/db/schema/migration";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,21 @@ export interface NewStagingRowInput {
   createdBy: string;
 }
 
+// WP-08-01F DEFECT 1A: Cutover manifest input
+export interface NewCutoverManifestInput {
+  tenantId: string;
+  importBatchId: string;
+  domain: string;
+  importMode: string;
+  cutoffDate: string | null;
+  sourceCoverage: string | null;
+  openingBalanceBasis: string | null;
+  liveSystemStartBoundary: string | null;
+  manifestHash: string;
+  isApproved: boolean;
+  createdBy: string;
+}
+
 // ---------------------------------------------------------------------------
 // Repository interface.
 // ---------------------------------------------------------------------------
@@ -89,11 +105,36 @@ export interface HistoricalStagingRepository {
   listImportBatches(tenantId: string): Promise<ImportBatch[]>;
   updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null>;
   updateBatchStagedRowCount(tenantId: string, batchId: string, count: number): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 1A: Update the staged-data hash on a batch.
+   * Used by finalizeStaging to lock the staged-data snapshot.
+   */
+  updateBatchStagedDataHash(tenantId: string, batchId: string, stagedDataHash: string, updatedBy: string): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 1A: Update the cutover-manifest hash on a batch.
+   * Used by finalizeCutoverManifest to bind the manifest hash to the batch.
+   */
+  updateBatchCutoverManifestHash(tenantId: string, batchId: string, cutoverManifestHash: string, updatedBy: string): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 1A: Update the validation status on a batch.
+   * Used by runValidation to set validationStatus = "passed" or "failed".
+   */
+  updateBatchValidationStatus(tenantId: string, batchId: string, validationStatus: string, updatedBy: string): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 1A: Update the reconciliation status on a batch.
+   * Used by runReconciliation to set reconciliationStatus = "matched" etc.
+   */
+  updateBatchReconciliationStatus(tenantId: string, batchId: string, reconciliationStatus: string, updatedBy: string): Promise<ImportBatch | null>;
 
   // Staging row methods
   insertStagingRow(row: NewStagingRowInput): Promise<ImportStagingRow>;
   findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
   findStagingRowById(tenantId: string, id: string): Promise<ImportStagingRow | null>;
+
+  // WP-08-01F DEFECT 1A: Cutover manifest methods
+  insertCutoverManifest(row: NewCutoverManifestInput): Promise<ImportCutoverManifest>;
+  findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]>;
+  findCutoverManifestById(tenantId: string, id: string): Promise<ImportCutoverManifest | null>;
 }
 
 export type {
@@ -101,4 +142,5 @@ export type {
   ImportFile,
   ImportTemplateVersion,
   ImportStagingRow,
+  ImportCutoverManifest,
 } from "@/server/db/schema/migration";

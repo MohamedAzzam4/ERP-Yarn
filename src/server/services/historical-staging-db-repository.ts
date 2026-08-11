@@ -13,6 +13,7 @@ import {
   importFiles,
   importTemplateVersions,
   importStagingRows,
+  importCutoverManifests,
 } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -21,12 +22,14 @@ import type {
   NewImportFileInput,
   NewImportBatchInput,
   NewStagingRowInput,
+  NewCutoverManifestInput,
 } from "./historical-staging-repository";
 import type {
   ImportBatch,
   ImportFile,
   ImportTemplateVersion,
   ImportStagingRow,
+  ImportCutoverManifest,
 } from "@/server/db/schema/migration";
 
 type Db = NonNullable<typeof DbType>;
@@ -206,6 +209,40 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
     return result ?? null;
   }
 
+  // WP-08-01F DEFECT 1A: lifecycle transition support methods
+
+  async updateBatchStagedDataHash(tenantId: string, batchId: string, stagedDataHash: string, updatedBy: string): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({ stagedDataHash, updatedBy, updatedAt: new Date() })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
+    return result ?? null;
+  }
+
+  async updateBatchCutoverManifestHash(tenantId: string, batchId: string, cutoverManifestHash: string, updatedBy: string): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({ cutoverManifestHash, updatedBy, updatedAt: new Date() })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
+    return result ?? null;
+  }
+
+  async updateBatchValidationStatus(tenantId: string, batchId: string, validationStatus: string, updatedBy: string): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({ validationStatus, updatedBy, updatedAt: new Date() })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
+    return result ?? null;
+  }
+
+  async updateBatchReconciliationStatus(tenantId: string, batchId: string, reconciliationStatus: string, updatedBy: string): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({ reconciliationStatus, updatedBy, updatedAt: new Date() })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
+    return result ?? null;
+  }
+
   // --- Staging row methods ---
 
   async insertStagingRow(row: NewStagingRowInput): Promise<ImportStagingRow> {
@@ -239,6 +276,43 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
       .where(and(
         eq(importStagingRows.tenantId, tenantId),
         eq(importStagingRows.id, id),
+      ))
+      .limit(1);
+    return result ?? null;
+  }
+
+  // WP-08-01F DEFECT 1A: Cutover manifest methods
+
+  async insertCutoverManifest(row: NewCutoverManifestInput): Promise<ImportCutoverManifest> {
+    const [result] = await this.db.insert(importCutoverManifests).values({
+      tenantId: row.tenantId,
+      importBatchId: row.importBatchId,
+      domain: row.domain,
+      importMode: row.importMode as any,
+      cutoffDate: row.cutoffDate,
+      sourceCoverage: row.sourceCoverage,
+      openingBalanceBasis: row.openingBalanceBasis,
+      liveSystemStartBoundary: row.liveSystemStartBoundary,
+      manifestHash: row.manifestHash,
+      isApproved: row.isApproved,
+      createdBy: row.createdBy,
+    }).returning();
+    return result!;
+  }
+
+  async findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]> {
+    return this.db.select().from(importCutoverManifests)
+      .where(and(
+        eq(importCutoverManifests.tenantId, tenantId),
+        eq(importCutoverManifests.importBatchId, importBatchId),
+      ));
+  }
+
+  async findCutoverManifestById(tenantId: string, id: string): Promise<ImportCutoverManifest | null> {
+    const [result] = await this.db.select().from(importCutoverManifests)
+      .where(and(
+        eq(importCutoverManifests.tenantId, tenantId),
+        eq(importCutoverManifests.id, id),
       ))
       .limit(1);
     return result ?? null;

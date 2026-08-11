@@ -61,90 +61,98 @@ import type { RoleCode } from "@/server/security/role-codes";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 
 const DATABASE_URL = process.env.DATABASE_URL;
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
 
 // ===========================================================================
-// DEFECT 4 — Fail-closed disposable-database guard
+// DEFECT 5 — Fail-closed disposable-database guard
+//
+// Behavior:
+// - When DATABASE_URL is absent during ordinary full gates, skip with an
+//   explicit reason.
+// - When DATABASE_URL is present but unsafe, FAIL the test file (not skip).
+// - When ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1, absence of a valid safe DB or
+//   the explicit destructive-test acknowledgment must FAIL, never skip.
+// - Supabase/pooler/non-loopback URLs must FAIL before opening a connection.
+// - Require one exact dedicated database name: erp_yarn_wp0801f_disposable.
+// - After connecting, verify a dedicated DB marker before any DELETE/fixture.
 // ===========================================================================
+
+/** The one exact dedicated database name for WP-08-01F disposable tests. */
+const DEDICATED_DB_NAME = "erp_yarn_wp0801f_disposable";
 
 /**
  * Parse the DATABASE_URL and verify it points to a safe local disposable DB.
- * Returns the parsed components or throws a safety error.
+ * Returns "skip" (with reason) or "fail" (with error message) or "ok".
  */
-function assertSafeDisposableDatabase(): { hostname: string; database: string } {
+type SafetyResult =
+  | { kind: "ok" }
+  | { kind: "skip"; reason: string }
+  | { kind: "fail"; message: string };
+
+function checkDatabaseSafety(): SafetyResult {
+  // Case 1: DATABASE_URL absent
   if (!DATABASE_URL) {
-    throw new Error(
-      "SAFETY: DATABASE_URL is not set. This test requires an explicit local " +
-      "disposable database URL. Refusing to run.",
-    );
+    if (REQUIRE_PROOF) {
+      return { kind: "fail", message: "SAFETY: ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 is set but DATABASE_URL is absent. PostgreSQL proof is required — refusing to skip." };
+    }
+    return { kind: "skip", reason: "DATABASE_URL not set — PostgreSQL proof skipped (set ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 to require it)." };
   }
+
+  // Case 2: DATABASE_URL present but doesn't start with postgres
   if (!DATABASE_URL.startsWith("postgres")) {
-    throw new Error(
-      `SAFETY: DATABASE_URL must start with 'postgres'. Got: '${DATABASE_URL.slice(0, 20)}...'. Refusing to run.`,
-    );
+    return { kind: "fail", message: `SAFETY: DATABASE_URL must start with 'postgres'. Got: '${DATABASE_URL.slice(0, 20)}...'. FAILING — refusing to run against non-postgres URL.` };
   }
 
   let parsed: URL;
   try {
     parsed = new URL(DATABASE_URL);
   } catch (e) {
-    throw new Error(`SAFETY: DATABASE_URL is not a valid URL. Refusing to run. ${(e as Error).message}`);
+    return { kind: "fail", message: `SAFETY: DATABASE_URL is not a valid URL. FAILING. ${(e as Error).message}` };
   }
 
   const hostname = parsed.hostname;
   const database = parsed.pathname.replace(/^\//, "");
 
-  // 1. Hostname must be exactly localhost, 127.0.0.1, or ::1
+  // Case 3: Hostname must be exactly localhost, 127.0.0.1, or ::1
   const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
   if (!ALLOWED_HOSTS.has(hostname)) {
-    throw new Error(
-      `SAFETY: DATABASE_URL hostname '${hostname}' is not in the allowed set ` +
-      `[localhost, 127.0.0.1, ::1]. This test refuses to run against non-local databases. ` +
-      `Refusing to run.`,
-    );
+    return { kind: "fail", message: `SAFETY: DATABASE_URL hostname '${hostname}' is not in [localhost, 127.0.0.1, ::1]. FAILING — refusing to run against non-local databases.` };
   }
 
-  // 2. Database name must be the dedicated disposable test DB
-  const ALLOWED_DB = new Set(["erp_yarn", "erp_yarn_test", "erp_yarn_disposable"]);
-  if (!ALLOWED_DB.has(database)) {
-    throw new Error(
-      `SAFETY: DATABASE_URL database '${database}' is not in the allowed set ` +
-      `[erp_yarn, erp_yarn_test, erp_yarn_disposable]. This test refuses to run ` +
-      `against non-disposable databases. Refusing to run.`,
-    );
-  }
-
-  // 3. Not a Supabase pooler/direct host
+  // Case 4: Supabase/pooler rejection
   if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler")) {
-    throw new Error(
-      `SAFETY: DATABASE_URL appears to point to a Supabase pooler/direct host. ` +
-      `This test refuses to run against Supabase. Refusing to run.`,
-    );
+    return { kind: "fail", message: `SAFETY: DATABASE_URL appears to point to a Supabase pooler/direct host. FAILING — refusing to run against Supabase.` };
   }
 
-  // 4. Explicit env flag must be present
-  if (process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB !== "1") {
-    throw new Error(
-      `SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 env flag is not set. ` +
-      `This test refuses to run without explicit acknowledgment that the target ` +
-      `database is a disposable local test database. Refusing to run.`,
-    );
+  // Case 5: Database name must be the EXACT dedicated disposable DB
+  if (database !== DEDICATED_DB_NAME) {
+    return { kind: "fail", message: `SAFETY: DATABASE_URL database '${database}' is not the dedicated disposable DB '${DEDICATED_DB_NAME}'. FAILING — refusing to run against non-disposable databases.` };
   }
 
-  return { hostname, database };
+  // Case 6: Explicit destructive-test acknowledgment
+  if (!ALLOW_DESTRUCTIVE) {
+    if (REQUIRE_PROOF) {
+      return { kind: "fail", message: `SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 is not set but ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 is set. FAILING — destructive acknowledgment required for proof.` };
+    }
+    return { kind: "skip", reason: `ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 not set — skipping (set ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 to require it).` };
+  }
+
+  return { kind: "ok" };
 }
 
-// Run the guard immediately (before any test setup). If it fails, the entire
-// test file fails loudly with a clear safety error.
-let SAFE_DB_INFO: { hostname: string; database: string } | null = null;
-try {
-  SAFE_DB_INFO = assertSafeDisposableDatabase();
-} catch (e) {
-  // Don't throw at module load — let describe.skip handle it so vitest
-  // reports the failure cleanly. But we DO log the safety error.
-  console.error(`\n[WP-08-01F PostgreSQL test] SAFETY GUARD FAILED:\n${(e as Error).message}\n`);
-}
+const SAFETY_RESULT = checkDatabaseSafety();
 
-const describeOrSkip = SAFE_DB_INFO ? describe : describe.skip;
+// Determine describeOrSkip vs fail
+const describeOrSkip = SAFETY_RESULT.kind === "fail" ? describe.skip : (SAFETY_RESULT.kind === "skip" ? describe.skip : describe);
+let SAFETY_ERROR_MESSAGE: string | null = null;
+
+if (SAFETY_RESULT.kind === "skip") {
+  console.log(`\n[WP-08-01F PostgreSQL test] SKIPPED: ${SAFETY_RESULT.reason}\n`);
+} else if (SAFETY_RESULT.kind === "fail") {
+  SAFETY_ERROR_MESSAGE = SAFETY_RESULT.message;
+  console.error(`\n[WP-08-01F PostgreSQL test] SAFETY GUARD FAILED:\n${SAFETY_RESULT.message}\n`);
+}
 
 // ===========================================================================
 // Unique run-scoped tenant IDs — each test run uses its own tenants so we
@@ -452,9 +460,26 @@ function makeEffective(role: RoleCode = "owner") {
 
 describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect proofs", () => {
   beforeAll(async () => {
+    // DEFECT 5: If safety guard failed, throw here to fail the test file
+    if (SAFETY_ERROR_MESSAGE) {
+      throw new Error(SAFETY_ERROR_MESSAGE);
+    }
     sql = postgres(DATABASE_URL!, { prepare: false, max: 10, idle_timeout: 10, connect_timeout: 10 });
     db = drizzle(sql, { schema });
     await sql`SET statement_timeout = 30000`;
+
+    // DEFECT 5: Verify dedicated DB marker before any DELETE/fixture operation.
+    // The current_database() must be the exact dedicated disposable DB.
+    const dbResult = await sql`SELECT current_database() AS db_name`;
+    const currentDb = dbResult[0]?.db_name;
+    if (currentDb !== DEDICATED_DB_NAME) {
+      await sql.end();
+      throw new Error(
+        `SAFETY: Connected to database '${currentDb}' but expected '${DEDICATED_DB_NAME}'. ` +
+        `FAILING — refusing to run against non-disposable database.`
+      );
+    }
+
     // Seed foundational fixtures — use run-scoped company_name/auth_id/email
     // to avoid unique constraint violations across test runs.
     const runSuffix = RUN_ID.slice(0, 8);

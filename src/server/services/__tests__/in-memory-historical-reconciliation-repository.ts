@@ -54,6 +54,7 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
       assignedTo: null,
       status: (item.status ?? "pending") as any,
       decision: null, decisionNotes: null, decidedBy: null, decidedAt: null,
+      reportVersion: null, isCurrent: true, supersededAt: null, supersededBy: null, supersededReason: null,
       createdBy: item.createdBy ?? "test-user",
       createdAt: NOW(), updatedBy: null, updatedAt: null,
     };
@@ -108,6 +109,7 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
       stagingRowId: row.stagingRowId, reviewReason: row.reviewReason,
       assignedTo: null, status: "pending" as any, decision: null,
       decisionNotes: null, decidedBy: null, decidedAt: null,
+      reportVersion: null, isCurrent: true, supersededAt: null, supersededBy: null, supersededReason: null,
       createdBy: row.createdBy, createdAt: NOW(), updatedBy: null, updatedAt: null,
     };
     this.reviews.set(`${row.tenantId}:${id}`, item);
@@ -138,14 +140,38 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
   }
 
   async invalidatePendingReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<number> {
-    let deleted = 0;
+    // WP-08-01F DEFECT 2: delegate to supersedeReviewItemsForBatch
+    return this.supersedeReviewItemsForBatch(tenantId, importBatchId, "system", "rework invalidation");
+  }
+
+  async supersedeReviewItemsForBatch(
+    tenantId: string,
+    importBatchId: string,
+    supersededBy: string,
+    supersededReason: string,
+  ): Promise<number> {
+    let superseded = 0;
     for (const [key, item] of this.reviews.entries()) {
-      if (item.tenantId === tenantId && item.importBatchId === importBatchId && item.status === "pending") {
-        this.reviews.delete(key);
-        deleted++;
+      if (item.tenantId === tenantId && item.importBatchId === importBatchId && item.isCurrent) {
+        const updated: ImportHumanReviewItem = {
+          ...item,
+          isCurrent: false,
+          supersededAt: NOW(),
+          supersededBy,
+          supersededReason,
+          updatedAt: NOW(),
+        };
+        this.reviews.set(key, updated);
+        superseded++;
       }
     }
-    return deleted;
+    return superseded;
+  }
+
+  async findCurrentReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<ImportHumanReviewItem[]> {
+    return [...this.reviews.values()].filter(
+      r => r.tenantId === tenantId && r.importBatchId === importBatchId && r.isCurrent,
+    );
   }
 
   async resetBatchValidationAndReconciliationStatuses(
@@ -156,6 +182,20 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
     const batch = this.batches.get(key);
     if (!batch) return null;
     const updated = { ...batch, validationStatus: null, reconciliationStatus: null, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
+  async updateBatchReconciliationStatus(
+    tenantId: string,
+    batchId: string,
+    reconciliationStatus: string,
+    updatedBy: string,
+  ): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, reconciliationStatus, updatedBy, updatedAt: NOW() };
     this.batches.set(key, updated);
     return updated;
   }

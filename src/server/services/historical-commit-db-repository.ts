@@ -139,16 +139,41 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
   }
 
   /**
-   * WP-08-01F DEFECT 2: Invalidate (delete) all approval records for a batch.
-   * Used by the rework command. Original audit entries remain in audit_logs.
+   * WP-08-01F DEFECT 2: Invalidate (mark is_current=false) all CURRENT
+   * approval records for a batch. Prior approval rows are preserved.
    */
-  async invalidateApprovalsForBatch(tenantId: string, importBatchId: string): Promise<number> {
-    const result = await this.db.delete(importBatchApprovals)
+  async invalidateCurrentApprovalsForBatch(
+    tenantId: string,
+    importBatchId: string,
+    invalidatedBy: string,
+    invalidationReason: string,
+  ): Promise<number> {
+    const result = await this.db.update(importBatchApprovals)
+      .set({
+        isCurrent: false,
+        invalidatedAt: new Date(),
+        invalidatedBy,
+        invalidationReason,
+        updatedAt: new Date(),
+      })
       .where(and(
         eq(importBatchApprovals.tenantId, tenantId),
         eq(importBatchApprovals.importBatchId, importBatchId),
+        eq(importBatchApprovals.isCurrent, true),
       ));
     return (result as any)?.length ?? (result as any)?.rowCount ?? 0;
+  }
+
+  /**
+   * Find only CURRENT approvals (is_current=true) for a batch.
+   */
+  async findCurrentApprovalsForBatch(tenantId: string, importBatchId: string): Promise<ImportBatchApproval[]> {
+    return this.db.select().from(importBatchApprovals)
+      .where(and(
+        eq(importBatchApprovals.tenantId, tenantId),
+        eq(importBatchApprovals.importBatchId, importBatchId),
+        eq(importBatchApprovals.isCurrent, true),
+      ));
   }
 
   // ---- Backup evidence ----

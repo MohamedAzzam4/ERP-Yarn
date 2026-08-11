@@ -470,9 +470,15 @@ describe("WP-08-01F DEFECT 1 — Reachable workflow happy path", () => {
       expect(result.invalidatedOwnerApproval).toBe(true);
       await deps.syncBatchToAllRepos(batchId, TENANT_A, "recon");
 
-      // Approvals should be invalidated
-      const approvalsAfter = await deps.commitRepo.findApprovalsForBatch(TENANT_A, batchId);
-      expect(approvalsAfter.length).toBe(0);
+      // Approvals should be invalidated (is_current=false, but rows preserved)
+      const currentApprovalsAfter = await deps.commitRepo.findCurrentApprovalsForBatch(TENANT_A, batchId);
+      expect(currentApprovalsAfter.length).toBe(0);
+      // Prior approval rows are preserved (immutable evidence)
+      const allApprovalsAfter = await deps.commitRepo.findApprovalsForBatch(TENANT_A, batchId);
+      expect(allApprovalsAfter.length).toBe(1);
+      expect(allApprovalsAfter[0]!.isCurrent).toBe(false);
+      expect(allApprovalsAfter[0]!.invalidatedAt).toBeTruthy();
+      expect(allApprovalsAfter[0]!.invalidationReason).toContain("material change");
 
       // Batch status should be review_required
       const batch = await deps.commitRepo.findImportBatchById(TENANT_A, batchId);

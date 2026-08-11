@@ -248,10 +248,21 @@ export const importHumanReviewItems = pgTable("import_human_review_items", {
   decisionNotes: text("decision_notes"),
   decidedBy: uuid("decided_by").references(() => users.id),
   decidedAt: timestamp("decided_at", { withTimezone: true, mode: "date" }),
+  // WP-08-01F DEFECT 2: Immutable review-item supersession fields.
+  // Review items are bound to a reconciliation report version. When rework
+  // invalidates a report version, the associated review items are marked
+  // is_current=false (not deleted). New reconciliation creates new items.
+  reportVersion: integer("report_version"),
+  isCurrent: boolean("is_current").notNull().default(true),
+  supersededAt: timestamp("superseded_at", { withTimezone: true, mode: "date" }),
+  supersededBy: uuid("superseded_by"),
+  supersededReason: text("superseded_reason"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   index("import_human_review_items_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_human_review_items_tenant_status_idx").on(t.tenantId, t.status),
+  index("import_human_review_items_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
+  index("import_human_review_items_tenant_batch_version_idx").on(t.tenantId, t.importBatchId, t.reportVersion),
 ]);
 
 export type ImportHumanReviewItem = typeof importHumanReviewItems.$inferSelect;
@@ -305,19 +316,28 @@ export const importBatchApprovals = pgTable("import_batch_approvals", {
   warningSummary: text("warning_summary"),
   approvedAt: timestamp("approved_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   reason: text("reason"),
-  // DEC-069: one approval per role per batch — unique constraint
-  // The distinct-user requirement is enforced by: (a) unique (batch, role)
-  // preventing two Owner approvals, and (b) a CHECK that owner_approver ≠
-  // accountant_approver which would require a cross-row constraint. The
-  // service layer enforces distinct user identities; the DB enforces one
-  // approval per role.
+  // WP-08-01F DEFECT 2: Immutable approval supersession fields.
+  // Prior approvals are preserved (append-only) and marked is_current=false
+  // when invalidated by rework. New approvals create new rows with
+  // is_current=true. The partial unique index below permits only one current
+  // approval per tenant/batch/role.
+  approvalVersion: integer("approval_version").notNull().default(1),
+  isCurrent: boolean("is_current").notNull().default(true),
+  invalidatedAt: timestamp("invalidated_at", { withTimezone: true, mode: "date" }),
+  invalidatedBy: uuid("invalidated_by"),
+  invalidationReason: text("invalidation_reason"),
+  supersededByApprovalId: uuid("superseded_by_approval_id"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
-  // DEC-069: one approval per role per batch
-  uniqueIndex("import_batch_approvals_tenant_batch_role_unique_idx")
-    .on(t.tenantId, t.importBatchId, t.approverRole),
+  // DEC-069: one CURRENT approval per role per batch (partial unique index).
+  // Prior invalidated approvals remain in the table with is_current=false.
+  // This replaces the old non-partial unique index.
+  uniqueIndex("import_batch_approvals_tenant_batch_role_current_unique_idx")
+    .on(t.tenantId, t.importBatchId, t.approverRole)
+    .where(sql`${t.isCurrent} = true`),
   index("import_batch_approvals_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_batch_approvals_tenant_approver_idx").on(t.tenantId, t.approverUserId),
+  index("import_batch_approvals_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
 ]);
 
 export type ImportBatchApproval = typeof importBatchApprovals.$inferSelect;

@@ -110,6 +110,7 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
       stagingRowId: row.stagingRowId, reviewReason: row.reviewReason,
       assignedTo: null, status: "pending" as any, decision: null,
       decisionNotes: null, decidedBy: null, decidedAt: null,
+      reportVersion: null, isCurrent: true, supersededAt: null, supersededBy: null, supersededReason: null,
       createdBy: row.createdBy, createdAt: NOW(), updatedBy: null, updatedAt: null,
     };
     this.reviews.set(`${row.tenantId}:${id}`, item);
@@ -139,6 +140,26 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
     const batch = this.batches.get(key);
     if (!batch) return null;
     const updated = { ...batch, status: status as any, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
+  // WP-08-01F DEFECT 1A: lifecycle transition support
+
+  async updateBatchValidationStatus(tenantId: string, batchId: string, validationStatus: string, updatedBy: string): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, validationStatus, updatedBy, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
+  async updateBatchErrorCounts(tenantId: string, batchId: string, blockingErrorCount: number, warningCount: number, updatedBy: string): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, blockingErrorCount, warningCount, updatedBy, updatedAt: NOW() };
     this.batches.set(key, updated);
     return updated;
   }
