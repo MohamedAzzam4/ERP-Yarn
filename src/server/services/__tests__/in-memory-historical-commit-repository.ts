@@ -56,6 +56,85 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   seedCutoverManifests(tenantId: string, batchId: string, manifests: ImportCutoverManifest[]): void {
     this.cutoverManifests.set(`${tenantId}:${batchId}`, manifests);
   }
+  /** Seed an approval record directly (bypasses service for test setup). */
+  seedApproval(
+    tenantId: string,
+    approval: {
+      importBatchId: string;
+      approverRole: "owner" | "accountant";
+      approverUserId: string;
+      stagedDataHash: string;
+      cutoverManifestHash: string;
+      templateVersion?: string | null;
+      mappingVersion?: string | null;
+      validationStatus?: string | null;
+      reconciliationStatus?: string | null;
+      warningSummary?: string | null;
+      reason?: string | null;
+      createdBy?: string;
+    },
+  ): ImportBatchApproval {
+    this.approvalCounter++;
+    const id = nid("appr-seed", this.approvalCounter);
+    const record: ImportBatchApproval = {
+      id,
+      tenantId,
+      importBatchId: approval.importBatchId,
+      approverRole: approval.approverRole as any,
+      approverUserId: approval.approverUserId,
+      stagedDataHash: approval.stagedDataHash,
+      cutoverManifestHash: approval.cutoverManifestHash,
+      templateVersion: approval.templateVersion ?? null,
+      mappingVersion: approval.mappingVersion ?? null,
+      validationStatus: approval.validationStatus ?? "passed",
+      reconciliationStatus: approval.reconciliationStatus ?? "matched",
+      warningSummary: approval.warningSummary ?? null,
+      approvedAt: NOW(),
+      reason: approval.reason ?? null,
+      createdBy: approval.createdBy ?? approval.approverUserId,
+      createdAt: NOW(),
+      updatedBy: null,
+      updatedAt: null,
+    };
+    this.approvals.set(`${tenantId}:${id}`, record);
+    return record;
+  }
+  /** Seed backup evidence directly (bypasses service for test setup). */
+  seedBackupEvidence(
+    tenantId: string,
+    evidence: {
+      importBatchId: string;
+      backupType: string;
+      backupLocation: string;
+      backupHash: string;
+      backupSizeBytes: number | null;
+      verifiedBy?: string;
+      verificationNotes?: string | null;
+      createdBy?: string;
+    },
+  ): ImportBackupEvidence {
+    this.backupCounter++;
+    const id = nid("bkp-seed", this.backupCounter);
+    const record: ImportBackupEvidence = {
+      id,
+      tenantId,
+      importBatchId: evidence.importBatchId,
+      backupType: evidence.backupType,
+      backupLocation: evidence.backupLocation,
+      backupHash: evidence.backupHash,
+      backupSizeBytes: evidence.backupSizeBytes,
+      backupCreatedAt: NOW(),
+      verifiedBy: evidence.verifiedBy ?? "test-user",
+      verifiedAt: NOW(),
+      verificationNotes: evidence.verificationNotes ?? null,
+      createdBy: evidence.createdBy ?? "test-user",
+      createdAt: NOW(),
+      updatedBy: null,
+      updatedAt: null,
+    };
+    this.backupEvidence.set(`${tenantId}:${id}`, record);
+    return record;
+  }
 
   // ---- Batch access ----
 

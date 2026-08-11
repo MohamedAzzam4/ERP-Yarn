@@ -106,13 +106,17 @@ async function seedBatchForCommit(
   tenantId: string = TENANT_A,
 ): Promise<string> {
   const batchId = await seedBatch(stagingDeps.service, userId, tenantId);
-  // Copy the batch into the commit repo with hashes set so recordApproval passes
+  // Copy the batch into the commit repo with hashes + validation/reconciliation
+  // statuses set so recordApproval passes its preconditions (TASK 1.1:
+  // validationStatus and reconciliationStatus must NOT be null or "unknown").
   const batch = await stagingDeps.repository.findImportBatchById(tenantId, batchId);
   if (batch) {
     const batchWithHashes = {
       ...batch,
       stagedDataHash: "test-staged-hash",
       cutoverManifestHash: "test-manifest-hash",
+      validationStatus: "passed",
+      reconciliationStatus: "matched",
       status: "pending_dual_approval" as const,
     };
     commitDeps.repository.seedBatch(tenantId, batchWithHashes);

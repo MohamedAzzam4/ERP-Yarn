@@ -34,6 +34,32 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
   seedBatch(tenantId: string, batch: ImportBatch): void {
     this.batches.set(`${tenantId}:${batch.id}`, batch);
   }
+  /** Seed a review item directly (bypasses service for test setup). */
+  seedReviewItem(
+    tenantId: string,
+    item: {
+      importBatchId: string;
+      reviewReason: string;
+      status?: string;
+      stagingRowId?: string | null;
+      createdBy?: string;
+    },
+  ): ImportHumanReviewItem {
+    this.reviewCounter++;
+    const id = nid("rev-seed", this.reviewCounter);
+    const record: ImportHumanReviewItem = {
+      id, tenantId, importBatchId: item.importBatchId,
+      stagingRowId: item.stagingRowId ?? null,
+      reviewReason: item.reviewReason,
+      assignedTo: null,
+      status: (item.status ?? "pending") as any,
+      decision: null, decisionNotes: null, decidedBy: null, decidedAt: null,
+      createdBy: item.createdBy ?? "test-user",
+      createdAt: NOW(), updatedBy: null, updatedAt: null,
+    };
+    this.reviews.set(`${tenantId}:${id}`, record);
+    return record;
+  }
 
   async insertReconciliationResult(row: NewReconciliationResultInput): Promise<ImportReconciliationResult> {
     this.resultCounter++;

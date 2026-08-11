@@ -86,7 +86,10 @@ function makeBatch(overrides: Partial<ImportBatch> = {}): ImportBatch {
     id: "batch-001",
     tenantId: TEST_TENANT_ID,
     batchNo: "MIG-001",
-    status: "validation_complete",
+    // WP-08-01F TASK 1.1: approvals require pending_dual_approval state.
+    // Previously this defaulted to validation_complete, which is no longer
+    // approval-eligible per Contract 08 §9.
+    status: "pending_dual_approval",
     sourceDescription: "Test batch",
     templateName: "opening_balances",
     templateVersion: "v1.0",
@@ -658,8 +661,9 @@ describe("WP-07-04 isolation and permissions", () => {
 
   it("18. No direct operational mutation outside transaction — batch must be approved_for_commit", async () => {
     const deps = makeDeps();
-    // Batch in validation_complete (not approved, no approvals recorded)
-    setupReadyBatch(deps, "batch-001", { status: "validation_complete" });
+    // WP-08-01F TASK 1.5: backup evidence requires review_required or later
+    // pre-commit state. Use pending_dual_approval (no approvals recorded yet).
+    setupReadyBatch(deps, "batch-001", { status: "pending_dual_approval" });
     await recordBackupEvidence(deps);
 
     // Should fail because dual approval is incomplete (no approvals recorded)

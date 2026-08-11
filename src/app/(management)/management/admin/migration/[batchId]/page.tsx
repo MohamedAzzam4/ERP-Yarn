@@ -34,6 +34,8 @@ import {
 } from "../actions";
 import {
   getActionMatrix,
+  visibleApprovalControls,
+  visibleCorrectionApprovalControls,
   type MigrationBatchState,
 } from "@/server/services/migration-lifecycle-predicates";
 
@@ -51,6 +53,14 @@ export default async function MigrationBatchDetailPage({
     r === "owner" || r === "accountant",
   ) as RoleCode | undefined;
   if (!managementRole) redirect("/worker");
+
+  // TASK 3: Collect ALL management roles the user has so role-specific
+  // control visibility can be applied (Owner-only sees only Owner control,
+  // Accountant-only sees only Accountant control, multi-role may see both,
+  // but service still prevents same identity satisfying both slots).
+  const userManagementRoles = authResult.roles.filter((r): r is "owner" | "accountant" =>
+    r === "owner" || r === "accountant",
+  );
 
   const navCategories = getManagementNavForRole(managementRole);
 
@@ -127,6 +137,11 @@ export default async function MigrationBatchDetailPage({
     hasBackupEvidence: detail.backupEvidence.length > 0,
   };
   const actionMatrix = getActionMatrix(batchState);
+
+  // TASK 3: Role-specific control visibility — Owner-only sees only Owner
+  // approval control, Accountant-only sees only Accountant control,
+  // unauthorized management/worker roles see neither, multi-role may see both.
+  const batchApprovalVisibility = visibleApprovalControls(userManagementRoles, batchState);
 
   return (
     <ManagementShell
@@ -313,8 +328,8 @@ export default async function MigrationBatchDetailPage({
                 </div>
               )}
 
-              {/* Owner approval — only when prerequisites met */}
-              {actionMatrix.recordOwnerApproval && !batchState.hasOwnerApproval && (
+              {/* Owner approval — only when prerequisites met AND user has owner role (TASK 3) */}
+              {batchApprovalVisibility.owner && !batchState.hasOwnerApproval && (
                 <form data-action="record-owner-approval" action={recordApprovalAction} className="flex gap-3 items-center">
                   <input type="hidden" name="batchId" value={b.id} />
                   <input type="hidden" name="approverRole" value="owner" />
@@ -324,8 +339,8 @@ export default async function MigrationBatchDetailPage({
                 </form>
               )}
 
-              {/* Accountant approval — only when prerequisites met */}
-              {actionMatrix.recordAccountantApproval && !batchState.hasAccountantApproval && (
+              {/* Accountant approval — only when prerequisites met AND user has accountant role (TASK 3) */}
+              {batchApprovalVisibility.accountant && !batchState.hasAccountantApproval && (
                 <form data-action="record-accountant-approval" action={recordApprovalAction} className="flex gap-3 items-center">
                   <input type="hidden" name="batchId" value={b.id} />
                   <input type="hidden" name="approverRole" value="accountant" />
@@ -401,11 +416,19 @@ export default async function MigrationBatchDetailPage({
                 </div>
               </form>
 
-              {/* Correction requests list with approval forms (DEFECT 2) */}
+              {/* Correction requests list with approval forms (DEFECT 2 + TASK 3) */}
               {detail.corrections.length > 0 && (
                 <div className="space-y-2">
                   <h3 className="text-sm font-semibold">طلبات التصحيح</h3>
-                  {detail.corrections.map((corr) => (
+                  {detail.corrections.map((corr) => {
+                    // TASK 3: Role-specific correction control visibility.
+                    const corrVis = visibleCorrectionApprovalControls(
+                      userManagementRoles,
+                      corr.status,
+                      Boolean(corr.ownerApprovedBy),
+                      Boolean(corr.accountantApprovedBy),
+                    );
+                    return (
                     <div key={corr.id} className="border rounded p-3 text-sm space-y-2">
                       <div className="flex justify-between">
                         <span className="font-medium"><LtrValue>{corr.docNo}</LtrValue></span>
@@ -416,8 +439,8 @@ export default async function MigrationBatchDetailPage({
                       </div>
                       <p>{corr.reason}</p>
 
-                      {/* Owner approval form — only if not already approved by owner */}
-                      {corr.status === "pending_review" && !corr.ownerApprovedBy && (
+                      {/* Owner approval form — only if user has owner role and slot empty (TASK 3) */}
+                      {corrVis.owner && (
                         <form data-action="approve-correction-owner" action={approveCorrectionAction} className="flex gap-2 items-center">
                           <input type="hidden" name="correctionRequestId" value={corr.id} />
                           <input type="hidden" name="batchId" value={b.id} />
@@ -427,8 +450,8 @@ export default async function MigrationBatchDetailPage({
                         </form>
                       )}
 
-                      {/* Accountant approval form — only if not already approved by accountant */}
-                      {corr.status === "pending_review" && !corr.accountantApprovedBy && (
+                      {/* Accountant approval form — only if user has accountant role and slot empty (TASK 3) */}
+                      {corrVis.accountant && (
                         <form data-action="approve-correction-accountant" action={approveCorrectionAction} className="flex gap-2 items-center">
                           <input type="hidden" name="correctionRequestId" value={corr.id} />
                           <input type="hidden" name="batchId" value={b.id} />
@@ -445,7 +468,8 @@ export default async function MigrationBatchDetailPage({
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 

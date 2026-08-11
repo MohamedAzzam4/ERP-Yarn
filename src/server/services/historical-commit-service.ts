@@ -64,6 +64,13 @@ import type {
   ImportBatchApproval,
   ImportStagingRow,
 } from "@/server/db/schema/migration";
+import {
+  guardRecordApproval,
+  guardRecordBackupEvidence,
+  guardCommitBatch,
+  assertApprovalStatusesBound,
+  MigrationLifecycleError,
+} from "./migration-lifecycle-guard";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -384,15 +391,26 @@ export class HistoricalCommitService {
     if (!batch) throw new CommitBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
-    // The existing terminal-status check is preserved (InvalidBatchStatusError).
-    // The guard adds preparation-state rejection (e.g., draft/staged cannot approve).
-    if (batch.status === "committed" || batch.status === "rejected" || batch.status === "cancelled" || batch.status === "committing") {
-      throw new InvalidBatchStatusError(input.importBatchId, batch.status, "non-terminal");
+    // WP-08-01F TASK 1.1: Enforce lifecycle state before any write —
+    // approval allowed only in pending_dual_approval or approved_for_commit.
+    // The central guard uses the SAME state set as the UI predicate
+    // (TASK 2 — single source of truth).
+    try {
+      guardRecordApproval(batch);
+    } catch (e) {
+      if (e instanceof MigrationLifecycleError) {
+        throw new InvalidBatchStatusError(
+          input.importBatchId, batch.status,
+          e.allowedStatuses.join(" | "),
+        );
+      }
+      throw e;
     }
-    if (batch.status === "draft" || batch.status === "source_uploaded" || batch.status === "normalized" || batch.status === "staged") {
-      throw new InvalidBatchStatusError(input.importBatchId, batch.status, "post-staging (validation_complete or later)");
-    }
+
+    // TASK 1.1: Do not store approvals with validationStatus or
+    // reconciliationStatus = "unknown". The batch must have completed
+    // validation AND reconciliation before any approval can be recorded.
+    assertApprovalStatusesBound(batch.validationStatus, batch.reconciliationStatus);
 
     // DEC-069: Check that this user has NOT already provided the OTHER role's approval.
     // The same user/person/identity must not approve both sides.
@@ -486,7 +504,9 @@ export class HistoricalCommitService {
       );
     }
 
-    // Insert the approval record with version/hash binding
+    // Insert the approval record with version/hash binding.
+    // TASK 1.1: validationStatus and reconciliationStatus are guaranteed
+    // non-null and non-"unknown" by assertApprovalStatusesBound above.
     const approval = await this.deps.repository.insertApproval({
       tenantId: user.tenantId,
       importBatchId: input.importBatchId,
@@ -496,8 +516,8 @@ export class HistoricalCommitService {
       cutoverManifestHash: batch.cutoverManifestHash,
       templateVersion: batch.templateVersion,
       mappingVersion: batch.mappingVersion,
-      validationStatus: batch.validationStatus ?? "unknown",
-      reconciliationStatus: batch.reconciliationStatus ?? "unknown",
+      validationStatus: batch.validationStatus!,
+      reconciliationStatus: batch.reconciliationStatus!,
       warningSummary: batch.warningSummary,
       reason: input.reason,
       createdBy: user.userId,
@@ -613,9 +633,20 @@ export class HistoricalCommitService {
     if (!batch) throw new CommitBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
-    if (batch.status === "committed" || batch.status === "rejected" || batch.status === "cancelled" || batch.status === "committing") {
-      throw new InvalidBatchStatusError(input.importBatchId, batch.status, "non-terminal pre-commit");
+    // WP-08-01F TASK 1.5: Enforce lifecycle state before any write —
+    // backup evidence allowed only in review_required, pending_dual_approval,
+    // or approved_for_commit. The central guard uses the SAME state set as
+    // the UI predicate (TASK 2 — single source of truth).
+    try {
+      guardRecordBackupEvidence(batch);
+    } catch (e) {
+      if (e instanceof MigrationLifecycleError) {
+        throw new InvalidBatchStatusError(
+          input.importBatchId, batch.status,
+          e.allowedStatuses.join(" | "),
+        );
+      }
+      throw e;
     }
 
     const now = new Date();
@@ -737,6 +768,62 @@ export class HistoricalCommitService {
     if (!batch) throw new CommitBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
+    // WP-08-01F TASK 1.6: Enforce lifecycle state BEFORE any new write or
+    // side effect (including idempotency claim, sequence allocation, audit
+    // or operational write), while preserving valid idempotency replay
+    // semantics. If the batch is already committed, replay is allowed
+    // below; otherwise the batch must be in approved_for_commit OR
+    // pending_dual_approval (pending_dual_approval is allowed to reach
+    // this point so we can give the more specific IncompleteDualApprovalError
+    // when approvals are incomplete — the guard below still prevents any
+    // write until approved_for_commit is reached).
+    if (batch.status !== "committed" && batch.status !== "approved_for_commit" && batch.status !== "pending_dual_approval") {
+      try {
+        guardCommitBatch(batch);
+      } catch (e) {
+        if (e instanceof MigrationLifecycleError) {
+          throw new InvalidBatchStatusError(
+            input.importBatchId, batch.status,
+            e.allowedStatuses.join(" | "),
+          );
+        }
+        throw e;
+      }
+    }
+
+    // Verify both approvals exist and are from distinct users (check BEFORE
+    // any write so we give the more specific IncompleteDualApprovalError
+    // when only one approval has been recorded). This is a read-only check.
+    const approvals = await this.deps.repository.findApprovalsForBatch(
+      user.tenantId, input.importBatchId,
+    );
+    const ownerApproval = approvals.find(a => a.approverRole === "owner");
+    const accountantApproval = approvals.find(a => a.approverRole === "accountant");
+    if (!ownerApproval || !accountantApproval) {
+      const roles = approvals.map(a => a.approverRole);
+      throw new IncompleteDualApprovalError(input.importBatchId, roles);
+    }
+    // DEC-069: distinct user identities
+    if (ownerApproval.approverUserId === accountantApproval.approverUserId) {
+      throw new SameUserDualApprovalError(ownerApproval.approverUserId);
+    }
+
+    // Now enforce the strict status guard: only approved_for_commit (or
+    // already committed for replay) may proceed past this point.
+    if (batch.status !== "committed") {
+      try {
+        guardCommitBatch(batch);
+      } catch (e) {
+        if (e instanceof MigrationLifecycleError) {
+          throw new InvalidBatchStatusError(
+            input.importBatchId, batch.status,
+            e.allowedStatuses.join(" | "),
+          );
+        }
+        throw e;
+      }
+    }
+
     // Check for idempotent replay FIRST — if this commit already succeeded,
     // return the existing result without re-running.
     const now = new Date();
@@ -780,23 +867,6 @@ export class HistoricalCommitService {
         entityType: COMMIT_ENTITY_TYPE, entityId: input.importBatchId,
       }, claim.record.ownerToken!, now);
       return result;
-    }
-
-    // Verify both approvals exist and are from distinct users (check BEFORE
-    // batch status so we give the more specific IncompleteDualApprovalError
-    // when only one approval has been recorded).
-    const approvals = await this.deps.repository.findApprovalsForBatch(
-      user.tenantId, input.importBatchId,
-    );
-    const ownerApproval = approvals.find(a => a.approverRole === "owner");
-    const accountantApproval = approvals.find(a => a.approverRole === "accountant");
-    if (!ownerApproval || !accountantApproval) {
-      const roles = approvals.map(a => a.approverRole);
-      throw new IncompleteDualApprovalError(input.importBatchId, roles);
-    }
-    // DEC-069: distinct user identities
-    if (ownerApproval.approverUserId === accountantApproval.approverUserId) {
-      throw new SameUserDualApprovalError(ownerApproval.approverUserId);
     }
 
     // Batch must be approved_for_commit (both approvals recorded moves it

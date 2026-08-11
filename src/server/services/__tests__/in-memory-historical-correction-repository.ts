@@ -26,6 +26,54 @@ export class InMemoryHistoricalCorrectionRepository implements HistoricalCorrect
   seedBatch(tenantId: string, batch: ImportBatch): void {
     this.batches.set(`${tenantId}:${batch.id}`, batch);
   }
+  /** Seed a correction request directly (bypasses service for test setup). */
+  seedCorrectionRequest(
+    tenantId: string,
+    request: {
+      importBatchId: string;
+      docNo?: string;
+      originalEntityType: string;
+      originalEntityId: string;
+      correctionType?: string;
+      reason: string;
+      status?: string;
+      ownerApprovedBy?: string | null;
+      ownerApprovedAt?: Date | null;
+      accountantApprovedBy?: string | null;
+      accountantApprovedAt?: Date | null;
+      correctedEntityType?: string | null;
+      correctedEntityId?: string | null;
+      createdBy?: string;
+    },
+  ): HistoricalCorrectionRequest {
+    this.counter++;
+    const id = `corr-seed-${String(this.counter).padStart(6, "0")}-${randomUUID().slice(0, 8)}`;
+    const record: HistoricalCorrectionRequest = {
+      id,
+      tenantId,
+      importBatchId: request.importBatchId,
+      docNo: request.docNo ?? `CORR-${String(this.counter).padStart(4, "0")}`,
+      originalEntityType: request.originalEntityType,
+      originalEntityId: request.originalEntityId,
+      correctionType: (request.correctionType ?? "adjustment") as any,
+      reason: request.reason,
+      proposedCorrectionJson: null,
+      impactAnalysisJson: null,
+      status: (request.status ?? "pending_review") as any,
+      ownerApprovedBy: request.ownerApprovedBy ?? null,
+      ownerApprovedAt: request.ownerApprovedAt ?? null,
+      accountantApprovedBy: request.accountantApprovedBy ?? null,
+      accountantApprovedAt: request.accountantApprovedAt ?? null,
+      correctedEntityType: request.correctedEntityType ?? null,
+      correctedEntityId: request.correctedEntityId ?? null,
+      createdBy: request.createdBy ?? "test-user",
+      createdAt: NOW(),
+      updatedBy: null,
+      updatedAt: null,
+    };
+    this.requests.set(`${tenantId}:${id}`, record);
+    return record;
+  }
 
   async insertCorrectionRequest(row: NewCorrectionRequestInput): Promise<HistoricalCorrectionRequest> {
     this.counter++;

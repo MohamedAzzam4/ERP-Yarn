@@ -566,6 +566,17 @@ export class HistoricalReconciliationService {
     if (!reviewItem) throw new ReviewItemNotFoundError(input.reviewItemId);
     requireTenantMatch(user, reviewItem.tenantId);
 
+    // WP-08-01F TASK 1.3: Must require an existing UNRESOLVED review item.
+    // Review items with status accepted/rejected/resolved are already decided
+    // and cannot be re-decided (prevents double-decision and audit pollution).
+    if (reviewItem.status !== "pending") {
+      throw new HistoricalReconciliationError(
+        "REVIEW_ALREADY_RESOLVED",
+        `Review item '${input.reviewItemId}' has status '${reviewItem.status}' and cannot be re-decided. ` +
+        `Only pending review items can receive a decision.`,
+      );
+    }
+
     // WP-08-01F DEFECT 1: Enforce lifecycle state — load batch and check
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, reviewItem.importBatchId);
     if (!batch) throw new ReconBatchNotFoundError(reviewItem.importBatchId);
