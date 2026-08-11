@@ -26,11 +26,15 @@ import {
   runValidationAction,
   runReconciliationAction,
   recordReviewDecisionAction,
-  recordApprovalAction,
+  submitMigrationForApprovalAction,
+  reopenBatchForReworkAction,
+  recordOwnerMigrationApprovalAction,
+  recordAccountantMigrationApprovalAction,
   recordBackupEvidenceAction,
   commitBatchAction,
   createCorrectionRequestAction,
-  approveCorrectionAction,
+  approveCorrectionAsOwnerAction,
+  approveCorrectionAsAccountantAction,
 } from "../actions";
 import {
   getActionMatrix,
@@ -328,22 +332,37 @@ export default async function MigrationBatchDetailPage({
                 </div>
               )}
 
-              {/* Owner approval — only when prerequisites met AND user has owner role (TASK 3) */}
-              {batchApprovalVisibility.owner && !batchState.hasOwnerApproval && (
-                <form data-action="record-owner-approval" action={recordApprovalAction} className="flex gap-3 items-center">
+              {/* WP-08-01F DEFECT 1 — Submit for approval (review_required → pending_dual_approval) */}
+              {actionMatrix.submitForApproval && (
+                <form data-action="submit-migration-for-approval" action={submitMigrationForApprovalAction} className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t pt-3">
                   <input type="hidden" name="batchId" value={b.id} />
-                  <input type="hidden" name="approverRole" value="owner" />
+                  <input type="hidden" name="idempotencyKey" value={`submit-${crypto.randomUUID()}`} />
+                  <label className="flex flex-col gap-1 text-sm sm:col-span-2">
+                    <span className="text-muted-foreground">ملخص قبول التحذيرات (مطلوب عند وجود تحذيرات):</span>
+                    <input type="text" name="warningSummary" placeholder="تمت مراجعة جميع التحذيرات وقبولها للأسباب التالية..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <div className="sm:col-span-2">
+                    <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-semibold" style={{ minHeight: "44px" }}>تقديم للاعتماد المزدوج</button>
+                  </div>
+                </form>
+              )}
+
+              {/* Owner approval — only when prerequisites met AND user has owner role (TASK 3 + DEFECT 3).
+                  WP-08-01F DEFECT 3: browser NO LONGER submits approverRole — role is FIXED server-side. */}
+              {batchApprovalVisibility.owner && !batchState.hasOwnerApproval && (
+                <form data-action="record-owner-approval" action={recordOwnerMigrationApprovalAction} className="flex gap-3 items-center">
+                  <input type="hidden" name="batchId" value={b.id} />
                   <input type="hidden" name="idempotencyKey" value={`appr-owner-${crypto.randomUUID()}`} />
                   <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
                   <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المالك</button>
                 </form>
               )}
 
-              {/* Accountant approval — only when prerequisites met AND user has accountant role (TASK 3) */}
+              {/* Accountant approval — only when prerequisites met AND user has accountant role (TASK 3 + DEFECT 3).
+                  WP-08-01F DEFECT 3: browser NO LONGER submits approverRole — role is FIXED server-side. */}
               {batchApprovalVisibility.accountant && !batchState.hasAccountantApproval && (
-                <form data-action="record-accountant-approval" action={recordApprovalAction} className="flex gap-3 items-center">
+                <form data-action="record-accountant-approval" action={recordAccountantMigrationApprovalAction} className="flex gap-3 items-center">
                   <input type="hidden" name="batchId" value={b.id} />
-                  <input type="hidden" name="approverRole" value="accountant" />
                   <input type="hidden" name="idempotencyKey" value={`appr-acct-${crypto.randomUUID()}`} />
                   <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
                   <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
@@ -379,6 +398,36 @@ export default async function MigrationBatchDetailPage({
                   <input type="hidden" name="batchId" value={b.id} />
                   <input type="hidden" name="idempotencyKey" value={`commit-${crypto.randomUUID()}`} />
                   <button type="submit" className="px-4 py-2 bg-destructive text-destructive-foreground rounded text-sm font-semibold" style={{ minHeight: "44px" }}>ترحيل نهائي (غير قابل للتراجع)</button>
+                </form>
+              )}
+
+              {/* WP-08-01F DEFECT 2 — Rework/reopen (Contract 08 §9 permitted branches) */}
+              {(b.status === "review_required" || b.status === "pending_dual_approval" || b.status === "approved_for_commit") && (
+                <form data-action="reopen-batch-for-rework" action={reopenBatchForReworkAction} className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t pt-3">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`rework-${crypto.randomUUID()}`} />
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">الحالة المستهدفة:</span>
+                    <select name="targetState" required className="px-2 py-1 border rounded text-sm bg-background" style={{ minHeight: "44px" }}>
+                      {b.status === "review_required" && (
+                        <>
+                          <option value="normalized">normalized (إعادة تجهيز)</option>
+                          <option value="staged">staged (إعادة تحقق)</option>
+                          <option value="validation_in_progress">validation_in_progress (إعادة مطابقة)</option>
+                        </>
+                      )}
+                      {(b.status === "pending_dual_approval" || b.status === "approved_for_commit") && (
+                        <option value="review_required">review_required (إعادة مراجعة)</option>
+                      )}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">سبب إعادة العمل:</span>
+                    <input type="text" name="reason" required placeholder="سبب إعادة فتح الدفعة..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <div className="sm:col-span-2">
+                    <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>إعادة فتح للعمل</button>
+                  </div>
                 </form>
               )}
 
@@ -439,23 +488,23 @@ export default async function MigrationBatchDetailPage({
                       </div>
                       <p>{corr.reason}</p>
 
-                      {/* Owner approval form — only if user has owner role and slot empty (TASK 3) */}
+                      {/* Owner approval form — only if user has owner role and slot empty (TASK 3 + DEFECT 3).
+                          WP-08-01F DEFECT 3: browser NO LONGER submits approverRole. */}
                       {corrVis.owner && (
-                        <form data-action="approve-correction-owner" action={approveCorrectionAction} className="flex gap-2 items-center">
+                        <form data-action="approve-correction-owner" action={approveCorrectionAsOwnerAction} className="flex gap-2 items-center">
                           <input type="hidden" name="correctionRequestId" value={corr.id} />
                           <input type="hidden" name="batchId" value={b.id} />
-                          <input type="hidden" name="approverRole" value="owner" />
                           <input type="hidden" name="idempotencyKey" value={`corr-owner-${corr.id}-${crypto.randomUUID()}`} />
                           <button type="submit" className="px-3 py-1 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>اعتماد المالك</button>
                         </form>
                       )}
 
-                      {/* Accountant approval form — only if user has accountant role and slot empty (TASK 3) */}
+                      {/* Accountant approval form — only if user has accountant role and slot empty (TASK 3 + DEFECT 3).
+                          WP-08-01F DEFECT 3: browser NO LONGER submits approverRole. */}
                       {corrVis.accountant && (
-                        <form data-action="approve-correction-accountant" action={approveCorrectionAction} className="flex gap-2 items-center">
+                        <form data-action="approve-correction-accountant" action={approveCorrectionAsAccountantAction} className="flex gap-2 items-center">
                           <input type="hidden" name="correctionRequestId" value={corr.id} />
                           <input type="hidden" name="batchId" value={b.id} />
-                          <input type="hidden" name="approverRole" value="accountant" />
                           <input type="hidden" name="idempotencyKey" value={`corr-acct-${corr.id}-${crypto.randomUUID()}`} />
                           <button type="submit" className="px-3 py-1 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
                         </form>

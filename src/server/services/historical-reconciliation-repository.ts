@@ -68,6 +68,14 @@ export interface HistoricalReconciliationRepository {
     status: string; decision: string | null; decisionNotes: string | null;
     decidedBy: string;
   }): Promise<ImportHumanReviewItem | null>;
+  /**
+   * WP-08-01F DEFECT 2: Invalidate (delete) all pending review items for a
+   * batch. Used by the rework command — old review items are tied to the old
+   * reconciliation report version and must be cleared so re-reconciliation
+   * can create fresh items. Resolved items remain in audit_logs.
+   * Returns the count of deleted items.
+   */
+  invalidatePendingReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<number>;
 
   // Staging row access (read-only)
   findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
@@ -75,6 +83,16 @@ export interface HistoricalReconciliationRepository {
   // Batch access
   findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null>;
   updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F DEFECT 2: Reset the batch's validationStatus and
+   * reconciliationStatus to null (forces re-validation and re-reconciliation
+   * after rework). Does NOT change the batch status itself — the caller
+   * sets the target status via updateBatchStatus.
+   */
+  resetBatchValidationAndReconciliationStatuses(
+    tenantId: string,
+    batchId: string,
+  ): Promise<ImportBatch | null>;
 }
 
 export type {

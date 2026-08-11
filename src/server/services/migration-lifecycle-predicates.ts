@@ -133,6 +133,18 @@ export const REVIEW_ELIGIBLE_STATES: ReadonlySet<MigrationBatchStatus> = new Set
 ]);
 
 /**
+ * Submission-eligible states — submitForApproval only in review_required.
+ *
+ * WP-08-01F DEFECT 1: explicit submission command transitions
+ * review_required → pending_dual_approval. Without this, the first approval
+ * can never be reached because recordApproval requires
+ * pending_dual_approval or approved_for_commit.
+ */
+export const SUBMISSION_ELIGIBLE_STATES: ReadonlySet<MigrationBatchStatus> = new Set([
+  "review_required",
+]);
+
+/**
  * Approval-eligible states — recordApproval only after validation,
  * reconciliation, and human review prerequisites are complete and the
  * batch has reached the contracted dual-approval state.
@@ -231,6 +243,28 @@ export function canRunReconciliation(state: MigrationBatchState): boolean {
  */
 export function canRecordReviewDecision(state: MigrationBatchState): boolean {
   return REVIEW_ELIGIBLE_STATES.has(state.status);
+}
+
+/**
+ * Can submit for approval. ONLY in review_required state with:
+ * - validation passed (validationStatus set, no blocking errors)
+ * - reconciliation matched (no blocking results)
+ * - all review items resolved (no pending items — checked at service level)
+ * - staged data hash + cutover manifest hash present
+ * - all warnings accepted (warningCount === acceptedWarningCount)
+ * - backup evidence present (Contract 08 §8.9)
+ *
+ * WP-08-01F DEFECT 1: this is the explicit submission command that
+ * transitions review_required → pending_dual_approval.
+ */
+export function canSubmitForApproval(state: MigrationBatchState): boolean {
+  if (!SUBMISSION_ELIGIBLE_STATES.has(state.status)) return false;
+  if (state.blockingErrorCount > 0) return false;
+  if (state.warningCount > state.acceptedWarningCount) return false;
+  if (!state.stagedDataHash) return false;
+  if (!state.cutoverManifestHash) return false;
+  if (!state.hasBackupEvidence) return false;
+  return true;
 }
 
 /**
@@ -374,6 +408,7 @@ export interface ActionAllowedResult {
   runValidation: boolean;
   runReconciliation: boolean;
   recordReviewDecision: boolean;
+  submitForApproval: boolean;
   recordOwnerApproval: boolean;
   recordAccountantApproval: boolean;
   recordBackupEvidence: boolean;
@@ -389,6 +424,7 @@ export function getActionMatrix(state: MigrationBatchState): ActionAllowedResult
     runValidation: canRunValidation(state),
     runReconciliation: canRunReconciliation(state),
     recordReviewDecision: canRecordReviewDecision(state),
+    submitForApproval: canSubmitForApproval(state),
     recordOwnerApproval: canRecordOwnerApproval(state),
     recordAccountantApproval: canRecordAccountantApproval(state),
     recordBackupEvidence: canRecordBackupEvidence(state),

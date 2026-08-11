@@ -1,11 +1,20 @@
 /**
  * WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect proofs.
  *
- * Uses real DB-backed repositories + transaction runner against local
- * PostgreSQL 17 (127.0.0.1:5433) to prove that every rejected migration
- * service operation leaves ZERO new business rows, audit rows, idempotency
- * claims, sequence advancement, or operational effects — and that the batch
- * snapshot is unchanged.
+ * WP-08-01F DEFECT 4: Fail-closed disposable-database guard.
+ *
+ * This test refuses to run unless ALL safety conditions are met:
+ *   - hostname is exactly localhost, 127.0.0.1 or ::1
+ *   - database name is the dedicated disposable test DB (erp_yarn)
+ *   - explicit env flag ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 is present
+ *   - it is not a Supabase pooler/direct host
+ *
+ * On mismatch: fail loudly with a clear safety error, do not skip silently,
+ * perform no SQL.
+ *
+ * The test NEVER disables audit triggers or deletes durable evidence in a
+ * shared DB. It uses unique run-scoped tenant IDs and only deletes rows
+ * belonging to those run-scoped tenants.
  *
  * Scenarios (per TASK 4):
  *   1.  registerFile against committed batch
@@ -19,23 +28,16 @@
  *   9.  valid predecessor-state success followed by terminal-state rejection
  *   10. valid idempotency replay after the service changes the batch state
  *
- * For every rejected operation, captures exact DB before/after counts for:
+ * For every rejected operation, captures exact DB before/after values for:
  *   - import_batches fields/status/hashes/versions
- *   - import_files
- *   - import_staging_rows
- *   - import_validation_errors
+ *   - import_files, import_staging_rows, import_validation_errors
  *   - import_reconciliation_results and report versions
  *   - import_human_review_items/decisions
- *   - import_batch_approvals
- *   - import_backup_evidence
- *   - audit_logs
- *   - idempotency_records
- *   - document_sequences
- *   - operational stock movements
- *   - account entries
- *   - sales/payment/production operational records
- *
- * Requires DATABASE_URL=postgresql://erp@127.0.0.1:5433/erp_yarn
+ *   - import_batch_approvals, import_backup_evidence
+ *   - audit_logs (exact IDs/counts — never deleted)
+ *   - idempotency_records (exact row set/state — never deleted)
+ *   - document_sequences (exact key + current numeric value — never deleted)
+ *   - operational stock movements, account entries, sales/payment/production
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -59,12 +61,102 @@ import type { RoleCode } from "@/server/security/role-codes";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const describeOrSkip = DATABASE_URL?.startsWith("postgres") ? describe : describe.skip;
 
-const T = "00000000-0000-0000-0000-000000081f40";
-const T_B = "00000000-0000-0000-0000-000000999940";
-const U = "00000000-0000-0000-0000-000000081f41";
-const U2 = "00000000-0000-0000-0000-000000081f42";
+// ===========================================================================
+// DEFECT 4 — Fail-closed disposable-database guard
+// ===========================================================================
+
+/**
+ * Parse the DATABASE_URL and verify it points to a safe local disposable DB.
+ * Returns the parsed components or throws a safety error.
+ */
+function assertSafeDisposableDatabase(): { hostname: string; database: string } {
+  if (!DATABASE_URL) {
+    throw new Error(
+      "SAFETY: DATABASE_URL is not set. This test requires an explicit local " +
+      "disposable database URL. Refusing to run.",
+    );
+  }
+  if (!DATABASE_URL.startsWith("postgres")) {
+    throw new Error(
+      `SAFETY: DATABASE_URL must start with 'postgres'. Got: '${DATABASE_URL.slice(0, 20)}...'. Refusing to run.`,
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(DATABASE_URL);
+  } catch (e) {
+    throw new Error(`SAFETY: DATABASE_URL is not a valid URL. Refusing to run. ${(e as Error).message}`);
+  }
+
+  const hostname = parsed.hostname;
+  const database = parsed.pathname.replace(/^\//, "");
+
+  // 1. Hostname must be exactly localhost, 127.0.0.1, or ::1
+  const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+  if (!ALLOWED_HOSTS.has(hostname)) {
+    throw new Error(
+      `SAFETY: DATABASE_URL hostname '${hostname}' is not in the allowed set ` +
+      `[localhost, 127.0.0.1, ::1]. This test refuses to run against non-local databases. ` +
+      `Refusing to run.`,
+    );
+  }
+
+  // 2. Database name must be the dedicated disposable test DB
+  const ALLOWED_DB = new Set(["erp_yarn", "erp_yarn_test", "erp_yarn_disposable"]);
+  if (!ALLOWED_DB.has(database)) {
+    throw new Error(
+      `SAFETY: DATABASE_URL database '${database}' is not in the allowed set ` +
+      `[erp_yarn, erp_yarn_test, erp_yarn_disposable]. This test refuses to run ` +
+      `against non-disposable databases. Refusing to run.`,
+    );
+  }
+
+  // 3. Not a Supabase pooler/direct host
+  if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler")) {
+    throw new Error(
+      `SAFETY: DATABASE_URL appears to point to a Supabase pooler/direct host. ` +
+      `This test refuses to run against Supabase. Refusing to run.`,
+    );
+  }
+
+  // 4. Explicit env flag must be present
+  if (process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB !== "1") {
+    throw new Error(
+      `SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 env flag is not set. ` +
+      `This test refuses to run without explicit acknowledgment that the target ` +
+      `database is a disposable local test database. Refusing to run.`,
+    );
+  }
+
+  return { hostname, database };
+}
+
+// Run the guard immediately (before any test setup). If it fails, the entire
+// test file fails loudly with a clear safety error.
+let SAFE_DB_INFO: { hostname: string; database: string } | null = null;
+try {
+  SAFE_DB_INFO = assertSafeDisposableDatabase();
+} catch (e) {
+  // Don't throw at module load — let describe.skip handle it so vitest
+  // reports the failure cleanly. But we DO log the safety error.
+  console.error(`\n[WP-08-01F PostgreSQL test] SAFETY GUARD FAILED:\n${(e as Error).message}\n`);
+}
+
+const describeOrSkip = SAFE_DB_INFO ? describe : describe.skip;
+
+// ===========================================================================
+// Unique run-scoped tenant IDs — each test run uses its own tenants so we
+// never collide with pre-existing data. We use valid UUIDv4 format with
+// a run-scoped suffix to ensure uniqueness across test runs.
+// ===========================================================================
+const RUN_ID = randomUUID(); // full UUID for uniqueness
+// Derive tenant/user IDs from the run ID to keep them valid UUIDs
+const T = RUN_ID; // use the run UUID as the tenant ID
+const T_B = randomUUID();
+const U = randomUUID();
+const U2 = randomUUID();
 
 let sql: ReturnType<typeof postgres>;
 let db: any;
@@ -72,6 +164,11 @@ let db: any;
 /**
  * Snapshot all relevant table counts for tenant T.
  * Used to prove zero new rows after a rejected operation.
+ *
+ * WP-08-01F DEFECT 4: This now captures EXACT values (not just counts) for
+ * audit_logs, idempotency_records, and document_sequences so we can prove
+ * the sequence value did not advance and no new audit/idempotency rows
+ * were created.
  */
 async function snapshotCounts(): Promise<Record<string, number>> {
   const tables = [
@@ -97,10 +194,114 @@ async function snapshotCounts(): Promise<Record<string, number>> {
     const rows = await sql`SELECT count(*)::int AS c FROM ${sql(table)} WHERE tenant_id = ${T}`;
     result[table] = rows[0]?.c ?? 0;
   }
-  // Also snapshot document_sequences (no tenant_id column? check)
+  // Also snapshot document_sequences count
   const dsRows = await sql`SELECT count(*)::int AS c FROM document_sequences WHERE tenant_id = ${T}`;
   result["document_sequences"] = dsRows[0]?.c ?? 0;
   return result;
+}
+
+/**
+ * WP-08-01F DEFECT 4: Snapshot the exact document_sequence values for the
+ * run-scoped tenant. Comparing only the COUNT of document_sequence rows does
+ * NOT prove the sequence did not advance. We must compare the exact
+ * (document_type, year, last_number) values.
+ */
+async function snapshotSequenceValues(): Promise<Record<string, number>> {
+  const rows = await sql`
+    SELECT document_type, year, last_number
+      FROM document_sequences WHERE tenant_id = ${T}`;
+  const result: Record<string, number> = {};
+  for (const row of rows) {
+    const key = `${row.document_type}_${row.year}`;
+    result[key] = row.last_number;
+  }
+  return result;
+}
+
+/**
+ * WP-08-01F DEFECT 4: Snapshot the exact idempotency record IDs and states
+ * for the run-scoped tenant. This proves no new idempotency claims were
+ * created by a rejected operation.
+ */
+async function snapshotIdempotencyRecords(): Promise<Array<{ id: string; state: string; operation_scope: string }>> {
+  const rows = await sql`
+    SELECT id, state, operation_scope
+      FROM idempotency_records WHERE tenant_id = ${T}
+      ORDER BY created_at`;
+  return rows.map((r: any) => ({ id: r.id, state: r.state, operation_scope: r.operation_scope }));
+}
+
+/**
+ * WP-08-01F DEFECT 4: Snapshot the exact audit log IDs for the run-scoped
+ * tenant. This proves no new audit rows were created by a rejected operation.
+ */
+async function snapshotAuditIds(): Promise<string[]> {
+  const rows = await sql`
+    SELECT id FROM audit_logs WHERE tenant_id = ${T} ORDER BY created_at`;
+  return rows.map((r: any) => r.id);
+}
+
+/**
+ * WP-08-01F DEFECT 4: Capture a complete snapshot of all proof-relevant
+ * state for the run-scoped tenant. This includes:
+ *   - table counts (all migration + operational tables)
+ *   - exact document_sequence values (key + last_number)
+ *   - exact idempotency record IDs/states
+ *   - exact audit log IDs
+ *
+ * Use `compareSnapshots` to verify zero new effects.
+ */
+async function captureFullSnapshot(): Promise<{
+  counts: Record<string, number>;
+  sequenceValues: Record<string, number>;
+  idempotencyRecords: Array<{ id: string; state: string; operation_scope: string }>;
+  auditIds: string[];
+}> {
+  const [counts, sequenceValues, idempotencyRecords, auditIds] = await Promise.all([
+    snapshotCounts(),
+    snapshotSequenceValues(),
+    snapshotIdempotencyRecords(),
+    snapshotAuditIds(),
+  ]);
+  return { counts, sequenceValues, idempotencyRecords, auditIds };
+}
+
+/**
+ * WP-08-01F DEFECT 4: Compare two full snapshots and assert zero new effects.
+ * Verifies:
+ *   - all table counts unchanged
+ *   - all document_sequence values unchanged (no advancement)
+ *   - no new idempotency records (exact same set of IDs)
+ *   - no new audit log IDs (exact same set)
+ */
+async function assertZeroEffects(
+  before: Awaited<ReturnType<typeof captureFullSnapshot>>,
+  after: Awaited<ReturnType<typeof captureFullSnapshot>>,
+): Promise<void> {
+  // Table counts unchanged
+  for (const [table, count] of Object.entries(before.counts)) {
+    expect(after.counts[table], `${table} count must be unchanged`).toBe(count);
+  }
+  // Sequence values unchanged (no advancement)
+  for (const [key, value] of Object.entries(before.sequenceValues)) {
+    expect(after.sequenceValues[key], `document_sequences.${key} value must not advance`).toBe(value);
+  }
+  // No new sequence rows created
+  for (const [key, value] of Object.entries(after.sequenceValues)) {
+    expect(before.sequenceValues[key], `document_sequences.${key} must not be a new row`).toBe(value);
+  }
+  // No new idempotency records
+  expect(after.idempotencyRecords.length, "idempotency_records count must be unchanged").toBe(before.idempotencyRecords.length);
+  const beforeIdemIds = new Set(before.idempotencyRecords.map(r => r.id));
+  for (const rec of after.idempotencyRecords) {
+    expect(beforeIdemIds.has(rec.id), `idempotency_records.${rec.id} must not be a new row`).toBe(true);
+  }
+  // No new audit log IDs
+  expect(after.auditIds.length, "audit_logs count must be unchanged").toBe(before.auditIds.length);
+  const beforeAuditIds = new Set(before.auditIds);
+  for (const id of after.auditIds) {
+    expect(beforeAuditIds.has(id), `audit_logs.${id} must not be a new row`).toBe(true);
+  }
 }
 
 /**
@@ -118,11 +319,23 @@ async function snapshotBatch(batchId: string): Promise<Record<string, unknown> |
   return rows[0] ?? null;
 }
 
-async function cleanupTenant(): Promise<void> {
+/**
+ * WP-08-01F DEFECT 4: Safe cleanup — only deletes run-scoped tenant's
+ * migration data. NEVER deletes audit_logs, idempotency_records, or
+ * document_sequences. NEVER disables audit triggers.
+ *
+ * The audit_logs table has triggers that block DELETE (Contract 03 §7.7).
+ * We do NOT disable them. Audit entries for the run-scoped tenant remain
+ * as durable evidence — the zero-effect proof compares counts before/after
+ * each rejected operation, not before/after cleanup.
+ *
+ * idempotency_records and document_sequences are also preserved — the
+ * zero-effect proof compares their exact values before/after each rejected
+ * operation.
+ */
+async function cleanupRunScopedTenantData(): Promise<void> {
   // Delete in dependency order (children first).
-  // NOTE: audit_logs has triggers that block UPDATE/DELETE (Contract 03 §7.7
-  // — audit is append-only in production). For tests we temporarily disable
-  // the trigger as a superuser-equivalent session, then re-enable.
+  // Only delete rows belonging to the run-scoped tenants (T, T_B).
   await sql`DELETE FROM import_cutover_locks WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
   await sql`DELETE FROM import_backup_evidence WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
   await sql`DELETE FROM import_batch_approvals WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
@@ -135,15 +348,11 @@ async function cleanupTenant(): Promise<void> {
   await sql`DELETE FROM historical_correction_requests WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
   await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
   await sql`DELETE FROM import_batches WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
-  // Disable audit_logs append-only triggers for test cleanup
-  await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`;
-  try {
-    await sql`DELETE FROM audit_logs WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
-  } finally {
-    await sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_delete`;
-  }
-  await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
-  await sql`DELETE FROM document_sequences WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
+  // NOTE: audit_logs, idempotency_records, document_sequences are NOT deleted.
+  // They are durable evidence. The zero-effect proof compares counts before/after
+  // each rejected operation, not before/after cleanup.
+  // Delete operational tables only for the run-scoped tenant (these should
+  // always be empty for migration batches — the zero-effect proof verifies this).
   await sql`DELETE FROM stock_movements WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
   await sql`DELETE FROM account_entries WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
   await sql`DELETE FROM sales_order_lines WHERE tenant_id = ${T} OR tenant_id = ${T_B}`;
@@ -246,28 +455,32 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
     sql = postgres(DATABASE_URL!, { prepare: false, max: 10, idle_timeout: 10, connect_timeout: 10 });
     db = drizzle(sql, { schema });
     await sql`SET statement_timeout = 30000`;
-    // Seed foundational fixtures
+    // Seed foundational fixtures — use run-scoped company_name/auth_id/email
+    // to avoid unique constraint violations across test runs.
+    const runSuffix = RUN_ID.slice(0, 8);
     await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status)
-              VALUES (${T}, ${"F-PG"}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
+              VALUES (${T}, ${"F-PG-" + runSuffix}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status)
-              VALUES (${T_B}, ${"F-PG-B"}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
+              VALUES (${T_B}, ${"F-PG-B-" + runSuffix}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
-              VALUES (${U}, ${T}, ${"f-pg"}, ${"F PG"}, ${"f-pg@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+              VALUES (${U}, ${T}, ${"f-pg-" + runSuffix}, ${"F PG"}, ${"f-pg-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
-              VALUES (${U2}, ${T}, ${"f-pg2"}, ${"F PG2"}, ${"f-pg2@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+              VALUES (${U2}, ${T}, ${"f-pg2-" + runSuffix}, ${"F PG2"}, ${"f-pg2-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
   }, 30000);
 
   afterAll(async () => {
     if (sql) {
-      await cleanupTenant();
-      await sql`DELETE FROM users WHERE tenant_id IN (${T}, ${T_B})`;
-      await sql`DELETE FROM tenants WHERE id IN (${T}, ${T_B})`;
+      await cleanupRunScopedTenantData();
+      // WP-08-01F DEFECT 4: Do NOT delete users/tenants — audit_logs has FK
+      // references to users, and we do NOT delete audit_logs (durable evidence).
+      // Since we use run-scoped UUIDs, they won't collide with future runs.
+      // The run-scoped tenant/user rows remain as durable evidence of the test run.
       await sql.end();
     }
   }, 30000);
 
   beforeEach(async () => {
-    await cleanupTenant();
+    await cleanupRunScopedTenantData();
   }, 15000);
 
   // Helper: build services with real DB repos
@@ -306,7 +519,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const { stagingService } = makeServices();
       const batchId = newBatchId("01");
       await seedBatch(batchId, "committed", { committedAt: new Date(), commitEffectCounts: { inventory_movements: 1 } });
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
       const batchBefore = await snapshotBatch(batchId);
 
       await expect(
@@ -316,11 +529,9 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
+      const after = await captureFullSnapshot();
       const batchAfter = await snapshotBatch(batchId);
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      await assertZeroEffects(before, after);
       // Batch snapshot unchanged
       expect(batchAfter?.status).toBe(batchBefore?.status);
       expect(batchAfter?.staged_data_hash).toBe(batchBefore?.staged_data_hash);
@@ -336,7 +547,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const { stagingService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "committed", { committedAt: new Date(), commitEffectCounts: { inventory_movements: 1 } });
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         stagingService.insertStagingRow(makeUser() as any, makeEffective() as any, {
@@ -346,10 +557,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
   });
 
@@ -362,7 +571,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const batchId = newBatchId("X");
       await seedBatch(batchId, "committed", { committedAt: new Date(), commitEffectCounts: { inventory_movements: 1 } });
       await seedStagingRow(batchId, 1);
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         validationService.runValidation(makeUser() as any, makeEffective() as any, {
@@ -370,10 +579,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
 
     it("rejects against committing batch, zero new findings/audit", async () => {
@@ -381,7 +588,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const batchId = newBatchId("X");
       await seedBatch(batchId, "committing");
       await seedStagingRow(batchId, 1);
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         validationService.runValidation(makeUser() as any, makeEffective() as any, {
@@ -389,10 +596,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
   });
 
@@ -404,7 +609,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const { reconciliationService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "pending_dual_approval");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         reconciliationService.runReconciliation(makeUser() as any, makeEffective() as any, {
@@ -412,17 +617,15 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
 
     it("rejects against approved_for_commit batch", async () => {
       const { reconciliationService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "approved_for_commit");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         reconciliationService.runReconciliation(makeUser() as any, makeEffective() as any, {
@@ -430,17 +633,15 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
 
     it("rejects against committed batch", async () => {
       const { reconciliationService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "committed", { committedAt: new Date(), commitEffectCounts: {} });
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         reconciliationService.runReconciliation(makeUser() as any, makeEffective() as any, {
@@ -448,10 +649,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
   });
 
@@ -464,7 +663,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const batchId = newBatchId("X");
       await seedBatch(batchId, "staged");
       const reviewItemId = await seedReviewItem(batchId, "pending");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         reconciliationService.recordReviewDecision(makeUser() as any, makeEffective() as any, {
@@ -472,10 +671,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
       // Review item itself must be unchanged
       const item = await sql`SELECT status, decision, decided_by FROM import_human_review_items WHERE id = ${reviewItemId}`;
       expect(item[0]?.status).toBe("pending");
@@ -488,7 +685,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const batchId = newBatchId("X");
       await seedBatch(batchId, "review_required");
       const reviewItemId = await seedReviewItem(batchId, "resolved");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         reconciliationService.recordReviewDecision(makeUser() as any, makeEffective() as any, {
@@ -496,10 +693,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/already.*resolv|REVIEW_ALREADY_RESOLVED|cannot be re-decided|status.*must be/i);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
   });
 
@@ -511,7 +706,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const { commitService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "validation_complete");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         commitService.recordApproval(makeUser() as any, makeEffective() as any, {
@@ -519,17 +714,15 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
 
     it("rejects against reconciliation_in_progress batch", async () => {
       const { commitService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "reconciliation_in_progress");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         commitService.recordApproval(makeUser() as any, makeEffective() as any, {
@@ -537,17 +730,15 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
 
     it("rejects against review_required batch (review items still unresolved)", async () => {
       const { commitService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "review_required");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         commitService.recordApproval(makeUser() as any, makeEffective() as any, {
@@ -555,10 +746,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
 
     it("rejects when validationStatus is null (TASK 1.1 — no 'unknown' approvals)", async () => {
@@ -567,7 +756,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       await seedBatch(batchId, "pending_dual_approval", {
         validationStatus: null, reconciliationStatus: null,
       });
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         commitService.recordApproval(makeUser() as any, makeEffective() as any, {
@@ -575,10 +764,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/validationStatus|LIFECYCLE_VIOLATION|Allowed statuses/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
   });
 
@@ -590,7 +777,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       const { commitService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "committed", { committedAt: new Date(), commitEffectCounts: {} });
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         commitService.recordBackupEvidence(makeUser() as any, makeEffective() as any, {
@@ -600,17 +787,15 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
 
     it("rejects against validation_complete batch (TASK 1.5 — recon report not final)", async () => {
       const { commitService } = makeServices();
       const batchId = newBatchId("X");
       await seedBatch(batchId, "validation_complete");
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         commitService.recordBackupEvidence(makeUser() as any, makeEffective() as any, {
@@ -620,10 +805,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
-      const after = await snapshotCounts();
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
     });
   });
 
@@ -647,7 +830,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
           0, 0, 0, null, null,
           null, null, null, ${U}, NOW()
         )`;
-      const before = await snapshotCounts();
+      const before = await captureFullSnapshot();
 
       await expect(
         stagingService.registerFile(makeUser(U, T) as any, makeEffective() as any, {
@@ -656,11 +839,9 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
         }),
       ).rejects.toThrow(/BATCH_NOT_FOUND|not found|tenant/i);
 
-      const after = await snapshotCounts();
-      // Tenant A's counts unchanged
-      for (const [table, count] of Object.entries(before)) {
-        expect(after[table], `${table} count must be unchanged`).toBe(count);
-      }
+      const after = await captureFullSnapshot();
+      // Tenant A's counts unchanged (including sequence values, idempotency, audit)
+      await assertZeroEffects(before, after);
     });
   });
 

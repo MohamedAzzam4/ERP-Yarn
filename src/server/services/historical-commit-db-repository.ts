@@ -138,6 +138,19 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
     return approval ?? null;
   }
 
+  /**
+   * WP-08-01F DEFECT 2: Invalidate (delete) all approval records for a batch.
+   * Used by the rework command. Original audit entries remain in audit_logs.
+   */
+  async invalidateApprovalsForBatch(tenantId: string, importBatchId: string): Promise<number> {
+    const result = await this.db.delete(importBatchApprovals)
+      .where(and(
+        eq(importBatchApprovals.tenantId, tenantId),
+        eq(importBatchApprovals.importBatchId, importBatchId),
+      ));
+    return (result as any)?.length ?? (result as any)?.rowCount ?? 0;
+  }
+
   // ---- Backup evidence ----
 
   async insertBackupEvidence(row: NewBackupEvidenceInput): Promise<ImportBackupEvidence> {

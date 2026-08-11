@@ -130,6 +130,18 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
     return result ?? null;
   }
 
+  async invalidatePendingReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<number> {
+    // Delete only PENDING review items — resolved items are preserved for audit.
+    // (Resolved items have decision/decidedBy populated; pending items do not.)
+    const result = await this.db.delete(importHumanReviewItems)
+      .where(and(
+        eq(importHumanReviewItems.tenantId, tenantId),
+        eq(importHumanReviewItems.importBatchId, importBatchId),
+        eq(importHumanReviewItems.status, "pending" as any),
+      ));
+    return (result as any)?.length ?? (result as any)?.rowCount ?? 0;
+  }
+
   async findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
     return this.db.select().from(importStagingRows)
       .where(and(eq(importStagingRows.tenantId, tenantId), eq(importStagingRows.importBatchId, importBatchId)));
@@ -145,6 +157,21 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
     const [result] = await this.db.update(importBatches)
       .set({ status: status as any, updatedAt: new Date() })
       .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId))).returning();
+    return result ?? null;
+  }
+
+  async resetBatchValidationAndReconciliationStatuses(
+    tenantId: string,
+    batchId: string,
+  ): Promise<ImportBatch | null> {
+    const [result] = await this.db.update(importBatches)
+      .set({
+        validationStatus: null,
+        reconciliationStatus: null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
+      .returning();
     return result ?? null;
   }
 }

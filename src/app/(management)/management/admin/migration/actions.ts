@@ -8,6 +8,18 @@
  * Contract 10 §9: Historical Migration Screens.
  * Contract 08: Historical Migration.
  * DEC-069/070/071/072.
+ *
+ * WP-08-01F DEFECT 1: submitMigrationForApprovalAction — explicit submission
+ *   command that transitions review_required → pending_dual_approval.
+ *
+ * WP-08-01F DEFECT 3: Role-fixed approval actions. The browser NO LONGER
+ *   submits `approverRole` — it is fixed server-side per action:
+ *   - recordOwnerMigrationApprovalAction (role = "owner")
+ *   - recordAccountantMigrationApprovalAction (role = "accountant")
+ *   - approveCorrectionAsOwnerAction (role = "owner")
+ *   - approveCorrectionAsAccountantAction (role = "accountant")
+ *   Contract 08 §11.7: "Request bodies cannot claim role, actor, tenant, or
+ *   calculated approval eligibility."
  */
 "use server";
 
@@ -35,7 +47,6 @@ import { InventoryLedgerService } from "@/server/services/inventory-ledger-servi
 import { SubledgerDbRepository } from "@/server/services/subledger-db-repository";
 import { SubledgerService } from "@/server/services/subledger-service";
 import {
-  parseApproverRole,
   parseCorrectionType,
   parseReviewDecision,
   parseFileType,
@@ -47,6 +58,7 @@ import {
   validateStoragePath,
   verifyApproverRole,
 } from "@/server/services/migration-form-parsers";
+import type { RoleCode } from "@/server/security/role-codes";
 
 // ---------------------------------------------------------------------------
 // Service composition
@@ -64,7 +76,11 @@ function getMigrationServices() {
   const correctionRepo = new HistoricalCorrectionDbRepository(db);
   const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency, documentSequence });
   const validationService = new HistoricalValidationService({ repository: validationRepo, audit, idempotency });
-  const reconciliationService = new HistoricalReconciliationService({ repository: reconciliationRepo, audit, idempotency });
+  // DEFECT 1: reconciliation service now needs commitRepository for
+  // submitForApproval (backup evidence + blocking-validation lookups).
+  const reconciliationService = new HistoricalReconciliationService({
+    repository: reconciliationRepo, audit, idempotency, commitRepository: commitRepo,
+  });
   const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
     (db as any).transaction(async (tx: any) => work(tx));
   const txFactories = {
@@ -173,13 +189,118 @@ export async function recordReviewDecisionAction(formData: FormData): Promise<vo
   revalidatePath(`/management/admin/migration/${batchId}`);
 }
 
-export async function recordApprovalAction(formData: FormData): Promise<void> {
+// ===========================================================================
+// WP-08-01F DEFECT 1 — submitMigrationBatchForApproval
+// ===========================================================================
+
+/**
+ * Explicit submission command that transitions a reviewed batch from
+ * review_required → pending_dual_approval. Without this, the first approval
+ * can never be reached because recordApproval requires pending_dual_approval
+ * or approved_for_commit.
+ *
+ * Permission: migration.review. The service verifies ALL submission
+ * prerequisites (validation/reconciliation completion, no blocking findings,
+ * all review items resolved, hashes present, warnings accepted, backup
+ * evidence exists) before transitioning.
+ */
+export async function submitMigrationForApprovalAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
+  const batchId = parseRequiredString(formData, "batchId");
+  const warningSummary = parseOptionalString(formData, "warningSummary");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  const { reconciliationService } = getMigrationServices();
+  await reconciliationService.submitForApproval(authResult as any, effective as any, {
+    importBatchId: batchId, warningSummary, idempotencyKey,
+  });
+  revalidatePath(`/management/admin/migration/${batchId}`);
+}
+
+// ===========================================================================
+// WP-08-01F DEFECT 2 — reopenBatchForRework
+//
+// Contract 08 §9 permitted branches:
+//   review_required → normalized | staged | validation_in_progress
+//   pending_dual_approval → review_required (material change or rejected approval)
+//   approved_for_commit → review_required (stale version/new blocker)
+//
+// Explicit idempotent rework command. Invalidates dependent evidence
+// (validation/reconciliation statuses, approvals, pending review items)
+// and transitions to the requested target state.
+// ===========================================================================
+
+/**
+ * Reopen a batch for rework. The target state must be one of the contracted
+ * permitted branches for the current batch status. Requires a reason.
+ *
+ * Permission: migration.review. The service verifies the source/target
+ * combination is permitted by Contract 08 §9 and invalidates dependent
+ * evidence atomically.
+ */
+export async function reopenBatchForReworkAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
+  const batchId = parseRequiredString(formData, "batchId");
+  const reason = parseRequiredString(formData, "reason");
+  const targetState = parseRequiredString(formData, "targetState") as
+    | "normalized" | "staged" | "validation_in_progress" | "review_required";
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  const { reconciliationService } = getMigrationServices();
+  await reconciliationService.reopenBatchForRework(authResult as any, effective as any, {
+    importBatchId: batchId, reason, targetState, idempotencyKey,
+  });
+  revalidatePath(`/management/admin/migration/${batchId}`);
+}
+
+// ===========================================================================
+// WP-08-01F DEFECT 3 — Role-fixed approval actions
+//
+// Contract 08 §11.7: "Request bodies cannot claim role, actor, tenant, or
+// calculated approval eligibility."
+//
+// The browser NO LONGER submits `approverRole`. Each action fixes its
+// approver role server-side and verifies the authenticated user actually
+// has that role via verifyApproverRole.
+// ===========================================================================
+
+/**
+ * Record the Owner approval slot. The role is FIXED to "owner" server-side —
+ * the browser cannot submit `approverRole`. The authenticated user must
+ * actually have the "owner" role.
+ *
+ * DEC-069: A multi-role identity may submit this AND the Accountant action,
+ * but the service prevents the same userId from satisfying both slots.
+ */
+export async function recordOwnerMigrationApprovalAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.approve");
   const batchId = parseRequiredString(formData, "batchId");
-  const approverRole = parseApproverRole(String(formData.get("approverRole") ?? ""));
   const reason = parseOptionalString(formData, "reason");
   const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
-  verifyApproverRole(authResult.roles, approverRole);
+  // Role is FIXED server-side — browser cannot claim it.
+  const approverRole = "owner" as const;
+  // Verify the authenticated user actually has the owner role.
+  verifyApproverRole(authResult.roles as ReadonlyArray<RoleCode>, approverRole);
+  const { commitService } = getMigrationServices();
+  await commitService.recordApproval(authResult as any, effective as any, { importBatchId: batchId, approverRole, reason, idempotencyKey });
+  revalidatePath(`/management/admin/migration/${batchId}`);
+}
+
+/**
+ * Record the Accountant approval slot. The role is FIXED to "accountant"
+ * server-side — the browser cannot submit `approverRole`. The authenticated
+ * user must actually have the "accountant" role.
+ *
+ * DEC-069: A multi-role identity may submit this AND the Owner action, but
+ * the service prevents the same userId from satisfying both slots.
+ */
+export async function recordAccountantMigrationApprovalAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.approve");
+  const batchId = parseRequiredString(formData, "batchId");
+  const reason = parseOptionalString(formData, "reason");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  // Role is FIXED server-side — browser cannot claim it.
+  const approverRole = "accountant" as const;
+  // Verify the authenticated user actually has the accountant role.
+  verifyApproverRole(authResult.roles as ReadonlyArray<RoleCode>, approverRole);
   const { commitService } = getMigrationServices();
   await commitService.recordApproval(authResult as any, effective as any, { importBatchId: batchId, approverRole, reason, idempotencyKey });
   revalidatePath(`/management/admin/migration/${batchId}`);
@@ -224,16 +345,48 @@ export async function createCorrectionRequestAction(formData: FormData): Promise
   revalidatePath(`/management/admin/migration/${batchId}`);
 }
 
-export async function approveCorrectionAction(formData: FormData): Promise<void> {
+// ===========================================================================
+// WP-08-01F DEFECT 3 — Role-fixed correction approval actions
+//
+// The browser NO LONGER submits `approverRole`. Each action fixes its
+// approver role server-side and verifies the authenticated user actually
+// has that role.
+// ===========================================================================
+
+/**
+ * Approve a correction request as Owner. Role is FIXED server-side.
+ */
+export async function approveCorrectionAsOwnerAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.approve");
   const correctionRequestId = parseRequiredString(formData, "correctionRequestId");
-  const approverRole = parseApproverRole(String(formData.get("approverRole") ?? ""));
   const batchId = parseOptionalString(formData, "batchId");
   const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
-  verifyApproverRole(authResult.roles, approverRole);
+  // Role is FIXED server-side — browser cannot claim it.
+  const approverRole = "owner" as const;
+  verifyApproverRole(authResult.roles as ReadonlyArray<RoleCode>, approverRole);
+  const { correctionService } = getMigrationServices();
+  await correctionService.approveCorrection(authResult as any, effective as any, { correctionRequestId, approverRole, idempotencyKey });
+  if (batchId) { revalidatePath(`/management/admin/migration/${batchId}`); }
+}
+
+/**
+ * Approve a correction request as Accountant. Role is FIXED server-side.
+ */
+export async function approveCorrectionAsAccountantAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.approve");
+  const correctionRequestId = parseRequiredString(formData, "correctionRequestId");
+  const batchId = parseOptionalString(formData, "batchId");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  // Role is FIXED server-side — browser cannot claim it.
+  const approverRole = "accountant" as const;
+  verifyApproverRole(authResult.roles as ReadonlyArray<RoleCode>, approverRole);
   const { correctionService } = getMigrationServices();
   await correctionService.approveCorrection(authResult as any, effective as any, { correctionRequestId, approverRole, idempotencyKey });
   if (batchId) { revalidatePath(`/management/admin/migration/${batchId}`); }
 }
 
 // executeCorrectionAction is NOT exposed — blocked_on_missing_production_correction_hook
+
+// Legacy actions recordApprovalAction and approveCorrectionAction were REMOVED
+// (DEFECT 3). The browser NO LONGER submits `approverRole`. Use the role-fixed
+// actions above instead.

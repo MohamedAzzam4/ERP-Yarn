@@ -234,6 +234,21 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
     ) ?? null;
   }
 
+  /**
+   * WP-08-01F DEFECT 2: Invalidate (delete) all approval records for a batch.
+   * Used by the rework command.
+   */
+  async invalidateApprovalsForBatch(tenantId: string, importBatchId: string): Promise<number> {
+    let deleted = 0;
+    for (const [key, a] of this.approvals.entries()) {
+      if (a.tenantId === tenantId && a.importBatchId === importBatchId) {
+        this.approvals.delete(key);
+        deleted++;
+      }
+    }
+    return deleted;
+  }
+
   // ---- Backup evidence ----
 
   async insertBackupEvidence(row: NewBackupEvidenceInput): Promise<ImportBackupEvidence> {

@@ -137,6 +137,29 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
     return updated;
   }
 
+  async invalidatePendingReviewItemsForBatch(tenantId: string, importBatchId: string): Promise<number> {
+    let deleted = 0;
+    for (const [key, item] of this.reviews.entries()) {
+      if (item.tenantId === tenantId && item.importBatchId === importBatchId && item.status === "pending") {
+        this.reviews.delete(key);
+        deleted++;
+      }
+    }
+    return deleted;
+  }
+
+  async resetBatchValidationAndReconciliationStatuses(
+    tenantId: string,
+    batchId: string,
+  ): Promise<ImportBatch | null> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return null;
+    const updated = { ...batch, validationStatus: null, reconciliationStatus: null, updatedAt: NOW() };
+    this.batches.set(key, updated);
+    return updated;
+  }
+
   async findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
     return this.stagingRows.get(`${tenantId}:${importBatchId}`) ?? [];
   }

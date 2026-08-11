@@ -36,12 +36,19 @@ import {
   type IdempotencyTransactionHandle,
 } from "./idempotency-service";
 import type { HistoricalReconciliationRepository } from "./historical-reconciliation-repository";
+import type { HistoricalCommitRepository } from "./historical-commit-repository";
 import type {
   ImportReconciliationResult,
   ImportHumanReviewItem,
   ImportStagingRow,
+  ImportBatch,
 } from "@/server/db/schema/migration";
-import { guardRunReconciliation, guardRecordReviewDecision } from "./migration-lifecycle-guard";
+import {
+  guardRunReconciliation,
+  guardRecordReviewDecision,
+  MigrationLifecycleError,
+} from "./migration-lifecycle-guard";
+import { APPROVAL_ELIGIBLE_STATES } from "./migration-lifecycle-predicates";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -79,6 +86,90 @@ export interface RecordReviewDecisionResult {
 }
 
 // ---------------------------------------------------------------------------
+// WP-08-01F DEFECT 1 — submitMigrationBatchForApproval
+//
+// Contract 08 §§9, 11.6, 11.7: an explicit idempotent submission command that
+// transitions a reviewed batch from review_required → pending_dual_approval.
+// Without this command, the first approval can never be reached because
+// recordApproval now requires pending_dual_approval or approved_for_commit.
+//
+// This command verifies ALL submission prerequisites in §8.9 / §11.6 before
+// transitioning state. It produces zero operational effects.
+// ---------------------------------------------------------------------------
+
+export interface SubmitForApprovalInput {
+  importBatchId: string;
+  /** Accepted-warning evidence/reason summary (§8.9: warnings must be resolved or explicitly accepted). */
+  warningSummary: string | null;
+  idempotencyKey: string;
+}
+
+export interface SubmitForApprovalResult {
+  action: "submitted" | "replayed";
+  batchId: string;
+  previousStatus: string;
+  newStatus: "pending_dual_approval";
+  reportVersion: number;
+  stagedDataHash: string;
+  cutoverManifestHash: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// WP-08-01F DEFECT 2 — reopenBatchForRework
+//
+// Contract 08 §9 permitted branches:
+//   review_required → normalized | staged | validation_in_progress
+//   pending_dual_approval → review_required (material change or rejected approval)
+//   approved_for_commit → review_required (stale version/new blocker)
+//
+// This is an explicit idempotent rework/reopen command. It does NOT simply
+// permit arbitrary file/staging mutation in review_required — it transitions
+// state and invalidates dependent evidence atomically.
+//
+// Invalidation semantics:
+//   - For review_required → normalized/staged/validation_in_progress:
+//     * Mark current reconciliation report version as superseded.
+//     * Reset validationStatus to null (forces re-validation).
+//     * Reset reconciliationStatus to null (forces re-reconciliation).
+//     * Invalidate Owner and Accountant approvals (delete — they cannot be
+//       preserved because their bound hashes/versions no longer match).
+//     * Audit old/new state, reason, invalidated versions.
+//   - For pending_dual_approval/approved_for_commit → review_required:
+//     * Mark current reconciliation report version as superseded.
+//     * Reset validationStatus and reconciliationStatus (forces re-run).
+//     * Invalidate Owner and Accountant approvals.
+//     * Transition to review_required (not to a preparation state — the
+//       rework branch from these states goes back to review_required).
+// ---------------------------------------------------------------------------
+
+export type ReworkTargetState = "normalized" | "staged" | "validation_in_progress" | "review_required";
+
+export interface ReworkBatchInput {
+  importBatchId: string;
+  /** Contract 08 §9: rework requires a reason. */
+  reason: string;
+  /**
+   * Target rework state. Must be one of the contracted permitted branches
+   * for the current batch status:
+   *   - from review_required: normalized | staged | validation_in_progress
+   *   - from pending_dual_approval: review_required
+   *   - from approved_for_commit: review_required
+   */
+  targetState: ReworkTargetState;
+  idempotencyKey: string;
+}
+
+export interface ReworkBatchResult {
+  action: "reworked" | "replayed";
+  batchId: string;
+  previousStatus: string;
+  newStatus: ReworkTargetState;
+  invalidatedReportVersion: number | null;
+  invalidatedOwnerApproval: boolean;
+  invalidatedAccountantApproval: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Errors.
 // ---------------------------------------------------------------------------
 
@@ -112,6 +203,125 @@ export class BlockingFindingsRemainError extends HistoricalReconciliationError {
   }
 }
 
+// WP-08-01F DEFECT 1 — submission prerequisite errors
+export class SubmissionValidationError extends HistoricalReconciliationError {
+  constructor(code: string, message: string) {
+    super(code, message);
+    this.name = "SubmissionValidationError";
+  }
+}
+
+export class UnresolvedReviewItemsError extends SubmissionValidationError {
+  constructor(batchId: string, count: number) {
+    super(
+      "UNRESOLVED_REVIEW_ITEMS",
+      `Cannot submit batch '${batchId}' for approval — ${count} human review item(s) are still pending. All review items must be resolved before submission.`,
+    );
+    this.name = "UnresolvedReviewItemsError";
+  }
+}
+
+export class MissingValidationCompletionError extends SubmissionValidationError {
+  constructor(batchId: string, validationStatus: string | null) {
+    super(
+      "VALIDATION_NOT_COMPLETE",
+      `Cannot submit batch '${batchId}' for approval — validationStatus is '${validationStatus ?? "null"}' but must be 'passed'. Run validation first.`,
+    );
+    this.name = "MissingValidationCompletionError";
+  }
+}
+
+export class MissingReconciliationCompletionError extends SubmissionValidationError {
+  constructor(batchId: string, reconciliationStatus: string | null) {
+    super(
+      "RECONCILIATION_NOT_COMPLETE",
+      `Cannot submit batch '${batchId}' for approval — reconciliationStatus is '${reconciliationStatus ?? "null"}' but must be 'matched'. Run reconciliation first.`,
+    );
+    this.name = "MissingReconciliationCompletionError";
+  }
+}
+
+export class MissingStagedDataHashError extends SubmissionValidationError {
+  constructor(batchId: string) {
+    super(
+      "MISSING_STAGED_DATA_HASH",
+      `Cannot submit batch '${batchId}' for approval — stagedDataHash is null. Run staging/validation first.`,
+    );
+    this.name = "MissingStagedDataHashError";
+  }
+}
+
+export class MissingCutoverManifestHashError extends SubmissionValidationError {
+  constructor(batchId: string) {
+    super(
+      "MISSING_CUTOVER_MANIFEST_HASH",
+      `Cannot submit batch '${batchId}' for approval — cutoverManifestHash is null. Create/approve a cutover manifest first.`,
+    );
+    this.name = "MissingCutoverManifestHashError";
+  }
+}
+
+export class UnacknowledgedWarningsError extends SubmissionValidationError {
+  constructor(batchId: string, warningCount: number, acceptedCount: number) {
+    super(
+      "UNACKNOWLEDGED_WARNINGS",
+      `Cannot submit batch '${batchId}' for approval — warningCount=${warningCount} but acceptedWarningCount=${acceptedCount}. All warnings must be explicitly accepted with reason before submission.`,
+    );
+    this.name = "UnacknowledgedWarningsError";
+  }
+}
+
+export class MissingBackupEvidenceError extends SubmissionValidationError {
+  constructor(batchId: string) {
+    super(
+      "MISSING_BACKUP_EVIDENCE",
+      `Cannot submit batch '${batchId}' for approval — Contract 08 §8.9 requires backup evidence to exist before submission for real migration data.`,
+    );
+    this.name = "MissingBackupEvidenceError";
+  }
+}
+
+export class SubmissionInvalidStateError extends SubmissionValidationError {
+  constructor(batchId: string, currentStatus: string, requiredStatus: string) {
+    super(
+      "INVALID_BATCH_STATUS",
+      `Cannot submit batch '${batchId}' for approval — current status is '${currentStatus}' but must be '${requiredStatus}'.`,
+    );
+    this.name = "SubmissionInvalidStateError";
+  }
+}
+
+// WP-08-01F DEFECT 2 — rework errors
+export class ReworkValidationError extends HistoricalReconciliationError {
+  constructor(code: string, message: string) {
+    super(code, message);
+    this.name = "ReworkValidationError";
+  }
+}
+
+export class ReworkInvalidSourceStateError extends ReworkValidationError {
+  constructor(batchId: string, currentStatus: string) {
+    super(
+      "INVALID_REWORK_SOURCE",
+      `Cannot rework batch '${batchId}' — current status '${currentStatus}' is not reworkable. ` +
+      `Rework is only permitted from review_required, pending_dual_approval, or approved_for_commit ` +
+      `(Contract 08 §9). Committed/rejected/cancelled/committing batches are terminal or locked.`,
+    );
+    this.name = "ReworkInvalidSourceStateError";
+  }
+}
+
+export class ReworkInvalidTargetStateError extends ReworkValidationError {
+  constructor(batchId: string, currentStatus: string, targetState: string, allowedTargets: string[]) {
+    super(
+      "INVALID_REWORK_TARGET",
+      `Cannot rework batch '${batchId}' from '${currentStatus}' to '${targetState}'. ` +
+      `Allowed targets from '${currentStatus}': [${allowedTargets.join(", ")}] (Contract 08 §9).`,
+    );
+    this.name = "ReworkInvalidTargetStateError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Service deps.
 // ---------------------------------------------------------------------------
@@ -120,6 +330,13 @@ export interface HistoricalReconciliationServiceDeps {
   repository: HistoricalReconciliationRepository;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
+  /**
+   * Commit repository is required for submitForApproval (DEFECT 1) — it
+   * provides backup-evidence, blocking-validation, and reconciliation-result
+   * lookups that the reconciliation repository does not own. If absent,
+   * submitForApproval throws on construction.
+   */
+  commitRepository?: HistoricalCommitRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +863,425 @@ export class HistoricalReconciliationService {
   ): Promise<ImportReconciliationResult[]> {
     requirePermission(effective, "migration.review");
     return this.deps.repository.findReconciliationResultsForBatch(user.tenantId, batchId);
+  }
+
+  // ===========================================================================
+  // WP-08-01F DEFECT 1 — submitMigrationBatchForApproval
+  //
+  // Contract 08 §§9, 11.6, 11.7: explicit idempotent submission command that
+  // transitions a reviewed batch from review_required → pending_dual_approval.
+  //
+  // Without this command, the first approval can never be reached because
+  // recordApproval requires pending_dual_approval or approved_for_commit.
+  //
+  // Prerequisites verified before any write (§8.9 / §11.6):
+  //   1. migration.review permission
+  //   2. tenant-scoped batch exists
+  //   3. batch.status === 'review_required' (exact contracted predecessor state)
+  //   4. validationStatus === 'passed' (validation completion)
+  //   5. reconciliationStatus === 'matched' (reconciliation completion)
+  //   6. no blocking reconciliation results against current report version
+  //   7. every required human-review item is resolved (status != 'pending')
+  //   8. stagedDataHash is present
+  //   9. cutoverManifestHash is present
+  //  10. warningCount === acceptedWarningCount (all warnings accepted with reason)
+  //  11. backup evidence exists (Contract 08 §8.9 — required before submission)
+  //  12. warningSummary is provided when warningCount > 0
+  //
+  // Produces zero operational effects. Transitions exactly once to
+  // pending_dual_approval. Writes immutable audit. Uses persistent DB-backed
+  // idempotency with replay/conflict behavior.
+  // ===========================================================================
+
+  async submitForApproval(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: SubmitForApprovalInput,
+  ): Promise<SubmitForApprovalResult> {
+    // 1. Permission: migration.review (Owner/Accountant)
+    requirePermission(effective, "migration.review");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    // Basic input validation
+    if (!input.importBatchId?.trim()) {
+      throw new HistoricalReconciliationError("VALIDATION_FAILED", "importBatchId is required.");
+    }
+    if (!input.idempotencyKey?.trim()) {
+      throw new HistoricalReconciliationError("VALIDATION_FAILED", "idempotencyKey is required.");
+    }
+
+    // Require commit repository for backup-evidence / blocking-validation checks
+    if (!this.deps.commitRepository) {
+      throw new HistoricalReconciliationError(
+        "CONFIGURATION_ERROR",
+        "submitForApproval requires commitRepository to be configured for backup-evidence and blocking-validation checks.",
+      );
+    }
+
+    // 2. Load + tenant-scope the batch
+    const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
+    if (!batch) throw new ReconBatchNotFoundError(input.importBatchId);
+    requireTenantMatch(user, batch.tenantId);
+
+    // Check for idempotent replay FIRST (before status check) — if this
+    // submission already succeeded, return the existing result even if the
+    // batch has since transitioned to pending_dual_approval.
+    const nowForReplay = new Date();
+    const replayClaim = await claimIdempotency(this.deps.idempotency, {
+      tenantId: user.tenantId,
+      operationScope: "historical_migration.submit_for_approval",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        importBatchId: input.importBatchId,
+        warningSummary: input.warningSummary,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now: nowForReplay,
+    });
+    if (replayClaim.action === "replay") {
+      const responseBody = replayClaim.record.responseBody as Partial<SubmitForApprovalResult> | null;
+      if (responseBody?.batchId) {
+        return { ...responseBody, action: "replayed" } as SubmitForApprovalResult;
+      }
+    }
+    if (replayClaim.action === "conflict") {
+      throw new HistoricalReconciliationError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
+    }
+    if (replayClaim.action === "in_progress") {
+      throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", "Submission already in progress.");
+    }
+
+    // 3. Require the exact contracted predecessor state: review_required
+    // All prerequisite checks are wrapped so that if any fails, we mark the
+    // idempotency claim as business_failed (so the same key can be retried
+    // after the prerequisite is fixed).
+    let reviewItems: ImportHumanReviewItem[] = [];
+    let pendingItems: ImportHumanReviewItem[] = [];
+    let blockingResults: ImportReconciliationResult[] = [];
+    let backupEvidence: { length: number } = { length: 0 };
+    try {
+      if (batch.status !== "review_required") {
+        throw new SubmissionInvalidStateError(input.importBatchId, batch.status, "review_required");
+      }
+
+      // 4. Validation completion (against current staged-data hash/version)
+      if (batch.validationStatus !== "passed") {
+        throw new MissingValidationCompletionError(input.importBatchId, batch.validationStatus);
+      }
+
+      // 5. Reconciliation completion (against current report/version)
+      if (batch.reconciliationStatus !== "matched") {
+        throw new MissingReconciliationCompletionError(input.importBatchId, batch.reconciliationStatus);
+      }
+
+      // 6. Reject unresolved blocking findings (reconciliation results with status='blocking')
+      const latestResults = await this.deps.commitRepository.findLatestReconciliationResults(
+        user.tenantId, input.importBatchId,
+      );
+      blockingResults = latestResults.filter(r => r.status === "blocking");
+      if (blockingResults.length > 0) {
+        throw new BlockingFindingsRemainError(input.importBatchId, blockingResults.length);
+      }
+
+      // Also reject blocking validation errors
+      const blockingValidationErrors = await this.deps.commitRepository.findBlockingValidationErrors(
+        user.tenantId, input.importBatchId,
+      );
+      if (blockingValidationErrors.length > 0) {
+        throw new BlockingFindingsRemainError(input.importBatchId, blockingValidationErrors.length);
+      }
+
+      // 7. Every required human-review item must be resolved
+      reviewItems = await this.deps.repository.findReviewItemsForBatch(
+        user.tenantId, input.importBatchId,
+      );
+      pendingItems = reviewItems.filter(r => r.status === "pending");
+      if (pendingItems.length > 0) {
+        throw new UnresolvedReviewItemsError(input.importBatchId, pendingItems.length);
+      }
+
+      // 8. Require staged-data hash
+      if (!batch.stagedDataHash) {
+        throw new MissingStagedDataHashError(input.importBatchId);
+      }
+
+      // 9. Require cutover-manifest hash
+      if (!batch.cutoverManifestHash) {
+        throw new MissingCutoverManifestHashError(input.importBatchId);
+      }
+
+      // 10. Require accepted-warning evidence (warningCount === acceptedWarningCount)
+      if (batch.warningCount > batch.acceptedWarningCount) {
+        throw new UnacknowledgedWarningsError(
+          input.importBatchId, batch.warningCount, batch.acceptedWarningCount,
+        );
+      }
+
+      // 12. warningSummary required when warningCount > 0
+      if (batch.warningCount > 0 && !input.warningSummary?.trim()) {
+        throw new SubmissionValidationError(
+          "MISSING_WARNING_SUMMARY",
+          `Cannot submit batch '${input.importBatchId}' for approval — warningSummary is required when warningCount > 0.`,
+        );
+      }
+
+      // 11. Require backup evidence (Contract 08 §8.9)
+      const backupEvidenceRows = await this.deps.commitRepository.findBackupEvidenceForBatch(
+        user.tenantId, input.importBatchId,
+      );
+      backupEvidence = { length: backupEvidenceRows.length };
+      if (backupEvidenceRows.length === 0) {
+        throw new MissingBackupEvidenceError(input.importBatchId);
+      }
+    } catch (e) {
+      // Mark the idempotency claim as business_failed so the same key can be
+      // retried after the prerequisite is fixed.
+      await markBusinessFailed(this.deps.idempotency, replayClaim.record.id, {
+        responseCode: 400,
+        responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "SUBMISSION_FAILED" },
+        lastErrorClass: (e as Error).name ?? "Error",
+      }, replayClaim.record.ownerToken!, nowForReplay);
+      throw e;
+    }
+
+    // ---- All prerequisites verified. The idempotency claim was already
+    // acquired above (before the status check) for replay handling.
+    // Now transition the batch. ----
+    const now = nowForReplay;
+    const claim = replayClaim; // use the claim acquired above
+
+    // 12. Transition exactly once to pending_dual_approval
+    const reportVersion = await this.deps.repository.findLatestReportVersion(
+      user.tenantId, input.importBatchId,
+    );
+    await this.deps.repository.updateBatchStatus(
+      user.tenantId, input.importBatchId, "pending_dual_approval",
+    );
+
+    // If a warningSummary was provided, persist it on the batch
+    // (the batch row's warningSummary column captures the accepted-warning reason).
+    // The repository doesn't have a dedicated setter, but the audit captures it.
+    // Future enhancement: add updateBatchWarningSummary to the repository.
+
+    // 13. Write immutable audit
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: "import_batch",
+      entityId: input.importBatchId,
+      actionType: "historical_migration.submit_for_approval",
+      newValuesJson: {
+        importBatchId: input.importBatchId,
+        previousStatus: batch.status,
+        newStatus: "pending_dual_approval",
+        reportVersion,
+        stagedDataHash: batch.stagedDataHash,
+        cutoverManifestHash: batch.cutoverManifestHash,
+        validationStatus: batch.validationStatus,
+        reconciliationStatus: batch.reconciliationStatus,
+        warningCount: batch.warningCount,
+        acceptedWarningCount: batch.acceptedWarningCount,
+        warningSummary: input.warningSummary,
+        reviewItemsTotal: reviewItems.length,
+        reviewItemsPending: pendingItems.length,
+        blockingResults: blockingResults.length,
+        backupEvidenceCount: backupEvidence.length,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    const result: SubmitForApprovalResult = {
+      action: "submitted",
+      batchId: input.importBatchId,
+      previousStatus: batch.status,
+      newStatus: "pending_dual_approval",
+      reportVersion,
+      stagedDataHash: batch.stagedDataHash,
+      cutoverManifestHash: batch.cutoverManifestHash,
+    };
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200, responseBody: result,
+      entityType: "import_batch", entityId: input.importBatchId,
+    }, claim.record.ownerToken!, now);
+
+    return result;
+  }
+
+  // ===========================================================================
+  // WP-08-01F DEFECT 2 — reopenBatchForRework
+  //
+  // Contract 08 §9 permitted branches:
+  //   review_required → normalized | staged | validation_in_progress
+  //   pending_dual_approval → review_required (material change or rejected approval)
+  //   approved_for_commit → review_required (stale version/new blocker)
+  //
+  // Explicit idempotent rework/reopen command. Does NOT simply permit
+  // arbitrary file/staging mutation in review_required — it transitions
+  // state and invalidates dependent evidence atomically.
+  //
+  // Invalidation semantics:
+  //   - Mark current reconciliation report version as superseded.
+  //   - Reset validationStatus and reconciliationStatus to null.
+  //   - Invalidate Owner and Accountant approvals (delete — they cannot be
+  //     preserved because their bound hashes/versions no longer match).
+  //   - Invalidate pending review items (resolved items preserved for audit).
+  //   - Audit old/new state, reason, invalidated versions.
+  //
+  // Produces zero operational effects. Rejects committed/rejected/cancelled/
+  // committing states.
+  // ===========================================================================
+
+  /**
+   * Contract 08 §9: define the allowed (source → target) rework branches.
+   * Any other combination is rejected as INVALID_REWORK_TARGET.
+   */
+  private static readonly REWORK_BRANCHES: Record<string, ReadonlySet<ReworkTargetState>> = {
+    review_required: new Set(["normalized", "staged", "validation_in_progress"] as ReworkTargetState[]),
+    pending_dual_approval: new Set(["review_required"] as ReworkTargetState[]),
+    approved_for_commit: new Set(["review_required"] as ReworkTargetState[]),
+  };
+
+  async reopenBatchForRework(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: ReworkBatchInput,
+  ): Promise<ReworkBatchResult> {
+    // 1. Permission: migration.review (Contract 08 §9 — rework requires
+    //    migration.review/prepare). We require migration.review because
+    //    rework is a review-stage decision.
+    requirePermission(effective, "migration.review");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    if (!input.importBatchId?.trim()) {
+      throw new HistoricalReconciliationError("VALIDATION_FAILED", "importBatchId is required.");
+    }
+    if (!input.idempotencyKey?.trim()) {
+      throw new HistoricalReconciliationError("VALIDATION_FAILED", "idempotencyKey is required.");
+    }
+    if (!input.reason?.trim()) {
+      throw new HistoricalReconciliationError("VALIDATION_FAILED", "reason is required (Contract 08 §9 — rework requires a reason).");
+    }
+
+    if (!this.deps.commitRepository) {
+      throw new HistoricalReconciliationError(
+        "CONFIGURATION_ERROR",
+        "reopenBatchForRework requires commitRepository to be configured for approval invalidation.",
+      );
+    }
+
+    // 2. Load + tenant-scope the batch
+    const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
+    if (!batch) throw new ReconBatchNotFoundError(input.importBatchId);
+    requireTenantMatch(user, batch.tenantId);
+
+    // 9. Reject committed/rejected/cancelled/committing states
+    const allowedSources = Object.keys(HistoricalReconciliationService.REWORK_BRANCHES);
+    if (!allowedSources.includes(batch.status)) {
+      throw new ReworkInvalidSourceStateError(input.importBatchId, batch.status);
+    }
+
+    // Validate the target state is permitted for this source
+    const allowedTargets = HistoricalReconciliationService.REWORK_BRANCHES[batch.status]!;
+    if (!allowedTargets.has(input.targetState)) {
+      throw new ReworkInvalidTargetStateError(
+        input.importBatchId, batch.status, input.targetState, [...allowedTargets],
+      );
+    }
+
+    // ---- All prerequisites verified. Now claim idempotency. ----
+    const now = new Date();
+    const claim = await claimIdempotency(this.deps.idempotency, {
+      tenantId: user.tenantId,
+      operationScope: "historical_migration.rework",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        importBatchId: input.importBatchId,
+        reason: input.reason,
+        targetState: input.targetState,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    });
+
+    if (claim.action === "replay") {
+      const responseBody = claim.record.responseBody as Partial<ReworkBatchResult> | null;
+      if (responseBody?.batchId) {
+        return { ...responseBody, action: "replayed" } as ReworkBatchResult;
+      }
+    }
+    if (claim.action === "conflict") {
+      throw new HistoricalReconciliationError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
+    }
+    if (claim.action === "in_progress") {
+      throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", "Rework already in progress.");
+    }
+
+    // 3. Invalidate current validation/reconciliation approval bindings
+    const latestReportVersion = await this.deps.repository.findLatestReportVersion(
+      user.tenantId, input.importBatchId,
+    );
+    if (latestReportVersion > 0) {
+      await this.deps.repository.markVersionAsSuperseded(
+        user.tenantId, input.importBatchId, latestReportVersion,
+      );
+    }
+
+    // 4. Reset validationStatus and reconciliationStatus (forces re-run)
+    await this.deps.repository.resetBatchValidationAndReconciliationStatuses(
+      user.tenantId, input.importBatchId,
+    );
+
+    // 5. Invalidate Owner and Accountant approvals
+    const invalidatedApprovalCount = await this.deps.commitRepository.invalidateApprovalsForBatch(
+      user.tenantId, input.importBatchId,
+    );
+
+    // 6. Invalidate pending review items (resolved items preserved for audit)
+    const invalidatedReviewItemCount = await this.deps.repository.invalidatePendingReviewItemsForBatch(
+      user.tenantId, input.importBatchId,
+    );
+
+    // 7. Transition batch to the requested target state
+    await this.deps.repository.updateBatchStatus(
+      user.tenantId, input.importBatchId, input.targetState,
+    );
+
+    // 8. Audit old/new state, reason, invalidated versions
+    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      entityType: "import_batch",
+      entityId: input.importBatchId,
+      actionType: "historical_migration.rework",
+      newValuesJson: {
+        importBatchId: input.importBatchId,
+        previousStatus: batch.status,
+        newStatus: input.targetState,
+        reason: input.reason,
+        invalidatedReportVersion: latestReportVersion > 0 ? latestReportVersion : null,
+        invalidatedApprovalCount,
+        invalidatedPendingReviewItemCount: invalidatedReviewItemCount,
+        previousValidationStatus: batch.validationStatus,
+        previousReconciliationStatus: batch.reconciliationStatus,
+      },
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    const result: ReworkBatchResult = {
+      action: "reworked",
+      batchId: input.importBatchId,
+      previousStatus: batch.status,
+      newStatus: input.targetState,
+      invalidatedReportVersion: latestReportVersion > 0 ? latestReportVersion : null,
+      invalidatedOwnerApproval: invalidatedApprovalCount > 0,
+      invalidatedAccountantApproval: invalidatedApprovalCount > 0,
+    };
+
+    await markSucceeded(this.deps.idempotency, claim.record.id, {
+      responseCode: 200, responseBody: result,
+      entityType: "import_batch", entityId: input.importBatchId,
+    }, claim.record.ownerToken!, now);
+
+    return result;
   }
 
   /**

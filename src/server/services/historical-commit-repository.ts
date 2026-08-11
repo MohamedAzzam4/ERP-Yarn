@@ -122,6 +122,14 @@ export interface HistoricalCommitRepository {
     importBatchId: string,
     approverRole: "owner" | "accountant",
   ): Promise<ImportBatchApproval | null>;
+  /**
+   * WP-08-01F DEFECT 2: Invalidate (delete) all approval records for a batch.
+   * Used by the rework command when transitioning back to a preparation state.
+   * The original approval audit entries remain in audit_logs (immutable) —
+   * only the approval rows themselves are removed so new approvals can be
+   * recorded against the new hashes/versions. Returns the count of deleted rows.
+   */
+  invalidateApprovalsForBatch(tenantId: string, importBatchId: string): Promise<number>;
 
   // ---- Backup evidence ----
   insertBackupEvidence(row: NewBackupEvidenceInput): Promise<ImportBackupEvidence>;
