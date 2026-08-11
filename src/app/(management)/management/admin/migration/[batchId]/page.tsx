@@ -32,6 +32,10 @@ import {
   createCorrectionRequestAction,
   approveCorrectionAction,
 } from "../actions";
+import {
+  getActionMatrix,
+  type MigrationBatchState,
+} from "@/server/services/migration-lifecycle-predicates";
 
 export default async function MigrationBatchDetailPage({
   params,
@@ -108,6 +112,21 @@ export default async function MigrationBatchDetailPage({
   }
 
   const b = detail.batch;
+
+  // Build lifecycle state for action matrix (TASK 2)
+  const batchState: MigrationBatchState = {
+    status: b.status as MigrationBatchState["status"],
+    stagedRowCount: b.stagedRowCount,
+    blockingErrorCount: b.blockingErrorCount,
+    warningCount: b.warningCount,
+    acceptedWarningCount: b.acceptedWarningCount,
+    stagedDataHash: b.stagedDataHash,
+    cutoverManifestHash: b.cutoverManifestHash,
+    hasOwnerApproval: detail.approvals.some(a => a.approverRole === "owner"),
+    hasAccountantApproval: detail.approvals.some(a => a.approverRole === "accountant"),
+    hasBackupEvidence: detail.backupEvidence.length > 0,
+  };
+  const actionMatrix = getActionMatrix(batchState);
 
   return (
     <ManagementShell
@@ -195,89 +214,152 @@ export default async function MigrationBatchDetailPage({
           </CardContent>
         </Card>
 
-        {/* Lifecycle action forms — shown only in valid states */}
-        {b.status !== "committed" && b.status !== "rejected" && b.status !== "cancelled" && (
+        {/* Lifecycle action forms — shown only in valid states (TASK 2: action matrix) */}
+        {!actionMatrix.createCorrectionRequest && (
           <Card className="mb-6">
             <CardHeader><CardTitle>إجراءات دورة الحياة</CardTitle></CardHeader>
             <CardContent className="space-y-4">
 
-              {/* Register file — allowed in draft/source_uploaded/staged */}
-              <form data-action="register-file" action={registerFileAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                <input type="hidden" name="batchId" value={b.id} />
-                <input type="hidden" name="idempotencyKey" value={`file-${crypto.randomUUID()}`} />
-                <input type="hidden" name="fileType" value="source" />
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-muted-foreground">اسم الملف:</span>
-                  <input type="text" name="originalFileName" required placeholder="data.xlsx" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                </label>
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-muted-foreground">مسار التخزين (خاص):</span>
-                  <input type="text" name="storagePath" required placeholder="s3://bucket/key" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                </label>
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-muted-foreground">بصمة الملف (SHA-256):</span>
-                  <input type="text" name="fileHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                </label>
-                <div className="sm:col-span-2 lg:col-span-3">
-                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل ملف</button>
+              {/* Register file — only in preparation states */}
+              {actionMatrix.registerFile && (
+                <form data-action="register-file" action={registerFileAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`file-${crypto.randomUUID()}`} />
+                  <input type="hidden" name="fileType" value="source" />
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">اسم الملف:</span>
+                    <input type="text" name="originalFileName" required placeholder="data.xlsx" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">مسار التخزين (خاص):</span>
+                    <input type="text" name="storagePath" required placeholder="s3://bucket/key" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">بصمة الملف (SHA-256):</span>
+                    <input type="text" name="fileHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <div className="sm:col-span-2 lg:col-span-3">
+                    <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل ملف</button>
+                  </div>
+                </form>
+              )}
+
+              {/* Insert staging row — only in preparation states */}
+              {actionMatrix.insertStagingRow && detail.files.length > 0 && (
+                <form data-action="insert-staging-row" action={insertStagingRowAction} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`stage-${crypto.randomUUID()}`} />
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">الملف:</span>
+                    <select name="importFileId" required className="px-2 py-1 border rounded text-sm bg-background" style={{ minHeight: "44px" }}>
+                      <option value="">— اختر الملف —</option>
+                      {detail.files.map((f) => (
+                        <option key={f.id} value={f.id}>{f.originalFileName}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">رقم الصف:</span>
+                    <input type="number" name="sourceRowNumber" placeholder="1" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">البيانات المحولة (JSON):</span>
+                    <input type="text" name="transformedRowJson" placeholder='{"key":"value"}' className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <div className="sm:col-span-2">
+                    <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>إضافة صف تجهيز</button>
+                  </div>
+                </form>
+              )}
+
+              {/* Run validation — only when staging exists */}
+              {actionMatrix.runValidation && (
+                <form data-action="run-validation" action={runValidationAction} className="flex gap-3 items-center">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`val-${crypto.randomUUID()}`} />
+                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل التحقق</button>
+                </form>
+              )}
+
+              {/* Run reconciliation — only after validation */}
+              {actionMatrix.runReconciliation && (
+                <form data-action="run-reconciliation" action={runReconciliationAction} className="flex gap-3 items-center">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`recon-${crypto.randomUUID()}`} />
+                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل المطابقة</button>
+                </form>
+              )}
+
+              {/* Review decisions — only for unresolved review items */}
+              {actionMatrix.recordReviewDecision && detail.reviewItems.filter(r => r.status === "pending").length > 0 && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">عناصر المراجعة غير المحلولة</h3>
+                  {detail.reviewItems.filter(r => r.status === "pending").map((item) => (
+                    <form key={item.id} data-action="record-review-decision" action={recordReviewDecisionAction} className="flex flex-wrap gap-2 items-center border rounded p-2">
+                      <input type="hidden" name="reviewItemId" value={item.id} />
+                      <input type="hidden" name="batchId" value={b.id} />
+                      <input type="hidden" name="idempotencyKey" value={`review-${item.id}-${crypto.randomUUID()}`} />
+                      <span className="text-sm flex-1">{item.reviewReason}</span>
+                      <select name="decision" required className="px-2 py-1 border rounded text-sm bg-background" style={{ minHeight: "44px" }}>
+                        <option value="">— قرار —</option>
+                        <option value="accepted">قبول</option>
+                        <option value="rejected">رفض</option>
+                        <option value="resolved">حل</option>
+                      </select>
+                      <input type="text" name="decisionNotes" placeholder="ملاحظات" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                      <button type="submit" className="px-3 py-1 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>حفظ</button>
+                    </form>
+                  ))}
                 </div>
-              </form>
+              )}
 
-              {/* Run validation — allowed in staged */}
-              <form data-action="run-validation" action={runValidationAction} className="flex gap-3 items-center">
-                <input type="hidden" name="batchId" value={b.id} />
-                <input type="hidden" name="idempotencyKey" value={`val-${crypto.randomUUID()}`} />
-                <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل التحقق</button>
-              </form>
+              {/* Owner approval — only when prerequisites met */}
+              {actionMatrix.recordOwnerApproval && !batchState.hasOwnerApproval && (
+                <form data-action="record-owner-approval" action={recordApprovalAction} className="flex gap-3 items-center">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="approverRole" value="owner" />
+                  <input type="hidden" name="idempotencyKey" value={`appr-owner-${crypto.randomUUID()}`} />
+                  <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المالك</button>
+                </form>
+              )}
 
-              {/* Run reconciliation — allowed after validation */}
-              <form data-action="run-reconciliation" action={runReconciliationAction} className="flex gap-3 items-center">
-                <input type="hidden" name="batchId" value={b.id} />
-                <input type="hidden" name="idempotencyKey" value={`recon-${crypto.randomUUID()}`} />
-                <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل المطابقة</button>
-              </form>
+              {/* Accountant approval — only when prerequisites met */}
+              {actionMatrix.recordAccountantApproval && !batchState.hasAccountantApproval && (
+                <form data-action="record-accountant-approval" action={recordApprovalAction} className="flex gap-3 items-center">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="approverRole" value="accountant" />
+                  <input type="hidden" name="idempotencyKey" value={`appr-acct-${crypto.randomUUID()}`} />
+                  <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
+                </form>
+              )}
 
-              {/* Owner approval */}
-              <form data-action="record-owner-approval" action={recordApprovalAction} className="flex gap-3 items-center">
-                <input type="hidden" name="batchId" value={b.id} />
-                <input type="hidden" name="approverRole" value="owner" />
-                <input type="hidden" name="idempotencyKey" value={`appr-owner-${crypto.randomUUID()}`} />
-                <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المالك</button>
-              </form>
+              {/* Record backup evidence — only in pre-commit states */}
+              {actionMatrix.recordBackupEvidence && !batchState.hasBackupEvidence && (
+                <form data-action="record-backup-evidence" action={recordBackupEvidenceAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`backup-${crypto.randomUUID()}`} />
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">نوع النسخة:</span>
+                    <input type="text" name="backupType" required placeholder="full" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">موقع النسخة (خاص):</span>
+                    <input type="text" name="backupLocation" required placeholder="s3://bucket/backup" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">بصمة النسخة:</span>
+                    <input type="text" name="backupHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                  </label>
+                  <div className="sm:col-span-2 lg:col-span-3">
+                    <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل دليل النسخ الاحتياطي</button>
+                  </div>
+                </form>
+              )}
 
-              {/* Accountant approval */}
-              <form data-action="record-accountant-approval" action={recordApprovalAction} className="flex gap-3 items-center">
-                <input type="hidden" name="batchId" value={b.id} />
-                <input type="hidden" name="approverRole" value="accountant" />
-                <input type="hidden" name="idempotencyKey" value={`appr-acct-${crypto.randomUUID()}`} />
-                <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
-              </form>
-
-              {/* Record backup evidence */}
-              <form data-action="record-backup-evidence" action={recordBackupEvidenceAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                <input type="hidden" name="batchId" value={b.id} />
-                <input type="hidden" name="idempotencyKey" value={`backup-${crypto.randomUUID()}`} />
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-muted-foreground">نوع النسخة:</span>
-                  <input type="text" name="backupType" required placeholder="full" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                </label>
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-muted-foreground">موقع النسخة (خاص):</span>
-                  <input type="text" name="backupLocation" required placeholder="s3://bucket/backup" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                </label>
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-muted-foreground">بصمة النسخة:</span>
-                  <input type="text" name="backupHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                </label>
-                <div className="sm:col-span-2 lg:col-span-3">
-                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل دليل النسخ الاحتياطي</button>
-                </div>
-              </form>
-
-              {/* Atomic commit — only when approved_for_commit */}
-              {b.status === "approved_for_commit" && (
+              {/* Atomic commit — only when fully eligible */}
+              {actionMatrix.commitBatch && (
                 <form data-action="commit-batch" action={commitBatchAction} className="flex gap-3 items-center">
                   <input type="hidden" name="batchId" value={b.id} />
                   <input type="hidden" name="idempotencyKey" value={`commit-${crypto.randomUUID()}`} />
@@ -289,7 +371,7 @@ export default async function MigrationBatchDetailPage({
           </Card>
         )}
 
-        {/* Committed batch — correction workflow only */}
+        {/* Committed batch — correction workflow only (TASK 6) */}
         {b.status === "committed" && (
           <Card className="mb-6">
             <CardHeader><CardTitle>التصحيحات</CardTitle></CardHeader>
@@ -318,6 +400,17 @@ export default async function MigrationBatchDetailPage({
                   <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>طلب تصحيح</button>
                 </div>
               </form>
+
+              {/* Correction approval forms — for pending correction requests */}
+              {/* TASK 1: approveCorrectionAction with role-bound selectors */}
+              {/* Note: correction requests are listed via the query service.
+                  For now, we show a placeholder. In production, correction
+                  requests would be fetched and rendered here. */}
+              <div role="alert" className="text-sm text-amber-600 border border-amber-300 rounded p-3">
+                <p className="font-semibold">تنفيذ التصحيح غير متاح حالياً</p>
+                <p className="mt-1">لا يمكن تنفيذ التصحيح حتى يتم تعريف آلية ربط المجال الإنتاجي (CorrectionDomainHook).
+                  طلبات التصحيح والاعتمادات متاحة، لكن التنفيذ معلق.</p>
+              </div>
             </CardContent>
           </Card>
         )}
