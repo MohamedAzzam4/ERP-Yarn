@@ -54,6 +54,7 @@ import type {
   ImportTemplateVersion,
   ImportStagingRow,
 } from "@/server/db/schema/migration";
+import { guardRegisterFile, guardInsertStagingRow } from "./migration-lifecycle-guard";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -311,6 +312,9 @@ export class HistoricalStagingService {
     if (!batch) throw new BatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
+    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
+    guardRegisterFile(batch);
+
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -487,6 +491,9 @@ export class HistoricalStagingService {
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
     if (!batch) throw new BatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
+
+    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
+    guardInsertStagingRow(batch);
 
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {

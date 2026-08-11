@@ -41,6 +41,7 @@ import type {
   ImportHumanReviewItem,
   ImportStagingRow,
 } from "@/server/db/schema/migration";
+import { guardRunReconciliation, guardRecordReviewDecision } from "./migration-lifecycle-guard";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -399,6 +400,9 @@ export class HistoricalReconciliationService {
     if (!batch) throw new ReconBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
+    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
+    guardRunReconciliation(batch);
+
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -561,6 +565,11 @@ export class HistoricalReconciliationService {
     const reviewItem = await this.deps.repository.findReviewItemById(user.tenantId, input.reviewItemId);
     if (!reviewItem) throw new ReviewItemNotFoundError(input.reviewItemId);
     requireTenantMatch(user, reviewItem.tenantId);
+
+    // WP-08-01F DEFECT 1: Enforce lifecycle state — load batch and check
+    const batch = await this.deps.repository.findImportBatchById(user.tenantId, reviewItem.importBatchId);
+    if (!batch) throw new ReconBatchNotFoundError(reviewItem.importBatchId);
+    guardRecordReviewDecision(batch);
 
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {

@@ -86,13 +86,13 @@ export function canInsertStagingRow(state: MigrationBatchState): boolean {
   return PREPARATION_STATES.has(state.status);
 }
 
-/** Can run validation. Requires at least one staged row. */
+/** Can run validation. Only in 'staged' state with at least one row, or re-run from 'validation_complete'. */
 export function canRunValidation(state: MigrationBatchState): boolean {
-  return (PREPARATION_STATES.has(state.status) || state.status === "validation_complete")
+  return (state.status === "staged" || state.status === "validation_complete")
     && state.stagedRowCount > 0;
 }
 
-/** Can run reconciliation. Requires validation to be complete. */
+/** Can run reconciliation. Only after validation is complete. */
 export function canRunReconciliation(state: MigrationBatchState): boolean {
   return state.status === "validation_complete"
     || state.status === "reconciliation_in_progress"
@@ -101,15 +101,16 @@ export function canRunReconciliation(state: MigrationBatchState): boolean {
     || state.status === "approved_for_commit";
 }
 
-/** Can record a review decision. Requires unresolved review items. */
+/** Can record a review decision. Only in review-eligible states with pending items. */
 export function canRecordReviewDecision(state: MigrationBatchState): boolean {
   return POST_STAGING_STATES.has(state.status);
 }
 
-/** Can record Owner approval. Requires validation + reconciliation + no blocking errors. */
+/** Can record Owner approval. Requires validation + reconciliation completion + no blocking errors + hashes. */
 export function canRecordOwnerApproval(state: MigrationBatchState): boolean {
   if (TERMINAL_STATES.has(state.status)) return false;
   if (state.status === "committing") return false;
+  if (state.status === "draft" || state.status === "source_uploaded" || state.status === "normalized" || state.status === "staged") return false;
   if (state.blockingErrorCount > 0) return false;
   if (state.warningCount > state.acceptedWarningCount) return false;
   if (!state.stagedDataHash) return false;
@@ -144,9 +145,22 @@ export function canCreateCorrectionRequest(state: MigrationBatchState): boolean 
   return state.status === "committed";
 }
 
-/** Can approve correction. Only pending correction requests. */
+/** Can approve correction. Only committed batch with pending_review correction. */
 export function canApproveCorrection(state: MigrationBatchState): boolean {
   return state.status === "committed";
+}
+
+/** Correction-level predicate: can approve with specific role. */
+export function canApproveCorrectionWithRole(
+  correctionStatus: string,
+  existingOwnerApproval: boolean,
+  existingAccountantApproval: boolean,
+  role: "owner" | "accountant",
+): boolean {
+  if (correctionStatus !== "pending_review") return false;
+  if (role === "owner" && existingOwnerApproval) return false;
+  if (role === "accountant" && existingAccountantApproval) return false;
+  return true;
 }
 
 /** Batch is read-only (no mutations except correction workflow). */

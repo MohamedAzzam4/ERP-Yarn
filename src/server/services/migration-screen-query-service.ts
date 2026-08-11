@@ -235,6 +235,7 @@ export interface MigrationBatchDetailDto {
   backupEvidence: MigrationBackupEvidenceDto[];
   activeLocks: MigrationCutoverLockDto[];
   cutoverManifests: MigrationCutoverManifestDto[];
+  corrections: MigrationCorrectionRequestDto[];
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +317,7 @@ export class MigrationScreenQueryService {
       backupEvidence: backupEvidence.map((b) => this.mapBackupEvidenceDto(b)),
       activeLocks: activeLocks.map((l) => this.mapCutoverLockDto(l)),
       cutoverManifests: cutoverManifests.map((m) => this.mapCutoverManifestDto(m)),
+      corrections: corrections.map((c) => this.mapCorrectionRequestDto(c)),
     };
   }
 
@@ -524,6 +526,26 @@ export class MigrationScreenQueryService {
       reconciliationOwner: m.reconciliationOwner,
       manifestHash: m.manifestHash,
       isApproved: m.isApproved,
+    };
+  }
+
+  private mapCorrectionRequestDto(c: typeof historicalCorrectionRequests.$inferSelect): MigrationCorrectionRequestDto {
+    return {
+      id: c.id,
+      docNo: c.docNo,
+      importBatchId: c.importBatchId,
+      originalEntityType: c.originalEntityType,
+      originalEntityId: c.originalEntityId,
+      correctionType: c.correctionType,
+      reason: c.reason,
+      status: c.status,
+      ownerApprovedBy: c.ownerApprovedBy,
+      ownerApprovedAt: c.ownerApprovedAt?.toISOString() ?? null,
+      accountantApprovedBy: c.accountantApprovedBy,
+      accountantApprovedAt: c.accountantApprovedAt?.toISOString() ?? null,
+      correctedEntityType: c.correctedEntityType,
+      correctedEntityId: c.correctedEntityId,
+      createdAt: c.createdAt.toISOString(),
     };
   }
 }

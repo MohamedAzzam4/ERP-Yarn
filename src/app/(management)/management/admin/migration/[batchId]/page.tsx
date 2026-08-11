@@ -401,11 +401,55 @@ export default async function MigrationBatchDetailPage({
                 </div>
               </form>
 
-              {/* Correction approval forms — for pending correction requests */}
-              {/* TASK 1: approveCorrectionAction with role-bound selectors */}
-              {/* Note: correction requests are listed via the query service.
-                  For now, we show a placeholder. In production, correction
-                  requests would be fetched and rendered here. */}
+              {/* Correction requests list with approval forms (DEFECT 2) */}
+              {detail.corrections.length > 0 && (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">طلبات التصحيح</h3>
+                  {detail.corrections.map((corr) => (
+                    <div key={corr.id} className="border rounded p-3 text-sm space-y-2">
+                      <div className="flex justify-between">
+                        <span className="font-medium"><LtrValue>{corr.docNo}</LtrValue></span>
+                        <span>{corr.status}</span>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        النوع: {corr.correctionType} | الكيان: <LtrValue>{corr.originalEntityType}</LtrValue>
+                      </div>
+                      <p>{corr.reason}</p>
+
+                      {/* Owner approval form — only if not already approved by owner */}
+                      {corr.status === "pending_review" && !corr.ownerApprovedBy && (
+                        <form data-action="approve-correction-owner" action={approveCorrectionAction} className="flex gap-2 items-center">
+                          <input type="hidden" name="correctionRequestId" value={corr.id} />
+                          <input type="hidden" name="batchId" value={b.id} />
+                          <input type="hidden" name="approverRole" value="owner" />
+                          <input type="hidden" name="idempotencyKey" value={`corr-owner-${corr.id}-${crypto.randomUUID()}`} />
+                          <button type="submit" className="px-3 py-1 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>اعتماد المالك</button>
+                        </form>
+                      )}
+
+                      {/* Accountant approval form — only if not already approved by accountant */}
+                      {corr.status === "pending_review" && !corr.accountantApprovedBy && (
+                        <form data-action="approve-correction-accountant" action={approveCorrectionAction} className="flex gap-2 items-center">
+                          <input type="hidden" name="correctionRequestId" value={corr.id} />
+                          <input type="hidden" name="batchId" value={b.id} />
+                          <input type="hidden" name="approverRole" value="accountant" />
+                          <input type="hidden" name="idempotencyKey" value={`corr-acct-${corr.id}-${crypto.randomUUID()}`} />
+                          <button type="submit" className="px-3 py-1 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
+                        </form>
+                      )}
+
+                      {/* Status display for approved corrections */}
+                      {corr.status === "approved" && (
+                        <div className="text-xs text-muted-foreground">
+                          تم الاعتماد من المالك والمحاسب. التنفيذ غير متاح حالياً.
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* CorrectionDomainHook blocker alert (TASK 6) */}
               <div role="alert" className="text-sm text-amber-600 border border-amber-300 rounded p-3">
                 <p className="font-semibold">تنفيذ التصحيح غير متاح حالياً</p>
                 <p className="mt-1">لا يمكن تنفيذ التصحيح حتى يتم تعريف آلية ربط المجال الإنتاجي (CorrectionDomainHook).

@@ -34,6 +34,11 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
   private batchCounter = 0;
   private rowCounter = 0;
 
+  // Test helper: seed a batch directly
+  seedBatch(tenantId: string, batch: ImportBatch): void {
+    this.batches.set(`${tenantId}:${batch.id}`, batch);
+  }
+
   // --- Template version methods ---
 
   async insertTemplateVersion(row: NewTemplateVersionInput): Promise<ImportTemplateVersion> {

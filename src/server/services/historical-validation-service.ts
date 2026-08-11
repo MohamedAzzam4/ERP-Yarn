@@ -43,6 +43,7 @@ import type {
   ImportStagingRow,
   ImportBatch,
 } from "@/server/db/schema/migration";
+import { guardRunValidation } from "./migration-lifecycle-guard";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -395,6 +396,9 @@ export class HistoricalValidationService {
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
     if (!batch) throw new BatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
+
+    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
+    guardRunValidation(batch);
 
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {

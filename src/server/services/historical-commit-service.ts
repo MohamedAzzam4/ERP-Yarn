@@ -384,10 +384,14 @@ export class HistoricalCommitService {
     if (!batch) throw new CommitBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // Check batch status — must not be terminal
-    const terminalStatuses = ["committed", "rejected", "cancelled"];
-    if (terminalStatuses.includes(batch.status)) {
+    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
+    // The existing terminal-status check is preserved (InvalidBatchStatusError).
+    // The guard adds preparation-state rejection (e.g., draft/staged cannot approve).
+    if (batch.status === "committed" || batch.status === "rejected" || batch.status === "cancelled" || batch.status === "committing") {
       throw new InvalidBatchStatusError(input.importBatchId, batch.status, "non-terminal");
+    }
+    if (batch.status === "draft" || batch.status === "source_uploaded" || batch.status === "normalized" || batch.status === "staged") {
+      throw new InvalidBatchStatusError(input.importBatchId, batch.status, "post-staging (validation_complete or later)");
     }
 
     // DEC-069: Check that this user has NOT already provided the OTHER role's approval.
@@ -608,6 +612,11 @@ export class HistoricalCommitService {
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
     if (!batch) throw new CommitBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
+
+    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
+    if (batch.status === "committed" || batch.status === "rejected" || batch.status === "cancelled" || batch.status === "committing") {
+      throw new InvalidBatchStatusError(input.importBatchId, batch.status, "non-terminal pre-commit");
+    }
 
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
