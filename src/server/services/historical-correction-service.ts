@@ -87,7 +87,21 @@ export interface ExecuteCorrectionInput {
   correctionRequestId: string;
   idempotencyKey: string;
   /**
-   * Optional fault injection for rollback testing.
+   * WP-08-01F PHASE 0: faultInjection is TEST-ONLY.
+   * Production server actions NEVER set this field. The browser cannot
+   * activate it. Tests inject it via a separate test-only service method.
+   * See executeCorrectionWithFaultInjection (test-only).
+   */
+}
+
+/**
+ * WP-08-01F PHASE 0: Test-only input that includes fault injection.
+   * This interface is NOT exported from server actions. Tests use it via
+   * executeCorrectionWithFaultInjection.
+ */
+export interface ExecuteCorrectionTestInput extends ExecuteCorrectionInput {
+  /**
+   * Test-only fault injection for rollback testing.
    * - 'after_domain_effect': fail after domain effect (rollback must undo it)
    * - null: normal execution
    */
@@ -569,6 +583,28 @@ export class HistoricalCorrectionService {
     effective: EffectivePermissions,
     input: ExecuteCorrectionInput,
   ): Promise<ExecuteCorrectionResult> {
+    return this.executeCorrectionInternal(user, effective, input, null);
+  }
+
+  /**
+   * WP-08-01F PHASE 0: Test-only method that accepts fault injection.
+   * Production server actions call executeCorrection (which passes null).
+   * This method is only called from tests.
+   */
+  async executeCorrectionWithFaultInjection(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: ExecuteCorrectionTestInput,
+  ): Promise<ExecuteCorrectionResult> {
+    return this.executeCorrectionInternal(user, effective, input, input.faultInjection ?? null);
+  }
+
+  private async executeCorrectionInternal(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: ExecuteCorrectionInput,
+    faultInjection: "after_domain_effect" | null,
+  ): Promise<ExecuteCorrectionResult> {
     requirePermission(effective, "migration.commit");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
@@ -619,9 +655,23 @@ export class HistoricalCorrectionService {
     });
 
     if (claim.action === "replay") {
-      const responseBody = claim.record.responseBody as Partial<ExecuteCorrectionResult> | null;
+      // WP-08-01F PHASE 0: Handle both succeeded and business_failed replays.
+      // For succeeded: return the stored success result.
+      // For business_failed: return the stored failure as a replay (the caller
+      // must use a NEW idempotency key to retry — business_failed is terminal).
+      const responseBody = claim.record.responseBody as Record<string, unknown> | null;
       if (responseBody?.correctionRequestId) {
+        // Succeeded replay — return the stored success result
         return { ...responseBody, action: "replayed" } as ExecuteCorrectionResult;
+      }
+      if (claim.record.state === "business_failed") {
+        // Business-failed replay — return the stored failure as a replay.
+        // The caller must use a NEW idempotency key to retry.
+        throw new HistoricalCorrectionError(
+          "OPERATION_REPLAY_FAILED",
+          `Correction execution with idempotency key '${input.idempotencyKey}' previously failed: ` +
+          `${responseBody?.error ?? "unknown error"}. Use a new idempotency key to retry.`,
+        );
       }
     }
     if (claim.action === "conflict") {
@@ -635,16 +685,18 @@ export class HistoricalCorrectionService {
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, request.importBatchId);
     if (!batch) throw new CorrectionBatchNotFoundError(request.importBatchId);
 
-    // WP-08-01F Production Correction Hook: The entire mutation phase
-    // (hook call + updateCorrectionResult + audit + idempotency markSucceeded)
-    // is atomic — all commit or all roll back.
-    const executeAtomically = async (): Promise<ExecuteCorrectionResult> => {
+    // WP-08-01F Production Correction Hook: The mutation phase (hook call +
+    // updateCorrectionResult + audit) is atomic via transactionRunner.
+    // markSucceeded is called AFTER the transaction commits — if the
+    // transaction rolls back, markSucceeded is never reached, and the
+    // catch block calls markBusinessFailed instead.
+    const executeInTransaction = async (): Promise<ExecuteCorrectionResult> => {
       const correctionResult = await this.deps.correctionDomainHook!.executeCorrection(
         user.tenantId,
         user.userId,
         request,
         batch,
-        input.faultInjection,
+        faultInjection,
       );
 
       // Update the correction request with the result
@@ -678,21 +730,27 @@ export class HistoricalCorrectionService {
         correctedEntityId: correctionResult.correctedEntityId,
       };
 
-      // markSucceeded inside the transaction — owner-token-fenced
+      return result;
+    };
+
+    try {
+      let result: ExecuteCorrectionResult;
+      if (this.deps.transactionRunner) {
+        result = await this.deps.transactionRunner(executeInTransaction);
+      } else {
+        result = await executeInTransaction();
+      }
+
+      // markSucceeded AFTER the transaction commits — owner-token-fenced.
+      // If this fails (ownership lost), the correction effects are already
+      // committed but the idempotency record stays in_progress. A retry
+      // with the same key will return replay after lease expiry.
       await markSucceeded(this.deps.idempotency, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: CORRECTION_ENTITY_TYPE, entityId: input.correctionRequestId,
       }, claim.record.ownerToken!, now);
 
       return result;
-    };
-
-    try {
-      if (this.deps.transactionRunner) {
-        return await this.deps.transactionRunner(executeAtomically);
-      } else {
-        return await executeAtomically();
-      }
     } catch (e) {
       // Mark idempotency as business failed
       try {

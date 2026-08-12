@@ -142,6 +142,11 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
     const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
       (db as any).transaction(async (tx: any) => work(tx));
 
+    // The correction service uses root idem for claim/markSucceeded.
+    // The transactionRunner wraps the hook call but the idempotency
+    // operations happen on the root connection (not inside the tx).
+    // This is the same pattern as the commit service.
+
     const txFactories = {
       createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
         ledger: new InventoryLedgerDbRepository(tx as any),
@@ -317,7 +322,7 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
 
     // Execute with fault injection — the hook will throw after posting the reversal
     await expect(
-      correctionService.executeCorrection(
+      correctionService.executeCorrectionWithFaultInjection(
         makeUser(U) as any, makeEffective() as any,
         { correctionRequestId, idempotencyKey: "corr-fault-1", faultInjection: "after_domain_effect" },
       ),
@@ -349,7 +354,7 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
 
     // First attempt fails (fault injection)
     await expect(
-      correctionService.executeCorrection(
+      correctionService.executeCorrectionWithFaultInjection(
         makeUser(U) as any, makeEffective() as any,
         { correctionRequestId, idempotencyKey: "corr-retry-1", faultInjection: "after_domain_effect" },
       ),
@@ -357,7 +362,16 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
 
     const before = await snapshotCounts();
 
-    // Retry with new idempotency key (no fault)
+    // PHASE 0: Same-key retry after business_failed throws OPERATION_REPLAY_FAILED
+    // (business_failed is terminal per Contract 06 §7.1 — same key cannot re-execute).
+    await expect(
+      correctionService.executeCorrection(
+        makeUser(U) as any, makeEffective() as any,
+        { correctionRequestId, idempotencyKey: "corr-retry-1" },
+      ),
+    ).rejects.toThrow(/OPERATION_REPLAY_FAILED|previously failed|new idempotency key/i);
+
+    // Retry with NEW idempotency key (no fault) — this is the correct retry path.
     const result = await correctionService.executeCorrection(
       makeUser(U) as any, makeEffective() as any,
       { correctionRequestId, idempotencyKey: "corr-retry-2" },
@@ -369,6 +383,17 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
     // Exactly ONE new reversal movement (from the retry, not the failed attempt)
     expect(after.stockMovements).toBe(before.stockMovements + 1);
     expect(after.correctionsExecuted).toBe(before.correctionsExecuted + 1);
+
+    // PHASE 0: Same-key replay of the SUCCESSFUL retry adds zero effects.
+    const beforeReplay = await snapshotCounts();
+    const replayResult = await correctionService.executeCorrection(
+      makeUser(U) as any, makeEffective() as any,
+      { correctionRequestId, idempotencyKey: "corr-retry-2" },
+    );
+    expect(replayResult.action).toBe("replayed");
+    const afterReplay = await snapshotCounts();
+    expect(afterReplay.stockMovements).toBe(beforeReplay.stockMovements);
+    expect(afterReplay.correctionsExecuted).toBe(beforeReplay.correctionsExecuted);
   }, 60000);
 
   // -------------------------------------------------------------------------
@@ -491,5 +516,39 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
     // Zero new effects
     expect(after.stockMovements).toBe(before.stockMovements);
     expect(after.correctionsExecuted).toBe(before.correctionsExecuted);
+  }, 60000);
+
+  // -------------------------------------------------------------------------
+  // 8. PHASE 0: Worker/unauthorized role denial with zero effects
+  // -------------------------------------------------------------------------
+  it("8. worker role denied executeCorrection with zero DB effects", async () => {
+    const { correctionService } = makeCorrectionService();
+    const { batchId, correctionRequestId, movementId } = await seedCommittedBatchWithApprovedCorrection(
+      "reversal", "stock_movement", "PLACEHOLDER",
+    );
+
+    const before = await snapshotCounts();
+
+    // Worker role lacks migration.commit permission
+    const workerEffective = {
+      assignedRoleCodes: ["warehouse_employee"],
+      permissionKeys: new Set(["inventory.view_quantity"]),
+      deniedFieldKeys: new Set(),
+      workerFinancialDeny: true,
+    } as any;
+
+    await expect(
+      correctionService.executeCorrection(
+        makeUser(U) as any, workerEffective,
+        { correctionRequestId, idempotencyKey: "corr-worker-1" },
+      ),
+    ).rejects.toThrow(/Permission denied/i);
+
+    const after = await snapshotCounts();
+    // Zero new effects — denied before any DB write
+    expect(after.stockMovements).toBe(before.stockMovements);
+    expect(after.correctionsExecuted).toBe(before.correctionsExecuted);
+    expect(after.auditCount).toBe(before.auditCount);
+    expect(after.idemSucceeded).toBe(before.idemSucceeded);
   }, 60000);
 });

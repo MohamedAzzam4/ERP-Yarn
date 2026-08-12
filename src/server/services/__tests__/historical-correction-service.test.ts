@@ -484,7 +484,7 @@ describe("WP-07-05 correction execution", () => {
     };
     const serviceWithHook = new HistoricalCorrectionService({ ...deps, correctionDomainHook: hook });
 
-    await expect(serviceWithHook.executeCorrection(makeUser() as any, makeOwnerEff() as any, {
+    await expect(serviceWithHook.executeCorrectionWithFaultInjection(makeUser() as any, makeOwnerEff() as any, {
       correctionRequestId: createResult.correctionRequestId,
       idempotencyKey: "exec-013",
       faultInjection: "after_domain_effect",
