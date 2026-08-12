@@ -279,18 +279,34 @@ export async function uploadAndParseCsvAction(formData: FormData): Promise<void>
     });
   } catch (e) {
     // DB registration failed — compensate by deleting the orphaned stored file.
-    // If compensation itself fails, record a durable orphan-cleanup alert.
+    // If compensation itself fails, create a DURABLE DB-backed orphan-cleanup
+    // alert in the operational_alerts table.
     try {
       await storage.deleteIfOrphaned(storedFile.storagePath);
     } catch (compensationError) {
-      // Durable record — log to console (in production, would write to operational_alerts table)
-      console.error(
-        `ORPHAN_CLEANUP_FAILED: tenant=${authResult.tenantId} batch=${batchId} ` +
-        `storagePath=${storedFile.storagePath} uploadKey=${idempotencyKey} ` +
-        `reason=${(compensationError as Error).message} ` +
-        `originalError=${(e as Error).message} ` +
-        `status=pending_cleanup retryNeeded=true timestamp=${new Date().toISOString()}`
-      );
+      // Durable record in operational_alerts table (not just console.error)
+      const { createOrphanCleanupAlert } = await import("@/server/services/orphan-cleanup-service");
+      try {
+        if (db) {
+          await createOrphanCleanupAlert(
+            db,
+            authResult.tenantId,
+            batchId,
+            storedFile.storagePath,
+            idempotencyKey,
+            (compensationError as Error).message,
+          );
+        }
+      } catch {
+        // If even the alert creation fails, fall back to console.error
+        console.error(
+          `ORPHAN_CLEANUP_ALERT_FAILED: tenant=${authResult.tenantId} batch=${batchId} ` +
+          `storagePath=${storedFile.storagePath} uploadKey=${idempotencyKey} ` +
+          `reason=${(compensationError as Error).message} ` +
+          `originalError=${(e as Error).message} ` +
+          `status=pending_cleanup timestamp=${new Date().toISOString()}`
+        );
+      }
     }
     throw e;
   }

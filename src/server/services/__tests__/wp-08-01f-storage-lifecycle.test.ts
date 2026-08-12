@@ -285,6 +285,21 @@ describe("WP-08-01F — Bucket verification", () => {
     await storage.deleteIfOrphaned(result.storagePath);
     expect(await storage.exists(result.storagePath)).toBe(false);
   });
+
+  it("no uploaded object path contains client idempotency keys or unsafe filenames", async () => {
+    const testStorage = new InMemoryPrivateFileStorage();
+    const content = Buffer.from("test\n");
+    const maliciousFilename = "../../../etc/passwd";
+    const result = await testStorage.store("t1", "b1", "client-idempotency-key-123", maliciousFilename, content, "text/csv");
+
+    // Path should NOT contain the client key or path traversal
+    expect(result.storagePath).not.toContain("client-idempotency-key-123");
+    expect(result.storagePath).not.toContain("..");
+    expect(result.storagePath).not.toContain("/etc/");
+    // The filename is sanitized to just "passwd" (path basename) — that's safe
+    // Path SHOULD contain a server-generated UUID
+    expect(result.storagePath).toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+  });
 });
 
 describe("WP-08-01F — Canonical manifest hash", () => {
