@@ -762,19 +762,42 @@ export class HistoricalStagingService {
     if (claim.action === "conflict") throw new HistoricalStagingError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
     if (claim.action === "in_progress") throw new HistoricalStagingError("OPERATION_IN_PROGRESS", "Operation in progress.");
 
-    // Server-side manifest hash derivation from CANONICAL server-side facts.
-    // WP-08-01F TASK 1: The hash must NOT trust client-supplied values alone.
-    // It includes: batch ID, batch status, staged row count, staged data hash,
-    // file hashes, domain, cutoff date, source coverage, opening balance basis.
+    // Server-side manifest hash derivation from CANONICAL persisted facts.
+    // WP-08-01F TASK 2: The hash includes ALL material persisted facts:
+    //   - batch ID, import mode, template type/version
+    //   - current file IDs, versions and hashes
+    //   - current staging version/hash/row count
+    //   - normalized cutover date/scope
+    //   - validation report version and persisted status
+    //   - reconciliation report version and persisted status
+    //   - warning summary and accepted-warning version
+    // Client inputs (domain, cutoffDate, etc.) are included as descriptive
+    // fields but the hash is primarily derived from persisted DB facts.
     const crypto = await import("node:crypto");
     const files = await this.deps.repository.findImportFilesForBatch(user.tenantId, input.importBatchId);
     const fileHashes = files.map((f: any) => f.fileHash).sort().join(",");
+    const fileIds = files.map((f: any) => f.id).sort().join(",");
     const manifestHashInput = JSON.stringify({
+      // Batch facts (persisted)
       batchId: input.importBatchId,
       batchStatus: batch.status,
+      importMode: batch.cutoverImportMode,
+      templateType: batch.templateName ?? "",
+      templateVersion: batch.templateVersion ?? "",
+      // Staging facts (persisted)
       stagedRowCount: batch.stagedRowCount,
       stagedDataHash: batch.stagedDataHash ?? "",
+      // File facts (persisted)
+      fileIds,
       fileHashes,
+      // Validation/reconciliation facts (persisted)
+      validationStatus: batch.validationStatus ?? "",
+      reconciliationStatus: batch.reconciliationStatus ?? "",
+      // Warning facts (persisted)
+      warningCount: batch.warningCount,
+      acceptedWarningCount: batch.acceptedWarningCount,
+      warningSummary: batch.warningSummary ?? "",
+      // Descriptive fields (client-supplied, validated, stored in manifest)
       domain: input.domain,
       cutoffDate: input.cutoffDate ?? "",
       sourceCoverage: input.sourceCoverage ?? "",

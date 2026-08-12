@@ -232,20 +232,46 @@ describe("WP-08-01F — Canonical manifest hash", () => {
     const facts1 = JSON.stringify({
       batchId: "b1",
       batchStatus: "staged",
+      importMode: "opening_balance",
+      templateType: "opening_balance_inventory",
+      templateVersion: "1.0",
       stagedRowCount: 5,
       stagedDataHash: "abc",
+      fileIds: "f1,f2",
       fileHashes: "h1,h2",
+      validationStatus: "passed",
+      reconciliationStatus: "matched",
+      warningCount: 0,
+      acceptedWarningCount: 0,
+      warningSummary: "",
       domain: "inventory",
+      cutoffDate: "2024-01-01",
+      sourceCoverage: "all",
+      openingBalanceBasis: "audit",
+      liveSystemStartBoundary: "2024-01-02",
     });
 
     // Same values, same order (JSON.stringify is deterministic)
     const facts2 = JSON.stringify({
       batchId: "b1",
       batchStatus: "staged",
+      importMode: "opening_balance",
+      templateType: "opening_balance_inventory",
+      templateVersion: "1.0",
       stagedRowCount: 5,
       stagedDataHash: "abc",
+      fileIds: "f1,f2",
       fileHashes: "h1,h2",
+      validationStatus: "passed",
+      reconciliationStatus: "matched",
+      warningCount: 0,
+      acceptedWarningCount: 0,
+      warningSummary: "",
       domain: "inventory",
+      cutoffDate: "2024-01-01",
+      sourceCoverage: "all",
+      openingBalanceBasis: "audit",
+      liveSystemStartBoundary: "2024-01-02",
     });
 
     const hash1 = crypto.createHash("sha256").update(facts1).digest("hex");
@@ -256,19 +282,19 @@ describe("WP-08-01F — Canonical manifest hash", () => {
   it("one material persisted change produces a different hash", () => {
     const facts1 = JSON.stringify({
       batchId: "b1",
-      batchStatus: "staged",
       stagedRowCount: 5,
       stagedDataHash: "abc",
       fileHashes: "h1,h2",
+      validationStatus: "passed",
       domain: "inventory",
     });
 
     const facts2 = JSON.stringify({
       batchId: "b1",
-      batchStatus: "staged",
       stagedRowCount: 6, // Material change: different row count
       stagedDataHash: "abc",
       fileHashes: "h1,h2",
+      validationStatus: "passed",
       domain: "inventory",
     });
 
@@ -287,6 +313,62 @@ describe("WP-08-01F — Canonical manifest hash", () => {
     const facts2 = JSON.stringify({
       batchId: "b1",
       fileHashes: "hash1,hash3", // Different file hash
+      domain: "inventory",
+    });
+
+    const hash1 = crypto.createHash("sha256").update(facts1).digest("hex");
+    const hash2 = crypto.createHash("sha256").update(facts2).digest("hex");
+    expect(hash1).not.toBe(hash2);
+  });
+
+  it("validation status change produces a different manifest hash", () => {
+    const facts1 = JSON.stringify({
+      batchId: "b1",
+      validationStatus: "passed",
+      domain: "inventory",
+    });
+
+    const facts2 = JSON.stringify({
+      batchId: "b1",
+      validationStatus: "failed", // Different validation status
+      domain: "inventory",
+    });
+
+    const hash1 = crypto.createHash("sha256").update(facts1).digest("hex");
+    const hash2 = crypto.createHash("sha256").update(facts2).digest("hex");
+    expect(hash1).not.toBe(hash2);
+  });
+
+  it("reconciliation status change produces a different manifest hash", () => {
+    const facts1 = JSON.stringify({
+      batchId: "b1",
+      reconciliationStatus: "matched",
+      domain: "inventory",
+    });
+
+    const facts2 = JSON.stringify({
+      batchId: "b1",
+      reconciliationStatus: "blocking", // Different reconciliation status
+      domain: "inventory",
+    });
+
+    const hash1 = crypto.createHash("sha256").update(facts1).digest("hex");
+    const hash2 = crypto.createHash("sha256").update(facts2).digest("hex");
+    expect(hash1).not.toBe(hash2);
+  });
+
+  it("warning count change produces a different manifest hash", () => {
+    const facts1 = JSON.stringify({
+      batchId: "b1",
+      warningCount: 2,
+      acceptedWarningCount: 1,
+      domain: "inventory",
+    });
+
+    const facts2 = JSON.stringify({
+      batchId: "b1",
+      warningCount: 3, // Different warning count
+      acceptedWarningCount: 1,
       domain: "inventory",
     });
 
