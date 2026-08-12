@@ -1,0 +1,2 @@
+# Gitignore for run-state (non-secret but ephemeral)
+run-state/

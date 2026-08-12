@@ -1,0 +1,4 @@
+entity_type,name,code,quantity,unit,date,item_id
+raw_yarn,Yarn 1,RY-001,100.5,kg,2024-01-01,00000000-0000-4000-8000-item00000001
+raw_yarn,Yarn 2,RY-002,200.5,kg,2024-01-01,00000000-0000-4000-8000-item00000002
+raw_yarn,Yarn 3,RY-003,300.5,kg,2024-01-01,00000000-0000-4000-8000-item00000003

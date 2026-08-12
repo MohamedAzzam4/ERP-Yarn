@@ -1,0 +1,4 @@
+entity_type,name,code,quantity,unit,date,item_id,currency
+raw_yarn,Yarn A,RY-DUP,-100,kg,2024-01-01,00000000-0000-4000-8000-item00000001,USD
+raw_yarn,Yarn B,RY-DUP,100,lbs,01/15/2024,00000000-0000-4000-8000-item00000002,EGP
+raw_yarn,Yarn C,RY-003,,kg,2024-01-01,nonexistent-item-id,EGP
