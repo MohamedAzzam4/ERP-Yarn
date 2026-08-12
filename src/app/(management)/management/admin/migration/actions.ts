@@ -109,32 +109,22 @@ function getMigrationServices() {
   // dispatches correctionType + originalEntityType to InventoryLedgerService
   // and SubledgerService. The hook receives tx-scoped factories so all
   // domain effects commit/rollback with the correction execution transaction.
-  const correctionDomainHook = new ProductionCorrectionDomainHook({
-    createInventoryLedger: txFactories.createInventoryLedger,
-    createSubledger: txFactories.createSubledger,
-    tx: null, // set per-call inside the transaction
-  });
-  // Wrap the hook so tx is injected from the transactionRunner
   const correctionService = new HistoricalCorrectionService({
     repository: correctionRepo, audit, idempotency, documentSequence,
-    correctionDomainHook: {
-      executeCorrection(tenantId, userId, correctionRequest, batch, faultInjection) {
-        // Inject the current transaction into the hook factories
-        // The transactionRunner provides the tx to the closure below
-        return correctionDomainHook.executeCorrection(tenantId, userId, correctionRequest, batch, faultInjection);
-      },
-    },
-    transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-      return (db as any).transaction(async (tx: any) => {
-        // Inject tx into the hook factories for this execution
-        (correctionDomainHook as any).factories.tx = tx;
-        try {
-          return await work(tx);
-        } finally {
-          (correctionDomainHook as any).factories.tx = null;
-        }
+    transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+      (db as any).transaction(async (tx: any) => work(tx)),
+    createRepository: (tx: unknown) => new HistoricalCorrectionDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    createCorrectionDomainHook: (tx: unknown) => {
+      const hook = new ProductionCorrectionDomainHook({
+        createInventoryLedger: txFactories.createInventoryLedger,
+        createSubledger: txFactories.createSubledger,
+        tx,
       });
+      return hook;
     },
+    // testFaultCallback is NEVER set in production wiring
   });
   return { stagingService, validationService, reconciliationService, commitService, correctionService };
 }

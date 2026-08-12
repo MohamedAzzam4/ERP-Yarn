@@ -220,7 +220,6 @@ export interface CorrectionDomainHook {
     userId: string,
     correctionRequest: HistoricalCorrectionRequest,
     batch: ImportBatch,
-    faultInjection?: "after_domain_effect" | null,
   ): Promise<{ correctedEntityType: string; correctedEntityId: string }>;
 }
 
@@ -239,12 +238,39 @@ export interface HistoricalCorrectionServiceDeps {
    */
   correctionDomainHook?: CorrectionDomainHook;
   /**
-   * WP-08-01F Production Correction Hook: Transaction runner for atomic
-   * executeCorrection. The entire mutation phase (hook call +
-   * updateCorrectionResult + audit + idempotency markSucceeded) commits
-   * or rolls back together.
+   * WP-08-01F: Transaction runner for atomic executeCorrection.
+   * The entire mutation phase (hook call + updateCorrectionResult + audit +
+   * idempotency markSucceeded) commits or rolls back together.
    */
   transactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+  /**
+   * WP-08-01F: Tx-scoped factory for the correction repository.
+   * Used inside the transaction for updateCorrectionResult.
+   */
+  createRepository?: (tx: unknown) => HistoricalCorrectionRepository;
+  /**
+   * WP-08-01F: Tx-scoped factory for the audit handle.
+   * Used inside the transaction for appendAuditLog.
+   */
+  createAudit?: (tx: unknown) => AuditTransactionHandle;
+  /**
+   * WP-08-01F: Tx-scoped factory for the idempotency handle.
+   * Used inside the transaction for markSucceeded (owner-token-fenced).
+   */
+  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
+  /**
+   * WP-08-01F: Tx-scoped factory for the correction domain hook.
+   * The hook receives tx-scoped domain services so all effects commit/rollback
+   * with the correction execution transaction.
+   */
+  createCorrectionDomainHook?: (tx: unknown) => CorrectionDomainHook;
+  /**
+   * WP-08-01F: Test-only failure callback. When set, the service calls this
+   * AFTER the domain effect but BEFORE markSucceeded, causing the transaction
+   * to roll back. Production wiring NEVER provides this. It cannot be
+   * activated by any action, input, URL, or FormData.
+   */
+  testFaultCallback?: (() => void) | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -583,28 +609,6 @@ export class HistoricalCorrectionService {
     effective: EffectivePermissions,
     input: ExecuteCorrectionInput,
   ): Promise<ExecuteCorrectionResult> {
-    return this.executeCorrectionInternal(user, effective, input, null);
-  }
-
-  /**
-   * WP-08-01F PHASE 0: Test-only method that accepts fault injection.
-   * Production server actions call executeCorrection (which passes null).
-   * This method is only called from tests.
-   */
-  async executeCorrectionWithFaultInjection(
-    user: ErpUserContext,
-    effective: EffectivePermissions,
-    input: ExecuteCorrectionTestInput,
-  ): Promise<ExecuteCorrectionResult> {
-    return this.executeCorrectionInternal(user, effective, input, input.faultInjection ?? null);
-  }
-
-  private async executeCorrectionInternal(
-    user: ErpUserContext,
-    effective: EffectivePermissions,
-    input: ExecuteCorrectionInput,
-    faultInjection: "after_domain_effect" | null,
-  ): Promise<ExecuteCorrectionResult> {
     requirePermission(effective, "migration.commit");
     rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
 
@@ -621,28 +625,26 @@ export class HistoricalCorrectionService {
 
     // Check status — must be approved
     if (request.status === "approved" && request.correctedEntityId) {
-      // Already executed — return replay
-      const result: ExecuteCorrectionResult = {
+      return {
         action: "replayed",
         correctionRequestId: input.correctionRequestId,
         correctedEntityType: request.correctedEntityType!,
         correctedEntityId: request.correctedEntityId!,
       };
-      return result;
     }
     if (request.status !== "approved") {
       throw new IncompleteDualApprovalError(input.correctionRequestId);
     }
 
     // Check domain hook is configured
-    if (!this.deps.correctionDomainHook) {
+    if (!this.deps.correctionDomainHook && !this.deps.createCorrectionDomainHook) {
       throw new HistoricalCorrectionError(
         "NO_CORRECTION_HOOK",
         "Correction domain hook is not configured. Cannot execute correction.",
       );
     }
 
-    // Claim idempotency
+    // Claim idempotency on the ROOT repository (before the transaction)
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -650,23 +652,16 @@ export class HistoricalCorrectionService {
       idempotencyKey: input.idempotencyKey,
       requestBody: { correctionRequestId: input.correctionRequestId } as Record<string, unknown>,
       initiatedBy: user.userId,
-      leaseDurationMs: 300000, // 5 minutes
+      leaseDurationMs: 300000,
       now,
     });
 
     if (claim.action === "replay") {
-      // WP-08-01F PHASE 0: Handle both succeeded and business_failed replays.
-      // For succeeded: return the stored success result.
-      // For business_failed: return the stored failure as a replay (the caller
-      // must use a NEW idempotency key to retry — business_failed is terminal).
       const responseBody = claim.record.responseBody as Record<string, unknown> | null;
       if (responseBody?.correctionRequestId) {
-        // Succeeded replay — return the stored success result
         return { ...responseBody, action: "replayed" } as ExecuteCorrectionResult;
       }
       if (claim.record.state === "business_failed") {
-        // Business-failed replay — return the stored failure as a replay.
-        // The caller must use a NEW idempotency key to retry.
         throw new HistoricalCorrectionError(
           "OPERATION_REPLAY_FAILED",
           `Correction execution with idempotency key '${input.idempotencyKey}' previously failed: ` +
@@ -681,34 +676,40 @@ export class HistoricalCorrectionService {
       throw new HistoricalCorrectionError("OPERATION_IN_PROGRESS", "Correction execution in progress.");
     }
 
-    // Fetch the original batch
+    // Fetch the original batch (on root repository — read-only)
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, request.importBatchId);
     if (!batch) throw new CorrectionBatchNotFoundError(request.importBatchId);
 
-    // WP-08-01F Production Correction Hook: The mutation phase (hook call +
-    // updateCorrectionResult + audit) is atomic via transactionRunner.
-    // markSucceeded is called AFTER the transaction commits — if the
-    // transaction rolls back, markSucceeded is never reached, and the
-    // catch block calls markBusinessFailed instead.
-    const executeInTransaction = async (): Promise<ExecuteCorrectionResult> => {
-      const correctionResult = await this.deps.correctionDomainHook!.executeCorrection(
+    // WP-08-01F CRITICAL FIX: The ENTIRE mutation phase runs inside the
+    // transaction, including markSucceeded. All tx-scoped repos use the
+    // SAME transaction connection — if any step fails, everything rolls back.
+    const executeAtomically = async (tx: unknown): Promise<ExecuteCorrectionResult> => {
+      // Use tx-scoped repos for ALL mutations inside the transaction
+      const txRepo = this.deps.createRepository ? this.deps.createRepository(tx) : this.deps.repository;
+      const txAudit = this.deps.createAudit ? this.deps.createAudit(tx) : this.deps.audit;
+      const txIdem = this.deps.createIdempotency ? this.deps.createIdempotency(tx) : this.deps.idempotency;
+      const txHook = this.deps.createCorrectionDomainHook
+        ? this.deps.createCorrectionDomainHook(tx)
+        : this.deps.correctionDomainHook!;
+
+      // 1. Execute the correction through the domain hook (tx-scoped)
+      const correctionResult = await txHook.executeCorrection(
         user.tenantId,
         user.userId,
         request,
         batch,
-        faultInjection,
       );
 
-      // Update the correction request with the result
-      await this.deps.repository.updateCorrectionResult(user.tenantId, input.correctionRequestId, {
+      // 2. Update the correction request with the result (tx-scoped)
+      await txRepo.updateCorrectionResult(user.tenantId, input.correctionRequestId, {
         correctedEntityType: correctionResult.correctedEntityType,
         correctedEntityId: correctionResult.correctedEntityId,
-        status: "approved", // Keep status as approved but with correctedEntityId set
+        status: "approved",
         updatedBy: user.userId,
       });
 
-      // Audit
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      // 3. Audit (tx-scoped)
+      await appendAuditLog(txAudit, user.tenantId, user.userId, {
         entityType: CORRECTION_ENTITY_TYPE,
         entityId: input.correctionRequestId,
         actionType: `${CORRECTION_AUDIT_ACTION}.execute`,
@@ -723,6 +724,13 @@ export class HistoricalCorrectionService {
         idempotencyKey: input.idempotencyKey,
       });
 
+      // WP-08-01F: Test-only fault callback. If set, throw AFTER the domain
+      // effect but BEFORE markSucceeded, causing the transaction to roll back.
+      // Production wiring NEVER provides this callback.
+      if (this.deps.testFaultCallback) {
+        this.deps.testFaultCallback();
+      }
+
       const result: ExecuteCorrectionResult = {
         action: "executed",
         correctionRequestId: input.correctionRequestId,
@@ -730,29 +738,25 @@ export class HistoricalCorrectionService {
         correctedEntityId: correctionResult.correctedEntityId,
       };
 
-      return result;
-    };
-
-    try {
-      let result: ExecuteCorrectionResult;
-      if (this.deps.transactionRunner) {
-        result = await this.deps.transactionRunner(executeInTransaction);
-      } else {
-        result = await executeInTransaction();
-      }
-
-      // markSucceeded AFTER the transaction commits — owner-token-fenced.
-      // If this fails (ownership lost), the correction effects are already
-      // committed but the idempotency record stays in_progress. A retry
-      // with the same key will return replay after lease expiry.
-      await markSucceeded(this.deps.idempotency, claim.record.id, {
+      // 4. markSucceeded INSIDE the transaction — owner-token-fenced.
+      // If ownership is lost, this throws IdempotencyOwnershipLostError,
+      // which rolls back the entire transaction (domain effect + status + audit).
+      await markSucceeded(txIdem, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: CORRECTION_ENTITY_TYPE, entityId: input.correctionRequestId,
       }, claim.record.ownerToken!, now);
 
       return result;
+    };
+
+    try {
+      if (this.deps.transactionRunner) {
+        return await this.deps.transactionRunner(executeAtomically);
+      } else {
+        return await executeAtomically(null);
+      }
     } catch (e) {
-      // Mark idempotency as business failed
+      // After rollback, mark the claim business_failed on the ROOT repository.
       try {
         await markBusinessFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 500,
@@ -762,12 +766,11 @@ export class HistoricalCorrectionService {
           entityId: input.correctionRequestId,
         }, claim.record.ownerToken!, now);
       } catch {
-        // Best-effort
+        // Best-effort — the main error is more important
       }
       throw e;
     }
   }
-
   // ===========================================================================
   // 4. Query helpers (read-only).
   // ===========================================================================

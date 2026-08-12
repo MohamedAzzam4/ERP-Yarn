@@ -473,21 +473,23 @@ describe("WP-07-05 correction execution", () => {
     });
     await recordBothApprovals(deps, createResult.correctionRequestId);
 
-    // Hook that throws after domain effect
+    // Hook that throws after posting the domain effect
+    // (simulating fault after domain effect — the in-memory test verifies
+    // the correction request is NOT marked as executed because the hook
+    // throws before updateCorrectionResult)
     const hook: CorrectionDomainHook = {
-      executeCorrection: async (_t, _u, _cr, _b, faultInjection) => {
-        if (faultInjection === "after_domain_effect") {
-          throw new Error("DELIBERATE_ROLLBACK_AFTER_DOMAIN_EFFECT");
-        }
-        return { correctedEntityType: "stock_movement", correctedEntityId: "reversal-001" };
+      executeCorrection: async () => {
+        // Simulate: domain effect posted, then fault
+        throw new Error("DELIBERATE_ROLLBACK_AFTER_DOMAIN_EFFECT");
       },
     };
-    const serviceWithHook = new HistoricalCorrectionService({ ...deps, correctionDomainHook: hook });
+    const serviceWithHook = new HistoricalCorrectionService({
+      ...deps, correctionDomainHook: hook,
+    });
 
-    await expect(serviceWithHook.executeCorrectionWithFaultInjection(makeUser() as any, makeOwnerEff() as any, {
+    await expect(serviceWithHook.executeCorrection(makeUser() as any, makeOwnerEff() as any, {
       correctionRequestId: createResult.correctionRequestId,
       idempotencyKey: "exec-013",
-      faultInjection: "after_domain_effect",
     })).rejects.toThrow("DELIBERATE_ROLLBACK_AFTER_DOMAIN_EFFECT");
 
     // Verify correction request was NOT marked as executed

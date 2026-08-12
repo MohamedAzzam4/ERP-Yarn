@@ -54,7 +54,6 @@ export class ProductionCorrectionDomainHook implements CorrectionDomainHook {
     userId: string,
     correctionRequest: HistoricalCorrectionRequest,
     batch: ImportBatch,
-    faultInjection?: "after_domain_effect" | null,
   ): Promise<{ correctedEntityType: string; correctedEntityId: string }> {
     const { correctionType, originalEntityType, originalEntityId } = correctionRequest;
 
@@ -80,22 +79,19 @@ export class ProductionCorrectionDomainHook implements CorrectionDomainHook {
     } as any;
 
     // Dispatch based on correctionType + originalEntityType
-    let result: { correctedEntityType: string; correctedEntityId: string };
-
     if (correctionType === "reversal" && originalEntityType === "stock_movement") {
-      result = await this.executeStockMovementReversal(
+      return await this.executeStockMovementReversal(
         userContext, effective, correctionRequest, originalEntityId,
       );
     } else if (correctionType === "reversal" && originalEntityType === "account_entry") {
-      result = await this.executeAccountEntryReversal(
+      return await this.executeAccountEntryReversal(
         userContext, effective, correctionRequest, originalEntityId,
       );
     } else if (correctionType === "adjustment" && originalEntityType === "stock_movement") {
-      result = await this.executeStockMovementAdjustment(
+      return await this.executeStockMovementAdjustment(
         userContext, effective, correctionRequest, originalEntityId,
       );
     } else {
-      // unsupported combination
       throw new Error(
         `CORRECTION_TYPE_NOT_SUPPORTED: correctionType='${correctionType}' with ` +
         `originalEntityType='${originalEntityType}' is not supported by the production ` +
@@ -103,15 +99,6 @@ export class ProductionCorrectionDomainHook implements CorrectionDomainHook {
         `(reversal, stock_movement), (reversal, account_entry), (adjustment, stock_movement).`,
       );
     }
-
-    // WP-08-01F fault injection: throw AFTER the domain effect has been posted
-    // but BEFORE the correction request status is updated. This tests that the
-    // transaction rolls back the domain effect.
-    if (faultInjection === "after_domain_effect") {
-      throw new Error("FAULT_INJECTED: after_domain_effect — domain effect posted but transaction will roll back");
-    }
-
-    return result;
   }
 
   /**

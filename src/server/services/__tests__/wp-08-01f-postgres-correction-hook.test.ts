@@ -133,7 +133,7 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
    * Create a correction service with the production hook wired to real
    * DB-backed domain services. Uses transactionRunner for atomicity.
    */
-  function makeCorrectionService() {
+  function makeCorrectionService(faultCallback?: (() => void) | null) {
     const correctionRepo = new HistoricalCorrectionDbRepository(db);
     const audit = new AuditDbRepository(db);
     const idem = new IdempotencyDbRepository(db);
@@ -141,11 +141,6 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
 
     const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
       (db as any).transaction(async (tx: any) => work(tx));
-
-    // The correction service uses root idem for claim/markSucceeded.
-    // The transactionRunner wraps the hook call but the idempotency
-    // operations happen on the root connection (not inside the tx).
-    // This is the same pattern as the commit service.
 
     const txFactories = {
       createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
@@ -163,22 +158,17 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
       tx: null as unknown,
     };
 
-    const hook = new ProductionCorrectionDomainHook(txFactories);
-
     const correctionService = new HistoricalCorrectionService({
       repository: correctionRepo, audit, idempotency: idem, documentSequence: docSeq,
-      correctionDomainHook: {
-        executeCorrection(tenantId, userId, correctionRequest, batch, faultInjection) {
-          return hook.executeCorrection(tenantId, userId, correctionRequest, batch, faultInjection);
-        },
+      transactionRunner,
+      createRepository: (tx: unknown) => new HistoricalCorrectionDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createCorrectionDomainHook: (tx: unknown) => {
+        (txFactories as any).tx = tx;
+        return new ProductionCorrectionDomainHook(txFactories);
       },
-      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-        return (db as any).transaction(async (tx: any) => {
-          (txFactories as any).tx = tx;
-          try { return await work(tx); }
-          finally { (txFactories as any).tx = null; }
-        });
-      },
+      testFaultCallback: faultCallback ?? null,
     });
 
     return { correctionService, correctionRepo };
@@ -313,20 +303,20 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
   // 2. injected failure after partial domain effect → complete rollback
   // -------------------------------------------------------------------------
   it("2. fault injection after domain effect → complete rollback (zero new movements)", async () => {
-    const { correctionService, correctionRepo } = makeCorrectionService();
+    const { correctionService, correctionRepo } = makeCorrectionService(() => { throw new Error("FAULT_INJECTED_AFTER_DOMAIN_EFFECT"); });
     const { batchId, correctionRequestId, movementId } = await seedCommittedBatchWithApprovedCorrection(
       "reversal", "stock_movement", "PLACEHOLDER",
     );
 
     const before = await snapshotCounts();
 
-    // Execute with fault injection — the hook will throw after posting the reversal
+    // Execute with fault callback — throws AFTER domain effect but BEFORE markSucceeded
     await expect(
-      correctionService.executeCorrectionWithFaultInjection(
+      correctionService.executeCorrection(
         makeUser(U) as any, makeEffective() as any,
-        { correctionRequestId, idempotencyKey: "corr-fault-1", faultInjection: "after_domain_effect" },
+        { correctionRequestId, idempotencyKey: "corr-fault-1" },
       ),
-    ).rejects.toThrow(/after_domain_effect|FAULT_INJECTED|CORRECTION_FAILED/i);
+    ).rejects.toThrow(/FAULT_INJECTED_AFTER_DOMAIN_EFFECT|CORRECTION_FAILED/i);
 
     const after = await snapshotCounts();
     // Zero new movements (rolled back)
@@ -347,32 +337,36 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
   // 3. valid retry → one append-only correction effect
   // -------------------------------------------------------------------------
   it("3. valid retry after failure → one append-only correction effect", async () => {
-    const { correctionService, correctionRepo } = makeCorrectionService();
+    // First service has fault callback; retry uses a new service without fault
+    const { correctionService: faultService } = makeCorrectionService(() => { throw new Error("FAULT_INJECTED"); });
     const { batchId, correctionRequestId, movementId } = await seedCommittedBatchWithApprovedCorrection(
       "reversal", "stock_movement", "PLACEHOLDER",
     );
 
-    // First attempt fails (fault injection)
+    // First attempt fails (fault callback)
     await expect(
-      correctionService.executeCorrectionWithFaultInjection(
+      faultService.executeCorrection(
         makeUser(U) as any, makeEffective() as any,
-        { correctionRequestId, idempotencyKey: "corr-retry-1", faultInjection: "after_domain_effect" },
+        { correctionRequestId, idempotencyKey: "corr-retry-1" },
       ),
     ).rejects.toThrow();
 
     const before = await snapshotCounts();
 
+    // Create a retry service WITHOUT fault callback for the retry attempts
+    const { correctionService: retryService } = makeCorrectionService();
+
     // PHASE 0: Same-key retry after business_failed throws OPERATION_REPLAY_FAILED
     // (business_failed is terminal per Contract 06 §7.1 — same key cannot re-execute).
     await expect(
-      correctionService.executeCorrection(
+      retryService.executeCorrection(
         makeUser(U) as any, makeEffective() as any,
         { correctionRequestId, idempotencyKey: "corr-retry-1" },
       ),
     ).rejects.toThrow(/OPERATION_REPLAY_FAILED|previously failed|new idempotency key/i);
 
-    // Retry with NEW idempotency key (no fault) — this is the correct retry path.
-    const result = await correctionService.executeCorrection(
+    // Retry with NEW idempotency key using the retry service
+    const result = await retryService.executeCorrection(
       makeUser(U) as any, makeEffective() as any,
       { correctionRequestId, idempotencyKey: "corr-retry-2" },
     );
@@ -386,7 +380,7 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
 
     // PHASE 0: Same-key replay of the SUCCESSFUL retry adds zero effects.
     const beforeReplay = await snapshotCounts();
-    const replayResult = await correctionService.executeCorrection(
+    const replayResult = await retryService.executeCorrection(
       makeUser(U) as any, makeEffective() as any,
       { correctionRequestId, idempotencyKey: "corr-retry-2" },
     );
