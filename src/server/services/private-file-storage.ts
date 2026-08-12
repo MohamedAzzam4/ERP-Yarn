@@ -4,17 +4,15 @@
  * Contract 08 §8.1: "Source-file access uses private storage and server
  * authorization or short-lived signed URLs."
  *
- * This module provides a production-safe private file storage adapter
- * that stores file bytes in a tenant/batch-scoped local filesystem path.
- * In production, this would be replaced by an S3/GCS adapter — the
- * interface is the same.
- *
  * Key properties:
  *   - No public URLs
  *   - Tenant/batch-scoped object keys
  *   - Server-derived checksum, size, MIME
  *   - Immutable: replacement creates a new object, old is preserved
  *   - Storage-success/DB-failure safe compensation (delete orphaned object)
+ *   - Production uses SupabasePrivateFileStorage (private bucket)
+ *   - Tests use InMemoryPrivateFileStorage or LocalPrivateFileStorage
+ *   - Fail-closed: if persistent storage is unavailable, production refuses
  */
 import "server-only";
 import { promises as fs } from "node:fs";
@@ -25,7 +23,7 @@ import crypto from "node:crypto";
  * Result of storing a file privately.
  */
 export interface StoredFile {
-  /** The private storage path (e.g. "private://tenant/batch/key/filename.csv"). */
+  /** The private storage path (e.g. "supabase://bucket/tenant/batch/key/filename"). */
   storagePath: string;
   /** SHA-256 checksum of the file content. */
   fileHash: string;
@@ -36,10 +34,6 @@ export interface StoredFile {
 }
 
 export interface PrivateFileStorage {
-  /**
-   * Store file bytes privately. Returns server-derived metadata.
-   * The storage key is tenant/batch-scoped — no public URL.
-   */
   store(
     tenantId: string,
     batchId: string,
@@ -49,31 +43,43 @@ export interface PrivateFileStorage {
     contentType: string,
   ): Promise<StoredFile>;
 
-  /**
-   * Read file bytes from private storage.
-   * Returns null if the file does not exist.
-   */
   read(storagePath: string): Promise<Buffer | null>;
 
-  /**
-   * Check if a file exists in private storage.
-   */
   exists(storagePath: string): Promise<boolean>;
 
-  /**
-   * Delete a file from private storage (for compensation on DB failure).
-   * Does NOT throw if the file doesn't exist.
-   */
   deleteIfOrphaned(storagePath: string): Promise<void>;
 }
 
 /**
+ * Sanitize a display filename into a safe object key component.
+ * Prevents path traversal and unsafe characters.
+ */
+export function sanitizeFilename(filename: string): string {
+  // Handle both forward and backslash path separators
+  const basename = filename.replace(/[/\\]/g, "/").split("/").pop() ?? filename;
+  return basename
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/\.{2,}/g, ".");
+}
+
+/**
+ * Build a tenant/batch-scoped object key.
+ */
+export function buildObjectKey(
+  tenantId: string,
+  batchId: string,
+  key: string,
+  filename: string,
+): string {
+  const safeName = sanitizeFilename(filename);
+  return `${tenantId}/migration/${batchId}/${key}/${safeName}`;
+}
+
+/**
  * Local filesystem private file storage adapter.
+ * FOR TESTS AND LOCAL DEVELOPMENT ONLY — never use in production.
  *
  * Stores files under a base directory with tenant/batch-scoped paths.
- * The storagePath format is: `private://{tenantId}/migration/{batchId}/{key}/{filename}`
- *
- * In production, replace with S3/GCS adapter implementing the same interface.
  */
 export class LocalPrivateFileStorage implements PrivateFileStorage {
   constructor(private readonly baseDir: string = "/tmp/erp-yarn-private-storage") {}
@@ -86,85 +92,185 @@ export class LocalPrivateFileStorage implements PrivateFileStorage {
     content: Buffer,
     contentType: string,
   ): Promise<StoredFile> {
-    // Build tenant/batch-scoped directory
     const dir = path.join(this.baseDir, tenantId, "migration", batchId, key);
     await fs.mkdir(dir, { recursive: true });
-
-    // Sanitize filename (prevent path traversal)
-    const safeFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+    const safeFilename = sanitizeFilename(filename);
     const filePath = path.join(dir, safeFilename);
-
-    // Write file bytes
     await fs.writeFile(filePath, content);
-
-    // Derive checksum server-side
     const fileHash = crypto.createHash("sha256").update(content).digest("hex");
-
-    // Build storage path (private:// scheme — never a public URL)
-    const storagePath = `private://${tenantId}/migration/${batchId}/${key}/${safeFilename}`;
-
-    return {
-      storagePath,
-      fileHash,
-      fileSizeBytes: content.length,
-      contentType,
-    };
+    const storagePath = `local://${tenantId}/migration/${batchId}/${key}/${safeFilename}`;
+    return { storagePath, fileHash, fileSizeBytes: content.length, contentType };
   }
 
   async read(storagePath: string): Promise<Buffer | null> {
     const filePath = this.resolvePath(storagePath);
     if (!filePath) return null;
-    try {
-      return await fs.readFile(filePath);
-    } catch {
-      return null;
-    }
+    try { return await fs.readFile(filePath); } catch { return null; }
   }
 
   async exists(storagePath: string): Promise<boolean> {
     const filePath = this.resolvePath(storagePath);
     if (!filePath) return false;
-    try {
-      await fs.access(filePath);
-      return true;
-    } catch {
-      return false;
-    }
+    try { await fs.access(filePath); return true; } catch { return false; }
   }
 
   async deleteIfOrphaned(storagePath: string): Promise<void> {
     const filePath = this.resolvePath(storagePath);
     if (!filePath) return;
-    try {
-      await fs.unlink(filePath);
-    } catch {
-      // Best-effort — file may not exist
-    }
+    try { await fs.unlink(filePath); } catch { /* best-effort */ }
   }
 
-  /**
-   * Convert a private:// storage path to a filesystem path.
-   * Returns null if the path is not a valid private:// path.
-   */
   private resolvePath(storagePath: string): string | null {
-    if (!storagePath.startsWith("private://")) return null;
-    const relativePath = storagePath.slice("private://".length);
-    // Prevent path traversal
+    if (!storagePath.startsWith("local://")) return null;
+    const relativePath = storagePath.slice("local://".length);
     if (relativePath.includes("..")) return null;
     return path.join(this.baseDir, relativePath);
   }
 }
 
 /**
- * Singleton instance. In production, this would be configured via env.
+ * Supabase private file storage adapter.
+ *
+ * Uses a PRIVATE Supabase Storage bucket. Server-only secret credentials.
+ * Never exposes public URLs. Object keys are tenant/batch-scoped.
+ *
+ * Production wiring: when SUPABASE_SERVICE_ROLE_KEY and SUPABASE_URL are
+ * configured, this adapter is used. If they are not configured, the
+ * factory throws (fail-closed).
  */
+export class SupabasePrivateFileStorage implements PrivateFileStorage {
+  private readonly bucket: string;
+
+  constructor(
+    private readonly supabaseUrl: string,
+    private readonly supabaseServiceKey: string,
+    bucketName: string = "migration-private-files",
+  ) {
+    this.bucket = bucketName;
+  }
+
+  async store(
+    tenantId: string,
+    batchId: string,
+    key: string,
+    filename: string,
+    content: Buffer,
+    contentType: string,
+  ): Promise<StoredFile> {
+    const objectKey = buildObjectKey(tenantId, batchId, key, filename);
+
+    // Upload to private bucket using server-side fetch
+    const uploadUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
+    const response = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.supabaseServiceKey}`,
+        "Content-Type": contentType,
+        "x-upsert": "false", // Never overwrite — new key = new object
+      },
+      body: new Uint8Array(content),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "unknown error");
+      throw new Error(`SupabasePrivateFileStorage.store failed: ${response.status} ${errorText}`);
+    }
+
+    const fileHash = crypto.createHash("sha256").update(content).digest("hex");
+    const storagePath = `supabase://${this.bucket}/${objectKey}`;
+
+    return { storagePath, fileHash, fileSizeBytes: content.length, contentType };
+  }
+
+  async read(storagePath: string): Promise<Buffer | null> {
+    const objectKey = this.resolveKey(storagePath);
+    if (!objectKey) return null;
+
+    const downloadUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
+    const response = await fetch(downloadUrl, {
+      headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
+    });
+
+    if (!response.ok) return null;
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  async exists(storagePath: string): Promise<boolean> {
+    const objectKey = this.resolveKey(storagePath);
+    if (!objectKey) return false;
+
+    const checkUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
+    const response = await fetch(checkUrl, {
+      method: "HEAD",
+      headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
+    });
+
+    return response.ok;
+  }
+
+  async deleteIfOrphaned(storagePath: string): Promise<void> {
+    const objectKey = this.resolveKey(storagePath);
+    if (!objectKey) return;
+
+    const deleteUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
+    try {
+      await fetch(deleteUrl, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
+      });
+    } catch {
+      // Best-effort — compensation failure is recorded by the caller
+    }
+  }
+
+  private resolveKey(storagePath: string): string | null {
+    if (!storagePath.startsWith("supabase://")) return null;
+    const afterBucket = storagePath.slice("supabase://".length);
+    const slashIdx = afterBucket.indexOf("/");
+    if (slashIdx < 0) return null;
+    return afterBucket.slice(slashIdx + 1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Factory — fail-closed production wiring
+// ---------------------------------------------------------------------------
+
 let _storage: PrivateFileStorage | null = null;
 
+/**
+ * Get the configured private file storage.
+ *
+ * Production wiring:
+ *   - If SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set → SupabasePrivateFileStorage
+ *   - If ERP_USE_LOCAL_STORAGE=1 → LocalPrivateFileStorage (tests/dev only)
+ *   - Otherwise → throws (fail-closed: no persistent storage available)
+ */
 export function getPrivateFileStorage(): PrivateFileStorage {
-  if (!_storage) {
-    _storage = new LocalPrivateFileStorage();
+  if (_storage) return _storage;
+
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const useLocal = process.env.ERP_USE_LOCAL_STORAGE === "1";
+
+  if (supabaseUrl && supabaseKey) {
+    _storage = new SupabasePrivateFileStorage(supabaseUrl, supabaseKey);
+    return _storage;
   }
-  return _storage;
+
+  if (useLocal) {
+    _storage = new LocalPrivateFileStorage();
+    return _storage;
+  }
+
+  // Fail-closed: no persistent storage configured
+  throw new Error(
+    "PRIVATE_FILE_STORAGE_NOT_CONFIGURED: Production requires SUPABASE_URL + " +
+    "SUPABASE_SERVICE_ROLE_KEY for SupabasePrivateFileStorage, or " +
+    "ERP_USE_LOCAL_STORAGE=1 for local development. Refusing to use " +
+    "ephemeral filesystem as production storage."
+  );
 }
 
 /**
