@@ -74,15 +74,22 @@ describe("WP-08-01F — Filename sanitization", () => {
 });
 
 describe("WP-08-01F — Object key building", () => {
-  it("builds tenant/batch-scoped keys", () => {
-    const key = buildObjectKey("tenant-1", "batch-1", "key-1", "data.csv");
-    expect(key).toBe("tenant-1/migration/batch-1/key-1/data.csv");
+  it("builds tenant/batch-scoped keys with server-generated random ID", () => {
+    const key = buildObjectKey("tenant-1", "batch-1", "ignored-key", "data.csv");
+    // Key should contain tenant/batch scope and sanitized filename
+    expect(key).toContain("tenant-1/migration/batch-1/");
+    expect(key).toContain("/data.csv");
+    // Key should NOT contain the client-supplied key
+    expect(key).not.toContain("ignored-key");
+    // Key should contain a UUID (random server-generated ID)
+    expect(key).toMatch(/tenant-1\/migration\/batch-1\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/data\.csv/);
   });
 
-  it("sanitizes filename in key", () => {
-    const key = buildObjectKey("tenant-1", "batch-1", "key-1", "../../../etc/passwd");
-    expect(key).toBe("tenant-1/migration/batch-1/key-1/passwd");
+  it("sanitizes filename in key (path traversal prevention)", () => {
+    const key = buildObjectKey("tenant-1", "batch-1", "ignored", "../../../etc/passwd");
+    expect(key).toContain("/passwd");
     expect(key).not.toContain("..");
+    expect(key).not.toContain("etc");
   });
 });
 
@@ -97,7 +104,8 @@ describe("WP-08-01F — Upload lifecycle and compensation", () => {
     const content = Buffer.from("entity_type,name\nraw_yarn,Test\n");
     const result = await storage.store("t1", "b1", "k1", "data.csv", content, "text/csv");
 
-    expect(result.storagePath).toContain("t1/migration/b1/k1/data.csv");
+    expect(result.storagePath).toContain("t1/migration/b1/");
+    expect(result.storagePath).toContain("data.csv");
     expect(result.fileHash).toBe(crypto.createHash("sha256").update(content).digest("hex"));
     expect(result.fileSizeBytes).toBe(content.length);
     expect(result.contentType).toBe("text/csv");
@@ -144,15 +152,19 @@ describe("WP-08-01F — Upload lifecycle and compensation", () => {
     expect(await storage.exists(result.storagePath)).toBe(true);
   });
 
-  it("replay with same key does not upload duplicate objects", async () => {
+  it("replay with same content creates separate objects (random IDs)", async () => {
+    // With server-generated random IDs, each store creates a new object.
+    // Replay deduplication is handled at the idempotency layer, not storage.
     const content = Buffer.from("test\n");
     const result1 = await storage.store("t1", "b1", "same-key", "file.csv", content, "text/csv");
     const result2 = await storage.store("t1", "b1", "same-key", "file.csv", content, "text/csv");
 
-    // Same storage path (same key = same object)
-    expect(result1.storagePath).toBe(result2.storagePath);
-    // Only one file in storage
-    expect(storage.getFileCount()).toBe(1);
+    // Different storage paths (random IDs)
+    expect(result1.storagePath).not.toBe(result2.storagePath);
+    // Same hash (same content)
+    expect(result1.fileHash).toBe(result2.fileHash);
+    // Two objects in storage
+    expect(storage.getFileCount()).toBe(2);
   });
 
   it("same key + different content produces different hash (conflict)", async () => {

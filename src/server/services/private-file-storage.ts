@@ -63,16 +63,19 @@ export function sanitizeFilename(filename: string): string {
 }
 
 /**
- * Build a tenant/batch-scoped object key.
+ * Build a tenant/batch-scoped object key using a server-generated random ID.
+ * The key parameter is IGNORED for object key construction — a random UUID
+ * is used instead to prevent client-controlled path components.
  */
 export function buildObjectKey(
   tenantId: string,
   batchId: string,
-  key: string,
+  _key: string, // ignored — server generates random ID
   filename: string,
 ): string {
   const safeName = sanitizeFilename(filename);
-  return `${tenantId}/migration/${batchId}/${key}/${safeName}`;
+  const randomId = crypto.randomUUID();
+  return `${tenantId}/migration/${batchId}/${randomId}/${safeName}`;
 }
 
 /**
@@ -87,18 +90,20 @@ export class LocalPrivateFileStorage implements PrivateFileStorage {
   async store(
     tenantId: string,
     batchId: string,
-    key: string,
+    _key: string,
     filename: string,
     content: Buffer,
     contentType: string,
   ): Promise<StoredFile> {
-    const dir = path.join(this.baseDir, tenantId, "migration", batchId, key);
+    // Use server-generated random ID for object key (not client-controlled)
+    const randomId = crypto.randomUUID();
+    const dir = path.join(this.baseDir, tenantId, "migration", batchId, randomId);
     await fs.mkdir(dir, { recursive: true });
     const safeFilename = sanitizeFilename(filename);
     const filePath = path.join(dir, safeFilename);
     await fs.writeFile(filePath, content);
     const fileHash = crypto.createHash("sha256").update(content).digest("hex");
-    const storagePath = `local://${tenantId}/migration/${batchId}/${key}/${safeFilename}`;
+    const storagePath = `local://${tenantId}/migration/${batchId}/${randomId}/${safeFilename}`;
     return { storagePath, fileHash, fileSizeBytes: content.length, contentType };
   }
 
@@ -242,18 +247,36 @@ let _storage: PrivateFileStorage | null = null;
 /**
  * Get the configured private file storage.
  *
- * Production wiring:
- *   - If SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set → SupabasePrivateFileStorage
- *   - If ERP_USE_LOCAL_STORAGE=1 → LocalPrivateFileStorage (tests/dev only)
- *   - Otherwise → throws (fail-closed: no persistent storage available)
+ * Production wiring (fail-closed):
+ *   - If NODE_ENV === "production": ONLY SupabasePrivateFileStorage is allowed.
+ *     ERP_USE_LOCAL_STORAGE is IGNORED. If Supabase is not configured, throws.
+ *   - If NODE_ENV !== "production" (test/dev):
+ *     - If SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY → SupabasePrivateFileStorage
+ *     - If ERP_USE_LOCAL_STORAGE=1 → LocalPrivateFileStorage (tests/dev only)
+ *     - Otherwise → throws
  */
 export function getPrivateFileStorage(): PrivateFileStorage {
   if (_storage) return _storage;
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const isProduction = process.env.NODE_ENV === "production";
   const useLocal = process.env.ERP_USE_LOCAL_STORAGE === "1";
 
+  // In production: ONLY Supabase is allowed. Local is impossible.
+  if (isProduction) {
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error(
+        "PRIVATE_FILE_STORAGE_NOT_CONFIGURED: Production requires SUPABASE_URL + " +
+        "SUPABASE_SERVICE_ROLE_KEY. LocalPrivateFileStorage is forbidden in production. " +
+        "ERP_USE_LOCAL_STORAGE is ignored in production."
+      );
+    }
+    _storage = new SupabasePrivateFileStorage(supabaseUrl, supabaseKey);
+    return _storage;
+  }
+
+  // Non-production: allow Supabase or local
   if (supabaseUrl && supabaseKey) {
     _storage = new SupabasePrivateFileStorage(supabaseUrl, supabaseKey);
     return _storage;
@@ -264,12 +287,11 @@ export function getPrivateFileStorage(): PrivateFileStorage {
     return _storage;
   }
 
-  // Fail-closed: no persistent storage configured
+  // Fail-closed
   throw new Error(
-    "PRIVATE_FILE_STORAGE_NOT_CONFIGURED: Production requires SUPABASE_URL + " +
-    "SUPABASE_SERVICE_ROLE_KEY for SupabasePrivateFileStorage, or " +
-    "ERP_USE_LOCAL_STORAGE=1 for local development. Refusing to use " +
-    "ephemeral filesystem as production storage."
+    "PRIVATE_FILE_STORAGE_NOT_CONFIGURED: Set SUPABASE_URL + " +
+    "SUPABASE_SERVICE_ROLE_KEY for Supabase storage, or " +
+    "ERP_USE_LOCAL_STORAGE=1 for local development."
   );
 }
 

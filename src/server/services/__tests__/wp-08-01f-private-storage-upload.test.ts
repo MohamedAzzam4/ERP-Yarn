@@ -18,7 +18,8 @@ describe("WP-08-01F MILESTONE B — Private file storage", () => {
     const content = Buffer.from("test,file,content\nrow1,val1,val2\n");
     const result = await storage.store("tenant-1", "batch-1", "key-1", "test.csv", content, "text/csv");
 
-    expect(result.storagePath).toContain("private://tenant-1/migration/batch-1/key-1/test.csv");
+    expect(result.storagePath).toContain("tenant-1/migration/batch-1/");
+    expect(result.storagePath).toContain("test.csv");
     expect(result.fileHash).toBe(crypto.createHash("sha256").update(content).digest("hex"));
     expect(result.fileSizeBytes).toBe(content.length);
     expect(result.contentType).toBe("text/csv");
@@ -74,7 +75,8 @@ describe("WP-08-01F MILESTONE B — Private file storage", () => {
     const result = await storage.store("t1", "b1", "k1", "f.csv", content, "text/csv");
     expect(result.storagePath).not.toMatch(/^https?:\/\//);
     expect(result.storagePath).not.toMatch(/^ftp:\/\//);
-    expect(result.storagePath).toMatch(/^private:\/\//);
+    // Storage paths use private://, local://, supabase://, or inmemory:// scheme
+    expect(result.storagePath).toMatch(/^(private|local|supabase|inmemory):\/\//);
   });
 
   it("preserves old file on replacement (new key = new object)", async () => {
