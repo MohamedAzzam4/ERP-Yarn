@@ -3,7 +3,7 @@
  * Non-operational — no stock/account/sales effects.
  */
 import "server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql as drizzleSql } from "drizzle-orm";
 import {
   importReconciliationResults,
   importHumanReviewItems,
@@ -180,10 +180,14 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
   }
 
   async updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null> {
-    const [result] = await this.db.update(importBatches)
-      .set({ status: status as any, updatedAt: new Date() })
-      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId))).returning();
-    return result ?? null;
+    // WP-08-01F R3 QA FIX: Use raw SQL with explicit enum cast for Supabase pooler compatibility.
+    const [result] = await this.db.execute(drizzleSql`
+      UPDATE import_batches
+      SET status = ${status}::import_batch_status, updated_at = NOW()
+      WHERE tenant_id = ${tenantId} AND id = ${batchId}
+      RETURNING *
+    `);
+    return (result as unknown as ImportBatch[])?.[0] ?? null;
   }
 
   async resetBatchValidationAndReconciliationStatuses(

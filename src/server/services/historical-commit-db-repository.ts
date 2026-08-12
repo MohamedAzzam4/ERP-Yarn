@@ -8,7 +8,7 @@
  * Contract: docs/contracts/06_approval_transaction_contract.md §15
  */
 import "server-only";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql as drizzleSql } from "drizzle-orm";
 import {
   importBatches,
   importBatchApprovals,
@@ -58,11 +58,14 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
   }
 
   async updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null> {
-    const [updated] = await this.db.update(importBatches)
-      .set({ status: status as any, updatedAt: new Date() })
-      .where(and(eq(importBatches.tenantId, tenantId), eq(importBatches.id, batchId)))
-      .returning();
-    return updated ?? null;
+    // WP-08-01F R3 QA FIX: Use raw SQL with explicit enum cast for Supabase pooler compatibility.
+    const [updated] = await this.db.execute(drizzleSql`
+      UPDATE import_batches
+      SET status = ${status}::import_batch_status, updated_at = NOW()
+      WHERE tenant_id = ${tenantId} AND id = ${batchId}
+      RETURNING *
+    `);
+    return (updated as unknown as ImportBatch[])?.[0] ?? null;
   }
 
   async updateBatchCommitMetadata(
