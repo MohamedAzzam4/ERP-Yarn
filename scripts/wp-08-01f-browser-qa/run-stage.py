@@ -113,8 +113,8 @@ def login(page, creds):
     print(f"  OK -> {page.url}")
 
 def goto_batch(page, batch_id):
-    page.goto(f"{BASE_URL}/management/admin/migration/{batch_id}", wait_until="networkidle")
-    page.wait_for_selector("h1", timeout=10000)
+    page.goto(f"{BASE_URL}/management/admin/migration/{batch_id}", wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_selector("h1", timeout=15000)
     time.sleep(5)
 
 def submit_form(page, action_name, run_id):
