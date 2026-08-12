@@ -57,15 +57,29 @@ def db_query(batch_id, mode=""):
     return out
 
 def get_batch_id_by_description(description):
-    """Get exact batch ID from DB by source description."""
-    # Use a one-off node command
-    result = subprocess.run([
-        "node", "-e",
-        f"const p=require('{REPO}/node_modules/postgres');"
-        f"const sql=p('{DB_URL}',{{prepare:false,max:3,connect_timeout:15,idle_timeout:10}});"
-        f"(async()=>{{const r=await sql`SELECT id FROM import_batches WHERE tenant_id='{QA_TENANT}' AND source_description='${description}' ORDER BY created_at DESC LIMIT 1`;console.log(r[0]?.id||'');await sql.end();}})();"
-    ], capture_output=True, text=True, cwd=str(REPO))
-    return result.stdout.strip()
+    """Get exact batch ID from DB by source description using a proper helper script."""
+    # Write description to a temp file to avoid shell escaping issues
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(description)
+        desc_file = f.name
+    try:
+        result = subprocess.run([
+            "node", "-e",
+            "const p=require('" + str(REPO / "node_modules/postgres") + "');"
+            "const fs=require('fs');"
+            "const desc=fs.readFileSync('" + desc_file + "','utf-8').trim();"
+            "const sql=p(process.argv[1],{prepare:false,max:3,connect_timeout:15,idle_timeout:10});"
+            "(async()=>{"
+            "const r=await sql`SELECT id FROM import_batches WHERE tenant_id=${process.argv[2]} AND source_description=${desc} ORDER BY created_at DESC LIMIT 1`;"
+            "console.log(r[0]?.id||'');"
+            "await sql.end();"
+            "})();",
+            DB_URL, QA_TENANT
+        ], capture_output=True, text=True, cwd=str(REPO))
+        return result.stdout.strip()
+    finally:
+        os.unlink(desc_file)
 
 def load_state(run_id):
     f = RUN_STATE_DIR / f"{run_id}.json"
