@@ -136,7 +136,8 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
     const key = `${tenantId}:${fileId}`;
     const file = this.files.get(key);
     if (!file) return null;
-    const updated = { ...file, supersededById, updatedAt: NOW() };
+    // WP-08-01F R2: update BOTH superseded_by_id and superseded_by.
+    const updated = { ...file, supersededById, supersededBy: supersededById, updatedAt: NOW() } as ImportFile;
     this.files.set(key, updated);
     return updated;
   }

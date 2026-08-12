@@ -139,8 +139,12 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
   }
 
   async updateFileSuperseded(tenantId: string, fileId: string, supersededById: string): Promise<ImportFile | null> {
+    // WP-08-01F R2: update BOTH superseded_by_id and superseded_by to the
+    // new file ID. The markFileSuperseded call uses a placeholder (the old
+    // file's own ID) because the new file hasn't been inserted yet. This
+    // follow-up update corrects both columns to point to the actual new file.
     const [result] = await this.db.update(importFiles)
-      .set({ supersededById, updatedAt: new Date() })
+      .set({ supersededById, supersededBy: supersededById, updatedAt: new Date() })
       .where(and(
         eq(importFiles.tenantId, tenantId),
         eq(importFiles.id, fileId),

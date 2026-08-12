@@ -120,29 +120,34 @@ export const INITIAL_UPLOAD_ELIGIBLE_STATES: ReadonlySet<MigrationBatchStatus> =
 ]);
 
 /**
- * WP-08-01F R1 — Replacement-eligible states.
+ * WP-08-01F R1/R2 — Replacement-eligible states.
  *
  * The explicit `replaceMigrationFile` command is the ONLY safe way to change
- * the file set after staging finalization. It is permitted whenever the
- * batch is in a pre-commit rework lifecycle state — i.e. any state where
- * staging data may still change without violating committed-batch immutability.
+ * the file set after staging finalization. It is permitted only in stable
+ * pre-commit rework states where NO concurrent validation/reconciliation/commit
+ * is in progress.
  *
  * Allowed: source_uploaded, normalized, staged, validation_complete,
- *   reconciliation_in_progress, review_required, pending_dual_approval,
- *   approved_for_commit.
- * Rejected: draft (no file to replace yet), committing (concurrent commit),
- *   committed (use HistoricalCorrectionService), rejected, cancelled.
+ *   review_required, pending_dual_approval, approved_for_commit.
+ * Rejected (fail closed):
+ *   - draft (no file to replace yet)
+ *   - validation_in_progress (concurrent validation — must not race)
+ *   - reconciliation_in_progress (concurrent reconciliation — must not race)
+ *   - committing (concurrent commit in progress)
+ *   - committed (use HistoricalCorrectionService)
+ *   - rejected, cancelled (terminal)
  *
- * Committed batches are NEVER eligible for replacement — Contract 08 §9
- * mandates committed-batch immutability; corrections go through the
- * HistoricalCorrectionService reversal/adjustment workflow.
+ * WP-08-01F R2: validation_in_progress and reconciliation_in_progress are
+ * explicitly excluded to prevent concurrent races. A replacement during
+ * active validation/reconciliation would corrupt the in-flight report.
+ * Committed batches are NEVER eligible — Contract 08 §9 mandates committed-
+ * batch immutability; corrections go through HistoricalCorrectionService.
  */
 export const REPLACEMENT_ELIGIBLE_STATES: ReadonlySet<MigrationBatchStatus> = new Set([
   "source_uploaded",
   "normalized",
   "staged",
   "validation_complete",
-  "reconciliation_in_progress",
   "review_required",
   "pending_dual_approval",
   "approved_for_commit",

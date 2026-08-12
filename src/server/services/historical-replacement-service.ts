@@ -197,6 +197,34 @@ export class HistoricalReplacementService {
       );
     }
 
+    // WP-08-01F R2: Reject `validation_in_progress` — concurrent validation
+    // must not race with replacement. A replacement during active validation
+    // would corrupt the in-flight validation report.
+    if (batch.status === "validation_in_progress") {
+      throw new HistoricalReplacementError(
+        "CONCURRENT_VALIDATION",
+        `Batch '${input.importBatchId}' is in 'validation_in_progress' state — concurrent validation in progress. Replacement is locked to prevent race conditions.`,
+      );
+    }
+
+    // WP-08-01F R2: Reject `reconciliation_in_progress` — concurrent
+    // reconciliation must not race with replacement. A replacement during
+    // active reconciliation would corrupt the in-flight reconciliation report.
+    if (batch.status === "reconciliation_in_progress") {
+      throw new HistoricalReplacementError(
+        "CONCURRENT_RECONCILIATION",
+        `Batch '${input.importBatchId}' is in 'reconciliation_in_progress' state — concurrent reconciliation in progress. Replacement is locked to prevent race conditions.`,
+      );
+    }
+
+    // Reject terminal states (rejected, cancelled) with a clear message.
+    if (batch.status === "rejected" || batch.status === "cancelled") {
+      throw new HistoricalReplacementError(
+        "BATCH_TERMINAL",
+        `Batch '${input.importBatchId}' is in terminal state '${batch.status}'. Replacement is not allowed on terminal batches.`,
+      );
+    }
+
     // Reject `draft` — nothing to replace yet.
     if (batch.status === "draft") {
       throw new HistoricalReplacementError(

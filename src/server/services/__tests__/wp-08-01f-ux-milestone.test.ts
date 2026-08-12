@@ -366,12 +366,14 @@ describe("WP-08-01F UX — lifecycle action matrix", () => {
     }
   });
 
-  it("replaceMigrationFile is allowed in pre-commit rework states (not draft, not committing, not committed)", () => {
+  it("replaceMigrationFile is allowed in stable pre-commit rework states (excludes validation_in_progress, reconciliation_in_progress, committing, committed, terminal)", () => {
+    // WP-08-01F R2: validation_in_progress and reconciliation_in_progress are
+    // excluded to prevent concurrent races.
     for (const status of ALL_BATCH_STATUSES) {
       const matrix = getActionMatrix(makeBaseState({ status }));
       const expected = [
         "source_uploaded", "normalized", "staged",
-        "validation_complete", "reconciliation_in_progress",
+        "validation_complete",
         "review_required", "pending_dual_approval", "approved_for_commit",
       ].includes(status);
       expect(matrix.replaceMigrationFile).toBe(expected);

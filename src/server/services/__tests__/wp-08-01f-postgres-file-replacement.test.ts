@@ -1004,4 +1004,475 @@ describeOrSkip("WP-08-01F R1 — Real PostgreSQL file-replacement proof", () => 
     const after = await captureFullSnapshot();
     await assertZeroEffects(before, after);
   });
+
+  // ===========================================================================
+  // WP-08-01F R2 — PHASE 0: Concurrency rejection + exact-lineage proof
+  // ===========================================================================
+
+  // -------------------------------------------------------------------------
+  // R2-1. Replacement rejected during validation_in_progress (zero effects)
+  // -------------------------------------------------------------------------
+  it("R2-1. replacement rejected during validation_in_progress (zero effects)", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "validation_in_progress");
+    const oldFileId = await seedFile(batchId, "sha256:r2vip", "source");
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-vip", "r.csv", Buffer.from(csv), "text/csv");
+
+    const before = await captureFullSnapshot();
+    await expect(
+      replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+        importBatchId: batchId, replaceFileId: oldFileId,
+        originalFileName: "r.csv", storagePath: storedFile.storagePath,
+        fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+        contentType: storedFile.contentType, fileType: "source",
+        parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+        reworkReason: "R2 concurrency", idempotencyKey: "r2-vip",
+      }),
+    ).rejects.toThrow(/CONCURRENT_VALIDATION|validation_in_progress/);
+    const after = await captureFullSnapshot();
+    await assertZeroEffects(before, after);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-2. Replacement rejected during reconciliation_in_progress (zero effects)
+  // -------------------------------------------------------------------------
+  it("R2-2. replacement rejected during reconciliation_in_progress (zero effects)", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "reconciliation_in_progress");
+    const oldFileId = await seedFile(batchId, "sha256:r2rip", "source");
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-rip", "r.csv", Buffer.from(csv), "text/csv");
+
+    const before = await captureFullSnapshot();
+    await expect(
+      replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+        importBatchId: batchId, replaceFileId: oldFileId,
+        originalFileName: "r.csv", storagePath: storedFile.storagePath,
+        fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+        contentType: storedFile.contentType, fileType: "source",
+        parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+        reworkReason: "R2 concurrency", idempotencyKey: "r2-rip",
+      }),
+    ).rejects.toThrow(/CONCURRENT_RECONCILIATION|reconciliation_in_progress/);
+    const after = await captureFullSnapshot();
+    await assertZeroEffects(before, after);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-3. Replacement rejected during committing (zero effects)
+  // -------------------------------------------------------------------------
+  it("R2-3. replacement rejected during committing (zero effects)", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "committing");
+    const oldFileId = await seedFile(batchId, "sha256:r2cmt", "source");
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-cmt", "r.csv", Buffer.from(csv), "text/csv");
+
+    const before = await captureFullSnapshot();
+    await expect(
+      replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+        importBatchId: batchId, replaceFileId: oldFileId,
+        originalFileName: "r.csv", storagePath: storedFile.storagePath,
+        fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+        contentType: storedFile.contentType, fileType: "source",
+        parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+        reworkReason: "R2 concurrency", idempotencyKey: "r2-cmt",
+      }),
+    ).rejects.toThrow(/CONCURRENT_COMMIT|committing/);
+    const after = await captureFullSnapshot();
+    await assertZeroEffects(before, after);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-4. Replacement rejected for rejected/cancelled terminal states (zero effects)
+  // -------------------------------------------------------------------------
+  it("R2-4. replacement rejected for rejected/cancelled terminal states (zero effects)", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+
+    for (const terminalStatus of ["rejected", "cancelled"] as const) {
+      const batchId = randomUUID();
+      await seedBatch(batchId, terminalStatus);
+      const oldFileId = await seedFile(batchId, `sha256:r2-${terminalStatus}`, "source");
+
+      const { csv, template } = buildInventoryCsv(1);
+      const parseResult = parseCsv(csv, template);
+      const storedFile = await storage.store(T, batchId, `r2-${terminalStatus}`, "r.csv", Buffer.from(csv), "text/csv");
+
+      const before = await captureFullSnapshot();
+      await expect(
+        replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+          importBatchId: batchId, replaceFileId: oldFileId,
+          originalFileName: "r.csv", storagePath: storedFile.storagePath,
+          fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+          contentType: storedFile.contentType, fileType: "source",
+          parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+          reworkReason: "R2 terminal", idempotencyKey: `r2-${terminalStatus}`,
+        }),
+      ).rejects.toThrow(/BATCH_TERMINAL|COMMITTED_BATCH_IMMUTABLE|terminal/);
+      const after = await captureFullSnapshot();
+      await assertZeroEffects(before, after);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-5. Final file chain verification (oldFile.isCurrent=false, supersededById=newFile.id, newFile.isCurrent=true)
+  // -------------------------------------------------------------------------
+  it("R2-5. final file chain: oldFile.isCurrent=false, supersededById=newFile.id, newFile.isCurrent=true, exactly one current", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "staged");
+    const oldFileId = await seedFile(batchId, "sha256:r2chain", "source");
+
+    const { csv, template } = buildInventoryCsv(2);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-chain", "r.csv", Buffer.from(csv), "text/csv");
+
+    const result = await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R2 chain test", idempotencyKey: "r2-chain",
+    });
+
+    // Old file: is_current=false, superseded_by_id=newFile.id, superseded_by=newFile.id
+    const oldFileRow = (await sql`SELECT is_current, superseded_by_id, superseded_by FROM import_files WHERE id = ${oldFileId}`) as any[];
+    expect(oldFileRow[0]!.is_current).toBe(false);
+    expect(oldFileRow[0]!.superseded_by_id).toBe(result.newFileId);
+    expect(oldFileRow[0]!.superseded_by).toBe(result.newFileId);
+    // newFile never points to itself
+    expect(result.newFileId).not.toBe(oldFileId);
+
+    // New file: is_current=true, superseded_by_id=null
+    const newFileRow = (await sql`SELECT is_current, superseded_by_id FROM import_files WHERE id = ${result.newFileId}`) as any[];
+    expect(newFileRow[0]!.is_current).toBe(true);
+    expect(newFileRow[0]!.superseded_by_id).toBeNull();
+
+    // Exactly one current file exists for this batch+fileType
+    const currentCount = (await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND file_type = 'source' AND is_current = true`) as any[];
+    expect(currentCount[0]!.c).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-6. Only old staging rows become non-current; new staging rows remain current
+  // -------------------------------------------------------------------------
+  it("R2-6. only old staging rows become non-current; new staging rows remain current", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "staged");
+    const oldFileId = await seedFile(batchId, "sha256:r2rows", "source");
+    // Seed 2 old staging rows
+    await seedStagingRow(batchId, oldFileId, 1);
+    await seedStagingRow(batchId, oldFileId, 2);
+
+    const { csv, template } = buildInventoryCsv(3);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-rows", "r.csv", Buffer.from(csv), "text/csv");
+
+    const result = await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R2 rows test", idempotencyKey: "r2-rows",
+    });
+
+    // Old staging rows: is_current=false, superseded_by_file_id=newFile.id
+    const oldRows = (await sql`SELECT is_current, superseded_by_file_id FROM import_staging_rows WHERE tenant_id = ${T} AND import_file_id = ${oldFileId}`) as any[];
+    expect(oldRows.length).toBe(2);
+    for (const row of oldRows) {
+      expect(row.is_current).toBe(false);
+      expect(row.superseded_by_file_id).toBe(result.newFileId);
+    }
+
+    // New staging rows: is_current=true, superseded_by_file_id=null
+    const newRows = (await sql`SELECT is_current, superseded_by_file_id FROM import_staging_rows WHERE tenant_id = ${T} AND import_file_id = ${result.newFileId}`) as any[];
+    expect(newRows.length).toBe(3);
+    for (const row of newRows) {
+      expect(row.is_current).toBe(true);
+      expect(row.superseded_by_file_id).toBeNull();
+    }
+
+    // Exactly 3 current staging rows (the new ones)
+    const currentCount = (await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
+    expect(currentCount[0]!.c).toBe(3);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-7. Only old findings become non-current; new findings (after re-validation) remain current
+  // -------------------------------------------------------------------------
+  it("R2-7. only current findings become non-current after replacement (batch-level reset)", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "staged");
+    const oldFileId = await seedFile(batchId, "sha256:r2find", "source");
+    const oldRowId = await seedStagingRow(batchId, oldFileId, 1);
+
+    // Seed an old finding (is_current=true)
+    const oldFindingId = randomUUID();
+    await sql`
+      INSERT INTO import_validation_errors (id, tenant_id, import_batch_id, staging_row_id, severity, error_code, message, field_name, is_blocking, resolution_status, finding_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${oldFindingId}, ${T}, ${batchId}, ${oldRowId}, ${"blocking_error"}::validation_severity, ${"TEST_ERROR"}, ${"test"}, ${"quantity"}, true, ${"open"}, 1, true, ${U}, NOW(), null, null)`;
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-find", "r.csv", Buffer.from(csv), "text/csv");
+
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R2 findings test", idempotencyKey: "r2-find",
+    });
+
+    // Old finding: is_current=false (superseded)
+    const oldFinding = (await sql`SELECT is_current, superseded_at FROM import_validation_errors WHERE id = ${oldFindingId}`) as any[];
+    expect(oldFinding[0]!.is_current).toBe(false);
+    expect(oldFinding[0]!.superseded_at).not.toBeNull();
+
+    // No current findings remain (re-validation hasn't run yet)
+    const currentFindings = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
+    expect(currentFindings[0]!.c).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-8. Same field name in two rows maps correctly (no cross-linking)
+  // -------------------------------------------------------------------------
+  it("R2-8. same field name in two rows maps correctly (no cross-linking)", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "staged");
+    const oldFileId = await seedFile(batchId, "sha256:r2field", "source");
+
+    // Seed two old staging rows with the same field name "quantity" but different values
+    const row1Id = randomUUID();
+    const row2Id = randomUUID();
+    await sql`
+      INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name, source_sheet_name, source_row_number, raw_row_json, transformed_row_json, transformation_notes, validation_status, review_status, ai_confidence, committed_entity_type, committed_entity_id, staging_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${row1Id}, ${T}, ${batchId}, ${oldFileId}, ${"t"}, ${"s"}, 1, ${JSON.stringify({ quantity: "100" })}::jsonb, ${JSON.stringify({ quantity: "100" })}::jsonb, null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${U}, NOW(), null, null)`;
+    await sql`
+      INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name, source_sheet_name, source_row_number, raw_row_json, transformed_row_json, transformation_notes, validation_status, review_status, ai_confidence, committed_entity_type, committed_entity_id, staging_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${row2Id}, ${T}, ${batchId}, ${oldFileId}, ${"t"}, ${"s"}, 2, ${JSON.stringify({ quantity: "200" })}::jsonb, ${JSON.stringify({ quantity: "200" })}::jsonb, null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${U}, NOW(), null, null)`;
+
+    // Seed two findings on the same field "quantity" but different rows
+    const finding1Id = randomUUID();
+    const finding2Id = randomUUID();
+    await sql`
+      INSERT INTO import_validation_errors (id, tenant_id, import_batch_id, staging_row_id, severity, error_code, message, field_name, is_blocking, resolution_status, finding_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${finding1Id}, ${T}, ${batchId}, ${row1Id}, ${"blocking_error"}::validation_severity, ${"INVALID_QUANTITY"}, ${"row1"}, ${"quantity"}, true, ${"open"}, 1, true, ${U}, NOW(), null, null)`;
+    await sql`
+      INSERT INTO import_validation_errors (id, tenant_id, import_batch_id, staging_row_id, severity, error_code, message, field_name, is_blocking, resolution_status, finding_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${finding2Id}, ${T}, ${batchId}, ${row2Id}, ${"blocking_error"}::validation_severity, ${"INVALID_QUANTITY"}, ${"row2"}, ${"quantity"}, true, ${"open"}, 1, true, ${U}, NOW(), null, null)`;
+
+    // Verify both findings are linked to their correct staging rows
+    const findings = (await sql`SELECT id, staging_row_id, field_name, message FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true ORDER BY message`) as any[];
+    expect(findings.length).toBe(2);
+    expect(findings[0]!.staging_row_id).toBe(row1Id);
+    expect(findings[0]!.field_name).toBe("quantity");
+    expect(findings[1]!.staging_row_id).toBe(row2Id);
+    expect(findings[1]!.field_name).toBe("quantity");
+    // No cross-linking: finding1 → row1, finding2 → row2
+    expect(findings[0]!.staging_row_id).not.toBe(findings[1]!.staging_row_id);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-9. Multiple findings on one cell are preserved
+  // -------------------------------------------------------------------------
+  it("R2-9. multiple findings on one cell (same staging_row_id + field_name) are preserved", async () => {
+    const batchId = randomUUID();
+    await seedBatch(batchId, "staged");
+    const oldFileId = await seedFile(batchId, "sha256:r2multi", "source");
+    const rowId = await seedStagingRow(batchId, oldFileId, 1);
+
+    // Seed 3 findings on the SAME cell (same staging_row_id + field_name)
+    const findingIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (let i = 0; i < 3; i++) {
+      await sql`
+        INSERT INTO import_validation_errors (id, tenant_id, import_batch_id, staging_row_id, severity, error_code, message, field_name, is_blocking, resolution_status, finding_version, is_current, created_by, created_at, updated_at, updated_by)
+        VALUES (${findingIds[i]!}, ${T}, ${batchId}, ${rowId}, ${"blocking_error"}::validation_severity, ${"ERR_" + i}, ${"msg_" + i}, ${"quantity"}, true, ${"open"}, 1, true, ${U}, NOW(), null, null)`;
+    }
+
+    // All 3 findings are preserved, linked to the same staging_row_id + field_name
+    const findings = (await sql`SELECT id, staging_row_id, field_name, error_code FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true AND staging_row_id = ${rowId} ORDER BY error_code`) as any[];
+    expect(findings.length).toBe(3);
+    for (const f of findings) {
+      expect(f.staging_row_id).toBe(rowId);
+      expect(f.field_name).toBe("quantity");
+    }
+    expect(findings.map((f: any) => f.error_code)).toEqual(["ERR_0", "ERR_1", "ERR_2"]);
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-10. Old-version finding cannot expose new-version values
+  // -------------------------------------------------------------------------
+  it("R2-10. old-version finding cannot expose new-version values (is_current filter)", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "staged");
+    const oldFileId = await seedFile(batchId, "sha256:r2oldv", "source");
+    const oldRowId = await seedStagingRow(batchId, oldFileId, 1);
+
+    // Seed an old finding
+    const oldFindingId = randomUUID();
+    await sql`
+      INSERT INTO import_validation_errors (id, tenant_id, import_batch_id, staging_row_id, severity, error_code, message, field_name, is_blocking, resolution_status, finding_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${oldFindingId}, ${T}, ${batchId}, ${oldRowId}, ${"blocking_error"}::validation_severity, ${"OLD_VERSION_ERROR"}, ${"old value"}, ${"quantity"}, true, ${"open"}, 1, true, ${U}, NOW(), null, null)`;
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-oldv", "r.csv", Buffer.from(csv), "text/csv");
+
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R2 old version isolation", idempotencyKey: "r2-oldv",
+    });
+
+    // The old finding is now is_current=false — it cannot be exposed via the
+    // current-finding query (the query service filters is_current=true).
+    const currentFindings = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
+    expect(currentFindings[0]!.c).toBe(0);
+
+    // The old finding still exists (immutable preservation) but is non-current
+    const oldFinding = (await sql`SELECT is_current, error_code, message FROM import_validation_errors WHERE id = ${oldFindingId}`) as any[];
+    expect(oldFinding[0]!.is_current).toBe(false);
+    expect(oldFinding[0]!.error_code).toBe("OLD_VERSION_ERROR");
+    expect(oldFinding[0]!.message).toBe("old value");
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-11. Tenant/batch/file isolation: tenant B's findings are unaffected
+  // -------------------------------------------------------------------------
+  it("R2-11. tenant/batch/file isolation: tenant B's findings are unaffected by tenant A's replacement", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+
+    // Tenant A batch + file + finding
+    const batchA = randomUUID();
+    await seedBatch(batchA, "staged");
+    const oldFileA = await seedFile(batchA, "sha256:r2iso-a", "source");
+    const oldRowA = await seedStagingRow(batchA, oldFileA, 1);
+    const findingA = randomUUID();
+    await sql`
+      INSERT INTO import_validation_errors (id, tenant_id, import_batch_id, staging_row_id, severity, error_code, message, field_name, is_blocking, resolution_status, finding_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${findingA}, ${T}, ${batchA}, ${oldRowA}, ${"blocking_error"}::validation_severity, ${"TENANT_A_ERROR"}, ${"a"}, ${"q"}, true, ${"open"}, 1, true, ${U}, NOW(), null, null)`;
+
+    // Tenant B batch + file + finding (separate tenant)
+    const batchB = randomUUID();
+    const runSuffixB = T_B.slice(0, 8);
+    await sql`
+      INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version, mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count, blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status, warning_summary, committed_at, commit_effect_counts, created_by, created_at)
+      VALUES (${batchB}, ${T_B}, ${"MIG-B-" + batchB.slice(-6)}, ${"staged"}::import_batch_status, ${"b"}, ${"t"}, ${"1.0"}, ${"1.0"}, ${"mh"}, ${"opening_balance"}, ${"sh"}, 1, 0, 0, 0, ${"passed"}, ${"matched"}, null, null, null, ${U}, NOW())`;
+    const fileBId = randomUUID();
+    await sql`
+      INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash, file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${fileBId}, ${T_B}, ${batchB}, ${"b.csv"}, ${"local://b"}, ${"sha256:b"}, 100, ${"text/csv"}, ${"source"}, 1, true, ${U}, NOW(), null, null)`;
+    const rowBId = randomUUID();
+    await sql`
+      INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name, source_sheet_name, source_row_number, raw_row_json, transformed_row_json, transformation_notes, validation_status, review_status, ai_confidence, committed_entity_type, committed_entity_id, staging_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${rowBId}, ${T_B}, ${batchB}, ${fileBId}, ${"t"}, ${"s"}, 1, ${JSON.stringify({ q: "1" })}::jsonb, ${JSON.stringify({ q: "1" })}::jsonb, null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${U}, NOW(), null, null)`;
+    const findingB = randomUUID();
+    await sql`
+      INSERT INTO import_validation_errors (id, tenant_id, import_batch_id, staging_row_id, severity, error_code, message, field_name, is_blocking, resolution_status, finding_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${findingB}, ${T_B}, ${batchB}, ${rowBId}, ${"blocking_error"}::validation_severity, ${"TENANT_B_ERROR"}, ${"b"}, ${"q"}, true, ${"open"}, 1, true, ${U}, NOW(), null, null)`;
+
+    // Run replacement on tenant A
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchA, "r2-iso", "r.csv", Buffer.from(csv), "text/csv");
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchA, replaceFileId: oldFileA,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R2 isolation", idempotencyKey: "r2-iso",
+    });
+
+    // Tenant A's finding is now non-current
+    const findingAAfter = (await sql`SELECT is_current FROM import_validation_errors WHERE id = ${findingA}`) as any[];
+    expect(findingAAfter[0]!.is_current).toBe(false);
+
+    // Tenant B's finding is UNCHANGED — still current
+    const findingBAfter = (await sql`SELECT is_current FROM import_validation_errors WHERE id = ${findingB}`) as any[];
+    expect(findingBAfter[0]!.is_current).toBe(true);
+
+    // Tenant B's file is UNCHANGED — still current
+    const fileBAfter = (await sql`SELECT is_current FROM import_files WHERE id = ${fileBId}`) as any[];
+    expect(fileBAfter[0]!.is_current).toBe(true);
+
+    // Cleanup tenant B data
+    await sql`DELETE FROM import_validation_errors WHERE tenant_id = ${T_B}`;
+    await sql`DELETE FROM import_staging_rows WHERE tenant_id = ${T_B}`;
+    await sql`DELETE FROM import_files WHERE tenant_id = ${T_B}`;
+    await sql`DELETE FROM import_batches WHERE tenant_id = ${T_B}`;
+  });
+
+  // -------------------------------------------------------------------------
+  // R2-12. Batch state after replacement: status=source_uploaded, hashes cleared, statuses reset, row count coherent
+  // -------------------------------------------------------------------------
+  it("R2-12. batch state after replacement: status=source_uploaded, hashes cleared, statuses reset, parsed rows queryable", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "review_required", {
+      stagedDataHash: "original-hash-r2",
+      cutoverManifestHash: "original-manifest-r2",
+      validationStatus: "passed",
+      reconciliationStatus: "matched",
+    });
+    const oldFileId = await seedFile(batchId, "sha256:r2state", "source");
+
+    const { csv, template } = buildInventoryCsv(4);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r2-state", "r.csv", Buffer.from(csv), "text/csv");
+
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R2 state test", idempotencyKey: "r2-state",
+    });
+
+    const batchAfter = (await sql`SELECT status, staged_data_hash, cutover_manifest_hash, validation_status, reconciliation_status, staged_row_count FROM import_batches WHERE id = ${batchId}`) as any[];
+    expect(batchAfter[0]!.status).toBe("source_uploaded");
+    expect(batchAfter[0]!.staged_data_hash).toBe("");
+    expect(batchAfter[0]!.cutover_manifest_hash).toBe("");
+    expect(batchAfter[0]!.validation_status).toBe("unknown");
+    expect(batchAfter[0]!.reconciliation_status).toBe("unknown");
+    // staged_row_count is 0 because finalize hasn't run yet
+    expect(batchAfter[0]!.staged_row_count).toBe(0);
+
+    // Parsed replacement rows remain queryable as the current unfinalized version
+    const currentRows = (await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
+    expect(currentRows[0]!.c).toBe(4);
+  });
 });
