@@ -220,21 +220,20 @@ export class SupabasePrivateFileStorage implements PrivateFileStorage {
 
     const objectKey = buildObjectKey(tenantId, batchId, key, filename);
 
-    // Upload to private bucket using server-side fetch
-    const uploadUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
-    const response = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.supabaseServiceKey}`,
-        "Content-Type": contentType,
-        "x-upsert": "false", // Never overwrite — new key = new object
-      },
-      body: new Uint8Array(content),
-    });
+    // WP-08-01F R2 QA: Use supabase-js client for storage operations.
+    // The new Supabase key format (sb_secret_...) is not a JWT — direct
+    // REST API calls with Bearer auth fail with HTTP 400.
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(this.supabaseUrl, this.supabaseServiceKey);
+    const { error: uploadError } = await supabase.storage
+      .from(this.bucket)
+      .upload(objectKey, new Uint8Array(content), {
+        contentType,
+        upsert: false, // Never overwrite — new key = new object
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "unknown error");
-      throw new Error(`SupabasePrivateFileStorage.store failed: ${response.status} ${errorText}`);
+    if (uploadError) {
+      throw new Error(`SupabasePrivateFileStorage.store failed: ${uploadError.message}`);
     }
 
     const fileHash = crypto.createHash("sha256").update(content).digest("hex");
@@ -247,13 +246,14 @@ export class SupabasePrivateFileStorage implements PrivateFileStorage {
     const objectKey = this.resolveKey(storagePath);
     if (!objectKey) return null;
 
-    const downloadUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
-    const response = await fetch(downloadUrl, {
-      headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
-    });
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(this.supabaseUrl, this.supabaseServiceKey);
+    const { data, error } = await supabase.storage
+      .from(this.bucket)
+      .download(objectKey);
 
-    if (!response.ok) return null;
-    const arrayBuffer = await response.arrayBuffer();
+    if (error || !data) return null;
+    const arrayBuffer = await data.arrayBuffer();
     return Buffer.from(arrayBuffer);
   }
 
@@ -261,25 +261,23 @@ export class SupabasePrivateFileStorage implements PrivateFileStorage {
     const objectKey = this.resolveKey(storagePath);
     if (!objectKey) return false;
 
-    const checkUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
-    const response = await fetch(checkUrl, {
-      method: "HEAD",
-      headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
-    });
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(this.supabaseUrl, this.supabaseServiceKey);
+    const { data, error } = await supabase.storage
+      .from(this.bucket)
+      .list("", { search: objectKey, limit: 1 });
 
-    return response.ok;
+    return !error && data !== null && data.length > 0;
   }
 
   async deleteIfOrphaned(storagePath: string): Promise<void> {
     const objectKey = this.resolveKey(storagePath);
     if (!objectKey) return;
 
-    const deleteUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucket}/${objectKey}`;
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(this.supabaseUrl, this.supabaseServiceKey);
     try {
-      await fetch(deleteUrl, {
-        method: "DELETE",
-        headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
-      });
+      await supabase.storage.from(this.bucket).remove([objectKey]);
     } catch {
       // Best-effort — compensation failure is recorded by the caller
     }
