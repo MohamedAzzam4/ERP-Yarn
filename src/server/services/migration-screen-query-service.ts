@@ -76,6 +76,13 @@ export interface MigrationFileDto {
   templateType: string | null;
   /** Template version recorded for this batch. */
   templateVersion: string | null;
+  // WP-08-01F R2 — immutable version chain metadata
+  /** Monotonically increasing file version number (1, 2, 3, ...). */
+  fileVersion: number;
+  /** Reason recorded when this file was superseded (null if current). */
+  supersededReason: string | null;
+  /** Timestamp when this file was superseded (null if current). */
+  supersededAt: string | null;
 }
 
 /** Staging row preview DTO — no operational effects, provenance only. */
@@ -400,7 +407,10 @@ export class MigrationScreenQueryService {
       for (const r of extraStagingRows) stagingRowById.set(r.id, r);
     }
 
-    // Compute file "isCurrent" — a file is current if no other file points to it via supersededById.
+    // WP-08-01F R2 — use the DB is_current column directly (authoritative).
+    // The old computation via supersededById is kept as a fallback for
+    // backward compatibility with rows that might have null is_current
+    // (shouldn't happen after migration 0017, but defensive).
     const supersededIds = new Set(files.map((f) => f.supersededById).filter((id): id is string => id !== null));
 
     // Validation summary counts (computed from the full findings list, not the page).
@@ -429,7 +439,7 @@ export class MigrationScreenQueryService {
         warningSummary: batchRow.warningSummary,
         commitEffectCounts: batchRow.commitEffectCounts,
       },
-      files: files.map((f) => this.mapFileDto(f, batchRow, supersededIds.has(f.id))),
+      files: files.map((f) => this.mapFileDto(f, batchRow, !f.isCurrent && supersededIds.has(f.id))),
       stagingRows: stagingRowsPage.map((r) => this.mapStagingRowDto(r)),
       stagingPagination,
       validationFindings: allValidationFindings.map((v) => this.mapValidationFindingDto(v, stagingRowById, fileById)),
@@ -564,6 +574,10 @@ export class MigrationScreenQueryService {
       // Template binding is at the batch level (single template per batch).
       templateType: batch.templateName,
       templateVersion: batch.templateVersion,
+      // WP-08-01F R2 — immutable version chain metadata.
+      fileVersion: f.fileVersion,
+      supersededReason: f.supersededReason,
+      supersededAt: f.supersededAt?.toISOString() ?? null,
     };
   }
 

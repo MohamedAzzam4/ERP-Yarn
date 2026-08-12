@@ -34,6 +34,7 @@ import { db } from "@/server/db/client";
 import { MigrationScreenQueryService } from "@/server/services/migration-screen-query-service";
 import {
   uploadAndParseCsvAction,
+  replaceMigrationFileAction,
   finalizeStagingAction,
   finalizeCutoverManifestAction,
   runValidationAction,
@@ -55,11 +56,14 @@ import {
   getActionMatrix,
   visibleApprovalControls,
   visibleCorrectionApprovalControls,
+  canReplaceMigrationFile,
   type MigrationBatchState,
 } from "@/server/services/migration-lifecycle-predicates";
 import { TemplateSelectorAndUploadForm } from "./_components/template-selector-and-upload-form";
 import { ValidationFindingsPanel } from "./_components/validation-findings-panel";
 import { StagingPagination } from "./_components/staging-pagination";
+import { ReplacementUploadForm } from "./_components/replacement-upload-form";
+import { StagingVersionSelector } from "./_components/staging-version-selector";
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -182,6 +186,10 @@ export default async function MigrationBatchDetailPage({
   };
   const actionMatrix = getActionMatrix(batchState);
   const batchApprovalVisibility = visibleApprovalControls(userManagementRoles, batchState);
+
+  // WP-08-01F R2 — The current (non-superseded) source file for the batch.
+  // Used to populate the replacement form's "current file being replaced" display.
+  const currentFile = detail.files.find((f) => f.isCurrent && f.fileType === "source") ?? null;
 
   // Apply validation filters on the server-rendered findings list.
   const filteredFindings = detail.validationFindings.filter((f) => {
@@ -333,13 +341,55 @@ export default async function MigrationBatchDetailPage({
             <CardContent className="space-y-4">
 
               {/* Template selector + upload form — only in preparation states.
-                  Replaces the five independent template buttons with a real selector. */}
+                  Replaces the five independent template buttons with a real selector.
+                  WP-08-01F R2: ordinary upload visible ONLY in draft/source_uploaded/normalized.
+                  It disappears after staging finalization (actionMatrix.registerFile is false
+                  in staged+ states). */}
               {actionMatrix.registerFile && (
                 <TemplateSelectorAndUploadForm
                   batchId={b.id}
                   templates={getAvailableTemplates()}
                   uploadAction={uploadAndParseCsvAction}
                 />
+              )}
+
+              {/* WP-08-01F R2 — Replacement upload form.
+                  Visible only in contract-valid pre-commit rework states
+                  (REPLACEMENT_ELIGIBLE_STATES: source_uploaded, normalized, staged,
+                  validation_complete, review_required, pending_dual_approval,
+                  approved_for_commit).
+                  Excluded: draft (no file to replace), validation_in_progress,
+                  reconciliation_in_progress, committing, committed, rejected, cancelled.
+                  Requires a current file to exist. */}
+              {canReplaceMigrationFile(batchState) && currentFile && (
+                <ReplacementUploadForm
+                  batchId={b.id}
+                  currentFile={{
+                    id: currentFile.id,
+                    originalFileName: currentFile.originalFileName,
+                    fileHashRedacted: currentFile.fileHashRedacted,
+                    fileVersion: currentFile.fileVersion,
+                    createdAt: currentFile.createdAt,
+                  }}
+                  templateType={b.templateName}
+                  templateVersion={b.templateVersion}
+                  replaceAction={replaceMigrationFileAction}
+                />
+              )}
+
+              {/* WP-08-01F R2 — After replacement, show the next required step.
+                  The batch is now in source_uploaded state; the user must finalize staging. */}
+              {b.status === "source_uploaded" && detail.files.filter((f) => !f.isCurrent).length > 0 && (
+                <div role="status" className="border border-info/50 text-info bg-info/5 rounded p-3 text-sm flex items-start gap-2">
+                  <span aria-hidden="true">ℹ</span>
+                  <div>
+                    <div className="font-semibold">الخطوة التالية المطلوبة: إنهاء التجهيز</div>
+                    <div className="text-xs mt-1">
+                      تم استبدال الملف بنجاح. يجب الآن إنهاء التجهيز لإعادة حساب بصمة البيانات،
+                      ثم إعادة التحقق والمطابقة والاعتماد المزدوج.
+                    </div>
+                  </div>
+                </div>
               )}
 
               {/* No metadata-only manual file registration on the end-user UI.
@@ -691,87 +741,154 @@ export default async function MigrationBatchDetailPage({
           </Card>
         )}
 
-        {/* File version list — with all metadata + protected download */}
+        {/* File version list — immutable version history with all metadata + protected download */}
         <Card className="mb-6">
-          <CardHeader><CardTitle>قائمة إصدارات الملفات</CardTitle></CardHeader>
+          <CardHeader><CardTitle>سجل إصدارات الملفات (غير قابل للتعديل)</CardTitle></CardHeader>
           <CardContent>
             {detail.files.length === 0 ? (
               <div className="text-sm text-muted-foreground text-center py-4">
                 لا توجد ملفات مرفوعة بعد. استخدم نموذج الرفع أعلاه لإضافة ملف CSV.
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-right">
-                      <th className="py-2 px-3">اسم الملف</th>
-                      <th className="py-2 px-3">القالب / الإصدار</th>
-                      <th className="py-2 px-3">الحجم</th>
-                      <th className="py-2 px-3">البصمة</th>
-                      <th className="py-2 px-3">الرافع</th>
-                      <th className="py-2 px-3">تاريخ الرفع</th>
-                      <th className="py-2 px-3">الحالة</th>
-                      <th className="py-2 px-3">التنزيل</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.files.map((f) => (
-                      <tr key={f.id} className="border-b">
-                        <td className="py-2 px-3"><LtrValue>{f.originalFileName}</LtrValue></td>
-                        <td className="py-2 px-3 text-xs">
-                          {f.templateType ? <LtrValue>{f.templateType}</LtrValue> : "—"}
-                          {" / v"}
-                          {f.templateVersion ? <LtrValue>{f.templateVersion}</LtrValue> : "—"}
-                        </td>
-                        <td className="py-2 px-3">
-                          {f.fileSizeBytes ? <LtrValue>{(f.fileSizeBytes / 1024).toFixed(1)} KB</LtrValue> : "—"}
-                        </td>
-                        <td className="py-2 px-3"><LtrValue>{f.fileHashRedacted}</LtrValue></td>
-                        <td className="py-2 px-3 text-xs text-muted-foreground">
-                          {f.uploaderUserId ? <LtrValue>{f.uploaderUserId.substring(0, 8)}…</LtrValue> : "—"}
-                        </td>
-                        <td className="py-2 px-3 text-xs">
-                          <LtrValue>{new Date(f.createdAt).toLocaleDateString("ar")}</LtrValue>
-                        </td>
-                        <td className="py-2 px-3">
-                          {f.isCurrent ? (
-                            <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-success/50 text-success bg-success/5 font-semibold">
-                              <span aria-hidden="true">✓</span> حالي
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-muted text-muted-foreground bg-muted/30 font-semibold">
-                              <span aria-hidden="true">↩</span> ملغى
-                              {f.supersededById && (
-                                <span className="text-xs ml-1" dir="ltr">
-                                  (<LtrValue>{f.supersededById.substring(0, 8)}…</LtrValue>)
-                                </span>
-                              )}
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2 px-3">
-                          <a
-                            href={`/management/admin/migration/${b.id}/files/${f.id}/download`}
-                            className="text-primary hover:underline inline-flex items-center"
-                            aria-label={`تنزيل ${f.originalFileName}`}
-                            style={{ minHeight: "44px", display: "inline-flex", alignItems: "center" }}
-                          >
-                            تنزيل
-                          </a>
-                        </td>
+              <div className="space-y-3">
+                {/* WP-08-01F R2 — Old/new comparison summary (when multiple versions exist) */}
+                {detail.files.length > 1 && (
+                  <div className="border rounded p-3 bg-muted/20 text-xs space-y-2">
+                    <div className="font-semibold text-foreground">مقارنة الإصدارات:</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-muted-foreground">الإصدار الحالي:</div>
+                        <div>الملف: <LtrValue>{currentFile?.originalFileName ?? "—"}</LtrValue></div>
+                        <div>الإصدار: <LtrValue>v{currentFile?.fileVersion ?? "—"}</LtrValue></div>
+                        <div>الصفوف الحالية: <LtrValue>{detail.stagingPagination.totalRows}</LtrValue></div>
+                        <div>التحقق: {b.validationStatus ?? "—"}</div>
+                        <div>المطابقة: {b.reconciliationStatus ?? "—"}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">الإصدارات الملغاة:</div>
+                        <div>العدد: <LtrValue>{detail.files.filter((f) => !f.isCurrent).length}</LtrValue></div>
+                        <div>آخر استبدال: <LtrValue>{detail.files.filter((f) => !f.isCurrent).sort((a, b2) => (b2.supersededAt ?? "").localeCompare(a.supersededAt ?? ""))[0]?.supersededAt ? new Date(detail.files.filter((f) => !f.isCurrent).sort((a, b2) => (b2.supersededAt ?? "").localeCompare(a.supersededAt ?? ""))[0]!.supersededAt!).toLocaleDateString("ar") : "—"}</LtrValue></div>
+                        <div className="text-amber-700">يحتاج إعادة اعتماد مزدوج: {detail.approvals.filter((a) => a.approverRole === "owner").length === 0 || detail.approvals.filter((a) => a.approverRole === "accountant").length === 0 ? "نعم" : "لا"}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-right">
+                        <th className="py-2 px-3">اسم الملف</th>
+                        <th className="py-2 px-3">القالب / الإصدار</th>
+                        <th className="py-2 px-3">إصدار الملف</th>
+                        <th className="py-2 px-3">الحجم</th>
+                        <th className="py-2 px-3">البصمة</th>
+                        <th className="py-2 px-3">الرافع</th>
+                        <th className="py-2 px-3">تاريخ الرفع</th>
+                        <th className="py-2 px-3">الحالة</th>
+                        <th className="py-2 px-3">سبب الإلغاء</th>
+                        <th className="py-2 px-3">التنزيل</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {detail.files.map((f) => (
+                        <tr key={f.id} className={`border-b ${f.isCurrent ? "" : "bg-muted/10"}`}>
+                          <td className="py-2 px-3"><LtrValue>{f.originalFileName}</LtrValue></td>
+                          <td className="py-2 px-3 text-xs">
+                            {f.templateType ? <LtrValue>{f.templateType}</LtrValue> : "—"}
+                            {" / v"}
+                            {f.templateVersion ? <LtrValue>{f.templateVersion}</LtrValue> : "—"}
+                          </td>
+                          <td className="py-2 px-3 text-xs">
+                            <LtrValue>v{f.fileVersion}</LtrValue>
+                          </td>
+                          <td className="py-2 px-3">
+                            {f.fileSizeBytes ? <LtrValue>{(f.fileSizeBytes / 1024).toFixed(1)} KB</LtrValue> : "—"}
+                          </td>
+                          <td className="py-2 px-3"><LtrValue>{f.fileHashRedacted}</LtrValue></td>
+                          <td className="py-2 px-3 text-xs text-muted-foreground">
+                            {f.uploaderUserId ? <LtrValue>{f.uploaderUserId.substring(0, 8)}…</LtrValue> : "—"}
+                          </td>
+                          <td className="py-2 px-3 text-xs">
+                            <LtrValue>{new Date(f.createdAt).toLocaleDateString("ar")}</LtrValue>
+                          </td>
+                          <td className="py-2 px-3">
+                            {f.isCurrent ? (
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-success/50 text-success bg-success/5 font-semibold">
+                                <span aria-hidden="true">✓</span> حالي
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-amber-500/50 text-amber-700 bg-amber-50 font-semibold">
+                                <span aria-hidden="true">↩</span> ملغى
+                                {f.supersededById && (
+                                  <span className="text-xs ml-1" dir="ltr">
+                                    (← <LtrValue>{f.supersededById.substring(0, 8)}…</LtrValue>)
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-muted-foreground max-w-[200px]">
+                            {f.supersededReason ? (
+                              <span className="break-words">{f.supersededReason}</span>
+                            ) : (
+                              <span>—</span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            <a
+                              href={`/management/admin/migration/${b.id}/files/${f.id}/download`}
+                              className="text-primary hover:underline inline-flex items-center"
+                              aria-label={`تنزيل ${f.originalFileName} (إصدار ${f.fileVersion})`}
+                              style={{ minHeight: "44px", display: "inline-flex", alignItems: "center" }}
+                            >
+                              تنزيل
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Storage paths are NEVER exposed — only protected download links */}
+                <div className="text-xs text-muted-foreground mt-2">
+                  لا يتم عرض مسارات التخزين أو الروابط الموقعة. التنزيل محمي بتحقق الملكية والصلاحية.
+                </div>
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Staging preview — paginated with lineage */}
+        {/* Staging preview — paginated with lineage + version selector */}
         <Card className="mb-6">
           <CardHeader><CardTitle>معاينة البيانات المجهزة</CardTitle></CardHeader>
           <CardContent>
+            {/* WP-08-01F R2 — Staging version selector.
+                Lets the user switch between current and historical superseded versions.
+                Historical versions are read-only and visually marked as superseded.
+                Never mixes rows/findings from different versions. */}
+            {detail.files.length > 1 && (
+              <StagingVersionSelector
+                files={detail.files.map((f) => ({
+                  id: f.id,
+                  originalFileName: f.originalFileName,
+                  fileVersion: f.fileVersion,
+                  isCurrent: f.isCurrent,
+                  fileHashRedacted: f.fileHashRedacted,
+                  createdAt: f.createdAt,
+                  supersededReason: f.supersededReason,
+                }))}
+                selectedFileId={typeof sp.fileVersion === "string" ? sp.fileVersion : null}
+                pathname={pathname}
+                preserveParams={{
+                  severity: validationFilters.severity,
+                  fileId: validationFilters.fileId,
+                  sheet: validationFilters.sheet,
+                  errorCode: validationFilters.errorCode,
+                  q: validationFilters.q,
+                  stagingPage: stagingPage > 1 ? String(stagingPage) : undefined,
+                }}
+              />
+            )}
             {detail.stagingRows.length === 0 && detail.stagingPagination.totalRows === 0 ? (
               <div className="text-sm text-muted-foreground text-center py-4">
                 لا توجد صفوف مجهزة بعد. ارفع ملف CSV وإنهاء التجهيز لرؤية البيانات هنا.
