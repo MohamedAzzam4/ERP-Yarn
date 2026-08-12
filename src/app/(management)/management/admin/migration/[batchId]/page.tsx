@@ -35,6 +35,7 @@ import {
   createCorrectionRequestAction,
   approveCorrectionAsOwnerAction,
   approveCorrectionAsAccountantAction,
+  executeCorrectionAction,
 } from "../actions";
 import {
   getActionMatrix,
@@ -511,9 +512,29 @@ export default async function MigrationBatchDetailPage({
                       )}
 
                       {/* Status display for approved corrections */}
-                      {corr.status === "approved" && (
+                      {corr.status === "approved" && !corr.correctedEntityId && (
                         <div className="text-xs text-muted-foreground">
-                          تم الاعتماد من المالك والمحاسب. التنفيذ غير متاح حالياً.
+                          تم الاعتماد من المالك والمحاسب. جاهز للتنفيذ.
+                        </div>
+                      )}
+
+                      {/* WP-08-01F Production Correction Hook — execute correction form.
+                          Shown only for approved corrections not yet executed. */}
+                      {corr.status === "approved" && !corr.correctedEntityId && (
+                        <form data-action="execute-correction" action={executeCorrectionAction} className="flex gap-2 items-center">
+                          <input type="hidden" name="correctionRequestId" value={corr.id} />
+                          <input type="hidden" name="batchId" value={b.id} />
+                          <input type="hidden" name="idempotencyKey" value={`exec-${corr.id}-${crypto.randomUUID()}`} />
+                          <button type="submit" className="px-4 py-2 bg-destructive text-destructive-foreground rounded text-sm font-semibold" style={{ minHeight: "44px" }}>
+                            تنفيذ التصحيح (تأثير عكسي)
+                          </button>
+                        </form>
+                      )}
+
+                      {/* Status display for executed corrections */}
+                      {corr.status === "approved" && corr.correctedEntityId && (
+                        <div className="text-xs text-green-600 border border-green-300 rounded p-2">
+                          تم تنفيذ التصحيح. الكيان المصحح: <LtrValue>{corr.correctedEntityType}</LtrValue> / <LtrValue>{corr.correctedEntityId}</LtrValue>
                         </div>
                       )}
                     </div>
@@ -521,13 +542,6 @@ export default async function MigrationBatchDetailPage({
                   })}
                 </div>
               )}
-
-              {/* CorrectionDomainHook blocker alert (TASK 6) */}
-              <div role="alert" className="text-sm text-amber-600 border border-amber-300 rounded p-3">
-                <p className="font-semibold">تنفيذ التصحيح غير متاح حالياً</p>
-                <p className="mt-1">لا يمكن تنفيذ التصحيح حتى يتم تعريف آلية ربط المجال الإنتاجي (CorrectionDomainHook).
-                  طلبات التصحيح والاعتمادات متاحة، لكن التنفيذ معلق.</p>
-              </div>
             </CardContent>
           </Card>
         )}

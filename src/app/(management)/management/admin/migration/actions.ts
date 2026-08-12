@@ -34,6 +34,7 @@ import { HistoricalValidationService } from "@/server/services/historical-valida
 import { HistoricalReconciliationService } from "@/server/services/historical-reconciliation-service";
 import { HistoricalCommitService } from "@/server/services/historical-commit-service";
 import { HistoricalCorrectionService } from "@/server/services/historical-correction-service";
+import { ProductionCorrectionDomainHook } from "@/server/services/production-correction-domain-hook";
 import { HistoricalStagingDbRepository } from "@/server/services/historical-staging-db-repository";
 import { HistoricalValidationDbRepository } from "@/server/services/historical-validation-db-repository";
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
@@ -103,7 +104,38 @@ function getMigrationServices() {
     createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
   });
   const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency, transactionRunner, txFactories });
-  const correctionService = new HistoricalCorrectionService({ repository: correctionRepo, audit, idempotency, documentSequence });
+
+  // WP-08-01F Production Correction Hook: wire the real domain hook that
+  // dispatches correctionType + originalEntityType to InventoryLedgerService
+  // and SubledgerService. The hook receives tx-scoped factories so all
+  // domain effects commit/rollback with the correction execution transaction.
+  const correctionDomainHook = new ProductionCorrectionDomainHook({
+    createInventoryLedger: txFactories.createInventoryLedger,
+    createSubledger: txFactories.createSubledger,
+    tx: null, // set per-call inside the transaction
+  });
+  // Wrap the hook so tx is injected from the transactionRunner
+  const correctionService = new HistoricalCorrectionService({
+    repository: correctionRepo, audit, idempotency, documentSequence,
+    correctionDomainHook: {
+      executeCorrection(tenantId, userId, correctionRequest, batch, faultInjection) {
+        // Inject the current transaction into the hook factories
+        // The transactionRunner provides the tx to the closure below
+        return correctionDomainHook.executeCorrection(tenantId, userId, correctionRequest, batch, faultInjection);
+      },
+    },
+    transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+      return (db as any).transaction(async (tx: any) => {
+        // Inject tx into the hook factories for this execution
+        (correctionDomainHook as any).factories.tx = tx;
+        try {
+          return await work(tx);
+        } finally {
+          (correctionDomainHook as any).factories.tx = null;
+        }
+      });
+    },
+  });
   return { stagingService, validationService, reconciliationService, commitService, correctionService };
 }
 
@@ -391,8 +423,35 @@ export async function approveCorrectionAsAccountantAction(formData: FormData): P
   if (batchId) { revalidatePath(`/management/admin/migration/${batchId}`); }
 }
 
-// executeCorrectionAction is NOT exposed — blocked_on_missing_production_correction_hook
+// ===========================================================================
+// WP-08-01F Production Correction Hook — executeCorrectionAction
+//
+// Executes an approved correction request through the production
+// ProductionCorrectionDomainHook, which dispatches on correctionType +
+// originalEntityType to call InventoryLedgerService.postReversal /
+// postAdjustment or SubledgerService.postReversalEntry.
+//
+// Permission: migration.commit (Owner/Accountant)
+// The entire execution is atomic (transactionRunner): correction effect +
+// correction status + audit + idempotency markSucceeded commit or roll
+// back together.
+// ===========================================================================
 
-// Legacy actions recordApprovalAction and approveCorrectionAction were REMOVED
-// (DEFECT 3). The browser NO LONGER submits `approverRole`. Use the role-fixed
-// actions above instead.
+/**
+ * Execute an approved correction request. The correction must have been
+ * approved by both Owner and Accountant (renewed dual approval per DEC-070).
+ *
+ * Produces append-only compensating effects through domain services —
+ * original committed records are never modified.
+ */
+export async function executeCorrectionAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.commit");
+  const correctionRequestId = parseRequiredString(formData, "correctionRequestId");
+  const batchId = parseOptionalString(formData, "batchId");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  const { correctionService } = getMigrationServices();
+  await correctionService.executeCorrection(authResult as any, effective as any, {
+    correctionRequestId, idempotencyKey,
+  });
+  if (batchId) { revalidatePath(`/management/admin/migration/${batchId}`); }
+}

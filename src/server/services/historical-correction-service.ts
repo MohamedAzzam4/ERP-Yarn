@@ -224,6 +224,13 @@ export interface HistoricalCorrectionServiceDeps {
    * When absent, executeCorrection throws (correction execution not configured).
    */
   correctionDomainHook?: CorrectionDomainHook;
+  /**
+   * WP-08-01F Production Correction Hook: Transaction runner for atomic
+   * executeCorrection. The entire mutation phase (hook call +
+   * updateCorrectionResult + audit + idempotency markSucceeded) commits
+   * or rolls back together.
+   */
+  transactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
 }
 
 // ---------------------------------------------------------------------------
@@ -628,9 +635,11 @@ export class HistoricalCorrectionService {
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, request.importBatchId);
     if (!batch) throw new CorrectionBatchNotFoundError(request.importBatchId);
 
-    // Execute the correction through the domain hook
-    try {
-      const correctionResult = await this.deps.correctionDomainHook.executeCorrection(
+    // WP-08-01F Production Correction Hook: The entire mutation phase
+    // (hook call + updateCorrectionResult + audit + idempotency markSucceeded)
+    // is atomic — all commit or all roll back.
+    const executeAtomically = async (): Promise<ExecuteCorrectionResult> => {
+      const correctionResult = await this.deps.correctionDomainHook!.executeCorrection(
         user.tenantId,
         user.userId,
         request,
@@ -669,13 +678,21 @@ export class HistoricalCorrectionService {
         correctedEntityId: correctionResult.correctedEntityId,
       };
 
+      // markSucceeded inside the transaction — owner-token-fenced
       await markSucceeded(this.deps.idempotency, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: CORRECTION_ENTITY_TYPE, entityId: input.correctionRequestId,
       }, claim.record.ownerToken!, now);
 
       return result;
+    };
 
+    try {
+      if (this.deps.transactionRunner) {
+        return await this.deps.transactionRunner(executeAtomically);
+      } else {
+        return await executeAtomically();
+      }
     } catch (e) {
       // Mark idempotency as business failed
       try {
