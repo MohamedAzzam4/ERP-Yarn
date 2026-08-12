@@ -23,6 +23,9 @@ import { MigrationScreenQueryService } from "@/server/services/migration-screen-
 import {
   registerFileAction,
   insertStagingRowAction,
+  uploadAndParseCsvAction,
+  finalizeStagingAction,
+  finalizeCutoverManifestAction,
   runValidationAction,
   runReconciliationAction,
   recordReviewDecisionAction,
@@ -37,6 +40,7 @@ import {
   approveCorrectionAsAccountantAction,
   executeCorrectionAction,
 } from "../actions";
+import { getAvailableTemplates, type MigrationTemplateDefinition } from "@/server/services/migration-templates";
 import {
   getActionMatrix,
   visibleApprovalControls,
@@ -240,28 +244,112 @@ export default async function MigrationBatchDetailPage({
             <CardHeader><CardTitle>إجراءات دورة الحياة</CardTitle></CardHeader>
             <CardContent className="space-y-4">
 
-              {/* Register file — only in preparation states */}
+              {/* WP-08-01F MILESTONE B4 — Template area */}
               {actionMatrix.registerFile && (
-                <form data-action="register-file" action={registerFileAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  <input type="hidden" name="batchId" value={b.id} />
-                  <input type="hidden" name="idempotencyKey" value={`file-${crypto.randomUUID()}`} />
-                  <input type="hidden" name="fileType" value="source" />
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-muted-foreground">اسم الملف:</span>
-                    <input type="text" name="originalFileName" required placeholder="data.xlsx" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-muted-foreground">مسار التخزين (خاص):</span>
-                    <input type="text" name="storagePath" required placeholder="s3://bucket/key" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-muted-foreground">بصمة الملف (SHA-256):</span>
-                    <input type="text" name="fileHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                  </label>
-                  <div className="sm:col-span-2 lg:col-span-3">
-                    <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل ملف</button>
+                <div className="border rounded p-4 space-y-3">
+                  <h3 className="text-sm font-semibold">قالب الاستيراد</h3>
+                  <div className="text-xs text-muted-foreground space-y-1">
+                    <p>تنسيق CSV فقط. الحد الأقصى: 10 ميجابايت / 10,000 صف. ترميز UTF-8.</p>
+                    <p>العملة: EGP فقط (Contract 08 §8.6). التاريخ: YYYY-MM-DD.</p>
                   </div>
+                  <div className="flex flex-wrap gap-2">
+                    {getAvailableTemplates().map((tpl: MigrationTemplateDefinition) => (
+                      <a
+                        key={tpl.templateType}
+                        href={`/management/admin/migration/template-download?templateType=${tpl.templateType}&templateVersion=${tpl.templateVersion}`}
+                        className="px-3 py-2 border rounded text-sm hover:bg-muted inline-flex items-center gap-1"
+                        style={{ minHeight: "44px" }}
+                        aria-label={`تنزيل قالب ${tpl.templateType}`}
+                      >
+                        <span>📄</span>
+                        <span>{tpl.templateType.replace(/_/g, " ")}</span>
+                        <span className="text-xs text-muted-foreground">v{tpl.templateVersion}</span>
+                      </a>
+                    ))}
+                  </div>
+                  {(() => {
+                    const selectedTemplate = getAvailableTemplates()[0];
+                    if (!selectedTemplate) return null;
+                    return (
+                      <details className="text-xs text-muted-foreground">
+                        <summary className="cursor-pointer" style={{ minHeight: "44px", display: "flex", alignItems: "center" }}>
+                          الأعمدة المطلوبة: {selectedTemplate.columns.filter(c => c.required).map(c => c.name).join("، ")}
+                        </summary>
+                        <div className="mt-2 space-y-1">
+                          {selectedTemplate.columns.map((col) => (
+                            <div key={col.name} className="flex gap-2">
+                              <span className="font-mono">{col.name}</span>
+                              <span>{col.required ? "✦ مطلوب" : "اختياري"}</span>
+                              <span>— {col.description}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* WP-08-01F MILESTONE B4 — Real CSV upload */}
+              {actionMatrix.registerFile && (
+                <form data-action="upload-csv" action={uploadAndParseCsvAction} encType="multipart/form-data" className="border rounded p-4 space-y-3">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`upload-${crypto.randomUUID()}`} />
+                  <input type="hidden" name="templateType" value="opening_balance_inventory" />
+                  <input type="hidden" name="templateVersion" value="1.0" />
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted-foreground">اختر ملف CSV:</span>
+                    <input
+                      type="file"
+                      name="file"
+                      accept=".csv,text/csv"
+                      required
+                      className="px-2 py-1 border rounded text-sm"
+                      style={{ minHeight: "44px" }}
+                      aria-label="اختر ملف CSV للرفع"
+                    />
+                  </label>
+                  <div className="text-xs text-muted-foreground">
+                    سيتم تخزين الملف بشكل آمن، حساب البصمة (SHA-256) تلقائياً،
+                    تحليل الصفوف، وتجهيزها. لا يمكن المتابعة حتى يكتمل التجهيز بنجاح.
+                  </div>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-semibold"
+                    style={{ minHeight: "44px" }}
+                  >
+                    رفع وتحليل الملف
+                  </button>
                 </form>
+              )}
+
+              {/* Register file — only in preparation states (manual metadata registration) */}
+              {actionMatrix.registerFile && (
+                <details className="border rounded p-3">
+                  <summary className="cursor-pointer text-sm font-medium" style={{ minHeight: "44px", display: "flex", alignItems: "center" }}>
+                    تسجيل ملف يدوياً (بيانات مسار فقط)
+                  </summary>
+                  <form data-action="register-file" action={registerFileAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
+                    <input type="hidden" name="batchId" value={b.id} />
+                    <input type="hidden" name="idempotencyKey" value={`file-${crypto.randomUUID()}`} />
+                    <input type="hidden" name="fileType" value="source" />
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">اسم الملف:</span>
+                      <input type="text" name="originalFileName" required placeholder="data.xlsx" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">مسار التخزين (خاص):</span>
+                      <input type="text" name="storagePath" required placeholder="s3://bucket/key" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">بصمة الملف (SHA-256):</span>
+                      <input type="text" name="fileHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                    </label>
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل ملف</button>
+                    </div>
+                  </form>
+                </details>
               )}
 
               {/* Insert staging row — only in preparation states */}
@@ -289,6 +377,50 @@ export default async function MigrationBatchDetailPage({
                   <div className="sm:col-span-2">
                     <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>إضافة صف تجهيز</button>
                   </div>
+                </form>
+              )}
+
+              {/* WP-08-01F MILESTONE B4 — Finalize staging control */}
+              {(b.status === "source_uploaded" || b.status === "normalized") && (
+                <form data-action="finalize-staging" action={finalizeStagingAction} className="border rounded p-3 flex gap-3 items-center">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`finalize-staging-${crypto.randomUUID()}`} />
+                  <div className="flex-1 text-sm">
+                    <span className="font-medium">إنهاء التجهيز</span>
+                    <p className="text-xs text-muted-foreground">سيتم حساب بصمة البيانات المجهزة (stagedDataHash) تلقائياً وتغيير الحالة إلى staged.</p>
+                  </div>
+                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>إنهاء التجهيز</button>
+                </form>
+              )}
+
+              {/* WP-08-01F MILESTONE B4 — Finalize cutover manifest control */}
+              {(b.status === "staged" || b.status === "validation_complete" || b.status === "reconciliation_in_progress" || b.status === "review_required") && !b.cutoverManifestHash && (
+                <form data-action="finalize-cutover-manifest" action={finalizeCutoverManifestAction} className="border rounded p-3 space-y-3">
+                  <input type="hidden" name="batchId" value={b.id} />
+                  <input type="hidden" name="idempotencyKey" value={`finalize-manifest-${crypto.randomUUID()}`} />
+                  <div className="text-sm">
+                    <span className="font-medium">إنهاء بيان الترحيل (Cutover Manifest)</span>
+                    <p className="text-xs text-muted-foreground">سيتم حساب بصمة البيان تلقائياً من البيانات المخزنة. لا تقم بإدخال بصمة يدوياً.</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">المجال (Domain):</span>
+                      <input type="text" name="domain" required placeholder="inventory" defaultValue="inventory" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">تاريخ القطع:</span>
+                      <input type="date" name="cutoffDate" required className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">تغطية المصدر:</span>
+                      <input type="text" name="sourceCoverage" placeholder="all" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-sm">
+                      <span className="text-muted-foreground">أساس الرصيد الافتتاحي:</span>
+                      <input type="text" name="openingBalanceBasis" placeholder="audit" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                    </label>
+                  </div>
+                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>إنهاء بيان الترحيل</button>
                 </form>
               )}
 
@@ -546,10 +678,10 @@ export default async function MigrationBatchDetailPage({
           </Card>
         )}
 
-        {/* Files */}
+        {/* Files — with protected download */}
         {detail.files.length > 0 && (
           <Card className="mb-6">
-            <CardHeader><CardTitle>الملفات</CardTitle></CardHeader>
+            <CardHeader><CardTitle>قائمة الملفات</CardTitle></CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -559,6 +691,7 @@ export default async function MigrationBatchDetailPage({
                       <th className="py-2 px-3">النوع</th>
                       <th className="py-2 px-3">الحجم</th>
                       <th className="py-2 px-3">البصمة</th>
+                      <th className="py-2 px-3">التنزيل</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -570,11 +703,78 @@ export default async function MigrationBatchDetailPage({
                           {f.fileSizeBytes ? <LtrValue>{(f.fileSizeBytes / 1024).toFixed(1)} KB</LtrValue> : "—"}
                         </td>
                         <td className="py-2 px-3"><LtrValue>{f.fileHashRedacted}</LtrValue></td>
+                        <td className="py-2 px-3">
+                          <a
+                            href={`/management/admin/migration/${b.id}/files/${f.id}/download`}
+                            className="text-primary hover:underline"
+                            aria-label={`تنزيل ${f.originalFileName}`}
+                            style={{ minHeight: "44px", display: "inline-flex", alignItems: "center" }}
+                          >
+                            تنزيل
+                          </a>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Staging preview — paginated */}
+        {detail.stagingRows.length > 0 && (
+          <Card className="mb-6">
+            <CardHeader><CardTitle>معاينة البيانات المجهزة</CardTitle></CardHeader>
+            <CardContent>
+              <div className="text-xs text-muted-foreground mb-3">
+                إجمالي الصفوف: <LtrValue>{b.stagedRowCount}</LtrValue> | عرض أول <LtrValue>{detail.stagingRows.length}</LtrValue> صف
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-right">
+                      <th className="py-2 px-3">#</th>
+                      <th className="py-2 px-3">المصدر (ملف/صف)</th>
+                      <th className="py-2 px-3">البيانات</th>
+                      <th className="py-2 px-3">حالة التحقق</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detail.stagingRows.slice(0, 20).map((row, idx) => (
+                      <tr key={row.id} className="border-b">
+                        <td className="py-2 px-3"><LtrValue>{idx + 1}</LtrValue></td>
+                        <td className="py-2 px-3 text-xs text-muted-foreground">
+                          {row.sourceSheetName && <div><LtrValue>{row.sourceSheetName}</LtrValue></div>}
+                          {row.sourceRowNumber != null && <div>صف: <LtrValue>{row.sourceRowNumber}</LtrValue></div>}
+                        </td>
+                        <td className="py-2 px-3 text-xs">
+                          {row.transformedRowJson ? (
+                            <details>
+                              <summary className="cursor-pointer" style={{ minHeight: "44px", display: "flex", alignItems: "center" }}>
+                                عرض البيانات
+                              </summary>
+                              <pre className="mt-1 p-2 bg-muted rounded text-xs overflow-x-auto" dir="ltr">
+                                {JSON.stringify(row.transformedRowJson, null, 2)}
+                              </pre>
+                            </details>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3">
+                          {row.validationStatus ? <LtrValue>{row.validationStatus}</LtrValue> : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {detail.stagingRows.length > 20 && (
+                <div className="text-xs text-muted-foreground mt-3 text-center">
+                  يتم عرض أول 20 صف فقط. إجمالي الصفوف: <LtrValue>{b.stagedRowCount}</LtrValue>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
