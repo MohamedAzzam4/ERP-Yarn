@@ -559,12 +559,18 @@ export class HistoricalValidationService {
     }
 
     // Update batch status based on findings.
-    // WP-08-01F DEFECT 1A: Set validationStatus = "passed" (no blocking errors)
-    // or "failed" (blocking errors > 0). Transition to validation_complete
-    // only when validationStatus = "passed". When blocking errors exist,
-    // remain in validation_in_progress so the user can fix and re-run.
+    // WP-08-01F DEFECT 1A / R2 QA FIX: Set validationStatus = "passed" (no
+    // blocking errors) or "failed" (blocking errors > 0). ALWAYS transition
+    // to validation_complete — the validation HAS completed, it just found
+    // errors. The blocking errors prevent progression to reconciliation/
+    // submission (checked by canRunReconciliation and canSubmitForApproval),
+    // but they should NOT prevent file replacement (the user needs to
+    // replace the file to fix the errors). Keeping the batch in
+    // validation_in_progress when validation has actually completed is
+    // incorrect — it blocks the replacement form which is the exact
+    // mechanism the user needs to fix the errors.
     const newValidationStatus = blockingErrors > 0 ? "failed" : "passed";
-    const newBatchStatus = blockingErrors > 0 ? "validation_in_progress" : "validation_complete";
+    const newBatchStatus = "validation_complete";
     await this.deps.repository.updateBatchValidationStatus(user.tenantId, input.importBatchId, newValidationStatus, user.userId);
     await this.deps.repository.updateBatchErrorCounts(user.tenantId, input.importBatchId, blockingErrors, warnings, user.userId);
     await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, newBatchStatus);
