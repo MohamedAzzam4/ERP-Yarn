@@ -356,11 +356,25 @@ describe("WP-08-01F UX — real staging pagination", () => {
 // ---------------------------------------------------------------------------
 
 describe("WP-08-01F UX — lifecycle action matrix", () => {
-  it("registerFile is allowed only in preparation states (draft, source_uploaded, normalized, staged)", () => {
+  it("registerFile (ordinary initial upload) is allowed only BEFORE staging finalization (draft, source_uploaded, normalized)", () => {
+    // WP-08-01F R1: ordinary initial upload is NOT allowed in `staged` or
+    // beyond — use replaceMigrationFile instead.
     for (const status of ALL_BATCH_STATUSES) {
       const matrix = getActionMatrix(makeBaseState({ status }));
-      const expected = ["draft", "source_uploaded", "normalized", "staged"].includes(status);
+      const expected = ["draft", "source_uploaded", "normalized"].includes(status);
       expect(matrix.registerFile).toBe(expected);
+    }
+  });
+
+  it("replaceMigrationFile is allowed in pre-commit rework states (not draft, not committing, not committed)", () => {
+    for (const status of ALL_BATCH_STATUSES) {
+      const matrix = getActionMatrix(makeBaseState({ status }));
+      const expected = [
+        "source_uploaded", "normalized", "staged",
+        "validation_complete", "reconciliation_in_progress",
+        "review_required", "pending_dual_approval", "approved_for_commit",
+      ].includes(status);
+      expect(matrix.replaceMigrationFile).toBe(expected);
     }
   });
 

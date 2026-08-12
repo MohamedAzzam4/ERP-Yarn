@@ -7,13 +7,14 @@
  * Contract 08 §8.1: Staging is non-operational — no stock/account/sales effects.
  */
 import "server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, sql as drizzleSql } from "drizzle-orm";
 import {
   importBatches,
   importFiles,
   importTemplateVersions,
   importStagingRows,
   importCutoverManifests,
+  importValidationErrors,
 } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -33,9 +34,15 @@ import type {
 } from "@/server/db/schema/migration";
 
 type Db = NonNullable<typeof DbType>;
+/**
+ * WP-08-01F R1 — The repository accepts either the root Db or a Drizzle
+ * transaction. This lets the replacement service run all writes inside ONE
+ * PostgreSQL transaction with tx-scoped idempotency/audit/sequence.
+ */
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export class HistoricalStagingDbRepository implements HistoricalStagingRepository {
-  constructor(private readonly db: Db) {}
+  constructor(private readonly db: DbOrTx) {}
 
   // --- Template version methods ---
 
@@ -140,6 +147,87 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
       ))
       .returning();
     return result ?? null;
+  }
+
+  // WP-08-01F R1 — Replacement-supporting repository methods.
+
+  async findCurrentImportFileForBatch(tenantId: string, importBatchId: string, fileType: string): Promise<ImportFile | null> {
+    const [result] = await this.db.select().from(importFiles)
+      .where(and(
+        eq(importFiles.tenantId, tenantId),
+        eq(importFiles.importBatchId, importBatchId),
+        eq(importFiles.fileType, fileType),
+        eq(importFiles.isCurrent, true),
+      ))
+      .limit(1);
+    return result ?? null;
+  }
+
+  async markFileSuperseded(
+    tenantId: string,
+    fileId: string,
+    supersededByFileId: string,
+    reason: string,
+    now: Date,
+  ): Promise<ImportFile | null> {
+    const [result] = await this.db.update(importFiles)
+      .set({
+        isCurrent: false,
+        supersededAt: now,
+        supersededBy: supersededByFileId,
+        supersededById: supersededByFileId,
+        supersededReason: reason,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(importFiles.tenantId, tenantId),
+        eq(importFiles.id, fileId),
+        // Only update if currently current — defends against double-supersession.
+        eq(importFiles.isCurrent, true),
+      ))
+      .returning();
+    return result ?? null;
+  }
+
+  async markStagingRowsSupersededForFile(
+    tenantId: string,
+    importFileId: string,
+    supersededByFileId: string,
+    now: Date,
+  ): Promise<number> {
+    const result = await this.db.update(importStagingRows)
+      .set({
+        isCurrent: false,
+        supersededAt: now,
+        supersededByFileId,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(importStagingRows.tenantId, tenantId),
+        eq(importStagingRows.importFileId, importFileId),
+        eq(importStagingRows.isCurrent, true),
+      ))
+      .returning();
+    return result.length;
+  }
+
+  async markValidationFindingsSupersededForBatch(
+    tenantId: string,
+    importBatchId: string,
+    now: Date,
+  ): Promise<number> {
+    const result = await this.db.update(importValidationErrors)
+      .set({
+        isCurrent: false,
+        supersededAt: now,
+      })
+      .where(and(
+        eq(importValidationErrors.tenantId, tenantId),
+        eq(importValidationErrors.importBatchId, importBatchId),
+        eq(importValidationErrors.isCurrent, true),
+      ))
+      .returning();
+    return result.length;
   }
 
   // --- Import batch methods ---

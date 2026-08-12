@@ -40,9 +40,14 @@ import type {
 } from "@/server/db/schema/migration";
 
 type Db = NonNullable<typeof DbType>;
+/**
+ * WP-08-01F R1 — accepts root Db or Drizzle transaction for tx-scoped use
+ * inside the replacement service saga.
+ */
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export class HistoricalCommitDbRepository implements HistoricalCommitRepository {
-  constructor(private readonly db: Db) {}
+  constructor(private readonly db: DbOrTx) {}
 
   // ---- Batch access ----
 

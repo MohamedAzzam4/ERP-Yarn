@@ -19,8 +19,10 @@ import {
   APPROVAL_ELIGIBLE_STATES,
   BACKUP_ELIGIBLE_STATES,
   COMMIT_ELIGIBLE_STATES,
+  INITIAL_UPLOAD_ELIGIBLE_STATES,
   PREPARATION_STATES,
   RECONCILIATION_ELIGIBLE_STATES,
+  REPLACEMENT_ELIGIBLE_STATES,
   REVIEW_ELIGIBLE_STATES,
   VALIDATION_ELIGIBLE_STATES,
 } from "./migration-lifecycle-predicates";
@@ -76,9 +78,43 @@ function enforceStatus(
 /**
  * Guard for registerFile — only in preparation states.
  * Contract 08 §9: draft | source_uploaded | normalized | staged.
+ *
+ * NOTE: This guard is retained for the staging service's internal
+ * `registerFile` method (which is also invoked by the replacement
+ * pipeline). End-user ordinary upload must use `guardRegisterFileInitial`
+ * instead — see WP-08-01F R1.
  */
 export function guardRegisterFile(batch: ImportBatch): void {
   enforceStatus(batch, PREPARATION_STATES, "register file");
+}
+
+/**
+ * WP-08-01F R1 — Guard for ordinary INITIAL upload.
+ *
+ * Ordinary initial upload is allowed ONLY before staging finalization.
+ * From `staged` onward, the explicit `replaceMigrationFile` command must
+ * be used so that hashes are reset and approvals are invalidated through
+ * append-only supersession.
+ *
+ * Allowed: draft, source_uploaded, normalized.
+ * Fail-closed: staged, validation_in_progress, validation_complete,
+ *   reconciliation_in_progress, review_required, pending_dual_approval,
+ *   approved_for_commit, committing, committed, rejected, cancelled.
+ */
+export function guardRegisterFileInitial(batch: ImportBatch): void {
+  enforceStatus(batch, INITIAL_UPLOAD_ELIGIBLE_STATES, "initial-upload file");
+}
+
+/**
+ * WP-08-01F R1 — Guard for replaceMigrationFile.
+ *
+ * The explicit replacement command is permitted whenever the batch is in
+ * a pre-commit rework lifecycle state. Committed batches must use
+ * HistoricalCorrectionService; `committing` is locked against concurrent
+ * replacement; `draft` has nothing to replace.
+ */
+export function guardReplaceFile(batch: ImportBatch): void {
+  enforceStatus(batch, REPLACEMENT_ELIGIBLE_STATES, "replace migration file");
 }
 
 /**

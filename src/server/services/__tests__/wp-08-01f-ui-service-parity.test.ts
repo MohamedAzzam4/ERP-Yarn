@@ -29,7 +29,7 @@ import {
   type MigrationBatchStatus,
 } from "../migration-lifecycle-predicates";
 import {
-  guardRegisterFile,
+  guardRegisterFileInitial,
   guardInsertStagingRow,
   guardRunValidation,
   guardRunReconciliation,
@@ -132,14 +132,14 @@ function expectParity(
 }
 
 describe("WP-08-01F TASK 2 — UI predicates match service guards exactly", () => {
-  describe("registerFile — UI canRegisterFile vs service guardRegisterFile", () => {
+  describe("registerFile — UI canRegisterFile vs service guardRegisterFileInitial", () => {
     for (const status of ALL_BATCH_STATUSES) {
       it(`status=${status}: UI and service agree`, () => {
         const state = makeReadyState(status);
         const batch = makeBatch(status);
         expectParity(
           () => canRegisterFile(state),
-          () => guardRegisterFile(batch),
+          () => guardRegisterFileInitial(batch),
           status,
           "registerFile",
         );

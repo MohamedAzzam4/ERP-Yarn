@@ -96,7 +96,10 @@ describe("WP-08-01F — Migration lifecycle predicates (Contract 08 §9)", () =>
   describe("staged state with rows", () => {
     const state = makeState({ status: "staged", stagedRowCount: 10 });
     const matrix = getActionMatrix(state);
-    it("can register file", () => expect(matrix.registerFile).toBe(true));
+    // WP-08-01F R1: ordinary initial upload is NOT allowed in `staged` —
+    // use replaceMigrationFile instead. insertStagingRow remains allowed
+    // because the replacement pipeline reuses it internally.
+    it("cannot register file (must use replaceMigrationFile)", () => expect(matrix.registerFile).toBe(false));
     it("can insert staging row", () => expect(matrix.insertStagingRow).toBe(true));
     it("can run validation (has rows)", () => expect(matrix.runValidation).toBe(true));
     it("cannot run reconciliation (validation not complete)", () => expect(matrix.runReconciliation).toBe(false));
@@ -411,7 +414,7 @@ describe("WP-08-01F TASK 2 — Full action matrix sweep across all statuses", ()
     draft: { registerFile: true, insertStagingRow: true, runValidation: false, runReconciliation: false, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },
     source_uploaded: { registerFile: true, insertStagingRow: true, runValidation: false, runReconciliation: false, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },
     normalized: { registerFile: true, insertStagingRow: true, runValidation: false, runReconciliation: false, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },
-    staged: { registerFile: true, insertStagingRow: true, runValidation: true, runReconciliation: false, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },
+    staged: { registerFile: false, insertStagingRow: true, runValidation: true, runReconciliation: false, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },
     validation_in_progress: { registerFile: false, insertStagingRow: false, runValidation: false, runReconciliation: false, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },
     validation_complete: { registerFile: false, insertStagingRow: false, runValidation: true, runReconciliation: true, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },
     reconciliation_in_progress: { registerFile: false, insertStagingRow: false, runValidation: false, runReconciliation: true, recordOwnerApproval: false, recordBackupEvidence: false, commitBatch: false, createCorrectionRequest: false },

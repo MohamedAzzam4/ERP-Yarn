@@ -80,6 +80,43 @@ export interface NewCutoverManifestInput {
   createdBy: string;
 }
 
+// WP-08-01F R1 — Replacement input. The replacement file is registered as a
+// NEW immutable file row; the previous current file is marked superseded.
+// Staging rows linked to the previous file are marked is_current=false
+// (NOT deleted) and new staging rows are inserted for the new file.
+export interface ReplaceMigrationFileInput {
+  tenantId: string;
+  importBatchId: string;
+  /** ID of the current file being superseded. */
+  replaceFileId: string;
+  /** New file metadata (from private storage). */
+  originalFileName: string;
+  storagePath: string;
+  fileHash: string;
+  fileSizeBytes: number | null;
+  contentType: string | null;
+  fileType: string;
+  /** Parsed replacement rows to insert as new staging rows. */
+  parsedRows: Array<{
+    rowNumber: number;
+    columns: Record<string, string>;
+  }>;
+  templateType: string;
+  /** Mandatory rework reason — recorded in audit + supersession fields. */
+  reworkReason: string;
+  idempotencyKey: string;
+  createdBy: string;
+}
+
+export interface ReplaceMigrationFileResult {
+  action: "created" | "replayed";
+  newFileId: string;
+  oldFileId: string;
+  importBatchId: string;
+  newFileHash: string;
+  newStagingRowCount: number;
+}
+
 // ---------------------------------------------------------------------------
 // Repository interface.
 // ---------------------------------------------------------------------------
@@ -97,6 +134,45 @@ export interface HistoricalStagingRepository {
   findImportFilesForBatch(tenantId: string, importBatchId: string): Promise<ImportFile[]>;
   findImportFileById(tenantId: string, id: string): Promise<ImportFile | null>;
   updateFileSuperseded(tenantId: string, fileId: string, supersededById: string): Promise<ImportFile | null>;
+  /**
+   * WP-08-01F R1 — Find the current (non-superseded) file of a given type
+   * for a batch. Returns null if no current file exists for that type.
+   */
+  findCurrentImportFileForBatch(tenantId: string, importBatchId: string, fileType: string): Promise<ImportFile | null>;
+  /**
+   * WP-08-01F R1 — Mark a file as superseded by a new file. Sets
+   * is_current=false, superseded_at=now, superseded_by=newFileId,
+   * superseded_by_id=newFileId, superseded_reason=reason. Does NOT delete
+   * the file row or its storage object — immutable preservation.
+   */
+  markFileSuperseded(
+    tenantId: string,
+    fileId: string,
+    supersededByFileId: string,
+    reason: string,
+    now: Date,
+  ): Promise<ImportFile | null>;
+  /**
+   * WP-08-01F R1 — Mark all staging rows linked to a file as superseded.
+   * Sets is_current=false, superseded_at=now, superseded_by_file_id=newFileId.
+   * Does NOT delete the staging rows — immutable preservation.
+   */
+  markStagingRowsSupersededForFile(
+    tenantId: string,
+    importFileId: string,
+    supersededByFileId: string,
+    now: Date,
+  ): Promise<number>;
+  /**
+   * WP-08-01F R1 — Mark all current validation findings for a batch as
+   * superseded. Sets is_current=false, superseded_at=now. Does NOT delete
+   * the findings — immutable preservation.
+   */
+  markValidationFindingsSupersededForBatch(
+    tenantId: string,
+    importBatchId: string,
+    now: Date,
+  ): Promise<number>;
 
   // Import batch methods
   insertImportBatch(row: NewImportBatchInput): Promise<ImportBatch>;

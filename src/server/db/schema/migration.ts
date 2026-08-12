@@ -77,11 +77,27 @@ export const importFiles = pgTable("import_files", {
   contentType: text("content_type"),
   fileType: text("file_type").notNull(), // 'source' | 'normalized' | 'mapping' | 'report'
   supersededById: uuid("superseded_by_id"),
+  // WP-08-01F R1 — Immutable file-version supersession fields.
+  // Prior file versions are preserved (append-only) and marked is_current=false
+  // when a replacement file is registered. New files create new rows with
+  // is_current=true. The partial unique index below permits only one current
+  // file per tenant/batch/fileType.
+  fileVersion: integer("file_version").notNull().default(1),
+  isCurrent: boolean("is_current").notNull().default(true),
+  supersededAt: timestamp("superseded_at", { withTimezone: true, mode: "date" }),
+  supersededBy: uuid("superseded_by"),
+  supersededReason: text("superseded_reason"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   index("import_files_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_files_tenant_hash_idx").on(t.tenantId, t.fileHash),
   uniqueIndex("import_files_tenant_batch_hash_type_unique_idx").on(t.tenantId, t.importBatchId, t.fileHash, t.fileType),
+  // WP-08-01F R1 — One current file per tenant/batch/fileType. Partial unique
+  // index allows historical (superseded) rows to coexist with the current row.
+  uniqueIndex("import_files_tenant_batch_type_current_unique_idx")
+    .on(t.tenantId, t.importBatchId, t.fileType)
+    .where(sql`${t.isCurrent} = true`),
+  index("import_files_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
 ]);
 
 export type ImportFile = typeof importFiles.$inferSelect;
@@ -128,11 +144,21 @@ export const importStagingRows = pgTable("import_staging_rows", {
   // Post-commit link to the operational record created from this staging row
   committedEntityType: text("committed_entity_type"),
   committedEntityId: uuid("committed_entity_id"),
+  // WP-08-01F R1 — Immutable staging-row version supersession.
+  // When a replacement file is registered, the old staging rows are marked
+  // is_current=false (NOT deleted) and new staging rows are inserted for
+  // the new file. This preserves exact lineage for old-version findings.
+  stagingVersion: integer("staging_version").notNull().default(1),
+  isCurrent: boolean("is_current").notNull().default(true),
+  supersededAt: timestamp("superseded_at", { withTimezone: true, mode: "date" }),
+  supersededByFileId: uuid("superseded_by_file_id"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   index("import_staging_rows_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_staging_rows_tenant_status_idx").on(t.tenantId, t.validationStatus),
   index("import_staging_rows_tenant_committed_idx").on(t.tenantId, t.committedEntityType, t.committedEntityId),
+  index("import_staging_rows_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
+  index("import_staging_rows_tenant_file_idx").on(t.tenantId, t.importFileId),
   check("import_staging_rows_source_row_check", sql`source_row_number IS NULL OR source_row_number >= 0`),
 ]);
 
@@ -184,11 +210,19 @@ export const importValidationErrors = pgTable("import_validation_errors", {
   resolvedBy: uuid("resolved_by").references(() => users.id),
   resolvedAt: timestamp("resolved_at", { withTimezone: true, mode: "date" }),
   resolutionNotes: text("resolution_notes"),
+  // WP-08-01F R1 — Immutable validation-finding version supersession.
+  // Old-version findings are preserved (is_current=false) when a replacement
+  // file is registered and re-validation produces new findings. This ensures
+  // old-version findings never display values from the new version.
+  findingVersion: integer("finding_version").notNull().default(1),
+  isCurrent: boolean("is_current").notNull().default(true),
+  supersededAt: timestamp("superseded_at", { withTimezone: true, mode: "date" }),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   index("import_validation_errors_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_validation_errors_tenant_severity_idx").on(t.tenantId, t.severity),
   index("import_validation_errors_tenant_blocking_idx").on(t.tenantId, t.isBlocking),
+  index("import_validation_errors_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
   // Severity blocking_error implies is_blocking = true
   check("import_validation_errors_blocking_check",
     sql`severity <> 'blocking_error' OR is_blocking = true`),

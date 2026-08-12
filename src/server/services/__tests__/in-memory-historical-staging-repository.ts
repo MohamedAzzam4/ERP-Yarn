@@ -98,11 +98,17 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
       contentType: row.contentType,
       fileType: row.fileType,
       supersededById: null,
+      // WP-08-01F R1 — new files start as current version 1.
+      fileVersion: 1,
+      isCurrent: true,
+      supersededAt: null,
+      supersededBy: null,
+      supersededReason: null,
       createdBy: row.createdBy,
       createdAt: NOW(),
       updatedBy: null,
       updatedAt: null,
-    };
+    } as ImportFile;
     this.files.set(`${row.tenantId}:${id}`, file);
     return file;
   }
@@ -133,6 +139,84 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
     const updated = { ...file, supersededById, updatedAt: NOW() };
     this.files.set(key, updated);
     return updated;
+  }
+
+  // WP-08-01F R1 — Replacement-supporting methods (in-memory implementations).
+
+  async findCurrentImportFileForBatch(tenantId: string, importBatchId: string, fileType: string): Promise<ImportFile | null> {
+    for (const f of this.files.values()) {
+      if (
+        f.tenantId === tenantId &&
+        f.importBatchId === importBatchId &&
+        f.fileType === fileType &&
+        (f as any).isCurrent !== false
+      ) {
+        return f;
+      }
+    }
+    return null;
+  }
+
+  async markFileSuperseded(
+    tenantId: string,
+    fileId: string,
+    supersededByFileId: string,
+    reason: string,
+    now: Date,
+  ): Promise<ImportFile | null> {
+    const key = `${tenantId}:${fileId}`;
+    const file = this.files.get(key);
+    if (!file) return null;
+    if ((file as any).isCurrent === false) return null;
+    const updated: ImportFile = {
+      ...file,
+      isCurrent: false,
+      supersededAt: now,
+      supersededBy: supersededByFileId,
+      supersededById: supersededByFileId,
+      supersededReason: reason,
+      updatedAt: now,
+    } as ImportFile;
+    this.files.set(key, updated);
+    return updated;
+  }
+
+  async markStagingRowsSupersededForFile(
+    tenantId: string,
+    importFileId: string,
+    supersededByFileId: string,
+    now: Date,
+  ): Promise<number> {
+    let count = 0;
+    for (const [key, row] of this.stagingRows.entries()) {
+      if (
+        row.tenantId === tenantId &&
+        row.importFileId === importFileId &&
+        (row as any).isCurrent !== false
+      ) {
+        const updated = {
+          ...row,
+          isCurrent: false,
+          supersededAt: now,
+          supersededByFileId,
+          updatedAt: now,
+        } as ImportStagingRow;
+        this.stagingRows.set(key, updated);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  async markValidationFindingsSupersededForBatch(
+    tenantId: string,
+    importBatchId: string,
+    now: Date,
+  ): Promise<number> {
+    // In-memory repo doesn't track validation errors — return 0.
+    // (Production uses HistoricalValidationDbRepository which has its own table.)
+    void tenantId; void importBatchId; void now;
+    return 0;
   }
 
   // --- Import batch methods ---
@@ -264,11 +348,16 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
       transformationNotes: row.transformationNotes,
       committedEntityType: null,
       committedEntityId: null,
+      // WP-08-01F R1 — new staging rows start as current version 1.
+      stagingVersion: 1,
+      isCurrent: true,
+      supersededAt: null,
+      supersededByFileId: null,
       createdBy: row.createdBy,
       createdAt: NOW(),
       updatedBy: null,
       updatedAt: null,
-    };
+    } as ImportStagingRow;
     this.stagingRows.set(`${row.tenantId}:${id}`, stagingRow);
     return stagingRow;
   }

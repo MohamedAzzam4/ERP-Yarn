@@ -85,12 +85,67 @@ export const TERMINAL_STATES: ReadonlySet<MigrationBatchStatus> = new Set([
 /**
  * Preparation states — file registration and staging-row insertion allowed.
  * Contract 08 §9: draft → source_uploaded → normalized → staged.
+ *
+ * NOTE: This set is used by `insertStagingRow` (which remains valid in `staged`
+ * for re-runs before finalization). For ordinary INITIAL upload, use
+ * `INITIAL_UPLOAD_ELIGIBLE_STATES` instead — see WP-08-01F R1.
  */
 export const PREPARATION_STATES: ReadonlySet<MigrationBatchStatus> = new Set([
   "draft",
   "source_uploaded",
   "normalized",
   "staged",
+]);
+
+/**
+ * WP-08-01F R1 — Initial-upload-eligible states.
+ *
+ * Ordinary initial upload (registerFile + uploadAndParseCsvAction) is allowed
+ * ONLY before staging finalization. Once the batch reaches `staged`, the
+ * staged-data hash is bound and any further "ordinary upload" would silently
+ * change the staged data without invalidating bound approvals — that is
+ * unsafe. From `staged` onward, the only way to change the file set is the
+ * explicit `replaceMigrationFile` command (which supersedes the old file,
+ * resets hashes, and invalidates approvals through append-only supersession).
+ *
+ * Allowed: draft, source_uploaded, normalized.
+ * Rejected (fail closed): staged, validation_in_progress, validation_complete,
+ *   reconciliation_in_progress, review_required, pending_dual_approval,
+ *   approved_for_commit, committing, committed, rejected, cancelled.
+ */
+export const INITIAL_UPLOAD_ELIGIBLE_STATES: ReadonlySet<MigrationBatchStatus> = new Set([
+  "draft",
+  "source_uploaded",
+  "normalized",
+]);
+
+/**
+ * WP-08-01F R1 — Replacement-eligible states.
+ *
+ * The explicit `replaceMigrationFile` command is the ONLY safe way to change
+ * the file set after staging finalization. It is permitted whenever the
+ * batch is in a pre-commit rework lifecycle state — i.e. any state where
+ * staging data may still change without violating committed-batch immutability.
+ *
+ * Allowed: source_uploaded, normalized, staged, validation_complete,
+ *   reconciliation_in_progress, review_required, pending_dual_approval,
+ *   approved_for_commit.
+ * Rejected: draft (no file to replace yet), committing (concurrent commit),
+ *   committed (use HistoricalCorrectionService), rejected, cancelled.
+ *
+ * Committed batches are NEVER eligible for replacement — Contract 08 §9
+ * mandates committed-batch immutability; corrections go through the
+ * HistoricalCorrectionService reversal/adjustment workflow.
+ */
+export const REPLACEMENT_ELIGIBLE_STATES: ReadonlySet<MigrationBatchStatus> = new Set([
+  "source_uploaded",
+  "normalized",
+  "staged",
+  "validation_complete",
+  "reconciliation_in_progress",
+  "review_required",
+  "pending_dual_approval",
+  "approved_for_commit",
 ]);
 
 /**
@@ -209,9 +264,29 @@ export const ALL_BATCH_STATUSES: ReadonlyArray<MigrationBatchStatus> = [
 // These mirror the service-side guard functions exactly (TASK 2).
 // ---------------------------------------------------------------------------
 
-/** Can register a new file. Only in preparation states. */
+/**
+ * Can register a new (INITIAL) file.
+ *
+ * WP-08-01F R1: ordinary initial upload is allowed ONLY before staging
+ * finalization. Once the batch reaches `staged`, the explicit
+ * `replaceMigrationFile` command must be used instead.
+ *
+ * NOTE: `canInsertStagingRow` below still uses PREPARATION_STATES because
+ * the staging-row insertion path is shared with the replacement pipeline
+ * (which inserts rows for the new file inside its own transaction).
+ */
 export function canRegisterFile(state: MigrationBatchState): boolean {
-  return PREPARATION_STATES.has(state.status);
+  return INITIAL_UPLOAD_ELIGIBLE_STATES.has(state.status);
+}
+
+/**
+ * WP-08-01F R1: Can replace a file.
+ * Permitted in all pre-commit rework states except `draft` (no file yet)
+ * and `committing` (concurrent commit). Committed batches must use
+ * HistoricalCorrectionService.
+ */
+export function canReplaceMigrationFile(state: MigrationBatchState): boolean {
+  return REPLACEMENT_ELIGIBLE_STATES.has(state.status);
 }
 
 /** Can insert a staging row. Only in preparation states. */
@@ -404,6 +479,8 @@ export function isCommitted(state: MigrationBatchState): boolean {
 
 export interface ActionAllowedResult {
   registerFile: boolean;
+  /** WP-08-01F R1 — explicit replacement command. */
+  replaceMigrationFile: boolean;
   insertStagingRow: boolean;
   runValidation: boolean;
   runReconciliation: boolean;
@@ -420,6 +497,7 @@ export interface ActionAllowedResult {
 export function getActionMatrix(state: MigrationBatchState): ActionAllowedResult {
   return {
     registerFile: canRegisterFile(state),
+    replaceMigrationFile: canReplaceMigrationFile(state),
     insertStagingRow: canInsertStagingRow(state),
     runValidation: canRunValidation(state),
     runReconciliation: canRunReconciliation(state),

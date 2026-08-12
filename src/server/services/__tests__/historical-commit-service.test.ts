@@ -131,6 +131,11 @@ function makeStagingRow(id: string, overrides: Partial<ImportStagingRow> = {}): 
     transformationNotes: null,
     committedEntityType: null,
     committedEntityId: null,
+    // WP-08-01F R1 — staging-row version fields.
+    stagingVersion: 1,
+    isCurrent: true,
+    supersededAt: null,
+    supersededByFileId: null,
     createdBy: OWNER_USER_ID,
     createdAt: new Date(),
     updatedBy: null,
@@ -154,6 +159,10 @@ function makeValidationError(id: string, isBlocking: boolean = false): ImportVal
     resolvedBy: null,
     resolvedAt: null,
     resolutionNotes: null,
+    // WP-08-01F R1 — finding version fields.
+    findingVersion: 1,
+    isCurrent: true,
+    supersededAt: null,
     createdBy: OWNER_USER_ID,
     createdAt: new Date(),
     updatedBy: null,

@@ -35,6 +35,7 @@ import { HistoricalReconciliationService } from "@/server/services/historical-re
 import { HistoricalCommitService } from "@/server/services/historical-commit-service";
 import { HistoricalCorrectionService } from "@/server/services/historical-correction-service";
 import { ProductionCorrectionDomainHook } from "@/server/services/production-correction-domain-hook";
+import { HistoricalReplacementService } from "@/server/services/historical-replacement-service";
 import { HistoricalStagingDbRepository } from "@/server/services/historical-staging-db-repository";
 import { HistoricalValidationDbRepository } from "@/server/services/historical-validation-db-repository";
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
@@ -126,7 +127,26 @@ function getMigrationServices() {
     },
     // testFaultCallback is NEVER set in production wiring
   });
-  return { stagingService, validationService, reconciliationService, commitService, correctionService };
+  // WP-08-01F R1 — File replacement service. Uses the same transactionRunner
+  // + tx-scoped factories as the commit/correction services so all DB writes
+  // commit/rollback atomically. The invalidateCurrentApprovals callback uses
+  // the commit repo's existing invalidateCurrentApprovalsForBatch method.
+  const replacementService = new HistoricalReplacementService({
+    repository: stagingRepo,
+    audit,
+    idempotency,
+    transactionRunner,
+    createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    invalidateCurrentApprovals: async (tx: unknown, tenantId: string, batchId: string, invalidatedBy: string, reason: string, now: Date) => {
+      const txCommitRepo = new HistoricalCommitDbRepository(tx as any);
+      void now; // the commit repo uses its own timestamp internally
+      return txCommitRepo.invalidateCurrentApprovalsForBatch(tenantId, batchId, invalidatedBy, reason);
+    },
+  });
+
+  return { stagingService, validationService, reconciliationService, commitService, correctionService, replacementService };
 }
 
 async function authenticateAndRequirePermission(permissionKey: string) {
@@ -222,6 +242,37 @@ export async function uploadAndParseCsvAction(formData: FormData): Promise<void>
   const templateType = parseRequiredString(formData, "templateType");
   const templateVersion = parseRequiredString(formData, "templateVersion");
   const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+
+  // WP-08-01F R1 — Close the unsafe upload boundary.
+  //
+  // Ordinary initial upload is allowed ONLY before staging finalization.
+  // Once the batch reaches `staged`, the staged-data hash is bound and any
+  // further "ordinary upload" would silently change the staged data without
+  // invalidating bound approvals — that is unsafe. From `staged` onward,
+  // the only safe path is the explicit `replaceMigrationFile` command.
+  //
+  // This check MUST run before ANY effect: before storage upload, before
+  // file registration, before staging insertion, before audit, before
+  // idempotency claim. A manipulated FormData cannot bypass this rule
+  // because the batch row is read directly from the database by the
+  // staging service's `findImportBatchById` (called inside the guard).
+  //
+  // We perform the check in TWO layers:
+  //   (1) Here in the action — fail fast before touching storage.
+  //   (2) Inside `stagingService.registerFile` via `guardRegisterFileInitial`
+  //       (defence in depth — the service refuses to register if the
+  //       batch is past finalization).
+  if (db) {
+    const { HistoricalStagingDbRepository } = await import("@/server/services/historical-staging-db-repository");
+    const { guardRegisterFileInitial } = await import("@/server/services/migration-lifecycle-guard");
+    const stagingRepo = new HistoricalStagingDbRepository(db);
+    const batch = await stagingRepo.findImportBatchById(authResult.tenantId, batchId);
+    if (!batch) {
+      throw new Error("VALIDATION_FAILED: Batch not found or tenant mismatch.");
+    }
+    // Throws MigrationLifecycleError BEFORE any storage/DB write — zero effects.
+    guardRegisterFileInitial(batch);
+  }
 
   // Get the uploaded file
   const file = formData.get("file") as File | null;
@@ -352,6 +403,151 @@ export async function uploadAndParseCsvAction(formData: FormData): Promise<void>
         idempotencyKey: rowKey,
       },
     );
+  }
+
+  revalidatePath(`/management/admin/migration/${batchId}`);
+}
+
+// ===========================================================================
+// WP-08-01F R1 — Explicit file replacement command
+// ===========================================================================
+
+/**
+ * Replace a migration file with a new immutable version.
+ *
+ * This is the ONLY safe way to change the file set after staging finalization.
+ * Ordinary initial upload is closed in `staged` and beyond (see
+ * `uploadAndParseCsvAction` which calls `guardRegisterFileInitial`).
+ *
+ * Saga (Supabase Storage + PostgreSQL cannot share one transaction):
+ *   1. Authorize migration.prepare permission.
+ *   2. Read batch + verify tenant match + guardReplaceFile.
+ *   3. Validate file size/extension/MIME BEFORE any storage write.
+ *   4. Parse the replacement CSV BEFORE any storage write — fail closed
+ *      on parse errors with zero effects.
+ *   5. Store replacement object in private storage (server-generated path).
+ *   6. Call replacementService.replaceMigrationFile which runs all DB writes
+ *      in ONE PostgreSQL transaction with tx-scoped idempotency.
+ *   7. If the service throws (DB transaction failed): compensate by deleting
+ *      ONLY the newly uploaded replacement object. If deletion fails, create
+ *      a durable orphan-cleanup alert in operational_alerts.
+ *   8. NEVER delete the old file object — immutable preservation.
+ *
+ * Permission: migration.prepare (Owner/Accountant only).
+ * Workers are denied before any file content is accessed.
+ */
+export async function replaceMigrationFileAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.prepare");
+  const batchId = parseRequiredString(formData, "batchId");
+  const replaceFileId = parseRequiredString(formData, "replaceFileId");
+  const templateType = parseRequiredString(formData, "templateType");
+  const templateVersion = parseRequiredString(formData, "templateVersion");
+  const reworkReason = parseRequiredString(formData, "reworkReason");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+
+  // Get the uploaded replacement file
+  const file = formData.get("file") as File | null;
+  if (!file) {
+    throw new Error("VALIDATION_FAILED: No replacement file uploaded.");
+  }
+
+  // Validate filename and extension
+  const filename = file.name;
+  if (!filename.toLowerCase().endsWith(".csv")) {
+    throw new Error("VALIDATION_FAILED: Only CSV files are supported.");
+  }
+
+  // Validate MIME type
+  const acceptedMimeTypes = ["text/csv", "application/csv", "text/plain", "application/vnd.ms-excel"];
+  if (file.type && !acceptedMimeTypes.includes(file.type)) {
+    throw new Error(`VALIDATION_FAILED: Unsupported MIME type '${file.type}'. Only CSV files are accepted.`);
+  }
+
+  // Validate file size (10 MB max)
+  const maxSize = 10 * 1024 * 1024;
+  if (file.size > maxSize) {
+    throw new Error(`VALIDATION_FAILED: File size ${file.size} bytes exceeds maximum ${maxSize} bytes.`);
+  }
+
+  // Read + parse the replacement CSV BEFORE any storage write.
+  // Fail closed on parse errors with zero effects.
+  const fileBuffer = Buffer.from(await file.arrayBuffer());
+  const fileContent = fileBuffer.toString("utf-8");
+  const contentType = file.type || "text/csv";
+
+  const { findTemplate } = await import("@/server/services/migration-templates");
+  const { parseCsv } = await import("@/server/services/migration-csv-parser");
+  const template = findTemplate(templateType, templateVersion);
+  if (!template) {
+    throw new Error(`Template '${templateType}' version '${templateVersion}' not found.`);
+  }
+
+  const parseResult = parseCsv(fileContent, template);
+  if (parseResult.errors.length > 0) {
+    throw new Error(`CSV_PARSE_FAILED: ${parseResult.errors.join("; ")}`);
+  }
+
+  // Store replacement bytes in private storage (server-generated path).
+  // This happens BEFORE the DB transaction — if the transaction fails, we
+  // compensate by deleting this newly-created object (never the old one).
+  const { getPrivateFileStorage } = await import("@/server/services/private-file-storage");
+  const storage = getPrivateFileStorage();
+  const storedFile = await storage.store(
+    authResult.tenantId,
+    batchId,
+    idempotencyKey,
+    filename,
+    fileBuffer,
+    contentType,
+  );
+
+  // Run the replacement saga — all DB writes in ONE PostgreSQL transaction.
+  const { replacementService } = getMigrationServices();
+  try {
+    await replacementService.replaceMigrationFile(authResult as any, effective as any, {
+      importBatchId: batchId,
+      replaceFileId,
+      originalFileName: filename,
+      storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash,
+      fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType,
+      fileType: "source",
+      parsedRows: parseResult.rows,
+      templateType,
+      reworkReason,
+      idempotencyKey,
+    });
+  } catch (e) {
+    // DB transaction failed — compensate by deleting ONLY the newly uploaded
+    // replacement object. NEVER delete the old file object.
+    try {
+      await storage.deleteIfOrphaned(storedFile.storagePath);
+    } catch (compensationError) {
+      // Durable record in operational_alerts table (not just console.error)
+      const { createOrphanCleanupAlert } = await import("@/server/services/orphan-cleanup-service");
+      try {
+        if (db) {
+          await createOrphanCleanupAlert(
+            db,
+            authResult.tenantId,
+            batchId,
+            storedFile.storagePath,
+            idempotencyKey,
+            `Replacement compensation failed: ${(compensationError as Error).message}. Original error: ${(e as Error).message}`,
+          );
+        }
+      } catch {
+        console.error(
+          `ORPHAN_CLEANUP_ALERT_FAILED: tenant=${authResult.tenantId} batch=${batchId} ` +
+          `storagePath=${storedFile.storagePath} replaceKey=${idempotencyKey} ` +
+          `reason=${(compensationError as Error).message} ` +
+          `originalError=${(e as Error).message} ` +
+          `status=pending_cleanup timestamp=${new Date().toISOString()}`
+        );
+      }
+    }
+    throw e;
   }
 
   revalidatePath(`/management/admin/migration/${batchId}`);

@@ -49,8 +49,10 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
       errorCode: row.errorCode, message: row.message, fieldName: row.fieldName,
       isBlocking: row.isBlocking, resolutionStatus: "open",
       resolvedBy: null, resolvedAt: null, resolutionNotes: null,
+      // WP-08-01F R1 — new findings start as current version 1.
+      findingVersion: 1, isCurrent: true, supersededAt: null,
       createdBy: row.createdBy, createdAt: NOW(), updatedBy: null, updatedAt: null,
-    };
+    } as ImportValidationError;
     this.errors.set(`${row.tenantId}:${id}`, error);
     return error;
   }

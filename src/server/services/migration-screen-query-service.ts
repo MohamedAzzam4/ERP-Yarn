@@ -337,21 +337,25 @@ export class MigrationScreenQueryService {
     const batchRow = batch[0]!;
 
     // Run independent queries in parallel. Staging rows now use COUNT + paginated SELECT.
+    // WP-08-01F R1 — filter on is_current=true so superseded versions don't
+    // leak into the current view. Old versions remain queryable for audit
+    // via direct table access, but the UI shows only current evidence.
     const [files, allValidationFindings, aliasMappings, reviewItems, reconciliationResults, approvals, backupEvidence, activeLocks, cutoverManifests, stagingTotalResult] = await Promise.all([
       this.db.select().from(importFiles).where(and(eq(importFiles.importBatchId, batchId), eq(importFiles.tenantId, tenantId))).orderBy(desc(importFiles.createdAt)),
-      this.db.select().from(importValidationErrors).where(and(eq(importValidationErrors.importBatchId, batchId), eq(importValidationErrors.tenantId, tenantId))).orderBy(desc(importValidationErrors.severity)),
+      this.db.select().from(importValidationErrors).where(and(eq(importValidationErrors.importBatchId, batchId), eq(importValidationErrors.tenantId, tenantId), eq(importValidationErrors.isCurrent, true))).orderBy(desc(importValidationErrors.severity)),
       this.db.select().from(importAliasMappings).where(and(eq(importAliasMappings.importBatchId, batchId), eq(importAliasMappings.tenantId, tenantId))),
       this.db.select().from(importHumanReviewItems).where(and(eq(importHumanReviewItems.importBatchId, batchId), eq(importHumanReviewItems.tenantId, tenantId))),
       this.db.select().from(importReconciliationResults).where(and(eq(importReconciliationResults.importBatchId, batchId), eq(importReconciliationResults.tenantId, tenantId))).orderBy(desc(importReconciliationResults.reportVersion)),
-      this.db.select().from(importBatchApprovals).where(and(eq(importBatchApprovals.importBatchId, batchId), eq(importBatchApprovals.tenantId, tenantId))),
+      this.db.select().from(importBatchApprovals).where(and(eq(importBatchApprovals.importBatchId, batchId), eq(importBatchApprovals.tenantId, tenantId), eq(importBatchApprovals.isCurrent, true))),
       this.db.select().from(importBackupEvidence).where(and(eq(importBackupEvidence.importBatchId, batchId), eq(importBackupEvidence.tenantId, tenantId))),
       this.db.select().from(importCutoverLocks).where(and(eq(importCutoverLocks.importBatchId, batchId), eq(importCutoverLocks.tenantId, tenantId), desc(importCutoverLocks.acquiredAt))),
       this.db.select().from(importCutoverManifests).where(and(eq(importCutoverManifests.importBatchId, batchId), eq(importCutoverManifests.tenantId, tenantId))),
       // Total staging row count — server-side pagination metadata.
+      // WP-08-01F R1 — count only current staging rows.
       this.db
         .select({ count: drizzleSql<number>`count(*)::int` })
         .from(importStagingRows)
-        .where(and(eq(importStagingRows.importBatchId, batchId), eq(importStagingRows.tenantId, tenantId))),
+        .where(and(eq(importStagingRows.importBatchId, batchId), eq(importStagingRows.tenantId, tenantId), eq(importStagingRows.isCurrent, true))),
     ]);
 
     const totalRows: number = Number(stagingTotalResult[0]?.count ?? 0);
@@ -360,11 +364,11 @@ export class MigrationScreenQueryService {
     const currentPage = Math.min(page, totalPages);
     const offset = (currentPage - 1) * pageSize;
 
-    // Fetch only the requested page of staging rows.
+    // Fetch only the requested page of current staging rows.
     const stagingRowsPage = await this.db
       .select()
       .from(importStagingRows)
-      .where(and(eq(importStagingRows.importBatchId, batchId), eq(importStagingRows.tenantId, tenantId)))
+      .where(and(eq(importStagingRows.importBatchId, batchId), eq(importStagingRows.tenantId, tenantId), eq(importStagingRows.isCurrent, true)))
       .orderBy(asc(importStagingRows.sourceRowNumber), asc(importStagingRows.id))
       .limit(pageSize)
       .offset(offset);
@@ -454,7 +458,7 @@ export class MigrationScreenQueryService {
     const findings = await this.db
       .select()
       .from(importValidationErrors)
-      .where(and(eq(importValidationErrors.importBatchId, batchId), eq(importValidationErrors.tenantId, tenantId)))
+      .where(and(eq(importValidationErrors.importBatchId, batchId), eq(importValidationErrors.tenantId, tenantId), eq(importValidationErrors.isCurrent, true)))
       .orderBy(desc(importValidationErrors.severity));
 
     const files = await this.db

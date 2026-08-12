@@ -54,7 +54,7 @@ import type {
   ImportTemplateVersion,
   ImportStagingRow,
 } from "@/server/db/schema/migration";
-import { guardRegisterFile, guardInsertStagingRow } from "./migration-lifecycle-guard";
+import { guardRegisterFileInitial, guardInsertStagingRow } from "./migration-lifecycle-guard";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -351,8 +351,12 @@ export class HistoricalStagingService {
     if (!batch) throw new BatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
-    guardRegisterFile(batch);
+    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write.
+    // WP-08-01F R1: ordinary INITIAL upload is allowed ONLY before staging
+    // finalization. From `staged` onward, the explicit `replaceMigrationFile`
+    // command must be used so that hashes are reset and approvals are
+    // invalidated through append-only supersession.
+    guardRegisterFileInitial(batch);
 
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {

@@ -52,6 +52,9 @@ function makeStagingRow(id: string, data: Record<string, unknown>, overrides: Pa
     validationStatus: "pending", reviewStatus: "not_required",
     aiConfidence: null, transformationNotes: null,
     committedEntityType: null, committedEntityId: null,
+    // WP-08-01F R1 — staging-row version fields.
+    stagingVersion: 1, isCurrent: true,
+    supersededAt: null, supersededByFileId: null,
     createdBy: TEST_USER_ID, createdAt: new Date(),
     updatedBy: null, updatedAt: null,
     ...overrides,
