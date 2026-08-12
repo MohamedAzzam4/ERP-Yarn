@@ -14,11 +14,10 @@
  * storage path or raw file URL.
  */
 import "server-only";
-import { eq, and, desc, sql as drizzleSql } from "drizzle-orm";
+import { eq, and, desc, sql as drizzleSql, asc, inArray } from "drizzle-orm";
 import {
   importBatches,
   importFiles,
-  importTemplateVersions,
   importStagingRows,
   importValidationErrors,
   importAliasMappings,
@@ -68,11 +67,22 @@ export interface MigrationFileDto {
   fileHashRedacted: string; // first 8 chars + "…" — never full hash in list view
   supersededById: string | null;
   createdAt: string;
+  // WP-08-01F UX milestone — richer file-version metadata
+  /** User ID of the uploader (never the email/name to avoid PII leakage in lists). */
+  uploaderUserId: string | null;
+  /** True when this file is the current version (no other file supersedes it). */
+  isCurrent: boolean;
+  /** Template type recorded for this batch (single-tenant batch→template binding). */
+  templateType: string | null;
+  /** Template version recorded for this batch. */
+  templateVersion: string | null;
 }
 
 /** Staging row preview DTO — no operational effects, provenance only. */
 export interface MigrationStagingRowDto {
   id: string;
+  /** Linked file ID (for lineage display). */
+  importFileId: string | null;
   sourceSheetName: string | null;
   sourceRowNumber: number | null;
   transformedRowJson: unknown;
@@ -82,6 +92,8 @@ export interface MigrationStagingRowDto {
   transformationNotes: string | null;
   committedEntityType: string | null;
   committedEntityId: string | null;
+  /** Template name recorded for this staging row. */
+  templateName: string | null;
 }
 
 /** Validation finding DTO — severity preserved, never downgraded. */
@@ -97,6 +109,21 @@ export interface MigrationValidationFindingDto {
   resolvedBy: string | null;
   resolvedAt: string | null;
   resolutionNotes: string | null;
+  // WP-08-01F UX milestone — cell-level lineage (linked to staging row + file).
+  /** File ID of the staging row linked to this finding (null if no staging row). */
+  fileId: string | null;
+  /** Original file name of the linked staging row (null if no staging row). */
+  fileName: string | null;
+  /** Sheet name of the linked staging row (for CSV uploads, equals file name). */
+  sourceSheetName: string | null;
+  /** Source row number of the linked staging row. */
+  sourceRowNumber: number | null;
+  /** Source column name (same as fieldName for MVP — single source of truth). */
+  columnName: string | null;
+  /** Submitted cell value (looked up from the staging row's transformedRowJson[fieldName]). */
+  submittedValue: string | null;
+  /** Normalized value if the staging row stored a different normalized form. */
+  normalizedValue: string | null;
 }
 
 /** Alias mapping DTO. */
@@ -216,6 +243,25 @@ export interface MigrationCorrectionRequestDto {
   createdAt: string;
 }
 
+/** Staging pagination metadata returned by getBatchDetail. */
+export interface MigrationStagingPaginationDto {
+  page: number; // 1-indexed current page
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+/** Validation summary counts returned by getBatchDetail. */
+export interface MigrationValidationSummaryDto {
+  blockingErrorCount: number;
+  warningCount: number;
+  informationalCount: number;
+  /** True if any blocking finding exists — progression is blocked. */
+  progressionBlocked: boolean;
+}
+
 /** Batch detail DTO — comprehensive view of a single batch. */
 export interface MigrationBatchDetailDto {
   batch: MigrationBatchListDto & {
@@ -227,7 +273,9 @@ export interface MigrationBatchDetailDto {
   };
   files: MigrationFileDto[];
   stagingRows: MigrationStagingRowDto[];
+  stagingPagination: MigrationStagingPaginationDto;
   validationFindings: MigrationValidationFindingDto[];
+  validationSummary: MigrationValidationSummaryDto;
   aliasMappings: MigrationAliasMappingDto[];
   reviewItems: MigrationReviewItemDto[];
   reconciliationResults: MigrationReconciliationResultDto[];
@@ -265,11 +313,19 @@ export class MigrationScreenQueryService {
    * Includes all related data: files, staging rows, validation findings,
    * aliases, review items, reconciliation results, approvals, backup evidence,
    * active locks, and cutover manifests.
+   *
+   * WP-08-01F UX milestone — real server-side pagination for staging preview.
+   * The staging preview no longer returns "first 200 rows"; it returns
+   * exactly the requested page plus pagination metadata.
    */
   async getBatchDetail(
     tenantId: string,
     batchId: string,
+    options?: { page?: number; pageSize?: number },
   ): Promise<MigrationBatchDetailDto | null> {
+    const page = Math.max(1, options?.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, options?.pageSize ?? 20));
+
     const batch = await this.db
       .select()
       .from(importBatches)
@@ -278,9 +334,11 @@ export class MigrationScreenQueryService {
 
     if (batch.length === 0) return null;
 
-    const [files, stagingRows, validationFindings, aliasMappings, reviewItems, reconciliationResults, approvals, backupEvidence, activeLocks, cutoverManifests] = await Promise.all([
+    const batchRow = batch[0]!;
+
+    // Run independent queries in parallel. Staging rows now use COUNT + paginated SELECT.
+    const [files, allValidationFindings, aliasMappings, reviewItems, reconciliationResults, approvals, backupEvidence, activeLocks, cutoverManifests, stagingTotalResult] = await Promise.all([
       this.db.select().from(importFiles).where(and(eq(importFiles.importBatchId, batchId), eq(importFiles.tenantId, tenantId))).orderBy(desc(importFiles.createdAt)),
-      this.db.select().from(importStagingRows).where(and(eq(importStagingRows.importBatchId, batchId), eq(importStagingRows.tenantId, tenantId))).limit(200),
       this.db.select().from(importValidationErrors).where(and(eq(importValidationErrors.importBatchId, batchId), eq(importValidationErrors.tenantId, tenantId))).orderBy(desc(importValidationErrors.severity)),
       this.db.select().from(importAliasMappings).where(and(eq(importAliasMappings.importBatchId, batchId), eq(importAliasMappings.tenantId, tenantId))),
       this.db.select().from(importHumanReviewItems).where(and(eq(importHumanReviewItems.importBatchId, batchId), eq(importHumanReviewItems.tenantId, tenantId))),
@@ -289,7 +347,27 @@ export class MigrationScreenQueryService {
       this.db.select().from(importBackupEvidence).where(and(eq(importBackupEvidence.importBatchId, batchId), eq(importBackupEvidence.tenantId, tenantId))),
       this.db.select().from(importCutoverLocks).where(and(eq(importCutoverLocks.importBatchId, batchId), eq(importCutoverLocks.tenantId, tenantId), desc(importCutoverLocks.acquiredAt))),
       this.db.select().from(importCutoverManifests).where(and(eq(importCutoverManifests.importBatchId, batchId), eq(importCutoverManifests.tenantId, tenantId))),
+      // Total staging row count — server-side pagination metadata.
+      this.db
+        .select({ count: drizzleSql<number>`count(*)::int` })
+        .from(importStagingRows)
+        .where(and(eq(importStagingRows.importBatchId, batchId), eq(importStagingRows.tenantId, tenantId))),
     ]);
+
+    const totalRows: number = Number(stagingTotalResult[0]?.count ?? 0);
+    const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+    // Clamp page to the last valid page when totalRows shrank after the user navigated.
+    const currentPage = Math.min(page, totalPages);
+    const offset = (currentPage - 1) * pageSize;
+
+    // Fetch only the requested page of staging rows.
+    const stagingRowsPage = await this.db
+      .select()
+      .from(importStagingRows)
+      .where(and(eq(importStagingRows.importBatchId, batchId), eq(importStagingRows.tenantId, tenantId)))
+      .orderBy(asc(importStagingRows.sourceRowNumber), asc(importStagingRows.id))
+      .limit(pageSize)
+      .offset(offset);
 
     // Fetch correction requests for this batch
     const corrections = await this.db
@@ -298,18 +376,60 @@ export class MigrationScreenQueryService {
       .where(and(eq(historicalCorrectionRequests.importBatchId, batchId), eq(historicalCorrectionRequests.tenantId, tenantId)))
       .orderBy(desc(historicalCorrectionRequests.createdAt));
 
+    // Build lookup maps for cell-level lineage enrichment of validation findings.
+    const fileById = new Map(files.map((f) => [f.id, f]));
+    const stagingRowById = new Map(stagingRowsPage.map((r) => [r.id, r]));
+    // Findings may reference staging rows NOT on the current page — fetch them in one shot.
+    const findingStagingRowIds = allValidationFindings
+      .map((v) => v.stagingRowId)
+      .filter((id): id is string => id !== null);
+    const unresolvedStagingRowIds = findingStagingRowIds.filter((id) => !stagingRowById.has(id));
+    let extraStagingRows: typeof importStagingRows.$inferSelect[] = [];
+    if (unresolvedStagingRowIds.length > 0) {
+      extraStagingRows = await this.db
+        .select()
+        .from(importStagingRows)
+        .where(and(
+          eq(importStagingRows.tenantId, tenantId),
+          inArray(importStagingRows.id, unresolvedStagingRowIds),
+        ));
+      for (const r of extraStagingRows) stagingRowById.set(r.id, r);
+    }
+
+    // Compute file "isCurrent" — a file is current if no other file points to it via supersededById.
+    const supersededIds = new Set(files.map((f) => f.supersededById).filter((id): id is string => id !== null));
+
+    // Validation summary counts (computed from the full findings list, not the page).
+    const validationSummary: MigrationValidationSummaryDto = {
+      blockingErrorCount: allValidationFindings.filter((v) => v.severity === "blocking_error").length,
+      warningCount: allValidationFindings.filter((v) => v.severity === "review_required_warning").length,
+      informationalCount: allValidationFindings.filter((v) => v.severity === "informational").length,
+      progressionBlocked: allValidationFindings.some((v) => v.isBlocking),
+    };
+
+    const stagingPagination: MigrationStagingPaginationDto = {
+      page: currentPage,
+      pageSize,
+      totalRows,
+      totalPages,
+      hasNextPage: currentPage < totalPages,
+      hasPrevPage: currentPage > 1,
+    };
+
     return {
       batch: {
-        ...this.mapBatchListDto(batch[0]!),
-        cutoverManifestHash: batch[0]!.cutoverManifestHash,
-        cutoverImportMode: batch[0]!.cutoverImportMode,
-        stagedDataHash: batch[0]!.stagedDataHash,
-        warningSummary: batch[0]!.warningSummary,
-        commitEffectCounts: batch[0]!.commitEffectCounts,
+        ...this.mapBatchListDto(batchRow),
+        cutoverManifestHash: batchRow.cutoverManifestHash,
+        cutoverImportMode: batchRow.cutoverImportMode,
+        stagedDataHash: batchRow.stagedDataHash,
+        warningSummary: batchRow.warningSummary,
+        commitEffectCounts: batchRow.commitEffectCounts,
       },
-      files: files.map((f) => this.mapFileDto(f)),
-      stagingRows: stagingRows.map((r) => this.mapStagingRowDto(r)),
-      validationFindings: validationFindings.map((v) => this.mapValidationFindingDto(v)),
+      files: files.map((f) => this.mapFileDto(f, batchRow, supersededIds.has(f.id))),
+      stagingRows: stagingRowsPage.map((r) => this.mapStagingRowDto(r)),
+      stagingPagination,
+      validationFindings: allValidationFindings.map((v) => this.mapValidationFindingDto(v, stagingRowById, fileById)),
+      validationSummary,
       aliasMappings: aliasMappings.map((a) => this.mapAliasMappingDto(a)),
       reviewItems: reviewItems.map((r) => this.mapReviewItemDto(r)),
       reconciliationResults: reconciliationResults.map((r) => this.mapReconciliationResultDto(r)),
@@ -319,6 +439,46 @@ export class MigrationScreenQueryService {
       cutoverManifests: cutoverManifests.map((m) => this.mapCutoverManifestDto(m)),
       corrections: corrections.map((c) => this.mapCorrectionRequestDto(c)),
     };
+  }
+
+  /**
+   * List validation findings for a batch — used by the CSV report route.
+   * Returns the full findings list with cell-level lineage enrichment,
+   * so the report can include file/sheet/row/column/submitted/normalized
+   * values regardless of pagination.
+   */
+  async listValidationFindings(
+    tenantId: string,
+    batchId: string,
+  ): Promise<MigrationValidationFindingDto[]> {
+    const findings = await this.db
+      .select()
+      .from(importValidationErrors)
+      .where(and(eq(importValidationErrors.importBatchId, batchId), eq(importValidationErrors.tenantId, tenantId)))
+      .orderBy(desc(importValidationErrors.severity));
+
+    const files = await this.db
+      .select()
+      .from(importFiles)
+      .where(and(eq(importFiles.importBatchId, batchId), eq(importFiles.tenantId, tenantId)));
+
+    const stagingRowIds = findings
+      .map((v) => v.stagingRowId)
+      .filter((id): id is string => id !== null);
+    let stagingRows: typeof importStagingRows.$inferSelect[] = [];
+    if (stagingRowIds.length > 0) {
+      stagingRows = await this.db
+        .select()
+        .from(importStagingRows)
+        .where(and(
+          eq(importStagingRows.tenantId, tenantId),
+          inArray(importStagingRows.id, stagingRowIds),
+        ));
+    }
+
+    const fileById = new Map(files.map((f) => [f.id, f]));
+    const stagingRowById = new Map(stagingRows.map((r) => [r.id, r]));
+    return findings.map((v) => this.mapValidationFindingDto(v, stagingRowById, fileById));
   }
 
   /**
@@ -378,7 +538,11 @@ export class MigrationScreenQueryService {
     };
   }
 
-  private mapFileDto(f: typeof importFiles.$inferSelect): MigrationFileDto {
+  private mapFileDto(
+    f: typeof importFiles.$inferSelect,
+    batch: typeof importBatches.$inferSelect,
+    isSuperseded: boolean,
+  ): MigrationFileDto {
     return {
       id: f.id,
       originalFileName: f.originalFileName,
@@ -388,12 +552,21 @@ export class MigrationScreenQueryService {
       fileHashRedacted: f.fileHash.substring(0, 8) + "…",
       supersededById: f.supersededById,
       createdAt: f.createdAt.toISOString(),
+      // WP-08-01F UX milestone — richer file-version metadata.
+      // The uploader is the user who created the file record (tenant-owned row).
+      uploaderUserId: f.createdBy,
+      // A file is "current" when no other file supersedes it.
+      isCurrent: !isSuperseded,
+      // Template binding is at the batch level (single template per batch).
+      templateType: batch.templateName,
+      templateVersion: batch.templateVersion,
     };
   }
 
   private mapStagingRowDto(r: typeof importStagingRows.$inferSelect): MigrationStagingRowDto {
     return {
       id: r.id,
+      importFileId: r.importFileId,
       sourceSheetName: r.sourceSheetName,
       sourceRowNumber: r.sourceRowNumber,
       transformedRowJson: r.transformedRowJson,
@@ -403,10 +576,46 @@ export class MigrationScreenQueryService {
       transformationNotes: r.transformationNotes,
       committedEntityType: r.committedEntityType,
       committedEntityId: r.committedEntityId,
+      templateName: r.templateName,
     };
   }
 
-  private mapValidationFindingDto(v: typeof importValidationErrors.$inferSelect): MigrationValidationFindingDto {
+  /**
+   * Map a validation finding DB row to DTO, enriching it with cell-level lineage.
+   * The stagingRowById and fileById maps are built by the caller to avoid N+1 queries.
+   */
+  private mapValidationFindingDto(
+    v: typeof importValidationErrors.$inferSelect,
+    stagingRowById: Map<string, typeof importStagingRows.$inferSelect>,
+    fileById: Map<string, typeof importFiles.$inferSelect>,
+  ): MigrationValidationFindingDto {
+    const stagingRow = v.stagingRowId ? stagingRowById.get(v.stagingRowId) ?? null : null;
+    const file = stagingRow?.importFileId ? fileById.get(stagingRow.importFileId) ?? null : null;
+    // Pull the submitted value from the staging row's transformed JSON by field name.
+    let submittedValue: string | null = null;
+    let normalizedValue: string | null = null;
+    if (stagingRow && v.fieldName) {
+      const transformed = stagingRow.transformedRowJson;
+      if (transformed && typeof transformed === "object" && !Array.isArray(transformed)) {
+        const obj = transformed as Record<string, unknown>;
+        const raw = obj[v.fieldName];
+        if (raw !== undefined && raw !== null) {
+          submittedValue = String(raw);
+        }
+        // rawRowJson holds the original (un-normalized) value — read it from the staging row.
+        // For MVP, raw and transformed are stored identically, so normalizedValue stays null
+        // unless the JSON object explicitly stores a separate "normalized" form.
+        const rawJson = stagingRow.rawRowJson;
+        if (rawJson && typeof rawJson === "object" && !Array.isArray(rawJson)) {
+          const rawObj = rawJson as Record<string, unknown>;
+          const rawCell = rawObj[v.fieldName];
+          if (rawCell !== undefined && rawCell !== null && String(rawCell) !== submittedValue) {
+            normalizedValue = submittedValue;
+            submittedValue = String(rawCell);
+          }
+        }
+      }
+    }
     return {
       id: v.id,
       stagingRowId: v.stagingRowId,
@@ -419,6 +628,13 @@ export class MigrationScreenQueryService {
       resolvedBy: v.resolvedBy,
       resolvedAt: v.resolvedAt?.toISOString() ?? null,
       resolutionNotes: v.resolutionNotes,
+      fileId: file?.id ?? null,
+      fileName: file?.originalFileName ?? null,
+      sourceSheetName: stagingRow?.sourceSheetName ?? null,
+      sourceRowNumber: stagingRow?.sourceRowNumber ?? null,
+      columnName: v.fieldName,
+      submittedValue,
+      normalizedValue,
     };
   }
 

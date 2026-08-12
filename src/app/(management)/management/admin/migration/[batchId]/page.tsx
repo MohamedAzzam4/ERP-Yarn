@@ -4,9 +4,21 @@
  * Route: /management/admin/migration/[batchId]
  * Contract 10 §9: Historical Migration Screens.
  *
- * Shows batch lifecycle, files, staging preview, validation findings,
- * alias mappings, review items, reconciliation results, approvals,
- * backup evidence, active locks, and cutover manifests.
+ * UX milestone: surfaces the already-implemented production migration
+ * commands on the real batch-detail UI with:
+ *   - Real template selector (5 templates, Arabic description, columns, rules)
+ *   - Upload form with useActionState/useFormStatus (pending, dedup, feedback)
+ *   - File version list with metadata (template, size, checksum, uploader,
+ *     date, current/superseded, replacement link, protected download)
+ *   - Server-side paginated staging preview with lineage
+ *   - Validation summary + cell-level finding details with filters + CSV export
+ *   - Lifecycle-gated action buttons matching the server-side guard matrix
+ *   - Loading / empty / denied / validation error / upload error / success states
+ *   - Responsive Arabic RTL accessible UI (no page-level overflow at 360px)
+ *
+ * No metadata-only manual file registration on this page — users must upload
+ * real bytes. The backend `registerFileAction` server action remains for
+ * internal/import tooling, but is not surfaced on the end-user UI.
  */
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -21,8 +33,6 @@ import { LtrValue } from "@/components/ui/ltr-value";
 import { db } from "@/server/db/client";
 import { MigrationScreenQueryService } from "@/server/services/migration-screen-query-service";
 import {
-  registerFileAction,
-  insertStagingRowAction,
   uploadAndParseCsvAction,
   finalizeStagingAction,
   finalizeCutoverManifestAction,
@@ -40,38 +50,58 @@ import {
   approveCorrectionAsAccountantAction,
   executeCorrectionAction,
 } from "../actions";
-import { getAvailableTemplates, type MigrationTemplateDefinition } from "@/server/services/migration-templates";
+import { getAvailableTemplates } from "@/server/services/migration-templates";
 import {
   getActionMatrix,
   visibleApprovalControls,
   visibleCorrectionApprovalControls,
   type MigrationBatchState,
 } from "@/server/services/migration-lifecycle-predicates";
+import { TemplateSelectorAndUploadForm } from "./_components/template-selector-and-upload-form";
+import { ValidationFindingsPanel } from "./_components/validation-findings-panel";
+import { StagingPagination } from "./_components/staging-pagination";
+
+const DEFAULT_PAGE_SIZE = 20;
 
 export default async function MigrationBatchDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ batchId: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const { batchId } = await params;
   const authResult = await getErpAuthContextWithRoles();
   if (!authResult.authenticated) redirect("/login");
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
 
+  // Worker denial — workers never see migration data (Contract 11 §8).
   const managementRole = authResult.roles.find((r) =>
     r === "owner" || r === "accountant",
   ) as RoleCode | undefined;
   if (!managementRole) redirect("/worker");
 
-  // TASK 3: Collect ALL management roles the user has so role-specific
-  // control visibility can be applied (Owner-only sees only Owner control,
-  // Accountant-only sees only Accountant control, multi-role may see both,
-  // but service still prevents same identity satisfying both slots).
+  // Collect ALL management roles so role-specific control visibility can be
+  // applied (Owner-only sees only Owner control, Accountant-only sees only
+  // Accountant control, multi-role may see both — service still prevents
+  // same identity satisfying both slots per DEC-069).
   const userManagementRoles = authResult.roles.filter((r): r is "owner" | "accountant" =>
     r === "owner" || r === "accountant",
   );
 
   const navCategories = getManagementNavForRole(managementRole);
+
+  // Parse pagination + filter query params.
+  const sp = await searchParams;
+  const stagingPageRaw = typeof sp.stagingPage === "string" ? parseInt(sp.stagingPage, 10) : 1;
+  const stagingPage = Number.isFinite(stagingPageRaw) && stagingPageRaw > 0 ? stagingPageRaw : 1;
+  const validationFilters = {
+    severity: typeof sp.severity === "string" ? sp.severity : undefined,
+    fileId: typeof sp.fileId === "string" ? sp.fileId : undefined,
+    sheet: typeof sp.sheet === "string" ? sp.sheet : undefined,
+    errorCode: typeof sp.errorCode === "string" ? sp.errorCode : undefined,
+    q: typeof sp.q === "string" ? sp.q : undefined,
+  };
 
   let detail: Awaited<
     ReturnType<MigrationScreenQueryService["getBatchDetail"]>
@@ -81,35 +111,18 @@ export default async function MigrationBatchDetailPage({
   if (db) {
     try {
       const queryService = new MigrationScreenQueryService(db);
-      detail = await queryService.getBatchDetail(authResult.tenantId, batchId);
+      detail = await queryService.getBatchDetail(authResult.tenantId, batchId, {
+        page: stagingPage,
+        pageSize: DEFAULT_PAGE_SIZE,
+      });
       dbAvailable = true;
     } catch {
       dbAvailable = false;
     }
   }
 
-  if (dbAvailable && !detail) {
-    return (
-      <ManagementShell
-        userName={authResult.name || authResult.email}
-        navCategories={navCategories}
-        onSignOut={async () => {
-          "use server";
-          await signOut();
-        }}
-      >
-        <Container>
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              الدفعة غير موجودة أو لا تنتمي إلى هذا المستأجر.
-            </CardContent>
-          </Card>
-        </Container>
-      </ManagementShell>
-    );
-  }
-
-  if (!detail) {
+  // Denied state: DB unavailable.
+  if (!dbAvailable) {
     return (
       <ManagementShell
         userName={authResult.name || authResult.email}
@@ -130,9 +143,31 @@ export default async function MigrationBatchDetailPage({
     );
   }
 
+  // Denied state: batch not found / wrong tenant.
+  if (!detail) {
+    return (
+      <ManagementShell
+        userName={authResult.name || authResult.email}
+        navCategories={navCategories}
+        onSignOut={async () => {
+          "use server";
+          await signOut();
+        }}
+      >
+        <Container>
+          <Card>
+            <CardContent className="py-8 text-center text-muted-foreground">
+              الدفعة غير موجودة أو لا تنتمي إلى هذا المستأجر.
+            </CardContent>
+          </Card>
+        </Container>
+      </ManagementShell>
+    );
+  }
+
   const b = detail.batch;
 
-  // Build lifecycle state for action matrix (TASK 2)
+  // Build lifecycle state for action matrix.
   const batchState: MigrationBatchState = {
     status: b.status as MigrationBatchState["status"],
     stagedRowCount: b.stagedRowCount,
@@ -141,16 +176,29 @@ export default async function MigrationBatchDetailPage({
     acceptedWarningCount: b.acceptedWarningCount,
     stagedDataHash: b.stagedDataHash,
     cutoverManifestHash: b.cutoverManifestHash,
-    hasOwnerApproval: detail.approvals.some(a => a.approverRole === "owner"),
-    hasAccountantApproval: detail.approvals.some(a => a.approverRole === "accountant"),
+    hasOwnerApproval: detail.approvals.some((a) => a.approverRole === "owner"),
+    hasAccountantApproval: detail.approvals.some((a) => a.approverRole === "accountant"),
     hasBackupEvidence: detail.backupEvidence.length > 0,
   };
   const actionMatrix = getActionMatrix(batchState);
-
-  // TASK 3: Role-specific control visibility — Owner-only sees only Owner
-  // approval control, Accountant-only sees only Accountant control,
-  // unauthorized management/worker roles see neither, multi-role may see both.
   const batchApprovalVisibility = visibleApprovalControls(userManagementRoles, batchState);
+
+  // Apply validation filters on the server-rendered findings list.
+  const filteredFindings = detail.validationFindings.filter((f) => {
+    if (validationFilters.severity && f.severity !== validationFilters.severity) return false;
+    if (validationFilters.fileId && f.fileId !== validationFilters.fileId) return false;
+    if (validationFilters.sheet && f.sourceSheetName !== validationFilters.sheet) return false;
+    if (validationFilters.errorCode && f.errorCode !== validationFilters.errorCode) return false;
+    if (validationFilters.q) {
+      const needle = validationFilters.q.toLowerCase();
+      const hay = [f.message, f.errorCode, f.submittedValue ?? "", f.fileName ?? ""].join(" ").toLowerCase();
+      if (!hay.includes(needle)) return false;
+    }
+    return true;
+  });
+
+  // Pathname for pagination links (preserves all query params).
+  const pathname = `/management/admin/migration/${batchId}`;
 
   return (
     <ManagementShell
@@ -238,149 +286,75 @@ export default async function MigrationBatchDetailPage({
           </CardContent>
         </Card>
 
-        {/* Lifecycle action forms — shown only in valid states (TASK 2: action matrix) */}
+        {/* Validation summary — always visible once findings exist */}
+        <Card className="mb-6">
+          <CardHeader><CardTitle>ملخص التحقق</CardTitle></CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+              <div className={`border rounded p-3 ${detail.validationSummary.blockingErrorCount > 0 ? "border-destructive/50 bg-destructive/5" : "border-muted bg-muted/30"}`}>
+                <div className="text-xs text-muted-foreground">أخطاء مانعة</div>
+                <div className={`text-2xl font-bold ${detail.validationSummary.blockingErrorCount > 0 ? "text-destructive" : ""}`}>
+                  <LtrValue>{detail.validationSummary.blockingErrorCount}</LtrValue>
+                </div>
+              </div>
+              <div className={`border rounded p-3 ${detail.validationSummary.warningCount > 0 ? "border-amber-500/50 bg-amber-50" : "border-muted bg-muted/30"}`}>
+                <div className="text-xs text-muted-foreground">تحذيرات للمراجعة</div>
+                <div className={`text-2xl font-bold ${detail.validationSummary.warningCount > 0 ? "text-amber-700" : ""}`}>
+                  <LtrValue>{detail.validationSummary.warningCount}</LtrValue>
+                </div>
+              </div>
+              <div className="border border-muted bg-muted/30 rounded p-3">
+                <div className="text-xs text-muted-foreground">معلومات</div>
+                <div className="text-2xl font-bold">
+                  <LtrValue>{detail.validationSummary.informationalCount}</LtrValue>
+                </div>
+              </div>
+            </div>
+            <div
+              role="status"
+              className={`mt-3 p-3 rounded text-sm border flex items-center gap-2 ${
+                detail.validationSummary.progressionBlocked
+                  ? "border-destructive/50 text-destructive bg-destructive/5"
+                  : "border-success/50 text-success bg-success/5"
+              }`}
+            >
+              <span aria-hidden="true">{detail.validationSummary.progressionBlocked ? "⛔" : "✓"}</span>
+              {detail.validationSummary.progressionBlocked
+                ? "التقدم محظور: يوجد خطأ مانع. يجب حل جميع الأخطاء المانعة قبل إكمال المطابقة أو التقديم للاعتماد."
+                : "لا توجد أخطاء مانعة. يمكن التقدم إلى مرحلة المطابقة / التقديم للاعتماد (راجع التحذيرات إن وجدت)."}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Lifecycle action forms — only shown in valid states */}
         {!actionMatrix.createCorrectionRequest && (
           <Card className="mb-6">
             <CardHeader><CardTitle>إجراءات دورة الحياة</CardTitle></CardHeader>
             <CardContent className="space-y-4">
 
-              {/* WP-08-01F MILESTONE B4 — Template area */}
+              {/* Template selector + upload form — only in preparation states.
+                  Replaces the five independent template buttons with a real selector. */}
               {actionMatrix.registerFile && (
-                <div className="border rounded p-4 space-y-3">
-                  <h3 className="text-sm font-semibold">قالب الاستيراد</h3>
-                  <div className="text-xs text-muted-foreground space-y-1">
-                    <p>تنسيق CSV فقط. الحد الأقصى: 10 ميجابايت / 10,000 صف. ترميز UTF-8.</p>
-                    <p>العملة: EGP فقط (Contract 08 §8.6). التاريخ: YYYY-MM-DD.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {getAvailableTemplates().map((tpl: MigrationTemplateDefinition) => (
-                      <a
-                        key={tpl.templateType}
-                        href={`/management/admin/migration/template-download?templateType=${tpl.templateType}&templateVersion=${tpl.templateVersion}`}
-                        className="px-3 py-2 border rounded text-sm hover:bg-muted inline-flex items-center gap-1"
-                        style={{ minHeight: "44px" }}
-                        aria-label={`تنزيل قالب ${tpl.templateType}`}
-                      >
-                        <span>📄</span>
-                        <span>{tpl.templateType.replace(/_/g, " ")}</span>
-                        <span className="text-xs text-muted-foreground">v{tpl.templateVersion}</span>
-                      </a>
-                    ))}
-                  </div>
-                  {(() => {
-                    const selectedTemplate = getAvailableTemplates()[0];
-                    if (!selectedTemplate) return null;
-                    return (
-                      <details className="text-xs text-muted-foreground">
-                        <summary className="cursor-pointer" style={{ minHeight: "44px", display: "flex", alignItems: "center" }}>
-                          الأعمدة المطلوبة: {selectedTemplate.columns.filter(c => c.required).map(c => c.name).join("، ")}
-                        </summary>
-                        <div className="mt-2 space-y-1">
-                          {selectedTemplate.columns.map((col) => (
-                            <div key={col.name} className="flex gap-2">
-                              <span className="font-mono">{col.name}</span>
-                              <span>{col.required ? "✦ مطلوب" : "اختياري"}</span>
-                              <span>— {col.description}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </details>
-                    );
-                  })()}
-                </div>
+                <TemplateSelectorAndUploadForm
+                  batchId={b.id}
+                  templates={getAvailableTemplates()}
+                  uploadAction={uploadAndParseCsvAction}
+                />
               )}
 
-              {/* WP-08-01F MILESTONE B4 — Real CSV upload */}
-              {actionMatrix.registerFile && (
-                <form data-action="upload-csv" action={uploadAndParseCsvAction} encType="multipart/form-data" className="border rounded p-4 space-y-3">
-                  <input type="hidden" name="batchId" value={b.id} />
-                  <input type="hidden" name="idempotencyKey" value={`upload-${crypto.randomUUID()}`} />
-                  <input type="hidden" name="templateType" value="opening_balance_inventory" />
-                  <input type="hidden" name="templateVersion" value="1.0" />
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-muted-foreground">اختر ملف CSV:</span>
-                    <input
-                      type="file"
-                      name="file"
-                      accept=".csv,text/csv"
-                      required
-                      className="px-2 py-1 border rounded text-sm"
-                      style={{ minHeight: "44px" }}
-                      aria-label="اختر ملف CSV للرفع"
-                    />
-                  </label>
-                  <div className="text-xs text-muted-foreground">
-                    سيتم تخزين الملف بشكل آمن، حساب البصمة (SHA-256) تلقائياً،
-                    تحليل الصفوف، وتجهيزها. لا يمكن المتابعة حتى يكتمل التجهيز بنجاح.
-                  </div>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-semibold"
-                    style={{ minHeight: "44px" }}
-                  >
-                    رفع وتحليل الملف
-                  </button>
-                </form>
-              )}
+              {/* No metadata-only manual file registration on the end-user UI.
+                  The backend registerFileAction server action remains for
+                  internal/import tooling, but users must NOT be able to
+                  create a file record without actual stored bytes. */}
 
-              {/* Register file — only in preparation states (manual metadata registration) */}
-              {actionMatrix.registerFile && (
-                <details className="border rounded p-3">
-                  <summary className="cursor-pointer text-sm font-medium" style={{ minHeight: "44px", display: "flex", alignItems: "center" }}>
-                    تسجيل ملف يدوياً (بيانات مسار فقط)
-                  </summary>
-                  <form data-action="register-file" action={registerFileAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
-                    <input type="hidden" name="batchId" value={b.id} />
-                    <input type="hidden" name="idempotencyKey" value={`file-${crypto.randomUUID()}`} />
-                    <input type="hidden" name="fileType" value="source" />
-                    <label className="flex flex-col gap-1 text-sm">
-                      <span className="text-muted-foreground">اسم الملف:</span>
-                      <input type="text" name="originalFileName" required placeholder="data.xlsx" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                    </label>
-                    <label className="flex flex-col gap-1 text-sm">
-                      <span className="text-muted-foreground">مسار التخزين (خاص):</span>
-                      <input type="text" name="storagePath" required placeholder="s3://bucket/key" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                    </label>
-                    <label className="flex flex-col gap-1 text-sm">
-                      <span className="text-muted-foreground">بصمة الملف (SHA-256):</span>
-                      <input type="text" name="fileHash" required placeholder="sha256:..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                    </label>
-                    <div className="sm:col-span-2 lg:col-span-3">
-                      <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تسجيل ملف</button>
-                    </div>
-                  </form>
-                </details>
-              )}
+              {/* Insert staging row — NOT exposed on the end-user UI.
+                  The canonical path for staging rows is uploading a CSV via the
+                  template selector above. Manual staging insertion is intentionally
+                  omitted to prevent bypassing the file-upload lineage requirement.
+                  The server action `insertStagingRowAction` remains for internal
+                  tooling but is not surfaced here. */}
 
-              {/* Insert staging row — only in preparation states */}
-              {actionMatrix.insertStagingRow && detail.files.length > 0 && (
-                <form data-action="insert-staging-row" action={insertStagingRowAction} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <input type="hidden" name="batchId" value={b.id} />
-                  <input type="hidden" name="idempotencyKey" value={`stage-${crypto.randomUUID()}`} />
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-muted-foreground">الملف:</span>
-                    <select name="importFileId" required className="px-2 py-1 border rounded text-sm bg-background" style={{ minHeight: "44px" }}>
-                      <option value="">— اختر الملف —</option>
-                      {detail.files.map((f) => (
-                        <option key={f.id} value={f.id}>{f.originalFileName}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-muted-foreground">رقم الصف:</span>
-                    <input type="number" name="sourceRowNumber" placeholder="1" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-muted-foreground">البيانات المحولة (JSON):</span>
-                    <input type="text" name="transformedRowJson" placeholder='{"key":"value"}' className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                  </label>
-                  <div className="sm:col-span-2">
-                    <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>إضافة صف تجهيز</button>
-                  </div>
-                </form>
-              )}
-
-              {/* WP-08-01F MILESTONE B4 — Finalize staging control */}
+              {/* Finalize staging — only in source_uploaded / normalized */}
               {(b.status === "source_uploaded" || b.status === "normalized") && (
                 <form data-action="finalize-staging" action={finalizeStagingAction} className="border rounded p-3 flex gap-3 items-center">
                   <input type="hidden" name="batchId" value={b.id} />
@@ -393,7 +367,7 @@ export default async function MigrationBatchDetailPage({
                 </form>
               )}
 
-              {/* WP-08-01F MILESTONE B4 — Finalize cutover manifest control */}
+              {/* Finalize cutover manifest — only when staged+ and no manifest yet */}
               {(b.status === "staged" || b.status === "validation_complete" || b.status === "reconciliation_in_progress" || b.status === "review_required") && !b.cutoverManifestHash && (
                 <form data-action="finalize-cutover-manifest" action={finalizeCutoverManifestAction} className="border rounded p-3 space-y-3">
                   <input type="hidden" name="batchId" value={b.id} />
@@ -430,23 +404,41 @@ export default async function MigrationBatchDetailPage({
                   <input type="hidden" name="batchId" value={b.id} />
                   <input type="hidden" name="idempotencyKey" value={`val-${crypto.randomUUID()}`} />
                   <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل التحقق</button>
+                  {detail.validationSummary.progressionBlocked && (
+                    <span className="text-xs text-destructive">⚠ يوجد خطأ مانع — يُنصح بحله قبل المتابعة</span>
+                  )}
                 </form>
               )}
 
-              {/* Run reconciliation — only after validation */}
+              {/* Run reconciliation — only after validation.
+                  Disabled when progression is blocked (UI matches server). */}
               {actionMatrix.runReconciliation && (
                 <form data-action="run-reconciliation" action={runReconciliationAction} className="flex gap-3 items-center">
                   <input type="hidden" name="batchId" value={b.id} />
                   <input type="hidden" name="idempotencyKey" value={`recon-${crypto.randomUUID()}`} />
-                  <button type="submit" className="px-4 py-2 border rounded text-sm hover:bg-muted" style={{ minHeight: "44px" }}>تشغيل المطابقة</button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 border rounded text-sm hover:bg-muted disabled:opacity-60"
+                    style={{ minHeight: "44px" }}
+                    disabled={detail.validationSummary.progressionBlocked}
+                    aria-disabled={detail.validationSummary.progressionBlocked}
+                    title={detail.validationSummary.progressionBlocked ? "محظور بسبب وجود خطأ مانع" : undefined}
+                  >
+                    تشغيل المطابقة
+                  </button>
+                  {detail.validationSummary.progressionBlocked && (
+                    <span className="text-xs text-destructive">
+                      محظور: يجب حل جميع الأخطاء المانعة أولاً
+                    </span>
+                  )}
                 </form>
               )}
 
               {/* Review decisions — only for unresolved review items */}
-              {actionMatrix.recordReviewDecision && detail.reviewItems.filter(r => r.status === "pending").length > 0 && (
+              {actionMatrix.recordReviewDecision && detail.reviewItems.filter((r) => r.status === "pending").length > 0 && (
                 <div className="space-y-2">
                   <h3 className="text-sm font-semibold">عناصر المراجعة غير المحلولة</h3>
-                  {detail.reviewItems.filter(r => r.status === "pending").map((item) => (
+                  {detail.reviewItems.filter((r) => r.status === "pending").map((item) => (
                     <form key={item.id} data-action="record-review-decision" action={recordReviewDecisionAction} className="flex flex-wrap gap-2 items-center border rounded p-2">
                       <input type="hidden" name="reviewItemId" value={item.id} />
                       <input type="hidden" name="batchId" value={b.id} />
@@ -465,7 +457,8 @@ export default async function MigrationBatchDetailPage({
                 </div>
               )}
 
-              {/* WP-08-01F DEFECT 1 — Submit for approval (review_required → pending_dual_approval) */}
+              {/* Submit for approval — review_required → pending_dual_approval.
+                  Disabled when progression is blocked. */}
               {actionMatrix.submitForApproval && (
                 <form data-action="submit-migration-for-approval" action={submitMigrationForApprovalAction} className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t pt-3">
                   <input type="hidden" name="batchId" value={b.id} />
@@ -474,32 +467,61 @@ export default async function MigrationBatchDetailPage({
                     <span className="text-muted-foreground">ملخص قبول التحذيرات (مطلوب عند وجود تحذيرات):</span>
                     <input type="text" name="warningSummary" placeholder="تمت مراجعة جميع التحذيرات وقبولها للأسباب التالية..." className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
                   </label>
-                  <div className="sm:col-span-2">
-                    <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-semibold" style={{ minHeight: "44px" }}>تقديم للاعتماد المزدوج</button>
+                  <div className="sm:col-span-2 flex items-center gap-3">
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-semibold disabled:opacity-60"
+                      style={{ minHeight: "44px" }}
+                      disabled={detail.validationSummary.progressionBlocked}
+                      aria-disabled={detail.validationSummary.progressionBlocked}
+                    >
+                      تقديم للاعتماد المزدوج
+                    </button>
+                    {detail.validationSummary.progressionBlocked && (
+                      <span className="text-xs text-destructive">محظور: يوجد خطأ مانع</span>
+                    )}
                   </div>
                 </form>
               )}
 
-              {/* Owner approval — only when prerequisites met AND user has owner role (TASK 3 + DEFECT 3).
-                  WP-08-01F DEFECT 3: browser NO LONGER submits approverRole — role is FIXED server-side. */}
-              {batchApprovalVisibility.owner && !batchState.hasOwnerApproval && (
-                <form data-action="record-owner-approval" action={recordOwnerMigrationApprovalAction} className="flex gap-3 items-center">
-                  <input type="hidden" name="batchId" value={b.id} />
-                  <input type="hidden" name="idempotencyKey" value={`appr-owner-${crypto.randomUUID()}`} />
-                  <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                  <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المالك</button>
-                </form>
+              {/* APPROVAL CONTROLS — only when pending_dual_approval AND user has the role
+                  AND the slot is not yet filled. approved_for_commit shows EVIDENCE ONLY
+                  (no new approval buttons) per the lifecycle gating matrix. */}
+              {batchState.status === "pending_dual_approval" && (
+                <>
+                  {batchApprovalVisibility.owner && !batchState.hasOwnerApproval && (
+                    <form data-action="record-owner-approval" action={recordOwnerMigrationApprovalAction} className="flex gap-3 items-center">
+                      <input type="hidden" name="batchId" value={b.id} />
+                      <input type="hidden" name="idempotencyKey" value={`appr-owner-${crypto.randomUUID()}`} />
+                      <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                      <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-semibold" style={{ minHeight: "44px" }}>اعتماد المالك</button>
+                    </form>
+                  )}
+                  {batchApprovalVisibility.accountant && !batchState.hasAccountantApproval && (
+                    <form data-action="record-accountant-approval" action={recordAccountantMigrationApprovalAction} className="flex gap-3 items-center">
+                      <input type="hidden" name="batchId" value={b.id} />
+                      <input type="hidden" name="idempotencyKey" value={`appr-acct-${crypto.randomUUID()}`} />
+                      <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
+                      <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-semibold" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
+                    </form>
+                  )}
+                  {/* When both approvals already exist in pending_dual_approval (rare race),
+                      show evidence-only — same as approved_for_commit. */}
+                  {batchState.hasOwnerApproval && batchState.hasAccountantApproval && (
+                    <div role="status" className="border border-success/50 text-success bg-success/5 rounded p-3 text-sm flex items-center gap-2">
+                      <span aria-hidden="true">✓</span>
+                      تم تسجيل اعتماد المالك والمحاسب. في انتظار انتقال الحالة إلى approved_for_commit.
+                    </div>
+                  )}
+                </>
               )}
 
-              {/* Accountant approval — only when prerequisites met AND user has accountant role (TASK 3 + DEFECT 3).
-                  WP-08-01F DEFECT 3: browser NO LONGER submits approverRole — role is FIXED server-side. */}
-              {batchApprovalVisibility.accountant && !batchState.hasAccountantApproval && (
-                <form data-action="record-accountant-approval" action={recordAccountantMigrationApprovalAction} className="flex gap-3 items-center">
-                  <input type="hidden" name="batchId" value={b.id} />
-                  <input type="hidden" name="idempotencyKey" value={`appr-acct-${crypto.randomUUID()}`} />
-                  <input type="text" name="reason" placeholder="سبب الاعتماد" className="px-2 py-1 border rounded text-sm" style={{ minHeight: "44px" }} />
-                  <button type="submit" className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm" style={{ minHeight: "44px" }}>اعتماد المحاسب</button>
-                </form>
+              {/* approved_for_commit — EVIDENCE ONLY, no new approval buttons. */}
+              {batchState.status === "approved_for_commit" && (
+                <div role="status" className="border border-success/50 text-success bg-success/5 rounded p-3 text-sm flex items-center gap-2">
+                  <span aria-hidden="true">✓</span>
+                  اكتمل الاعتماد المزدوج. الدفعة جاهزة للترحيل النهائي.
+                </div>
               )}
 
               {/* Record backup evidence — only in pre-commit states */}
@@ -534,7 +556,7 @@ export default async function MigrationBatchDetailPage({
                 </form>
               )}
 
-              {/* WP-08-01F DEFECT 2 — Rework/reopen (Contract 08 §9 permitted branches) */}
+              {/* Rework/reopen — Contract 08 §9 permitted branches */}
               {(b.status === "review_required" || b.status === "pending_dual_approval" || b.status === "approved_for_commit") && (
                 <form data-action="reopen-batch-for-rework" action={reopenBatchForReworkAction} className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t pt-3">
                   <input type="hidden" name="batchId" value={b.id} />
@@ -568,7 +590,7 @@ export default async function MigrationBatchDetailPage({
           </Card>
         )}
 
-        {/* Committed batch — correction workflow only (TASK 6) */}
+        {/* Committed batch — correction workflow only */}
         {b.status === "committed" && (
           <Card className="mb-6">
             <CardHeader><CardTitle>التصحيحات</CardTitle></CardHeader>
@@ -598,12 +620,11 @@ export default async function MigrationBatchDetailPage({
                 </div>
               </form>
 
-              {/* Correction requests list with approval forms (DEFECT 2 + TASK 3) */}
+              {/* Correction requests list with approval forms */}
               {detail.corrections.length > 0 && (
                 <div className="space-y-2">
                   <h3 className="text-sm font-semibold">طلبات التصحيح</h3>
                   {detail.corrections.map((corr) => {
-                    // TASK 3: Role-specific correction control visibility.
                     const corrVis = visibleCorrectionApprovalControls(
                       userManagementRoles,
                       corr.status,
@@ -621,8 +642,6 @@ export default async function MigrationBatchDetailPage({
                       </div>
                       <p>{corr.reason}</p>
 
-                      {/* Owner approval form — only if user has owner role and slot empty (TASK 3 + DEFECT 3).
-                          WP-08-01F DEFECT 3: browser NO LONGER submits approverRole. */}
                       {corrVis.owner && (
                         <form data-action="approve-correction-owner" action={approveCorrectionAsOwnerAction} className="flex gap-2 items-center">
                           <input type="hidden" name="correctionRequestId" value={corr.id} />
@@ -632,8 +651,6 @@ export default async function MigrationBatchDetailPage({
                         </form>
                       )}
 
-                      {/* Accountant approval form — only if user has accountant role and slot empty (TASK 3 + DEFECT 3).
-                          WP-08-01F DEFECT 3: browser NO LONGER submits approverRole. */}
                       {corrVis.accountant && (
                         <form data-action="approve-correction-accountant" action={approveCorrectionAsAccountantAction} className="flex gap-2 items-center">
                           <input type="hidden" name="correctionRequestId" value={corr.id} />
@@ -643,15 +660,12 @@ export default async function MigrationBatchDetailPage({
                         </form>
                       )}
 
-                      {/* Status display for approved corrections */}
                       {corr.status === "approved" && !corr.correctedEntityId && (
                         <div className="text-xs text-muted-foreground">
                           تم الاعتماد من المالك والمحاسب. جاهز للتنفيذ.
                         </div>
                       )}
 
-                      {/* WP-08-01F Production Correction Hook — execute correction form.
-                          Shown only for approved corrections not yet executed. */}
                       {corr.status === "approved" && !corr.correctedEntityId && (
                         <form data-action="execute-correction" action={executeCorrectionAction} className="flex gap-2 items-center">
                           <input type="hidden" name="correctionRequestId" value={corr.id} />
@@ -663,7 +677,6 @@ export default async function MigrationBatchDetailPage({
                         </form>
                       )}
 
-                      {/* Status display for executed corrections */}
                       {corr.status === "approved" && corr.correctedEntityId && (
                         <div className="text-xs text-green-600 border border-green-300 rounded p-2">
                           تم تنفيذ التصحيح. الكيان المصحح: <LtrValue>{corr.correctedEntityType}</LtrValue> / <LtrValue>{corr.correctedEntityId}</LtrValue>
@@ -678,19 +691,26 @@ export default async function MigrationBatchDetailPage({
           </Card>
         )}
 
-        {/* Files — with protected download */}
-        {detail.files.length > 0 && (
-          <Card className="mb-6">
-            <CardHeader><CardTitle>قائمة الملفات</CardTitle></CardHeader>
-            <CardContent>
+        {/* File version list — with all metadata + protected download */}
+        <Card className="mb-6">
+          <CardHeader><CardTitle>قائمة إصدارات الملفات</CardTitle></CardHeader>
+          <CardContent>
+            {detail.files.length === 0 ? (
+              <div className="text-sm text-muted-foreground text-center py-4">
+                لا توجد ملفات مرفوعة بعد. استخدم نموذج الرفع أعلاه لإضافة ملف CSV.
+              </div>
+            ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-right">
                       <th className="py-2 px-3">اسم الملف</th>
-                      <th className="py-2 px-3">النوع</th>
+                      <th className="py-2 px-3">القالب / الإصدار</th>
                       <th className="py-2 px-3">الحجم</th>
                       <th className="py-2 px-3">البصمة</th>
+                      <th className="py-2 px-3">الرافع</th>
+                      <th className="py-2 px-3">تاريخ الرفع</th>
+                      <th className="py-2 px-3">الحالة</th>
                       <th className="py-2 px-3">التنزيل</th>
                     </tr>
                   </thead>
@@ -698,15 +718,41 @@ export default async function MigrationBatchDetailPage({
                     {detail.files.map((f) => (
                       <tr key={f.id} className="border-b">
                         <td className="py-2 px-3"><LtrValue>{f.originalFileName}</LtrValue></td>
-                        <td className="py-2 px-3">{f.fileType}</td>
+                        <td className="py-2 px-3 text-xs">
+                          {f.templateType ? <LtrValue>{f.templateType}</LtrValue> : "—"}
+                          {" / v"}
+                          {f.templateVersion ? <LtrValue>{f.templateVersion}</LtrValue> : "—"}
+                        </td>
                         <td className="py-2 px-3">
                           {f.fileSizeBytes ? <LtrValue>{(f.fileSizeBytes / 1024).toFixed(1)} KB</LtrValue> : "—"}
                         </td>
                         <td className="py-2 px-3"><LtrValue>{f.fileHashRedacted}</LtrValue></td>
+                        <td className="py-2 px-3 text-xs text-muted-foreground">
+                          {f.uploaderUserId ? <LtrValue>{f.uploaderUserId.substring(0, 8)}…</LtrValue> : "—"}
+                        </td>
+                        <td className="py-2 px-3 text-xs">
+                          <LtrValue>{new Date(f.createdAt).toLocaleDateString("ar")}</LtrValue>
+                        </td>
+                        <td className="py-2 px-3">
+                          {f.isCurrent ? (
+                            <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-success/50 text-success bg-success/5 font-semibold">
+                              <span aria-hidden="true">✓</span> حالي
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-muted text-muted-foreground bg-muted/30 font-semibold">
+                              <span aria-hidden="true">↩</span> ملغى
+                              {f.supersededById && (
+                                <span className="text-xs ml-1" dir="ltr">
+                                  (<LtrValue>{f.supersededById.substring(0, 8)}…</LtrValue>)
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </td>
                         <td className="py-2 px-3">
                           <a
                             href={`/management/admin/migration/${b.id}/files/${f.id}/download`}
-                            className="text-primary hover:underline"
+                            className="text-primary hover:underline inline-flex items-center"
                             aria-label={`تنزيل ${f.originalFileName}`}
                             style={{ minHeight: "44px", display: "inline-flex", alignItems: "center" }}
                           >
@@ -718,101 +764,118 @@ export default async function MigrationBatchDetailPage({
                   </tbody>
                 </table>
               </div>
-            </CardContent>
-          </Card>
-        )}
+            )}
+          </CardContent>
+        </Card>
 
-        {/* Staging preview — paginated */}
-        {detail.stagingRows.length > 0 && (
-          <Card className="mb-6">
-            <CardHeader><CardTitle>معاينة البيانات المجهزة</CardTitle></CardHeader>
-            <CardContent>
-              <div className="text-xs text-muted-foreground mb-3">
-                إجمالي الصفوف: <LtrValue>{b.stagedRowCount}</LtrValue> | عرض أول <LtrValue>{detail.stagingRows.length}</LtrValue> صف
+        {/* Staging preview — paginated with lineage */}
+        <Card className="mb-6">
+          <CardHeader><CardTitle>معاينة البيانات المجهزة</CardTitle></CardHeader>
+          <CardContent>
+            {detail.stagingRows.length === 0 && detail.stagingPagination.totalRows === 0 ? (
+              <div className="text-sm text-muted-foreground text-center py-4">
+                لا توجد صفوف مجهزة بعد. ارفع ملف CSV وإنهاء التجهيز لرؤية البيانات هنا.
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-right">
-                      <th className="py-2 px-3">#</th>
-                      <th className="py-2 px-3">المصدر (ملف/صف)</th>
-                      <th className="py-2 px-3">البيانات</th>
-                      <th className="py-2 px-3">حالة التحقق</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.stagingRows.slice(0, 20).map((row, idx) => (
-                      <tr key={row.id} className="border-b">
-                        <td className="py-2 px-3"><LtrValue>{idx + 1}</LtrValue></td>
-                        <td className="py-2 px-3 text-xs text-muted-foreground">
-                          {row.sourceSheetName && <div><LtrValue>{row.sourceSheetName}</LtrValue></div>}
-                          {row.sourceRowNumber != null && <div>صف: <LtrValue>{row.sourceRowNumber}</LtrValue></div>}
-                        </td>
-                        <td className="py-2 px-3 text-xs">
-                          {row.transformedRowJson ? (
-                            <details>
-                              <summary className="cursor-pointer" style={{ minHeight: "44px", display: "flex", alignItems: "center" }}>
-                                عرض البيانات
-                              </summary>
-                              <pre className="mt-1 p-2 bg-muted rounded text-xs overflow-x-auto" dir="ltr">
-                                {JSON.stringify(row.transformedRowJson, null, 2)}
-                              </pre>
-                            </details>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </td>
-                        <td className="py-2 px-3">
-                          {row.validationStatus ? <LtrValue>{row.validationStatus}</LtrValue> : "—"}
-                        </td>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-right">
+                        <th className="py-2 px-3">#</th>
+                        <th className="py-2 px-3">الملف / الورقة / الصف</th>
+                        <th className="py-2 px-3">القالب</th>
+                        <th className="py-2 px-3">البيانات</th>
+                        <th className="py-2 px-3">حالة التحقق</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {detail.stagingRows.length > 20 && (
-                <div className="text-xs text-muted-foreground mt-3 text-center">
-                  يتم عرض أول 20 صف فقط. إجمالي الصفوف: <LtrValue>{b.stagedRowCount}</LtrValue>
+                    </thead>
+                    <tbody>
+                      {detail.stagingRows.map((row, idx) => {
+                        const linkedFile = detail.files.find((f) => f.id === row.importFileId);
+                        return (
+                          <tr key={row.id} className="border-b">
+                            <td className="py-2 px-3">
+                              <LtrValue>
+                                {(detail.stagingPagination.page - 1) * detail.stagingPagination.pageSize + idx + 1}
+                              </LtrValue>
+                            </td>
+                            <td className="py-2 px-3 text-xs text-muted-foreground">
+                              {linkedFile && <div className="truncate max-w-[200px]"><LtrValue>{linkedFile.originalFileName}</LtrValue></div>}
+                              {row.sourceSheetName && row.sourceSheetName !== linkedFile?.originalFileName && (
+                                <div><LtrValue>{row.sourceSheetName}</LtrValue></div>
+                              )}
+                              {row.sourceRowNumber != null && <div>صف: <LtrValue>{row.sourceRowNumber}</LtrValue></div>}
+                            </td>
+                            <td className="py-2 px-3 text-xs">
+                              {row.templateName ? <LtrValue>{row.templateName}</LtrValue> : "—"}
+                            </td>
+                            <td className="py-2 px-3 text-xs">
+                              {row.transformedRowJson ? (
+                                <details>
+                                  <summary
+                                    className="cursor-pointer hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    style={{ minHeight: "44px", display: "flex", alignItems: "center" }}
+                                  >
+                                    عرض البيانات (القيم المُرسلة + المُطبَّعة)
+                                  </summary>
+                                  <pre className="mt-1 p-2 bg-muted rounded text-xs overflow-x-auto" dir="ltr">
+                                    {JSON.stringify(row.transformedRowJson, null, 2)}
+                                  </pre>
+                                </details>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3">
+                              {row.validationStatus ? <LtrValue>{row.validationStatus}</LtrValue> : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
 
-        {/* Validation findings */}
-        {detail.validationFindings.length > 0 && (
-          <Card className="mb-6">
-            <CardHeader><CardTitle>نتائج التحقق</CardTitle></CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-right">
-                      <th className="py-2 px-3">الخطورة</th>
-                      <th className="py-2 px-3">الرمز</th>
-                      <th className="py-2 px-3">الرسالة</th>
-                      <th className="py-2 px-3">الحالة</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.validationFindings.map((v) => (
-                      <tr key={v.id} className="border-b">
-                        <td className="py-2 px-3">
-                          {v.severity === "blocking_error" && <span className="text-destructive font-semibold">خطأ مانع</span>}
-                          {v.severity === "review_required_warning" && <span className="text-amber-600 font-semibold">تحذير للمراجعة</span>}
-                          {v.severity === "informational" && <span className="text-muted-foreground">معلومة</span>}
-                        </td>
-                        <td className="py-2 px-3"><LtrValue>{v.errorCode}</LtrValue></td>
-                        <td className="py-2 px-3">{v.message}</td>
-                        <td className="py-2 px-3">{v.resolutionStatus}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <StagingPagination
+                  page={detail.stagingPagination.page}
+                  pageSize={detail.stagingPagination.pageSize}
+                  totalRows={detail.stagingPagination.totalRows}
+                  totalPages={detail.stagingPagination.totalPages}
+                  hasNextPage={detail.stagingPagination.hasNextPage}
+                  hasPrevPage={detail.stagingPagination.hasPrevPage}
+                  pathname={pathname}
+                  preserveParams={{
+                    severity: validationFilters.severity,
+                    fileId: validationFilters.fileId,
+                    sheet: validationFilters.sheet,
+                    errorCode: validationFilters.errorCode,
+                    q: validationFilters.q,
+                  }}
+                />
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Validation findings — with filters + CSV export */}
+        <Card className="mb-6">
+          <CardHeader><CardTitle>نتائج التحقق — التفاصيل على مستوى الخلية</CardTitle></CardHeader>
+          <CardContent>
+            {detail.validationFindings.length === 0 ? (
+              <div className="text-sm text-muted-foreground text-center py-4">
+                لا توجد نتائج تحقق بعد. شغّل التحقق لرؤية النتائج هنا.
               </div>
-            </CardContent>
-          </Card>
-        )}
+            ) : (
+              <ValidationFindingsPanel
+                batchId={b.id}
+                findings={filteredFindings}
+                files={detail.files}
+                currentFilters={validationFilters}
+                stagingPage={stagingPage}
+              />
+            )}
+          </CardContent>
+        </Card>
 
         {/* Reconciliation results */}
         {detail.reconciliationResults.length > 0 && (
@@ -855,10 +918,10 @@ export default async function MigrationBatchDetailPage({
           </Card>
         )}
 
-        {/* Approvals */}
+        {/* Approvals — evidence-only display, no new approval buttons here */}
         {detail.approvals.length > 0 && (
           <Card className="mb-6">
-            <CardHeader><CardTitle>الاعتمادات</CardTitle></CardHeader>
+            <CardHeader><CardTitle>الاعتمادات المسجلة</CardTitle></CardHeader>
             <CardContent>
               <div className="space-y-2">
                 {detail.approvals.map((a) => (
@@ -886,18 +949,18 @@ export default async function MigrationBatchDetailPage({
             <CardHeader><CardTitle>أدلة النسخ الاحتياطي</CardTitle></CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {detail.backupEvidence.map((b) => (
-                  <div key={b.id} className="border rounded p-3 text-sm">
+                {detail.backupEvidence.map((be) => (
+                  <div key={be.id} className="border rounded p-3 text-sm">
                     <div className="flex justify-between">
-                      <span className="font-medium">{b.backupType}</span>
-                      <LtrValue>{b.backupLocationRedacted}</LtrValue>
+                      <span className="font-medium">{be.backupType}</span>
+                      <LtrValue>{be.backupLocationRedacted}</LtrValue>
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      البصمة: <LtrValue>{b.backupHash.substring(0, 16)}…</LtrValue>
+                      البصمة: <LtrValue>{be.backupHash.substring(0, 16)}…</LtrValue>
                     </div>
-                    {b.verifiedAt && (
+                    {be.verifiedAt && (
                       <div className="text-xs text-muted-foreground">
-                        تم التحقق: <LtrValue>{new Date(b.verifiedAt).toLocaleDateString("ar")}</LtrValue>
+                        تم التحقق: <LtrValue>{new Date(be.verifiedAt).toLocaleDateString("ar")}</LtrValue>
                       </div>
                     )}
                   </div>
@@ -913,7 +976,7 @@ export default async function MigrationBatchDetailPage({
             <CardHeader><CardTitle>أقفال الترحيل النشطة</CardTitle></CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {detail.activeLocks.filter(l => !l.releasedAt).map((l) => (
+                {detail.activeLocks.filter((l) => !l.releasedAt).map((l) => (
                   <div key={l.id} className="border rounded p-3 text-sm">
                     <div className="flex justify-between">
                       <span className="font-medium">{l.lockScope}</span>
