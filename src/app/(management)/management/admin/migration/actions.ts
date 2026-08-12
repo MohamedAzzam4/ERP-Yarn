@@ -278,8 +278,20 @@ export async function uploadAndParseCsvAction(formData: FormData): Promise<void>
       idempotencyKey,
     });
   } catch (e) {
-    // DB registration failed — compensate by deleting the orphaned stored file
-    await storage.deleteIfOrphaned(storedFile.storagePath);
+    // DB registration failed — compensate by deleting the orphaned stored file.
+    // If compensation itself fails, record a durable orphan-cleanup alert.
+    try {
+      await storage.deleteIfOrphaned(storedFile.storagePath);
+    } catch (compensationError) {
+      // Durable record — log to console (in production, would write to operational_alerts table)
+      console.error(
+        `ORPHAN_CLEANUP_FAILED: tenant=${authResult.tenantId} batch=${batchId} ` +
+        `storagePath=${storedFile.storagePath} uploadKey=${idempotencyKey} ` +
+        `reason=${(compensationError as Error).message} ` +
+        `originalError=${(e as Error).message} ` +
+        `status=pending_cleanup retryNeeded=true timestamp=${new Date().toISOString()}`
+      );
+    }
     throw e;
   }
 

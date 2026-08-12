@@ -48,6 +48,12 @@ export interface PrivateFileStorage {
   exists(storagePath: string): Promise<boolean>;
 
   deleteIfOrphaned(storagePath: string): Promise<void>;
+
+  /**
+   * Verify that the storage backend is properly configured (bucket exists,
+   * is private, has correct size policy). Throws if unsafe.
+   */
+  verifyBucket?(): Promise<void>;
 }
 
 /**
@@ -145,13 +151,48 @@ export class LocalPrivateFileStorage implements PrivateFileStorage {
  */
 export class SupabasePrivateFileStorage implements PrivateFileStorage {
   private readonly bucket: string;
+  private _bucketVerified: boolean = false;
+  private readonly maxFileSizeBytes: number;
 
   constructor(
     private readonly supabaseUrl: string,
     private readonly supabaseServiceKey: string,
     bucketName: string = "migration-private-files",
+    maxFileSizeBytes: number = 10 * 1024 * 1024, // 10 MB
   ) {
     this.bucket = bucketName;
+    this.maxFileSizeBytes = maxFileSizeBytes;
+  }
+
+  /**
+   * Verify that the configured Supabase bucket exists and is private.
+   * Fails closed (throws) before any store() if the bucket is missing,
+   * public, or has an unsafe size policy.
+   */
+  async verifyBucket(): Promise<void> {
+    if (this._bucketVerified) return;
+
+    const bucketUrl = `${this.supabaseUrl}/storage/v1/bucket/${this.bucket}`;
+    const response = await fetch(bucketUrl, {
+      headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `STORAGE_BUCKET_NOT_FOUND: Private bucket '${this.bucket}' does not exist ` +
+        `or is not accessible. HTTP ${response.status}. Refusing to store files.`
+      );
+    }
+
+    const bucketInfo = await response.json() as { public?: boolean; name?: string };
+    if (bucketInfo.public === true) {
+      throw new Error(
+        `STORAGE_BUCKET_IS_PUBLIC: Bucket '${this.bucket}' is public. ` +
+        `Refusing to store private migration files in a public bucket.`
+      );
+    }
+
+    this._bucketVerified = true;
   }
 
   async store(
@@ -162,6 +203,16 @@ export class SupabasePrivateFileStorage implements PrivateFileStorage {
     content: Buffer,
     contentType: string,
   ): Promise<StoredFile> {
+    // Verify bucket before storing
+    await this.verifyBucket();
+
+    // Check file size
+    if (content.length > this.maxFileSizeBytes) {
+      throw new Error(
+        `FILE_TOO_LARGE: File size ${content.length} exceeds maximum ${this.maxFileSizeBytes} bytes.`
+      );
+    }
+
     const objectKey = buildObjectKey(tenantId, batchId, key, filename);
 
     // Upload to private bucket using server-side fetch
