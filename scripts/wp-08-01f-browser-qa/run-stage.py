@@ -85,11 +85,34 @@ def load_state(run_id):
     f = RUN_STATE_DIR / f"{run_id}.json"
     if f.exists():
         return json.loads(f.read_text())
-    return {"runId": run_id, "completed": [], "nextStage": None, "batchId": None}
+    return {"runId": run_id, "completed": [], "nextStage": None, "batchId": None, "expectedState": None}
 
 def save_state(state):
     f = RUN_STATE_DIR / f"{state['runId']}.json"
     f.write_text(json.dumps(state, indent=2))
+
+def verify_and_checkpoint(state, stage, expected_status, next_stage, run_id, page=None):
+    """Verify persisted DB state matches expected, then checkpoint.
+    NEVER marks complete unless DB status is confirmed."""
+    bid = state.get("batchId")
+    if not bid:
+        print(f"  FAIL cannot verify — no batchId in state")
+        if page: ss(page, f"{stage}-fail-no-batchid", run_id)
+        return False
+    status = db_query(bid, "status")
+    if status != expected_status:
+        print(f"  FAIL {stage}: DB status={status} expected={expected_status}")
+        if page: ss(page, f"{stage}-fail-wrong-status", run_id)
+        # Save failure diagnostics
+        d = evidence_dir(run_id)
+        (d / f"{stage}-FAIL.txt").write_text(f"Stage: {stage}\nExpected: {expected_status}\nActual: {status}\nBatchId: {bid}\n")
+        return False
+    print(f"  VERIFIED {stage}: DB status={status}")
+    state["completed"].append(stage)
+    state["nextStage"] = next_stage
+    state["expectedState"] = expected_status
+    save_state(state)
+    return True
 
 def evidence_dir(run_id):
     d = EVIDENCE_BASE / run_id
