@@ -762,9 +762,25 @@ export class HistoricalStagingService {
     if (claim.action === "conflict") throw new HistoricalStagingError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
     if (claim.action === "in_progress") throw new HistoricalStagingError("OPERATION_IN_PROGRESS", "Operation in progress.");
 
-    // Server-side manifest hash derivation: SHA-256 of domain + batchId + cutoffDate + sourceCoverage
+    // Server-side manifest hash derivation from CANONICAL server-side facts.
+    // WP-08-01F TASK 1: The hash must NOT trust client-supplied values alone.
+    // It includes: batch ID, batch status, staged row count, staged data hash,
+    // file hashes, domain, cutoff date, source coverage, opening balance basis.
     const crypto = await import("node:crypto");
-    const manifestHashInput = `${input.domain}:${input.importBatchId}:${input.cutoffDate ?? ""}:${input.sourceCoverage ?? ""}:${input.openingBalanceBasis ?? ""}`;
+    const files = await this.deps.repository.findImportFilesForBatch(user.tenantId, input.importBatchId);
+    const fileHashes = files.map((f: any) => f.fileHash).sort().join(",");
+    const manifestHashInput = JSON.stringify({
+      batchId: input.importBatchId,
+      batchStatus: batch.status,
+      stagedRowCount: batch.stagedRowCount,
+      stagedDataHash: batch.stagedDataHash ?? "",
+      fileHashes,
+      domain: input.domain,
+      cutoffDate: input.cutoffDate ?? "",
+      sourceCoverage: input.sourceCoverage ?? "",
+      openingBalanceBasis: input.openingBalanceBasis ?? "",
+      liveSystemStartBoundary: input.liveSystemStartBoundary ?? "",
+    });
     const manifestHash = crypto.createHash("sha256").update(manifestHashInput).digest("hex");
 
     // Insert cutover manifest

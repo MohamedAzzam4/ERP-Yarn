@@ -201,16 +201,20 @@ export async function downloadTemplateAction(formData: FormData): Promise<{ csv:
 // ===========================================================================
 
 /**
- * Upload a real CSV file, parse it server-side, and stage the rows.
+ * Upload a real CSV file, store it privately, parse it server-side,
+ * and stage the rows through HistoricalStagingService.
  *
  * Security:
  *   - Validates filename, extension, MIME type, size
  *   - Rejects macros/executable content
  *   - Never executes spreadsheet formulas
+ *   - Stores actual file bytes in private storage (not just metadata)
  *   - Derives checksum, byte size, content type server-side
- *   - Tenant-scoped storage keys
+ *   - Tenant/batch-scoped storage keys
+ *   - Handles storage-success/DB-failure with safe compensation (deletes orphaned file)
  *
  * Permission: migration.prepare (Owner/Accountant only).
+ * Workers are denied before file content is accessed.
  */
 export async function uploadAndParseCsvAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.prepare");
@@ -243,54 +247,74 @@ export async function uploadAndParseCsvAction(formData: FormData): Promise<void>
     throw new Error(`VALIDATION_FAILED: File size ${file.size} bytes exceeds maximum ${maxSize} bytes.`);
   }
 
-  // Read file content
-  const fileContent = await file.text();
+  // Read file content as Buffer (for private storage)
+  const fileBuffer = Buffer.from(await file.arrayBuffer());
+  const fileContent = fileBuffer.toString("utf-8");
+  const contentType = file.type || "text/csv";
 
-  // Derive checksum server-side (SHA-256)
-  const crypto = await import("node:crypto");
-  const fileHash = crypto.createHash("sha256").update(fileContent).digest("hex");
-
-  // Generate private storage path (tenant-scoped)
-  const storagePath = `private://${authResult.tenantId}/migration/${batchId}/${idempotencyKey}/${filename}`;
-
-  // Register the file metadata
-  const { stagingService } = getMigrationServices();
-  await stagingService.registerFile(authResult as any, effective as any, {
-    importBatchId: batchId,
-    originalFileName: filename,
-    storagePath,
-    fileHash,
-    fileType: "source",
-    fileSizeBytes: file.size,
-    contentType: file.type || "text/csv",
+  // Store file bytes in private storage (actual byte storage, not just metadata)
+  const { getPrivateFileStorage } = await import("@/server/services/private-file-storage");
+  const storage = getPrivateFileStorage();
+  const storedFile = await storage.store(
+    authResult.tenantId,
+    batchId,
     idempotencyKey,
-  });
+    filename,
+    fileBuffer,
+    contentType,
+  );
+
+  // Register the file metadata with server-derived checksum/size/MIME
+  const { stagingService } = getMigrationServices();
+  try {
+    await stagingService.registerFile(authResult as any, effective as any, {
+      importBatchId: batchId,
+      originalFileName: filename,
+      storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash,
+      fileType: "source",
+      fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType,
+      idempotencyKey,
+    });
+  } catch (e) {
+    // DB registration failed — compensate by deleting the orphaned stored file
+    await storage.deleteIfOrphaned(storedFile.storagePath);
+    throw e;
+  }
 
   // Parse the CSV server-side
   const { findTemplate } = await import("@/server/services/migration-templates");
   const { parseCsv } = await import("@/server/services/migration-csv-parser");
   const template = findTemplate(templateType, templateVersion);
   if (!template) {
+    // Clean up the stored file since parsing can't proceed
+    await storage.deleteIfOrphaned(storedFile.storagePath);
     throw new Error(`Template '${templateType}' version '${templateVersion}' not found.`);
   }
 
   const parseResult = parseCsv(fileContent, template);
   if (parseResult.errors.length > 0) {
+    // File is stored but parsing failed — the file metadata is registered
+    // (the file exists in private storage for audit/replacement)
     throw new Error(`CSV_PARSE_FAILED: ${parseResult.errors.join("; ")}`);
   }
 
-  // Get the registered file ID (need to query for it)
-  // For now, we'll stage rows with the file hash as reference
-  // The staging service's insertStagingRow accepts importFileId
+  // Find the registered file ID by querying the staging service
+  // The registerFile call above inserted the file — we need its ID
+  // Use the staging service's getBatchDetail to find the file
+  const batchDetail = await stagingService.getBatchDetail(authResult as any, effective as any, batchId);
+  const registeredFile = batchDetail.files.find((f: any) => f.fileHash === storedFile.fileHash);
+  const importFileId = registeredFile?.id ?? null;
 
-  // Stage each parsed row through HistoricalStagingService
+  // Stage each parsed row through HistoricalStagingService with lineage
   for (const row of parseResult.rows) {
     const rowKey = `upload-${idempotencyKey}-row-${row.rowNumber}`;
     await stagingService.insertStagingRow(
       authResult as any, effective as any,
       {
         importBatchId: batchId,
-        importFileId: null, // Will be linked after staging
+        importFileId, // Link to the registered file
         templateName: templateType,
         sourceSheetName: filename, // Use filename as "sheet" for CSV
         sourceRowNumber: row.rowNumber,
