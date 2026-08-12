@@ -168,23 +168,28 @@ export class SupabasePrivateFileStorage implements PrivateFileStorage {
    * Verify that the configured Supabase bucket exists and is private.
    * Fails closed (throws) before any store() if the bucket is missing,
    * public, or has an unsafe size policy.
+   *
+   * WP-08-01F R2 QA: Uses the Supabase JS client (createClient) instead of
+   * a direct fetch() to the REST API. The new Supabase key format
+   * (sb_secret_...) is a standard API key, not a JWT — the direct REST
+   * endpoint /storage/v1/bucket/{name} rejects it with HTTP 400. The
+   * supabase-js client handles the key format correctly internally.
    */
   async verifyBucket(): Promise<void> {
     if (this._bucketVerified) return;
 
-    const bucketUrl = `${this.supabaseUrl}/storage/v1/bucket/${this.bucket}`;
-    const response = await fetch(bucketUrl, {
-      headers: { "Authorization": `Bearer ${this.supabaseServiceKey}` },
-    });
+    // Use createClient (supabase-js) which handles the new key format correctly.
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(this.supabaseUrl, this.supabaseServiceKey);
+    const { data: bucketInfo, error } = await supabase.storage.getBucket(this.bucket);
 
-    if (!response.ok) {
+    if (error || !bucketInfo) {
       throw new Error(
         `STORAGE_BUCKET_NOT_FOUND: Private bucket '${this.bucket}' does not exist ` +
-        `or is not accessible. HTTP ${response.status}. Refusing to store files.`
+        `or is not accessible. ${error?.message ?? 'Unknown error'}. Refusing to store files.`
       );
     }
 
-    const bucketInfo = await response.json() as { public?: boolean; name?: string };
     if (bucketInfo.public === true) {
       throw new Error(
         `STORAGE_BUCKET_IS_PUBLIC: Bucket '${this.bucket}' is public. ` +
