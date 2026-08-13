@@ -196,9 +196,17 @@ export async function createMigrationBatchAction(formData: FormData): Promise<vo
     revalidatePath("/management/admin/migration");
   } catch (e) {
     if (e instanceof Error && e.message.startsWith("VALIDATION_FAILED:")) {
-      // Controlled validation error — redirect with Arabic message
+      // Controlled validation error — redirect with Arabic message.
+      // WP-08-01F Task 2: Distinguish user-visible fields from internal fields.
+      // Internal fields (idempotencyKey, batchId, etc.) get a generic retry
+      // message; user-visible fields get a field-specific message.
       const field = e.message.replace("VALIDATION_FAILED: ", "").replace(" is required.", "");
-      redirect(`/management/admin/migration?error=validation&field=${encodeURIComponent(field)}`);
+      const internalFields = new Set(["idempotencyKey", "batchId", "storagePath", "fileHash", "fileType", "cutoverImportMode"]);
+      if (internalFields.has(field)) {
+        redirect(`/management/admin/migration?error=internal`);
+      } else {
+        redirect(`/management/admin/migration?error=validation&field=${encodeURIComponent(field)}`);
+      }
     }
     throw e;
   }

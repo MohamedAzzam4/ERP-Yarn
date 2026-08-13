@@ -1,0 +1,81 @@
+{
+  "taskId": "Task5-Finding-Breakdown",
+  "totalCurrent": 6,
+  "blockers": 0,
+  "warnings": 6,
+  "info": 0,
+  "findings": [
+    {
+      "id": "a57ad93b-9ddf-4740-bad7-bd556d750ec9",
+      "severity": "review_required_warning",
+      "error_code": "MISSING_MASTER_REFERENCE",
+      "message": "Customer reference is missing or empty — needs master extraction.",
+      "field_name": "customer_id",
+      "is_blocking": false,
+      "is_current": true,
+      "staging_row_id": "a70e277a-e4f8-41df-bbca-cadb3c495420",
+      "finding_version": 1,
+      "created_at": "2026-08-13T20:15:46.894222+00:00"
+    },
+    {
+      "id": "0ca9c100-15fe-4e67-aaab-d5865fa3b34a",
+      "severity": "review_required_warning",
+      "error_code": "UNRESOLVED_ALIAS",
+      "message": "Entity name 'Yarn 1' has no resolved master reference — alias review needed.",
+      "field_name": "name",
+      "is_blocking": false,
+      "is_current": true,
+      "staging_row_id": "a70e277a-e4f8-41df-bbca-cadb3c495420",
+      "finding_version": 1,
+      "created_at": "2026-08-13T20:15:46.894222+00:00"
+    },
+    {
+      "id": "4026e629-accf-4922-8160-b9ee1310ec14",
+      "severity": "review_required_warning",
+      "error_code": "MISSING_MASTER_REFERENCE",
+      "message": "Customer reference is missing or empty — needs master extraction.",
+      "field_name": "customer_id",
+      "is_blocking": false,
+      "is_current": true,
+      "staging_row_id": "9ff8dc85-71c5-4402-9e99-d42d79e83b59",
+      "finding_version": 1,
+      "created_at": "2026-08-13T20:15:46.894222+00:00"
+    },
+    {
+      "id": "1037ddce-9b1e-401c-87fb-3063c84b30a0",
+      "severity": "review_required_warning",
+      "error_code": "UNRESOLVED_ALIAS",
+      "message": "Entity name 'Yarn 2' has no resolved master reference — alias review needed.",
+      "field_name": "name",
+      "is_blocking": false,
+      "is_current": true,
+      "staging_row_id": "9ff8dc85-71c5-4402-9e99-d42d79e83b59",
+      "finding_version": 1,
+      "created_at": "2026-08-13T20:15:46.894222+00:00"
+    },
+    {
+      "id": "13416243-c26d-46b7-81b3-928c634920d9",
+      "severity": "review_required_warning",
+      "error_code": "MISSING_MASTER_REFERENCE",
+      "message": "Customer reference is missing or empty — needs master extraction.",
+      "field_name": "customer_id",
+      "is_blocking": false,
+      "is_current": true,
+      "staging_row_id": "9426ca29-21ba-4bba-abb3-8912b1b3e8b8",
+      "finding_version": 1,
+      "created_at": "2026-08-13T20:15:46.894222+00:00"
+    },
+    {
+      "id": "a42879dc-8d33-4ffc-8f88-d657ae656925",
+      "severity": "review_required_warning",
+      "error_code": "UNRESOLVED_ALIAS",
+      "message": "Entity name 'Yarn 3' has no resolved master reference — alias review needed.",
+      "field_name": "name",
+      "is_blocking": false,
+      "is_current": true,
+      "staging_row_id": "9426ca29-21ba-4bba-abb3-8912b1b3e8b8",
+      "finding_version": 1,
+      "created_at": "2026-08-13T20:15:46.894222+00:00"
+    }
+  ]
+}

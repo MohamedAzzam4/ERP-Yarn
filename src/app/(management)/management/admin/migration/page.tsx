@@ -40,6 +40,8 @@ export default async function MigrationBatchListPage({
     ? `خطأ في التحقق: الحقل "${params.field || ""}" مطلوب`
     : params.error === "denied"
     ? "تم رفض الوصول: ليس لديك صلاحية"
+    : params.error === "internal"
+    ? "حدث خطأ داخلي. يرجى المحاولة مرة أخرى أو الاتصال بالدعم الفني"
     : null;
 
   const navCategories = getManagementNavForRole(managementRole);

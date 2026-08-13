@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-08-13T20:41:10.030Z",
+  "batch": {
+    "id": "32fd0ab8-b52a-4a8e-927e-326e634f02b0",
+    "tenant": "00000000-0000-0000-0000-000000081e50",
+    "status": "validation_complete",
+    "validationStatus": "passed",
+    "blockingErrorCount": 0,
+    "warningCount": 6,
+    "stagedDataHash": "84fb13a5e36b6d55758aa478f316087d65139f3578122184b070b3059c983d8e",
+    "cutoverManifestHash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702"
+  },
+  "currentFiles": 1,
+  "currentManifests": 1,
+  "manifest": {
+    "id": "f33e7008-da57-4ce5-807e-3bbd753add9f",
+    "version": 1,
+    "hash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702"
+  },
+  "currentStagingRows": 3,
+  "noEffects": {
+    "import_reconciliation_results": 0,
+    "import_human_review_items": 3,
+    "import_batch_approvals": 0,
+    "import_backup_evidence": 0,
+    "import_cutover_locks": 0
+  }
+}
