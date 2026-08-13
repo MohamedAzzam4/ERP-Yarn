@@ -124,11 +124,11 @@ async function main() {
     // The local permissions table requires tenant_id, module, action, description.
     // Derive module/action from permission_key (format: "module.action" or "module.submodule.action")
     const parts = (p.permission_key || "").split(".");
-    const module = parts[0] || "general";
-    const action = parts.slice(1).join(".") || "view";
+    const permModule = parts[0] || "general";
+    const permAction = parts.slice(1).join(".") || "view";
     await sql`
       INSERT INTO permissions (id, tenant_id, permission_key, module, action, field_key, description, created_at, updated_at)
-      VALUES (${p.id}, ${QA_TENANT}, ${p.permission_key}, ${module}, ${action}, ${p.field_key || null}, ${p.description || ''}, ${p.created_at}, ${p.updated_at})
+      VALUES (${p.id}, ${QA_TENANT}, ${p.permission_key}, ${permModule}, ${permAction}, ${p.field_key || null}, ${p.description || ''}, ${p.created_at}, ${p.updated_at})
       ON CONFLICT (id) DO UPDATE SET permission_key = EXCLUDED.permission_key, module = EXCLUDED.module, action = EXCLUDED.action
     `;
   }
