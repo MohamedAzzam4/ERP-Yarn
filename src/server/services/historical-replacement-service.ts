@@ -391,6 +391,16 @@ export class HistoricalReplacementService {
           now,
         );
 
+        // 5b. Delete old cutover manifests for the batch.
+        // WP-08-01F R4 QA FIX: The replacement clears cutoverManifestHash on
+        // the batch, but the old manifest row in import_cutover_manifests
+        // must also be deleted, otherwise the unique constraint
+        // (tenant_id, import_batch_id, domain) blocks creating a new manifest.
+        await txRepo.deleteCutoverManifestsForBatch(
+          user.tenantId,
+          input.importBatchId,
+        );
+
         // 6. Reset batch state — force re-finalize + re-validate + re-reconcile +
         //    renewed distinct approvals.
         await txRepo.updateBatchStagedDataHash(user.tenantId, input.importBatchId, "", user.userId);

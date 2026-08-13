@@ -211,6 +211,12 @@ export interface HistoricalStagingRepository {
   insertCutoverManifest(row: NewCutoverManifestInput): Promise<ImportCutoverManifest>;
   findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]>;
   findCutoverManifestById(tenantId: string, id: string): Promise<ImportCutoverManifest | null>;
+  /**
+   * WP-08-01F R4 QA FIX: Delete cutover manifests for a batch.
+   * Used by the replacement service to clear old manifests so a new one
+   * can be created without violating the unique constraint.
+   */
+  deleteCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<number>;
 }
 
 export type {

@@ -409,6 +409,19 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
       .limit(1);
     return result ?? null;
   }
+
+  async deleteCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<number> {
+    // WP-08-01F R4 QA FIX: Delete cutover manifests for a batch.
+    // Used by the replacement service to clear old manifests so a new one
+    // can be created without violating the unique constraint.
+    const result = await this.db.delete(importCutoverManifests)
+      .where(and(
+        eq(importCutoverManifests.tenantId, tenantId),
+        eq(importCutoverManifests.importBatchId, importBatchId),
+      ))
+      .returning();
+    return result.length;
+  }
 }
 
 export function createHistoricalStagingDbRepository(db: Db): HistoricalStagingDbRepository {

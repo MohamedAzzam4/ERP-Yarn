@@ -408,4 +408,15 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
   async findCutoverManifestById(tenantId: string, id: string): Promise<ImportCutoverManifest | null> {
     return this.cutoverManifests.get(`${tenantId}:${id}`) ?? null;
   }
+
+  async deleteCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<number> {
+    let count = 0;
+    for (const [key, m] of this.cutoverManifests.entries()) {
+      if (m.tenantId === tenantId && m.importBatchId === importBatchId) {
+        this.cutoverManifests.delete(key);
+        count++;
+      }
+    }
+    return count;
+  }
 }
