@@ -1475,4 +1475,187 @@ describeOrSkip("WP-08-01F R1 — Real PostgreSQL file-replacement proof", () => 
     const currentRows = (await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
     expect(currentRows[0]!.c).toBe(4);
   });
+
+  // ===========================================================================
+  // WP-08-01F R6 — Manifest versioning tests
+  // ===========================================================================
+
+  it("R6-M1. original manifest exists before replacement", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "validation_complete", { stagedDataHash: "h", cutoverManifestHash: "mh" });
+    const oldFileId = await seedFile(batchId, "sha256:r6m1", "source");
+
+    // Seed a manifest
+    const manifestId = randomUUID();
+    await sql`
+      INSERT INTO import_cutover_manifests (id, tenant_id, import_batch_id, domain, import_mode,
+        cutoff_date, source_coverage, opening_balance_basis, live_system_start_boundary,
+        reconciliation_owner, manifest_hash, is_approved, manifest_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${manifestId}, ${T}, ${batchId}, ${"inventory"}, ${"opening_balance"},
+        ${"2024-01-01"}, ${"all"}, ${"audit"}, null, null, ${"original-manifest-hash"}, false, 1, true, ${U}, NOW(), null, null)`;
+
+    // Verify manifest exists and is current
+    const manifests = (await sql`SELECT count(*)::int AS c, is_current FROM import_cutover_manifests WHERE tenant_id = ${T} AND import_batch_id = ${batchId} GROUP BY is_current`) as any[];
+    expect(manifests.length).toBe(1);
+    expect(manifests[0]!.c).toBe(1);
+    expect(manifests[0]!.is_current).toBe(true);
+  });
+
+  it("R6-M2. replacement preserves original manifest as is_current=false", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "validation_complete", { stagedDataHash: "h", cutoverManifestHash: "mh" });
+    const oldFileId = await seedFile(batchId, "sha256:r6m2", "source");
+
+    // Seed a manifest
+    const manifestId = randomUUID();
+    await sql`
+      INSERT INTO import_cutover_manifests (id, tenant_id, import_batch_id, domain, import_mode,
+        cutoff_date, source_coverage, opening_balance_basis, live_system_start_boundary,
+        reconciliation_owner, manifest_hash, is_approved, manifest_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${manifestId}, ${T}, ${batchId}, ${"inventory"}, ${"opening_balance"},
+        ${"2024-01-01"}, ${"all"}, ${"audit"}, null, null, ${"original-hash-r6m2"}, false, 1, true, ${U}, NOW(), null, null)`;
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r6-m2", "r.csv", Buffer.from(csv), "text/csv");
+
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R6 manifest preservation", idempotencyKey: "r6-m2",
+    });
+
+    // Old manifest should be preserved with is_current=false
+    const oldManifest = (await sql`SELECT is_current, manifest_hash, superseded_at FROM import_cutover_manifests WHERE id = ${manifestId}`) as any[];
+    expect(oldManifest[0]!.is_current).toBe(false);
+    expect(oldManifest[0]!.manifest_hash).toBe("original-hash-r6m2");
+    expect(oldManifest[0]!.superseded_at).not.toBeNull();
+  });
+
+  it("R6-M3. new manifest can be finalized after replacement", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService, stagingService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "validation_complete", { stagedDataHash: "h", cutoverManifestHash: "mh" });
+    const oldFileId = await seedFile(batchId, "sha256:r6m3", "source");
+
+    // Seed a manifest
+    await sql`
+      INSERT INTO import_cutover_manifests (id, tenant_id, import_batch_id, domain, import_mode,
+        cutoff_date, source_coverage, opening_balance_basis, live_system_start_boundary,
+        reconciliation_owner, manifest_hash, is_approved, manifest_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${randomUUID()}, ${T}, ${batchId}, ${"inventory"}, ${"opening_balance"},
+        ${"2024-01-01"}, ${"all"}, ${"audit"}, null, null, ${"old-hash-r6m3"}, false, 1, true, ${U}, NOW(), null, null)`;
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r6-m3", "r.csv", Buffer.from(csv), "text/csv");
+
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R6 new manifest", idempotencyKey: "r6-m3",
+    });
+
+    // Now finalize staging + manifest
+    await stagingService.finalizeStaging(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, idempotencyKey: "r6-m3-finalize",
+    });
+    await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
+      sourceCoverage: "all", openingBalanceBasis: "audit",
+      liveSystemStartBoundary: null, idempotencyKey: "r6-m3-manifest",
+    });
+
+    // Verify new manifest exists and is current
+    const currentManifests = (await sql`SELECT count(*)::int AS c FROM import_cutover_manifests WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
+    expect(currentManifests[0]!.c).toBe(1);
+
+    // Verify old manifest still exists (non-current)
+    const oldManifests = (await sql`SELECT count(*)::int AS c FROM import_cutover_manifests WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = false`) as any[];
+    expect(oldManifests[0]!.c).toBe(1);
+  });
+
+  it("R6-M4. exactly one manifest is current after replacement + re-finalize", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService, stagingService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "validation_complete", { stagedDataHash: "h", cutoverManifestHash: "mh" });
+    const oldFileId = await seedFile(batchId, "sha256:r6m4", "source");
+
+    await sql`
+      INSERT INTO import_cutover_manifests (id, tenant_id, import_batch_id, domain, import_mode,
+        cutoff_date, source_coverage, opening_balance_basis, live_system_start_boundary,
+        reconciliation_owner, manifest_hash, is_approved, manifest_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${randomUUID()}, ${T}, ${batchId}, ${"inventory"}, ${"opening_balance"},
+        ${"2024-01-01"}, ${"all"}, ${"audit"}, null, null, ${"old-hash-r6m4"}, false, 1, true, ${U}, NOW(), null, null)`;
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r6-m4", "r.csv", Buffer.from(csv), "text/csv");
+
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R6 exactly one current", idempotencyKey: "r6-m4",
+    });
+    await stagingService.finalizeStaging(makeUser() as any, makeEffective() as any, { importBatchId: batchId, idempotencyKey: "r6-m4-f" });
+    await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
+      sourceCoverage: "all", openingBalanceBasis: "audit", liveSystemStartBoundary: null, idempotencyKey: "r6-m4-m",
+    });
+
+    const currentCount = (await sql`SELECT count(*)::int AS c FROM import_cutover_manifests WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
+    expect(currentCount[0]!.c).toBe(1);
+  });
+
+  it("R6-M5. old and new manifest hashes differ", async () => {
+    const storage = new InMemoryPrivateFileStorage();
+    const { replacementService, stagingService } = makeServices(storage);
+    const batchId = randomUUID();
+    await seedBatch(batchId, "validation_complete", { stagedDataHash: "h", cutoverManifestHash: "mh" });
+    const oldFileId = await seedFile(batchId, "sha256:r6m5", "source");
+
+    const oldHash = "old-hash-r6m5-unique";
+    await sql`
+      INSERT INTO import_cutover_manifests (id, tenant_id, import_batch_id, domain, import_mode,
+        cutoff_date, source_coverage, opening_balance_basis, live_system_start_boundary,
+        reconciliation_owner, manifest_hash, is_approved, manifest_version, is_current, created_by, created_at, updated_at, updated_by)
+      VALUES (${randomUUID()}, ${T}, ${batchId}, ${"inventory"}, ${"opening_balance"},
+        ${"2024-01-01"}, ${"all"}, ${"audit"}, null, null, ${oldHash}, false, 1, true, ${U}, NOW(), null, null)`;
+
+    const { csv, template } = buildInventoryCsv(1);
+    const parseResult = parseCsv(csv, template);
+    const storedFile = await storage.store(T, batchId, "r6-m5", "r.csv", Buffer.from(csv), "text/csv");
+
+    await replacementService.replaceMigrationFile(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, replaceFileId: oldFileId,
+      originalFileName: "r.csv", storagePath: storedFile.storagePath,
+      fileHash: storedFile.fileHash, fileSizeBytes: storedFile.fileSizeBytes,
+      contentType: storedFile.contentType, fileType: "source",
+      parsedRows: parseResult.rows, templateType: "opening_balance_inventory",
+      reworkReason: "R6 hash diff", idempotencyKey: "r6-m5",
+    });
+    await stagingService.finalizeStaging(makeUser() as any, makeEffective() as any, { importBatchId: batchId, idempotencyKey: "r6-m5-f" });
+    await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
+      sourceCoverage: "all", openingBalanceBasis: "audit", liveSystemStartBoundary: null, idempotencyKey: "r6-m5-m",
+    });
+
+    const newManifest = (await sql`SELECT manifest_hash FROM import_cutover_manifests WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND is_current = true`) as any[];
+    expect(newManifest[0]!.manifest_hash).not.toBe(oldHash);
+  });
 });
