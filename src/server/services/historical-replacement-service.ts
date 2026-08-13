@@ -59,6 +59,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   type IdempotencyTransactionHandle,
 } from "./idempotency-service";
 import { guardReplaceFile } from "./migration-lifecycle-guard";
@@ -475,16 +476,21 @@ export class HistoricalReplacementService {
       // it receives the error, deletes the orphan, and creates a durable
       // alert if deletion fails.
       //
-      // Mark the idempotency record as retryable-failed so the client can
-      // retry with the same key (Contract 06 idempotency semantics).
+      // WP-08-01F Phase 0 closing proof: Mark the idempotency record as
+      // retryable-failed (NOT business-failed) so the client can retry with
+      // the SAME key immediately. A transient transaction failure (DB error,
+      // connection drop, etc.) is NOT a business-rule rejection — the
+      // operation may succeed on retry. Contract 06 idempotency semantics:
+      // retryable_failed → claimExpiredLease reclaims immediately on next
+      // call with the same key.
       try {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
           responseCode: 500,
           responseBody: { error: "TRANSACTION_FAILED" },
           lastErrorClass: (e as Error).name || "TRANSACTION_FAILED",
         }, claim.record.ownerToken!, now);
       } catch {
-        // If markBusinessFailed itself fails (e.g. ownership lost), the
+        // If markRetryableFailed itself fails (e.g. ownership lost), the
         // idempotency record remains in_progress and will expire via lease.
         // The client may retry — the claim will return "in_progress" until
         // the lease expires, then "execute" on retry.
