@@ -1,0 +1,69 @@
+=== WP-08-01F Task 1: Clean superseded run qaB-r7-1786625568 ===
+Batch ID: 634c764f-ef70-468e-ba0e-9f9f472c9087
+QA Tenant: 00000000-0000-0000-0000-000000081e50
+
+─ STEP 1: Inspect BEFORE state ─
+  import_cutover_locks: count=0
+  import_backup_evidence: count=0
+  import_batch_approvals: count=0
+  import_reconciliation_results: count=0
+  import_human_review_items: count=0
+  import_validation_errors: count=0
+  import_alias_mappings: count=0
+  import_staging_rows: count=0
+  import_files: count=0
+  import_cutover_manifests: count=0
+  import_batches: count=0
+  Batch record: null
+  Storage objects to delete: 0
+
+  DURABLE audit_logs: count=1135
+  DURABLE idempotency_records: count=329
+  DURABLE document_sequences: count=9
+
+  Non-QA control: import_batches count (excluding QA tenant) = 0
+
+─ STEP 2: Delete storage objects ─
+  Storage deleted: 0, errors: 0
+
+─ STEP 3: Delete mutable fixtures (FK-safe order) ─
+  Deleted from import_cutover_locks for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_backup_evidence for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_batch_approvals for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_reconciliation_results for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_human_review_items for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_validation_errors for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_alias_mappings for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_staging_rows for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_files for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_cutover_manifests for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  Deleted from import_batches for batch 634c764f-ef70-468e-ba0e-9f9f472c9087
+  DB delete errors: 0
+
+─ STEP 4: Verify AFTER state ─
+  import_cutover_locks: count=0
+  import_backup_evidence: count=0
+  import_batch_approvals: count=0
+  import_reconciliation_results: count=0
+  import_human_review_items: count=0
+  import_validation_errors: count=0
+  import_alias_mappings: count=0
+  import_staging_rows: count=0
+  import_files: count=0
+  import_cutover_manifests: count=0
+  import_batches: count=0
+
+  DURABLE audit_logs: before=1135 after=1135 ✓ UNCHANGED
+  DURABLE idempotency_records: before=329 after=329 ✓ UNCHANGED
+  DURABLE document_sequences: before=9 after=9 ✓ UNCHANGED
+  Non-QA control: before=0 after=0 ✓ UNCHANGED
+
+─ STEP 5: Summary ─
+  Storage objects deleted: 0
+  Storage errors: 0
+  DB delete errors: 0
+  Mutable tables with residual rows: 0
+  Durable evidence preserved: YES
+  Non-QA control unchanged: YES
+
+  RESULT: SUCCESS — zero errors, no orphans, durable evidence preserved

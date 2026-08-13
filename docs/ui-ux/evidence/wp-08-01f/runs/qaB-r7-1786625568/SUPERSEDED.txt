@@ -1,1 +1,5 @@
 SUPERSEDED — B1 timed out before completion
+Cleaned: 2026-08-13 — mutable fixtures + storage objects deleted (FK-safe order).
+Durable evidence preserved: audit_logs=1135, idempotency_records=329, document_sequences=9 (all unchanged).
+Non-QA control: 0 batches outside QA tenant (unchanged).
+See CLEANUP_RESULT.txt for full proof.

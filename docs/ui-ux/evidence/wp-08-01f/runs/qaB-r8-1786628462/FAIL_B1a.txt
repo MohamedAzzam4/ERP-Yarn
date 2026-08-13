@@ -1,0 +1,12 @@
+Stage: B1a
+Run ID: qaB-r8-1786628462
+Timestamp: 2026-08-13T13:52:49Z
+Error: Page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:3000/login
+Call log:
+  - navigating to "http://127.0.0.1:3000/login", waiting until "networkidle"
+
+Server error: 
+Current URL: about:blank
+
+Next safe resume command:
+  python3 /home/z/my-project/ERP-Yarn/scripts/wp-08-01f-browser-qa/run-b1-stages.py B1a qaB-r8-1786628462
