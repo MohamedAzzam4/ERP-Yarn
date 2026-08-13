@@ -1,0 +1,112 @@
+{
+  "startCommand": "next start -p 3000 (values redacted \u2014 env vars not shown)",
+  "gitSha": "13a019e0a87637e517e9e7b467f4c6d6944cb399",
+  "port": 3000,
+  "startTime": "2026-08-13T14:19:17.847580Z",
+  "envPresent": {
+    "NEXT_PUBLIC_SUPABASE_URL": true,
+    "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": true,
+    "SUPABASE_SECRET_KEY": true,
+    "DATABASE_URL": true,
+    "SUPABASE_PROJECT_REF": true
+  },
+  "stdoutLogPath": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01f/runs/server-diagnostic/server-stdout.log",
+  "stderrLogPath": "/home/z/my-project/ERP-Yarn/docs/ui-ux/evidence/wp-08-01f/runs/server-diagnostic/server-stderr.log",
+  "checks": [
+    {
+      "time": "2026-08-13T14:19:18.850235Z",
+      "elapsedSeconds": 1.2,
+      "processAlive": true,
+      "portListening": true,
+      "healthCheck": {
+        "status_code": 200,
+        "ok": true
+      },
+      "memory": {
+        "vm_rss_bytes": 90271744,
+        "vm_size_bytes": 1646538752,
+        "oom_score": null
+      },
+      "pollExitCode": null
+    },
+    {
+      "time": "2026-08-13T14:19:22.850277Z",
+      "elapsedSeconds": 5.0,
+      "processAlive": true,
+      "portListening": true,
+      "healthCheck": {
+        "status_code": 200,
+        "ok": true
+      },
+      "memory": {
+        "vm_rss_bytes": 90271744,
+        "vm_size_bytes": 1646538752,
+        "oom_score": null
+      },
+      "pollExitCode": null
+    },
+    {
+      "time": "2026-08-13T14:19:32.850250Z",
+      "elapsedSeconds": 15.0,
+      "processAlive": true,
+      "portListening": true,
+      "healthCheck": {
+        "status_code": 200,
+        "ok": true
+      },
+      "memory": {
+        "vm_rss_bytes": 90271744,
+        "vm_size_bytes": 1646538752,
+        "oom_score": null
+      },
+      "pollExitCode": null
+    },
+    {
+      "time": "2026-08-13T14:19:47.850277Z",
+      "elapsedSeconds": 30.0,
+      "processAlive": true,
+      "portListening": true,
+      "healthCheck": {
+        "status_code": 200,
+        "ok": true
+      },
+      "memory": {
+        "vm_rss_bytes": 90271744,
+        "vm_size_bytes": 1646538752,
+        "oom_score": null
+      },
+      "pollExitCode": null
+    },
+    {
+      "time": "2026-08-13T14:20:17.850268Z",
+      "elapsedSeconds": 60.0,
+      "processAlive": true,
+      "portListening": true,
+      "healthCheck": {
+        "status_code": 200,
+        "ok": true
+      },
+      "memory": {
+        "vm_rss_bytes": 90271744,
+        "vm_size_bytes": 1646538752,
+        "oom_score": null
+      },
+      "pollExitCode": null
+    }
+  ],
+  "termination": {
+    "time": "2026-08-13T14:20:17.873993Z",
+    "elapsedSeconds": 60.0,
+    "exitCode": -15,
+    "signal": "terminated by diagnostic script (survived 60s)",
+    "classification": "server_healthy"
+  },
+  "oomEvidence": {
+    "dmesg": [],
+    "journalctl": []
+  },
+  "pid": 2664,
+  "stdoutContent": "\u25b2 Next.js 16.2.9\n- Local:         http://localhost:3000\n- Network:       http://21.0.9.201:3000\n\u2713 Ready in 110ms\n",
+  "stderrContent": "",
+  "classification": "server_healthy (survived 60s)"
+}

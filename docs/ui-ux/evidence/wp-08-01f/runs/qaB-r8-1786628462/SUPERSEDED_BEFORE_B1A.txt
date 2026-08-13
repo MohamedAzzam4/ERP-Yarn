@@ -1,0 +1,14 @@
+SUPERSEDED_BEFORE_B1A — Run qaB-r8-1786628462
+
+Reason: B1a failed before browser connection (net::ERR_CONNECTION_REFUSED).
+The server process was killed by the setsid/disown pattern in the previous
+session — NOT by OOM. Task 3 diagnostic proved the server is healthy
+(survived 60s with HTTP 200 at every check).
+
+No batch was ever created (batchId=null in run-state).
+Zero residual mutable records in the QA database.
+Zero residual storage objects.
+No cleanup needed — nothing was created.
+
+This run is NOT active. Do not call its resume command.
+A fresh run will be created when the real QA DATABASE_URL is available.
