@@ -537,8 +537,11 @@ describe("WP-08-01D Production Repository Wiring", () => {
     const directCostsActions = readFile(DIRECT_COSTS_ACTIONS_PATH);
 
     it("postPaymentAction calls resolveAndRequirePermission BEFORE getSharedDeps", () => {
+      // WP-08-01F: The permission matrix is now loaded from DB at runtime
+      // (loadRolePermissionMatrixForTenant) instead of TEST_ROLE_PERMISSION_MATRIX.
+      // The test checks that resolveAndRequirePermission is called before getSharedDeps.
       const permIdx = paymentsActions.indexOf(
-        "resolveAndRequirePermission(\n    authResult.roles,\n    TEST_ROLE_PERMISSION_MATRIX,\n    \"payments.approve\",\n  )",
+        "resolveAndRequirePermission(\n    authResult.roles,\n    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),\n    \"payments.approve\",\n  )",
       );
       const postActionIdx = paymentsActions.indexOf("export async function postPaymentAction");
       const sharedDepsIdx = paymentsActions.indexOf("getSharedDeps()", postActionIdx);

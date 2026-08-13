@@ -14,6 +14,30 @@ vi.mock("@/server/db/client", () => ({
   db: null,
 }));
 
+vi.mock("@/server/security/permission-loader", () => ({
+  loadRolePermissionMatrixForTenant: vi.fn().mockResolvedValue({
+    owner: new Set([
+      "inventory.transfer.create", "inventory.transfer.approve",
+      "inventory.receive.create", "inventory.receive.approve",
+      "production.create", "production.receive_draft", "production.return_from_wip.request",
+      "quality_tests.create", "returns.create",
+    ]),
+    accountant: new Set([
+      "inventory.transfer.approve", "inventory.receive.approve",
+    ]),
+    warehouse_employee: new Set([
+      "inventory.transfer.create", "inventory.receive.create",
+      "production.create", "production.receive_draft", "returns.create",
+    ]),
+    production_employee: new Set([
+      "production.create", "production.receive_draft",
+    ]),
+    quality_employee: new Set([
+      "quality_tests.create",
+    ]),
+  }),
+}));
+
 vi.mock("next/navigation", () => ({
   redirect: vi.fn((url: string) => { throw new Error(`REDIRECT:${url}`); }),
   revalidatePath: vi.fn(),
