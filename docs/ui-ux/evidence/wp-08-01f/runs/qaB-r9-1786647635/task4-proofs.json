@@ -1,0 +1,57 @@
+{
+  "replay": {
+    "pass": true,
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1144,
+      "idem": 338
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1144,
+      "idem": 338
+    }
+  },
+  "conflict": {
+    "pass": true,
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1144,
+      "idem": 338
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1144,
+      "idem": 338
+    }
+  },
+  "worker_denial": {
+    "pass": true,
+    "worker_url": "http://127.0.0.1:3000/management/admin/migration",
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1144,
+      "idem": 338
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1144,
+      "idem": 338
+    }
+  },
+  "forged_fields": {
+    "pass": true,
+    "forged_batch": {
+      "id": "6f191368-5ca6-40ac-bb61-aaa7d77bca6a",
+      "tenant_id": "00000000-0000-0000-0000-000000081e50",
+      "source_description": "FORGED TEST 1786647964"
+    }
+  },
+  "all_pass": true
+}

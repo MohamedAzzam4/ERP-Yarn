@@ -1,0 +1,14 @@
+{
+  "runId": "qaB-r9-1786647635",
+  "batchId": "32fd0ab8-b52a-4a8e-927e-326e634f02b0",
+  "status": "source_uploaded",
+  "tenantMatch": true,
+  "fileCount": 1,
+  "currentFileCount": 1,
+  "fileVersion": 1,
+  "fileHash": "edc5ff70ffd783ada86e8e9d2e549d0baa2c3df0555af586f092e3ea185ff3c1",
+  "fileType": "source",
+  "storagePath": "supabase://migration-private-files/00000000-0000-0000-0000-000000081e50/migration/32fd0ab8-b52a-4a8e-927e-326e634f02b0/27712048-8b82-4415-9ae2-9b5bc2449c05/valid.csv",
+  "auditDelta": 2,
+  "idempotencyDelta": 3
+}

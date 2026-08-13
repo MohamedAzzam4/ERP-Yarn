@@ -212,7 +212,7 @@ async function main() {
   } catch (e) { tenantDetail = `error: ${e.message}`; }
 
   try {
-    const roles = await sql`SELECT count(*)::int AS c, string_agg(role_code, ', ') AS codes FROM roles WHERE tenant_id = ${QA_TENANT}`;
+    const roles = await sql`SELECT count(*)::int AS c, string_agg(role_code::text, ', ') AS codes FROM roles WHERE tenant_id = ${QA_TENANT}`;
     rolesOk = roles[0].c > 0;
     rolesDetail = `${roles[0].c} roles: ${roles[0].codes}`;
   } catch (e) { rolesDetail = `error: ${e.message}`; }
