@@ -188,7 +188,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       WHERE tenant_id = ${tenantId} AND id = ${batchId}
       RETURNING *
     `);
-    return (result as unknown as ImportBatch[])?.[0] ?? null;
+    return (result as unknown as ImportBatch) ?? null;
   }
 
   // WP-08-01F DEFECT 1A: lifecycle transition support

@@ -287,7 +287,7 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
       WHERE tenant_id = ${tenantId} AND id = ${batchId}
       RETURNING *
     `);
-    return (result as unknown as ImportBatch[])?.[0] ?? null;
+    return (result as unknown as ImportBatch) ?? null;
   }
 
   async updateBatchStagedRowCount(tenantId: string, batchId: string, count: number): Promise<ImportBatch | null> {

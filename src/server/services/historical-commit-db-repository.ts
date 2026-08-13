@@ -65,7 +65,7 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
       WHERE tenant_id = ${tenantId} AND id = ${batchId}
       RETURNING *
     `);
-    return (updated as unknown as ImportBatch[])?.[0] ?? null;
+    return (updated as unknown as ImportBatch) ?? null;
   }
 
   async updateBatchCommitMetadata(
