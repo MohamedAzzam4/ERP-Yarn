@@ -29,7 +29,7 @@ import { MasterDataService } from "@/server/services/master-data-service";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import type { Supplier, Location, FiberType } from "@/server/db/schema/master-data";
 
 export default async function WorkerReceiptPage() {
@@ -67,7 +67,7 @@ export default async function WorkerReceiptPage() {
     });
     const effective: EffectivePermissions = resolveEffectivePermissions(
       authResult.roles,
-      TEST_ROLE_PERMISSION_MATRIX,
+      (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     );
     try {
       const userContext = { ...authResult, tenantId: authResult.tenantId };

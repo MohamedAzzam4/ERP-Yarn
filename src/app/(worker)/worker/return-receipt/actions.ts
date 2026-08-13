@@ -17,7 +17,7 @@
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { requireWarehouseTaskActor } from "@/server/security/inventory-guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { ReturnRequestService } from "@/server/services/return-request-service";
 import { ReturnRequestDbRepository } from "@/server/services/return-request-db-repository";
 import { SalesDbRepository } from "@/server/services/sales-db-repository";
@@ -82,7 +82,7 @@ export async function createReturnRequest(formData: FormData): Promise<void> {
   requireWarehouseTaskActor(authResult as any, authResult.roles);
 
   const effective = resolveAndRequirePermission(
-    authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "returns.create",
+    authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "returns.create",
   );
 
   // Reject forbidden fields in payload

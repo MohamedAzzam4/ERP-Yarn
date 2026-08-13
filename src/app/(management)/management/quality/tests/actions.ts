@@ -25,7 +25,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { QualityTestService } from "@/server/services/quality-test-service";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
@@ -122,7 +122,7 @@ export async function reviewQualityTestAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "quality_risk_sales.approve",
   );
 

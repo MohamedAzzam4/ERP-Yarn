@@ -23,7 +23,7 @@ import { RawBatchTraceService } from "@/server/services/raw-batch-trace-service"
 import { RawReceiptDraftDbRepository } from "@/server/services/raw-receipt-draft-db-repository";
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import Link from "next/link";
 
@@ -46,7 +46,7 @@ export default async function TraceabilityPage() {
       draftRepository: new RawReceiptDraftDbRepository(db),
       approvalRepository: new RawReceiptApprovalDbRepository(db),
     });
-    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, TEST_ROLE_PERMISSION_MATRIX);
+    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)));
     try {
       batches = await traceService.listBatches({ ...authResult, tenantId: authResult.tenantId } as any, effective);
       dbAvailable = true;

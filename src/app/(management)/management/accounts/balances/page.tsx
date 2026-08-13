@@ -31,7 +31,7 @@ import { signOut } from "@/app/login/actions";
 import type { RoleCode } from "@/server/security/role-codes";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { requireAnyPermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { Container } from "@/components/ui/container";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LtrValue } from "@/components/ui/ltr-value";
@@ -56,7 +56,7 @@ export default async function ManagementAccountBalancesPage() {
   // financial-deny ceiling (DEC-063) before this check even runs.
   const effective = resolveEffectivePermissions(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
   );
   requireAnyPermission(effective, [
     "balances.view_customer",

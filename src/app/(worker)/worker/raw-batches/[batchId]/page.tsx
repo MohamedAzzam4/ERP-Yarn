@@ -35,7 +35,7 @@ import { RawBatchTraceService, RawBatchNotFoundError } from "@/server/services/r
 import { RawReceiptDraftDbRepository } from "@/server/services/raw-receipt-draft-db-repository";
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import type { RawBatchTrace } from "@/server/services/raw-batch-trace-service";
 import Link from "next/link";
@@ -61,7 +61,7 @@ export default async function WorkerRawBatchDetailPage({ params }: { params: Pro
       draftRepository: new RawReceiptDraftDbRepository(db),
       approvalRepository: new RawReceiptApprovalDbRepository(db),
     });
-    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, TEST_ROLE_PERMISSION_MATRIX);
+    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)));
     try {
       trace = await traceService.traceRawBatch({ ...authResult, tenantId: authResult.tenantId } as any, effective, batchId);
       dbAvailable = true;

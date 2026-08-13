@@ -16,7 +16,7 @@
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { requireWarehouseTaskActor } from "@/server/security/inventory-guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { TransferWorkflowService } from "@/server/services/transfer-workflow-service";
 import { RawReceiptApprovalDbRepository } from "@/server/services/raw-receipt-approval-db-repository";
 import { InventoryLedgerService } from "@/server/services/inventory-ledger-service";
@@ -62,7 +62,7 @@ export async function createTransferDraft(formData: FormData): Promise<void> {
   requireWarehouseTaskActor(authResult as any, authResult.roles);
 
   const effective = resolveAndRequirePermission(
-    authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "inventory.transfer.create",
+    authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "inventory.transfer.create",
   );
 
   // Reject forbidden fields in payload

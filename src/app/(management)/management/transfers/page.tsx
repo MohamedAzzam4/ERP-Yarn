@@ -25,7 +25,7 @@ import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 
 export default async function TransfersPage() {
@@ -54,7 +54,7 @@ export default async function TransfersPage() {
       inventoryLedger, audit, idempotency,
       tenantOwnershipValidator: new DbTenantOwnershipValidator(db),
     });
-    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, TEST_ROLE_PERMISSION_MATRIX);
+    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)));
     try {
       pendingTransfers = await service.listPendingTransfers({ ...authResult, tenantId: authResult.tenantId } as any, effective);
       dbAvailable = true;

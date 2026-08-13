@@ -20,7 +20,7 @@ import { db } from "@/server/db/client";
 import { InventoryLedgerDbRepository } from "@/server/services/inventory-ledger-db-repository";
 import { FullReconciliationService } from "@/server/services/inventory-ledger-expansion";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import type { BatchReconciliationResult } from "@/server/services/inventory-ledger-expansion";
 
@@ -40,7 +40,7 @@ export default async function ReconciliationPage() {
   if (db) {
     const ledger = new InventoryLedgerDbRepository(db);
     const reconciler = new FullReconciliationService({ ledger });
-    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, TEST_ROLE_PERMISSION_MATRIX);
+    const effective: EffectivePermissions = resolveEffectivePermissions(authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)));
     try {
       result = await reconciler.reconcileAll({ ...authResult, tenantId: authResult.tenantId } as any, effective);
       dbAvailable = true;

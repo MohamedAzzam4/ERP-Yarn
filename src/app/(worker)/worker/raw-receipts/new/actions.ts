@@ -41,7 +41,8 @@ import {
   type GuardError,
 } from "@/server/security/guards";
 import { isWorkerRole } from "@/server/security/role-codes";
-import { getTestRoleAssignments, TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { getTestRoleAssignments } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { InProcessAuditStore } from "@/server/services/audit-service";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import {
@@ -79,7 +80,7 @@ export async function createRawReceiptDraftAction(
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
 
   const roles = authResult.roles;
-  const effective = resolveAndRequirePermission(roles, TEST_ROLE_PERMISSION_MATRIX, "inventory.receive.create");
+  const effective = resolveAndRequirePermission(roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "inventory.receive.create");
 
   // Build the input from FormData. Only operational fields — NO financial
   // fields are read. Worker financial-deny is enforced by

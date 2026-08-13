@@ -23,6 +23,7 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getErpAuthContextWithRoles, type ErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "./guards";
+import { resolveEffectivePermissions } from "./effective-permissions";
 import type { EffectivePermissions, RolePermissionMatrix } from "./effective-permissions";
 import type { RoleCode } from "./role-codes";
 
@@ -130,6 +131,35 @@ export async function authenticateAndRequirePermissionFromDb(
 
   const matrix = await loadRolePermissionMatrixForTenant(authResult.tenantId);
   const effective = resolveAndRequirePermission(authResult.roles, matrix, permissionKey);
+
+  return { authResult, effective };
+}
+
+/**
+ * Convenience: authenticate the current user and resolve their effective
+ * permissions using the tenant's DB-backed permission matrix.
+ *
+ * This is the production replacement for Server Components that do:
+ *   const authResult = await getErpAuthContextWithRoles();
+ *   const effective = resolveEffectivePermissions(authResult.roles, TEST_ROLE_PERMISSION_MATRIX);
+ *
+ * Unlike `authenticateAndRequirePermissionFromDb`, this does NOT require a
+ * specific permission — it just resolves the user's full permission set.
+ * The caller can then check specific permissions with `hasPermission()`.
+ *
+ * @returns The authenticated user context + resolved effective permissions.
+ * @throws Redirect if the user is not authenticated or has no roles.
+ */
+export async function authenticateAndResolvePermissionsFromDb(): Promise<{
+  authResult: ErpAuthContextWithRoles;
+  effective: EffectivePermissions;
+}> {
+  const authResult = await getErpAuthContextWithRoles();
+  if (!authResult.authenticated) redirect("/login");
+  if (authResult.roles.length === 0) redirect("/login?error=no_role");
+
+  const matrix = await loadRolePermissionMatrixForTenant(authResult.tenantId);
+  const effective = resolveEffectivePermissions(authResult.roles, matrix);
 
   return { authResult, effective };
 }

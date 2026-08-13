@@ -31,7 +31,7 @@ import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import type { Supplier } from "@/server/db/schema/master-data";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 
 export default async function SuppliersPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -68,7 +68,7 @@ export default async function SuppliersPage() {
     });
     const effective: EffectivePermissions = resolveEffectivePermissions(
       authResult.roles,
-      TEST_ROLE_PERMISSION_MATRIX,
+      (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     );
     try {
       suppliers = await service.listActiveSuppliers(

@@ -25,7 +25,7 @@
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
@@ -102,7 +102,7 @@ export async function approveTransferAction(formData: FormData) {
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "inventory.transfer.approve",
   );
 
@@ -135,7 +135,7 @@ export async function reverseMovementAction(formData: FormData) {
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "inventory.reverse",
   );
 

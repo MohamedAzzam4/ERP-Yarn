@@ -23,7 +23,7 @@
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
 import { requireProductionTaskActor } from "@/server/security/inventory-guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { ProductionIssueService } from "@/server/services/production-issue-service";
 import { ProductionReceiptDraftService } from "@/server/services/production-receipt-draft-service";
 import { WipReturnRequestService } from "@/server/services/wip-return-request-service";
@@ -81,7 +81,7 @@ export async function createProductionDraft(formData: FormData): Promise<void> {
   requireProductionTaskActor(authResult as any, authResult.roles);
 
   const effective = resolveAndRequirePermission(
-    authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "production.create",
+    authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "production.create",
   );
 
   checkForbiddenFields(formData);
@@ -160,7 +160,7 @@ export async function createReceiptDraft(formData: FormData): Promise<void> {
   requireProductionTaskActor(authResult as any, authResult.roles);
 
   const effective = resolveAndRequirePermission(
-    authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "production.receive_draft",
+    authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "production.receive_draft",
   );
 
   checkForbiddenFields(formData);
@@ -243,7 +243,7 @@ export async function createWipReturnRequest(formData: FormData): Promise<void> 
   requireProductionTaskActor(authResult as any, authResult.roles);
 
   const effective = resolveAndRequirePermission(
-    authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "production.return_from_wip.request",
+    authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "production.return_from_wip.request",
   );
 
   checkForbiddenFields(formData);

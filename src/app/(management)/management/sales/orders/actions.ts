@@ -25,7 +25,7 @@
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { SalesApprovalService } from "@/server/services/sales-approval-service";
 import { SalesFailureResolutionService } from "@/server/services/sales-failure-resolution-service";
 import type { ResolveSaleFailureInput } from "@/server/services/sales-failure-resolution-types";
@@ -76,7 +76,7 @@ export async function approveSaleAction(formData: FormData): Promise<void> {
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
 
   const effective = resolveAndRequirePermission(
-    authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "sales.approve",
+    authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "sales.approve",
   );
 
   // Reject forbidden fields (client must not set totals/status)
@@ -172,7 +172,7 @@ export async function rejectSaleAction(formData: FormData): Promise<void> {
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
 
   const effective = resolveAndRequirePermission(
-    authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "sales.approve",
+    authResult.roles, (await loadRolePermissionMatrixForTenant(authResult.tenantId)), "sales.approve",
   );
 
   for (const field of FORBIDDEN_SALES_FIELDS) {

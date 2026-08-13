@@ -45,7 +45,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { DirectCostService } from "@/server/services/direct-cost-service";
 import type {
   ReviewDirectCostInput,
@@ -309,7 +309,7 @@ export async function reviewDirectCostAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "direct_costs.review",
   );
 

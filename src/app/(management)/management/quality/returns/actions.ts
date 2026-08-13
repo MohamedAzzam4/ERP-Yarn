@@ -31,7 +31,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { ReturnRequestService } from "@/server/services/return-request-service";
 import { ReplacementWorkflowService } from "@/server/services/replacement-workflow-service";
 import { SubledgerService } from "@/server/services/subledger-service";
@@ -109,7 +109,7 @@ export async function approveReturnAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "returns.approve",
   );
 
@@ -221,7 +221,7 @@ export async function rejectReturnAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "returns.approve",
   );
 
@@ -372,7 +372,7 @@ export async function createReplacementOrderAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "returns.approve",
   );
 

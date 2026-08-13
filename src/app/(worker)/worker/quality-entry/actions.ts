@@ -28,7 +28,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { QualityTestService } from "@/server/services/quality-test-service";
 import { ComplaintService } from "@/server/services/complaint-service";
 import type { UpdateComplaintInput, ComplaintPriority } from "@/server/services/complaint-service";
@@ -104,7 +104,7 @@ export async function createQualityTestAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "quality_tests.create",
   );
 
@@ -181,7 +181,7 @@ export async function createComplaintAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "complaints.investigate",
   );
 
@@ -287,7 +287,7 @@ export async function recordQualityTestValueAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "quality_tests.create",
   );
 
@@ -371,7 +371,7 @@ export async function updateComplaintAction(
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "complaints.investigate",
   );
 

@@ -41,7 +41,7 @@ import { SubledgerService } from "@/server/services/subledger-service";
 import { SubledgerDbRepository } from "@/server/services/subledger-db-repository";
 import type { EffectivePermissions } from "@/server/security/effective-permissions";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 
 export default async function RawReceiptApprovalsPage() {
   const authResult = await getErpAuthContextWithRoles();
@@ -107,7 +107,7 @@ export default async function RawReceiptApprovalsPage() {
     });
     const effective: EffectivePermissions = resolveEffectivePermissions(
       authResult.roles,
-      TEST_ROLE_PERMISSION_MATRIX,
+      (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     );
     try {
       const approvals = await service.listPendingApprovals(authResult, effective);

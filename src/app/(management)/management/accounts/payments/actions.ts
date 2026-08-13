@@ -38,7 +38,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { PaymentService } from "@/server/services/payment-service";
 import { SettlementService } from "@/server/services/settlement-service";
 import { PaymentReversalService } from "@/server/services/payment-reversal-service";
@@ -183,7 +183,7 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "payments.approve",
   );
 
@@ -263,7 +263,7 @@ export async function settlePaymentAction(formData: FormData): Promise<void> {
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "payments.approve",
   );
 
@@ -337,7 +337,7 @@ export async function reversePaymentAction(formData: FormData): Promise<void> {
 
   const effective = resolveAndRequirePermission(
     authResult.roles,
-    TEST_ROLE_PERMISSION_MATRIX,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
     "payments.reverse",
   );
 
