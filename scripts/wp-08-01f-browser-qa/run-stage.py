@@ -64,6 +64,34 @@ def get_batch_status(batch_id):
     counts = json.loads(lines[1]) if len(lines) > 1 and lines[1] else {}
     return data, counts
 
+def poll_db(batch_id, expected_status, timeout_s=30, interval_s=2):
+    """Poll DB until expected status is reached or timeout expires.
+    Returns True if status matched, False on timeout."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        data, counts = get_batch_status(batch_id)
+        status = data.get("status", "UNKNOWN")
+        if status == expected_status:
+            print(f"  poll OK: status={status}")
+            return True
+        time.sleep(interval_s)
+    print(f"  poll TIMEOUT: status={status} (expected {expected_status})")
+    return False
+
+def poll_validation_complete(batch_id, timeout_s=30, interval_s=2):
+    """Poll until validation_complete with validationStatus != unknown."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        data, counts = get_batch_status(batch_id)
+        status = data.get("status", "UNKNOWN")
+        vs = data.get("validation_status", "")
+        if status == "validation_complete" and vs and vs != "unknown":
+            print(f"  poll OK: status={status} validationStatus={vs}")
+            return True, data, counts
+        time.sleep(interval_s)
+    print(f"  poll TIMEOUT: status={status} validationStatus={vs}")
+    return False, data, counts
+
 def get_batch_id_by_description(description):
     """Get exact batch ID from DB by source description using a proper helper script."""
     # Write description to a temp file to avoid shell escaping issues
@@ -313,16 +341,20 @@ def stage_A2(run_id):
         goto_batch(page, bid)
         print("  Run validation...")
         if submit_form(page, "run-validation", run_id):
+            # Poll for validation_complete with validationStatus != unknown
+            ok, vdata, vcounts = poll_validation_complete(bid, timeout_s=30, interval_s=2)
             goto_batch(page, bid)
             ss(page, "A06-validation", run_id)
-            out = db_query(bid)
-            lines = out.split('\n')
-            if lines:
-                data = json.loads(lines[0])
-                print(f"  DB status={data.get('status')} validationStatus={data.get('validation_status')}")
-            if len(lines) >= 2:
-                counts = json.loads(lines[1])
-                print(f"  findings={counts.get('findings', 0)}")
+            if ok:
+                print(f"  VERIFIED validation_complete: validationStatus={vdata.get('validation_status')}")
+                print(f"  findings={vcounts.get('findings', 0)}")
+            else:
+                print(f"  FAIL validation did not complete: status={vdata.get('status')} vs={vdata.get('validation_status')}")
+                ss(page, "A06-fail-validation", run_id)
+                d = evidence_dir(run_id)
+                (d / "A2-FAIL.txt").write_text(f"Validation did not complete\nstatus={vdata.get('status')}\nvalidationStatus={vdata.get('validation_status')}\n")
+                browser.close()
+                return False
 
         state["completed"].append("A2")
         state["nextStage"] = "A3"
@@ -535,16 +567,23 @@ def stage_A4(run_id):
         goto_batch(page, bid)
         print("  Run corrected validation...")
         if submit_form(page, "run-validation", run_id):
+            # Poll for validation_complete with validationStatus != unknown
+            ok, vdata, vcounts = poll_validation_complete(bid, timeout_s=30, interval_s=2)
             goto_batch(page, bid)
             ss(page, "A10-corrected-validation", run_id)
-            out = db_query(bid)
-            lines = out.split('\n')
-            if lines:
-                data = json.loads(lines[0])
-                print(f"  DB status={data.get('status')} validationStatus={data.get('validation_status')}")
-            if len(lines) >= 2:
-                counts = json.loads(lines[1])
-                print(f"  findings={counts.get('findings', 0)}")
+            if ok:
+                vs = vdata.get("validation_status", "")
+                findings = vcounts.get("findings", 0)
+                print(f"  VERIFIED validation_complete: validationStatus={vs} findings={findings}")
+                if vs == "passed":
+                    print("  A4 SUCCESS: validationStatus=passed, blockers=0")
+                else:
+                    print(f"  A4 WARNING: validationStatus={vs} (expected passed)")
+            else:
+                print(f"  FAIL corrected validation did not complete")
+                ss(page, "A10-fail-validation", run_id)
+                d = evidence_dir(run_id)
+                (d / "A4-FAIL.txt").write_text(f"Corrected validation did not complete\nstatus={vdata.get('status')}\nvalidationStatus={vdata.get('validation_status')}\n")
 
         # Capture all viewports
         for name, w, h in [("360",360,640),("768",768,1024),("1024",1024,768),("1440",1440,900)]:
