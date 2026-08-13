@@ -1,0 +1,63 @@
+{
+  "taskId": "Tasks5-7-B1b",
+  "before": {
+    "status": "staged",
+    "stagedDataHash": "84fb13a5e36b6d55758aa478f316087d65139f3578122184b070b3059c983d8e",
+    "stagedRowCount": 3,
+    "cutoverManifestHash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702",
+    "validationStatus": null,
+    "blockingErrorCount": 0,
+    "warningCount": 0,
+    "audit": 1150,
+    "idem": 344,
+    "staging": 3,
+    "manifests": 1,
+    "findings": 0,
+    "currentManifest": {
+      "id": "f33e7008-da57-4ce5-807e-3bbd753add9f",
+      "version": 1,
+      "hash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702"
+    }
+  },
+  "after": {
+    "status": "staged",
+    "stagedDataHash": "84fb13a5e36b6d55758aa478f316087d65139f3578122184b070b3059c983d8e",
+    "stagedRowCount": 3,
+    "cutoverManifestHash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702",
+    "validationStatus": null,
+    "blockingErrorCount": 0,
+    "warningCount": 0,
+    "audit": 1150,
+    "idem": 345,
+    "staging": 3,
+    "manifests": 1,
+    "findings": 0,
+    "currentManifest": {
+      "id": "f33e7008-da57-4ce5-807e-3bbd753add9f",
+      "version": 1,
+      "hash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702"
+    }
+  },
+  "finalState": {
+    "status": "staged",
+    "stagedDataHash": "84fb13a5e36b6d55758aa478f316087d65139f3578122184b070b3059c983d8e",
+    "stagedRowCount": 3,
+    "cutoverManifestHash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702",
+    "validationStatus": null,
+    "blockingErrorCount": 0,
+    "warningCount": 0,
+    "audit": 1150,
+    "idem": 345,
+    "staging": 3,
+    "manifests": 1,
+    "findings": 0,
+    "currentManifest": {
+      "id": "f33e7008-da57-4ce5-807e-3bbd753add9f",
+      "version": 1,
+      "hash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702"
+    }
+  },
+  "stagingOk": true,
+  "manifestOk": true,
+  "validationOk": false
+}

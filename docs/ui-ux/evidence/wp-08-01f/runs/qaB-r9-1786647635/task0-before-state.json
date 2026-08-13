@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-08-13T20:02:19.857Z",
+  "batch": {
+    "id": "32fd0ab8-b52a-4a8e-927e-326e634f02b0",
+    "status": "source_uploaded",
+    "tenant": "00000000-0000-0000-0000-000000081e50",
+    "stagedDataHash": null,
+    "cutoverManifestHash": null,
+    "validationStatus": null
+  },
+  "file": {
+    "id": "78c48eb0-e73e-4eb2-a376-e76cc2719c36",
+    "version": 1,
+    "hash": "edc5ff70ffd783ada86e8e9d2e549d0baa2c3df0555af586f092e3ea185ff3c1"
+  },
+  "downstreamEffects": {
+    "import_cutover_manifests": 0,
+    "import_validation_errors": 0,
+    "import_reconciliation_results": 0,
+    "import_human_review_items": 0,
+    "import_batch_approvals": 0,
+    "import_backup_evidence": 0,
+    "import_cutover_locks": 0
+  }
+}

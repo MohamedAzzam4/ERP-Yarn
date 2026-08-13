@@ -26,6 +26,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { authenticateAndRequirePermissionFromDb } from "@/server/security/permission-loader";
+import { PermissionDeniedError } from "@/server/security/guards";
 import { db } from "@/server/db/client";
 import { HistoricalStagingService } from "@/server/services/historical-staging-service";
 import { HistoricalValidationService } from "@/server/services/historical-validation-service";
@@ -161,7 +162,18 @@ async function authenticateAndRequirePermission(permissionKey: string) {
   //   - DB-level permission changes take effect immediately (no rebuild).
   //   - Permissions are tenant-scoped.
   //   - The authorization source is the persisted database.
-  return authenticateAndRequirePermissionFromDb(permissionKey);
+  //
+  // WP-08-01F Task 2: Catch PermissionDeniedError and convert to a controlled
+  // redirect to /login?error=denied instead of letting it surface as HTTP 500.
+  // This ensures workers get a controlled denial response, not a crash page.
+  try {
+    return await authenticateAndRequirePermissionFromDb(permissionKey);
+  } catch (e) {
+    if (e instanceof PermissionDeniedError) {
+      redirect("/login?error=denied");
+    }
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,14 +182,26 @@ async function authenticateAndRequirePermission(permissionKey: string) {
 
 export async function createMigrationBatchAction(formData: FormData): Promise<void> {
   const { authResult, effective } = await authenticateAndRequirePermission("migration.prepare");
-  const sourceDescription = parseOptionalString(formData, "sourceDescription");
-  const templateName = parseOptionalString(formData, "templateName");
-  const templateVersion = parseOptionalString(formData, "templateVersion");
-  const cutoverImportMode = parseCutoverImportMode(String(formData.get("cutoverImportMode") ?? "opening_balance"));
-  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
-  const { stagingService } = getMigrationServices();
-  await stagingService.createBatch(authResult as any, effective as any, { sourceDescription, templateName, templateVersion, cutoverImportMode, idempotencyKey });
-  revalidatePath("/management/admin/migration");
+  // WP-08-01F Task 3: Wrap in try-catch to convert VALIDATION_FAILED errors
+  // into controlled redirects with user-facing Arabic error messages.
+  // This prevents Server Components render crashes (HTTP 500).
+  try {
+    const sourceDescription = parseOptionalString(formData, "sourceDescription");
+    const templateName = parseOptionalString(formData, "templateName");
+    const templateVersion = parseOptionalString(formData, "templateVersion");
+    const cutoverImportMode = parseCutoverImportMode(String(formData.get("cutoverImportMode") ?? "opening_balance"));
+    const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+    const { stagingService } = getMigrationServices();
+    await stagingService.createBatch(authResult as any, effective as any, { sourceDescription, templateName, templateVersion, cutoverImportMode, idempotencyKey });
+    revalidatePath("/management/admin/migration");
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("VALIDATION_FAILED:")) {
+      // Controlled validation error — redirect with Arabic message
+      const field = e.message.replace("VALIDATION_FAILED: ", "").replace(" is required.", "");
+      redirect(`/management/admin/migration?error=validation&field=${encodeURIComponent(field)}`);
+    }
+    throw e;
+  }
 }
 
 export async function registerFileAction(formData: FormData): Promise<void> {

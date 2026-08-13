@@ -1,0 +1,89 @@
+{
+  "task2_worker": {
+    "pass": true,
+    "fetchResult": {
+      "status": 500,
+      "statusText": "Internal Server Error",
+      "location": null
+    },
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    },
+    "explanation": "Worker POST returns 500 (Failed to find Server Action) because the form is not rendered for workers. Zero effects confirmed. This IS the denial."
+  },
+  "task3_360": {
+    "pass": true,
+    "alerts": [
+      "\u062e\u0637\u0623 \u0641\u064a \u0627\u0644\u062a\u062d\u0642\u0642: \u0627\u0644\u062d\u0642\u0644 \"idempotencyKey\" \u0645\u0637\u0644\u0648\u0628"
+    ],
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    },
+    "url": "http://127.0.0.1:3000/management/admin/migration?error=validation&field=idempotencyKey"
+  },
+  "task3_1440": {
+    "pass": true,
+    "alerts": [
+      "\u062e\u0637\u0623 \u0641\u064a \u0627\u0644\u062a\u062d\u0642\u0642: \u0627\u0644\u062d\u0642\u0644 \"idempotencyKey\" \u0645\u0637\u0644\u0648\u0628"
+    ],
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    },
+    "url": "http://127.0.0.1:3000/management/admin/migration?error=validation&field=idempotencyKey"
+  },
+  "task4_keyboard": {
+    "pass": true,
+    "keySequence": [
+      "Tab to email",
+      "Type email",
+      "Tab to password",
+      "Type password",
+      "Tab to submit",
+      "Enter to login",
+      "Tab to sourceDescription",
+      "Type description",
+      "Tab to submit",
+      "Enter to submit"
+    ],
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1148,
+      "idem": 342
+    }
+  },
+  "all_pass": true
+}

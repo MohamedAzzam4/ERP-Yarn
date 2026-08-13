@@ -1,0 +1,17 @@
+{
+  "browserProof": "PENDING — no legitimate second-tenant browser credential available",
+  "serverBoundaryProof": {
+    "cross_tenant_batch_read": "DENIED",
+    "cross_tenant_file_read": "DENIED",
+    "cross_tenant_staging_read": "DENIED",
+    "storage_path_tenant_prefix": "QA tenant",
+    "cross_tenant_finalize": "BatchNotFoundError (tenant-scoped query)",
+    "cross_tenant_upload": "BatchNotFoundError (tenant-scoped query)"
+  },
+  "deltas": {
+    "batches": 0,
+    "files": 0,
+    "audit": 0,
+    "idem": 0
+  }
+}

@@ -21,7 +21,11 @@ import { db } from "@/server/db/client";
 import { MigrationScreenQueryService } from "@/server/services/migration-screen-query-service";
 import { createMigrationBatchAction } from "./actions";
 
-export default async function MigrationBatchListPage() {
+export default async function MigrationBatchListPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string; field?: string }>;
+}) {
   const authResult = await getErpAuthContextWithRoles();
   if (!authResult.authenticated) redirect("/login");
   if (authResult.roles.length === 0) redirect("/login?error=no_role");
@@ -30,6 +34,13 @@ export default async function MigrationBatchListPage() {
     r === "owner" || r === "accountant",
   ) as RoleCode | undefined;
   if (!managementRole) redirect("/worker");
+
+  const params = await searchParams;
+  const errorMessage = params.error === "validation"
+    ? `خطأ في التحقق: الحقل "${params.field || ""}" مطلوب`
+    : params.error === "denied"
+    ? "تم رفض الوصول: ليس لديك صلاحية"
+    : null;
 
   const navCategories = getManagementNavForRole(managementRole);
 
@@ -100,6 +111,11 @@ export default async function MigrationBatchListPage() {
               <CardTitle>إنشاء دفعة ترحيل جديدة</CardTitle>
             </CardHeader>
             <CardContent>
+              {errorMessage && (
+                <div role="alert" className="mb-4 p-3 border border-red-500 bg-red-50 text-red-900 rounded text-sm" style={{ minHeight: "44px" }}>
+                  {errorMessage}
+                </div>
+              )}
               <form data-action="create-migration-batch" action={createMigrationBatchAction} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <input type="hidden" name="idempotencyKey" value={`batch-${crypto.randomUUID()}`} />
                 <input type="hidden" name="cutoverImportMode" value="opening_balance" />
