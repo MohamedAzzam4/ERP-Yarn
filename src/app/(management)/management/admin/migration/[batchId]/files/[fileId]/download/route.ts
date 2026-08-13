@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { redirect } from "next/navigation";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { db } from "@/server/db/client";
 import { eq, and } from "drizzle-orm";
 import { importFiles, importBatches } from "@/server/db/schema";
@@ -34,9 +34,10 @@ export async function GET(
     return new NextResponse("No role assigned", { status: 403 });
   }
 
-  // Require migration.prepare permission (Owner/Accountant only)
+  // Require migration.prepare permission using DB-backed matrix (Owner/Accountant only)
   try {
-    resolveAndRequirePermission(authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "migration.prepare");
+    const matrix = await loadRolePermissionMatrixForTenant(authResult.tenantId);
+    resolveAndRequirePermission(authResult.roles, matrix, "migration.prepare");
   } catch {
     return new NextResponse("Permission denied", { status: 403 });
   }

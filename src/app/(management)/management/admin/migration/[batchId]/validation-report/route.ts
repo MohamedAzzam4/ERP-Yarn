@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { db } from "@/server/db/client";
 import { MigrationScreenQueryService } from "@/server/services/migration-screen-query-service";
 import type { MigrationValidationFindingDto } from "@/server/services/migration-screen-query-service";
@@ -88,9 +88,10 @@ export async function GET(
     return new NextResponse("No role assigned", { status: 403 });
   }
 
-  // Require migration.review permission (Owner/Accountant only — workers denied).
+  // Require migration.review permission using DB-backed matrix (Owner/Accountant only — workers denied).
   try {
-    resolveAndRequirePermission(authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "migration.review");
+    const matrix = await loadRolePermissionMatrixForTenant(authResult.tenantId);
+    resolveAndRequirePermission(authResult.roles, matrix, "migration.review");
   } catch {
     return new NextResponse("Permission denied", { status: 403 });
   }

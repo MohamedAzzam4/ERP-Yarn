@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
 import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { loadRolePermissionMatrixForTenant } from "@/server/security/permission-loader";
 import { findTemplate, generateTemplateCsv } from "@/server/services/migration-templates";
 
 export async function GET(request: NextRequest) {
@@ -25,9 +25,10 @@ export async function GET(request: NextRequest) {
     return new NextResponse("No role assigned", { status: 403 });
   }
 
-  // Require migration.prepare permission (Owner/Accountant only)
+  // Require migration.prepare permission using DB-backed matrix
   try {
-    resolveAndRequirePermission(authResult.roles, TEST_ROLE_PERMISSION_MATRIX, "migration.prepare");
+    const matrix = await loadRolePermissionMatrixForTenant(authResult.tenantId);
+    resolveAndRequirePermission(authResult.roles, matrix, "migration.prepare");
   } catch {
     return new NextResponse("Permission denied", { status: 403 });
   }

@@ -25,9 +25,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { getErpAuthContextWithRoles } from "@/server/auth/erp-context";
-import { resolveAndRequirePermission } from "@/server/security/guards";
-import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import { authenticateAndRequirePermissionFromDb } from "@/server/security/permission-loader";
 import { db } from "@/server/db/client";
 import { HistoricalStagingService } from "@/server/services/historical-staging-service";
 import { HistoricalValidationService } from "@/server/services/historical-validation-service";
@@ -158,11 +156,12 @@ function getMigrationServices() {
 }
 
 async function authenticateAndRequirePermission(permissionKey: string) {
-  const authResult = await getErpAuthContextWithRoles();
-  if (!authResult.authenticated) redirect("/login");
-  if (authResult.roles.length === 0) redirect("/login?error=no_role");
-  const effective = resolveAndRequirePermission(authResult.roles, TEST_ROLE_PERMISSION_MATRIX, permissionKey);
-  return { authResult, effective };
+  // WP-08-01F authorization fix: use DB-backed permission matrix instead of
+  // the static TEST_ROLE_PERMISSION_MATRIX constant. This ensures:
+  //   - DB-level permission changes take effect immediately (no rebuild).
+  //   - Permissions are tenant-scoped.
+  //   - The authorization source is the persisted database.
+  return authenticateAndRequirePermissionFromDb(permissionKey);
 }
 
 // ---------------------------------------------------------------------------
