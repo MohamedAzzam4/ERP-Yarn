@@ -356,7 +356,7 @@ export class MigrationScreenQueryService {
       this.db.select().from(importBatchApprovals).where(and(eq(importBatchApprovals.importBatchId, batchId), eq(importBatchApprovals.tenantId, tenantId), eq(importBatchApprovals.isCurrent, true))),
       this.db.select().from(importBackupEvidence).where(and(eq(importBackupEvidence.importBatchId, batchId), eq(importBackupEvidence.tenantId, tenantId))),
       this.db.select().from(importCutoverLocks).where(and(eq(importCutoverLocks.importBatchId, batchId), eq(importCutoverLocks.tenantId, tenantId))).orderBy(desc(importCutoverLocks.acquiredAt)),
-      this.db.select().from(importCutoverManifests).where(and(eq(importCutoverManifests.importBatchId, batchId), eq(importCutoverManifests.tenantId, tenantId))),
+      this.db.select().from(importCutoverManifests).where(and(eq(importCutoverManifests.importBatchId, batchId), eq(importCutoverManifests.tenantId, tenantId), eq(importCutoverManifests.isCurrent, true))),
       // Total staging row count — server-side pagination metadata.
       // WP-08-01F R1 — count only current staging rows.
       this.db

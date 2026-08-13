@@ -212,11 +212,18 @@ export interface HistoricalStagingRepository {
   findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]>;
   findCutoverManifestById(tenantId: string, id: string): Promise<ImportCutoverManifest | null>;
   /**
-   * WP-08-01F R4 QA FIX: Delete cutover manifests for a batch.
-   * Used by the replacement service to clear old manifests so a new one
-   * can be created without violating the unique constraint.
+   * WP-08-01F R5: Mark all current cutover manifests for a batch as superseded.
+   * Old manifests are preserved (is_current=false) — NOT deleted.
+   * This follows the contract requirement: "Re-uploading a corrected file
+   * creates a new version; it does not overwrite evidence used by an earlier
+   * validation or approval."
    */
-  deleteCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<number>;
+  markCutoverManifestsSupersededForBatch(
+    tenantId: string,
+    importBatchId: string,
+    supersededBy: string | null,
+    now: Date,
+  ): Promise<number>;
 }
 
 export type {

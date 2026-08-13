@@ -391,14 +391,18 @@ export class HistoricalReplacementService {
           now,
         );
 
-        // 5b. Delete old cutover manifests for the batch.
-        // WP-08-01F R4 QA FIX: The replacement clears cutoverManifestHash on
-        // the batch, but the old manifest row in import_cutover_manifests
-        // must also be deleted, otherwise the unique constraint
-        // (tenant_id, import_batch_id, domain) blocks creating a new manifest.
-        await txRepo.deleteCutoverManifestsForBatch(
+        // 5b. Mark old cutover manifests as superseded (is_current=false).
+        // WP-08-01F R5: Old manifests are preserved as historical evidence —
+        // NOT deleted. Contract §7.1: "Re-uploading a corrected file creates
+        // a new version; it does not overwrite evidence used by an earlier
+        // validation or approval." The partial unique index permits only one
+        // current manifest per batch+domain, so the old one must be marked
+        // non-current before a new one can be inserted.
+        await txRepo.markCutoverManifestsSupersededForBatch(
           user.tenantId,
           input.importBatchId,
+          newFile.id,
+          now,
         );
 
         // 6. Reset batch state — force re-finalize + re-validate + re-reconcile +

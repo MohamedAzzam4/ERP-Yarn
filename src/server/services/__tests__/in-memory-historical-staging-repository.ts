@@ -390,6 +390,10 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
       reconciliationOwner: null,
       manifestHash: row.manifestHash,
       isApproved: row.isApproved,
+      manifestVersion: 1,
+      isCurrent: true,
+      supersededAt: null,
+      supersededBy: null,
       createdBy: row.createdBy,
       createdAt: NOW(),
       updatedBy: null,
@@ -409,11 +413,23 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
     return this.cutoverManifests.get(`${tenantId}:${id}`) ?? null;
   }
 
-  async deleteCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<number> {
+  async markCutoverManifestsSupersededForBatch(
+    tenantId: string,
+    importBatchId: string,
+    supersededBy: string | null,
+    now: Date,
+  ): Promise<number> {
     let count = 0;
     for (const [key, m] of this.cutoverManifests.entries()) {
-      if (m.tenantId === tenantId && m.importBatchId === importBatchId) {
-        this.cutoverManifests.delete(key);
+      if (m.tenantId === tenantId && m.importBatchId === importBatchId && (m as any).isCurrent !== false) {
+        const updated = {
+          ...m,
+          isCurrent: false,
+          supersededAt: now,
+          supersededBy: supersededBy as any,
+          updatedAt: now,
+        } as ImportCutoverManifest;
+        this.cutoverManifests.set(key, updated);
         count++;
       }
     }

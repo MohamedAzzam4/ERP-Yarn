@@ -394,11 +394,25 @@ export const importCutoverManifests = pgTable("import_cutover_manifests", {
   reconciliationOwner: uuid("reconciliation_owner").references(() => users.id),
   manifestHash: text("manifest_hash").notNull(),
   isApproved: boolean("is_approved").notNull().default(false),
+  // WP-08-01F R5: Immutable manifest version supersession fields.
+  // Old manifests are preserved (append-only) and marked is_current=false
+  // when a replacement file triggers re-finalization. New manifests create
+  // new rows with is_current=true. The partial unique index permits only
+  // one current manifest per tenant/batch/domain.
+  manifestVersion: integer("manifest_version").notNull().default(1),
+  isCurrent: boolean("is_current").notNull().default(true),
+  supersededAt: timestamp("superseded_at", { withTimezone: true, mode: "date" }),
+  supersededBy: uuid("superseded_by"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   index("import_cutover_manifests_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_cutover_manifests_tenant_domain_idx").on(t.tenantId, t.domain),
-  uniqueIndex("import_cutover_manifests_tenant_batch_domain_unique_idx").on(t.tenantId, t.importBatchId, t.domain),
+  // WP-08-01F R5: Partial unique index — one CURRENT manifest per batch+domain.
+  // Old (superseded) manifests remain in the table with is_current=false.
+  uniqueIndex("import_cutover_manifests_tenant_batch_domain_current_unique_idx")
+    .on(t.tenantId, t.importBatchId, t.domain)
+    .where(sql`${t.isCurrent} = true`),
+  index("import_cutover_manifests_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
 ]);
 
 export type ImportCutoverManifest = typeof importCutoverManifests.$inferSelect;

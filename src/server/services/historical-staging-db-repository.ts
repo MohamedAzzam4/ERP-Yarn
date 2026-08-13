@@ -410,14 +410,25 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
     return result ?? null;
   }
 
-  async deleteCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<number> {
-    // WP-08-01F R4 QA FIX: Delete cutover manifests for a batch.
-    // Used by the replacement service to clear old manifests so a new one
-    // can be created without violating the unique constraint.
-    const result = await this.db.delete(importCutoverManifests)
+  async markCutoverManifestsSupersededForBatch(
+    tenantId: string,
+    importBatchId: string,
+    supersededBy: string | null,
+    now: Date,
+  ): Promise<number> {
+    // WP-08-01F R5: Mark current manifests as superseded (is_current=false).
+    // Old manifests are preserved as historical evidence — NOT deleted.
+    const result = await this.db.update(importCutoverManifests)
+      .set({
+        isCurrent: false,
+        supersededAt: now,
+        supersededBy: supersededBy as any,
+        updatedAt: now,
+      })
       .where(and(
         eq(importCutoverManifests.tenantId, tenantId),
         eq(importCutoverManifests.importBatchId, importBatchId),
+        eq(importCutoverManifests.isCurrent, true),
       ))
       .returning();
     return result.length;
