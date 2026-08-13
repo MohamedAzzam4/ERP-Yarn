@@ -77,12 +77,20 @@ function getMigrationServices() {
   const commitRepo = new HistoricalCommitDbRepository(db);
   const correctionRepo = new HistoricalCorrectionDbRepository(db);
   const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency, documentSequence });
-  const validationService = new HistoricalValidationService({ repository: validationRepo, audit, idempotency });
+  // WP-08-01F R6: Define transactionRunner BEFORE services that need it.
+  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+    (db as any).transaction(async (tx: any) => work(tx));
+  const validationService = new HistoricalValidationService({
+    repository: validationRepo, audit, idempotency,
+    // WP-08-01F R6: tx-scoped factories for atomic validation writes
+    transactionRunner,
+    createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+  });
   // DEFECT 1: reconciliation service now needs commitRepository for
   // submitForApproval (backup evidence + blocking-validation lookups).
   // DEFECT 3/4: transactionRunner + txFactories for atomic submit/rework.
-  const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
-    (db as any).transaction(async (tx: any) => work(tx));
   const txFactories = {
     createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),

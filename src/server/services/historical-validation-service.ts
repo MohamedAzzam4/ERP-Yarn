@@ -112,6 +112,11 @@ export interface HistoricalValidationServiceDeps {
   repository: HistoricalValidationRepository;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
+  /** WP-08-01F R6: Transaction runner for atomic validation writes. */
+  transactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+  createRepository?: (tx: unknown) => HistoricalValidationRepository;
+  createAudit?: (tx: unknown) => AuditTransactionHandle;
+  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -418,13 +423,21 @@ export class HistoricalValidationService {
     if (claim.action === "conflict") throw new HistoricalValidationError("IDEMPOTENCY_CONFLICT", `Idempotency key conflict.`);
     if (claim.action === "in_progress") throw new HistoricalValidationError("OPERATION_IN_PROGRESS", `Operation in progress.`);
 
+    // WP-08-01F R6: Wrap ALL validation writes in a single transaction.
+    // This ensures atomicity: if updateBatchStatus fails, all findings,
+    // alias mappings, review items, and status updates roll back.
+    // The idempotency claim is made BEFORE the transaction (root DB).
+    // markSucceeded is called INSIDE the transaction (tx-scoped).
+    const useTx = this.deps.transactionRunner && this.deps.createRepository && this.deps.createAudit && this.deps.createIdempotency;
+
+    const executeValidation = async (repo: HistoricalValidationRepository, auditHandle: AuditTransactionHandle, idemHandle: IdempotencyTransactionHandle): Promise<RunValidationResult> => {
     // Delete old findings (re-run is safe — old findings are replaced)
-    await this.deps.repository.deleteValidationErrorsForBatch(user.tenantId, input.importBatchId);
-    await this.deps.repository.deleteAliasMappingsForBatch(user.tenantId, input.importBatchId);
-    await this.deps.repository.deleteHumanReviewItemsForBatch(user.tenantId, input.importBatchId);
+    await repo.deleteValidationErrorsForBatch(user.tenantId, input.importBatchId);
+    await repo.deleteAliasMappingsForBatch(user.tenantId, input.importBatchId);
+    await repo.deleteHumanReviewItemsForBatch(user.tenantId, input.importBatchId);
 
     // Fetch all staging rows
-    const rows = await this.deps.repository.findStagingRowsForBatch(user.tenantId, input.importBatchId);
+    const rows = await repo.findStagingRowsForBatch(user.tenantId, input.importBatchId);
 
     let blockingErrors = 0;
     let warnings = 0;
@@ -437,7 +450,7 @@ export class HistoricalValidationService {
       for (const rule of VALIDATION_RULES) {
         const findings = rule.check(row, rows);
         for (const finding of findings) {
-          const errorRecord = await this.deps.repository.insertValidationError({
+          const errorRecord = await repo.insertValidationError({
             tenantId: user.tenantId,
             importBatchId: input.importBatchId,
             stagingRowId: row.id,
@@ -450,7 +463,7 @@ export class HistoricalValidationService {
           });
 
           // Audit each finding creation
-          await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+          await appendAuditLog(auditHandle, user.tenantId, user.userId, {
             entityType: "import_validation_error",
             entityId: errorRecord.id,
             actionType: "historical_finding.create",
@@ -480,7 +493,7 @@ export class HistoricalValidationService {
         const normalizedName = sourceLabel.trim().toLowerCase();
 
         // Check if alias already exists for this source label (deduplication)
-        const existing = await this.deps.repository.findAliasMappingBySourceLabel(
+        const existing = await repo.findAliasMappingBySourceLabel(
           user.tenantId, input.importBatchId, "customer", sourceLabel,
         );
         if (!existing) {
@@ -494,7 +507,7 @@ export class HistoricalValidationService {
           const isLowConfidence = confidenceScore !== "1.000000";
 
           // Create as candidate — NOT a live master record
-          const aliasMapping = await this.deps.repository.insertAliasMapping({
+          const aliasMapping = await repo.insertAliasMapping({
             tenantId: user.tenantId,
             importBatchId: input.importBatchId,
             entityType: "customer",
@@ -510,7 +523,7 @@ export class HistoricalValidationService {
           masterCandidates++;
 
           // Audit each alias mapping creation
-          await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+          await appendAuditLog(auditHandle, user.tenantId, user.userId, {
             entityType: "import_alias_mapping",
             entityId: aliasMapping.id,
             actionType: "historical_alias.create",
@@ -529,7 +542,7 @@ export class HistoricalValidationService {
 
           // Create human review item for ALL candidates (Contract 08 §8.4:
           // all candidates require human review before approval)
-          const reviewItem = await this.deps.repository.insertHumanReviewItem({
+          const reviewItem = await repo.insertHumanReviewItem({
             tenantId: user.tenantId,
             importBatchId: input.importBatchId,
             stagingRowId: row.id,
@@ -541,7 +554,7 @@ export class HistoricalValidationService {
           reviewItems++;
 
           // Audit each review item creation
-          await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+          await appendAuditLog(auditHandle, user.tenantId, user.userId, {
             entityType: "import_human_review_item",
             entityId: reviewItem.id,
             actionType: "historical_review.create",
@@ -571,12 +584,12 @@ export class HistoricalValidationService {
     // mechanism the user needs to fix the errors.
     const newValidationStatus = blockingErrors > 0 ? "failed" : "passed";
     const newBatchStatus = "validation_complete";
-    await this.deps.repository.updateBatchValidationStatus(user.tenantId, input.importBatchId, newValidationStatus, user.userId);
-    await this.deps.repository.updateBatchErrorCounts(user.tenantId, input.importBatchId, blockingErrors, warnings, user.userId);
-    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, newBatchStatus);
+    await repo.updateBatchValidationStatus(user.tenantId, input.importBatchId, newValidationStatus, user.userId);
+    await repo.updateBatchErrorCounts(user.tenantId, input.importBatchId, blockingErrors, warnings, user.userId);
+    await repo.updateBatchStatus(user.tenantId, input.importBatchId, newBatchStatus);
 
     // Audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+    await appendAuditLog(auditHandle, user.tenantId, user.userId, {
       entityType: "import_batch",
       entityId: input.importBatchId,
       actionType: "historical_validation.run",
@@ -604,12 +617,26 @@ export class HistoricalValidationService {
       reviewItems,
     };
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
+    await markSucceeded(idemHandle, claim.record.id, {
       responseCode: 200, responseBody: result,
       entityType: "import_batch", entityId: input.importBatchId,
     }, claim.record.ownerToken!, now);
 
     return result;
+    }; // end executeValidation
+
+    // Execute with or without transaction
+    if (useTx) {
+      return await this.deps.transactionRunner!(async (tx: unknown) => {
+        const txRepo = this.deps.createRepository!(tx);
+        const txAudit = this.deps.createAudit!(tx);
+        const txIdem = this.deps.createIdempotency!(tx);
+        return executeValidation(txRepo, txAudit, txIdem);
+      });
+    } else {
+      // Backward-compatible non-transactional path (for in-memory tests)
+      return executeValidation(this.deps.repository, this.deps.audit, this.deps.idempotency);
+    }
   }
 
   /**

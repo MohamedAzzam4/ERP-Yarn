@@ -31,9 +31,10 @@ import type {
 } from "@/server/db/schema/migration";
 
 type Db = NonNullable<typeof DbType>;
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export class HistoricalValidationDbRepository implements HistoricalValidationRepository {
-  constructor(private readonly db: Db) {}
+  constructor(private readonly db: DbOrTx) {}
 
   // --- Validation error methods ---
 
