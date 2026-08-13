@@ -72,10 +72,14 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
   }
 
   async deleteValidationErrorsForBatch(tenantId: string, importBatchId: string): Promise<void> {
+    // WP-08-01F R6 FIX: Only delete CURRENT findings.
+    // Old non-current findings (from superseded file versions) are preserved
+    // as historical evidence per Contract 08 §7.1.
     await this.db.delete(importValidationErrors)
       .where(and(
         eq(importValidationErrors.tenantId, tenantId),
         eq(importValidationErrors.importBatchId, importBatchId),
+        eq(importValidationErrors.isCurrent, true),
       ));
   }
 
@@ -159,10 +163,13 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
   // --- Staging row access (read-only) ---
 
   async findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
+    // WP-08-01F R6 FIX: Only validate CURRENT staging rows.
+    // Old non-current rows (from superseded file versions) must NOT be validated.
     return this.db.select().from(importStagingRows)
       .where(and(
         eq(importStagingRows.tenantId, tenantId),
         eq(importStagingRows.importBatchId, importBatchId),
+        eq(importStagingRows.isCurrent, true),
       ));
   }
 
