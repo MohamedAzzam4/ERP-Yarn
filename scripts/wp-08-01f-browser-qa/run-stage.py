@@ -334,6 +334,13 @@ def stage_A3(run_id):
         print("  FAIL no batchId")
         return False
 
+    # Capture BEFORE state
+    before_data, before_counts = get_batch_status(bid)
+    before_files = before_counts.get("files", 0)
+    before_rows = before_counts.get("staging_rows", 0)
+    before_findings = before_counts.get("findings", 0)
+    print(f"  BEFORE: files={before_files} rows={before_rows} findings={before_findings} status={before_data.get('status')}")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1024, "height": 768})
@@ -357,34 +364,104 @@ def stage_A3(run_id):
                 replace_fi = fi
                 break
 
-        if replace_fi:
-            csv_path = FIXTURES / "corrected.csv"
-            replace_fi.set_input_files(str(csv_path))
-            ta = page.query_selector('textarea[name="reworkReason"]')
-            if ta: ta.fill(f"Cycle A correction {run_id}")
-            cb = page.query_selector('input[type="checkbox"]')
-            if cb: cb.check()
-            # Submit replacement form
-            page.evaluate('''() => {
-                const forms = document.querySelectorAll('form');
-                for (const f of forms) {
-                    if (f.querySelector('textarea[name="reworkReason"]')) {
-                        f.requestSubmit();
-                        return;
-                    }
-                }
-            }''')
-            page.wait_for_load_state("networkidle", timeout=30000)
-            time.sleep(3)
-            goto_batch(page, bid)
-            ss(page, "A08-after-replacement", run_id)
-            status = db_query(bid, "status")
-            print(f"  DB status after replacement={status}")
-            print("  Replacement submitted")
-        else:
-            print("  WARN replacement form not found")
-            ss(page, "A08-no-replacement", run_id)
+        if not replace_fi:
+            print("  FAIL replacement form file input not found")
+            ss(page, "A08-no-replacement-form", run_id)
+            d = evidence_dir(run_id)
+            (d / "A3-FAIL.txt").write_text(f"Replacement form not found\nBatchId: {bid}\nStatus: {before_data.get('status')}\n")
+            browser.close()
+            return False
 
+        csv_path = FIXTURES / "corrected.csv"
+        replace_fi.set_input_files(str(csv_path))
+        ta = page.query_selector('textarea[name="reworkReason"]')
+        if ta: ta.fill(f"Cycle A correction {run_id}")
+        cb = page.query_selector('input[type="checkbox"]')
+        if cb: cb.check()
+        # Submit replacement form
+        page.evaluate('''() => {
+            const forms = document.querySelectorAll('form');
+            for (const f of forms) {
+                if (f.querySelector('textarea[name="reworkReason"]')) {
+                    f.requestSubmit();
+                    return;
+                }
+            }
+        }''')
+        page.wait_for_load_state("networkidle", timeout=30000)
+        time.sleep(5)
+        goto_batch(page, bid)
+        ss(page, "A08-after-replacement", run_id)
+
+        # Capture AFTER state
+        after_data, after_counts = get_batch_status(bid)
+        after_files = after_counts.get("files", 0)
+        after_rows = after_counts.get("staging_rows", 0)
+        after_findings = after_counts.get("findings", 0)
+        after_status = after_data.get("status", "UNKNOWN")
+        print(f"  AFTER: files={after_files} rows={after_rows} findings={after_findings} status={after_status}")
+
+        # Verify ALL replacement assertions
+        all_ok = True
+
+        # 1. file count increased by exactly 1
+        if after_files != before_files + 1:
+            print(f"  FAIL file count: {before_files} -> {after_files} (expected +1)")
+            all_ok = False
+        else:
+            print(f"  OK file count: {before_files} -> {after_files} (+1)")
+
+        # 2. batch status is source_uploaded
+        if after_status != "source_uploaded":
+            print(f"  FAIL status: {after_status} (expected source_uploaded)")
+            all_ok = False
+        else:
+            print(f"  OK status: {after_status}")
+
+        # 3. stagedDataHash cleared
+        sdh = after_data.get("staged_data_hash", "")
+        if sdh:
+            print(f"  FAIL stagedDataHash not cleared: {sdh}")
+            all_ok = False
+        else:
+            print(f"  OK stagedDataHash cleared")
+
+        # 4. cutoverManifestHash cleared
+        cmh = after_data.get("cutover_manifest_hash", "")
+        if cmh:
+            print(f"  FAIL cutoverManifestHash not cleared: {cmh}")
+            all_ok = False
+        else:
+            print(f"  OK cutoverManifestHash cleared")
+
+        # 5. validationStatus reset
+        vs = after_data.get("validation_status", "")
+        if vs and vs != "unknown":
+            print(f"  FAIL validationStatus not reset: {vs}")
+            all_ok = False
+        else:
+            print(f"  OK validationStatus reset: {vs or 'unknown'}")
+
+        # 6. findings preserved (old findings still exist)
+        if after_findings < before_findings:
+            print(f"  FAIL findings decreased: {before_findings} -> {after_findings}")
+            all_ok = False
+        else:
+            print(f"  OK findings preserved: {before_findings} -> {after_findings}")
+
+        if not all_ok:
+            print("  A3 FAILED — not checkpointing")
+            d = evidence_dir(run_id)
+            (d / "A3-FAIL.txt").write_text(
+                f"Replacement verification failed\nBatchId: {bid}\n"
+                f"Before: files={before_files} rows={before_rows} findings={before_findings} status={before_data.get('status')}\n"
+                f"After: files={after_files} rows={after_rows} findings={after_findings} status={after_status}\n"
+                f"stagedDataHash={sdh}\ncutoverManifestHash={cmh}\nvalidationStatus={vs}\n"
+            )
+            browser.close()
+            return False
+
+        print("  A3 ALL CHECKS PASSED")
         state["completed"].append("A3")
         state["nextStage"] = "A4"
         save_state(state)
