@@ -1,0 +1,20 @@
+{
+  "keySequence": [
+    "Tab to email field",
+    "Type email",
+    "Tab to password field",
+    "Type password",
+    "Tab to submit button",
+    "Press Enter to submit login",
+    "Tab to sourceDescription field",
+    "Type sourceDescription value",
+    "Tab to templateName field",
+    "Tab to templateVersion field",
+    "Tab to submit button",
+    "Press Enter to submit form",
+    "Shift+Tab to reverse navigate"
+  ],
+  "zeroEffects": true,
+  "errorVisible": true,
+  "screenshotCount": 5
+}

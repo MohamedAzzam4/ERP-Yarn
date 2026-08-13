@@ -1,0 +1,47 @@
+{
+  "browser_proof": {
+    "pass": true,
+    "workerShellUrl": "http://127.0.0.1:3000/",
+    "workerMigrationUrl": "http://127.0.0.1:3000/management/admin/migration",
+    "hasMigrationForm": false,
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1146,
+      "idem": 340,
+      "storage_files": 1
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1146,
+      "idem": 340,
+      "storage_files": 1
+    }
+  },
+  "server_command_proof": {
+    "pass": true,
+    "fetchResult": {
+      "status": 500,
+      "statusText": "Internal Server Error",
+      "type": "basic",
+      "url": "http://127.0.0.1:3000/management/admin/migration",
+      "redirected": false
+    },
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1146,
+      "idem": 340,
+      "storage_files": 1
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1146,
+      "idem": 340,
+      "storage_files": 1
+    }
+  },
+  "all_pass": true
+}

@@ -1,0 +1,49 @@
+{
+  "cross_tenant_route": {
+    "pass": true,
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1145,
+      "idem": 339,
+      "staging": 3
+    },
+    "after": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1145,
+      "idem": 339,
+      "staging": 3
+    }
+  },
+  "forged_tenant": {
+    "pass": true,
+    "forged_batch": {
+      "id": "1f8ca518-ff8e-4ecd-90fa-19dd67a44ae5",
+      "tenant_id": "00000000-0000-0000-0000-000000081e50",
+      "source_description": "FORGED TENANT TEST"
+    },
+    "before": {
+      "batches": 1,
+      "files": 1,
+      "audit": 1145,
+      "idem": 339,
+      "staging": 3
+    },
+    "after": {
+      "batches": 2,
+      "files": 1,
+      "audit": 1146,
+      "idem": 340,
+      "staging": 3
+    }
+  },
+  "cross_tenant_api": {
+    "pass": true,
+    "result": {
+      "result": null,
+      "denied": true
+    }
+  },
+  "all_pass": true
+}

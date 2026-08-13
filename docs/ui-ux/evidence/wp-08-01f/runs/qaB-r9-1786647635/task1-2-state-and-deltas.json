@@ -1,0 +1,181 @@
+{
+  "taskId": "Task1-Existing-B1a-State",
+  "timestamp": "2026-08-13T19:24:09.574Z",
+  "batch": {
+    "found": true,
+    "status": "source_uploaded",
+    "tenantId": "00000000-0000-0000-0000-000000081e50",
+    "tenantMatch": true,
+    "stagedRowCount": 3,
+    "stagedDataHash": null,
+    "cutoverManifestHash": null,
+    "validationStatus": null,
+    "reconciliationStatus": null,
+    "committedAt": null
+  },
+  "file": {
+    "totalFiles": 1,
+    "currentFiles": 1,
+    "fileId": "78c48eb0-e73e-4eb2-a376-e76cc2719c36",
+    "fileIdMatch": true,
+    "fileVersion": 1,
+    "fileHash": "edc5ff70ffd783ada86e8e9d2e549d0baa2c3df0555af586f092e3ea185ff3c1",
+    "storagePath": "supabase://migration-private-files/00000000-0000-0000-0000-000000081e50/migration/32fd0ab8-b52a-4a8e-927e-326e634f02b0/27712048-8b82-4415-9ae2-9b5bc2449c05/valid.csv",
+    "fileType": "source",
+    "tenantMatch": true,
+    "noPublicUrl": true
+  },
+  "storage": {
+    "exists": true,
+    "objectName": "00000000-0000-0000-0000-000000081e50",
+    "objectSize": 289
+  },
+  "noDownstreamEffects": {
+    "import_cutover_manifests": {
+      "count": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "import_validation_errors": {
+      "count": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "import_reconciliation_results": {
+      "count": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "import_human_review_items": {
+      "count": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "import_batch_approvals": {
+      "count": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "import_backup_evidence": {
+      "count": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "import_cutover_locks": {
+      "count": 0,
+      "expected": 0,
+      "pass": true
+    }
+  },
+  "auditRows": [
+    {
+      "action": "historical_batch.create",
+      "entityType": "import_batch",
+      "entityId": "32fd0ab8-b52a-4a8e-927e-326e634f02b0",
+      "actor": "00000000-0000-0000-0000-000000081e61",
+      "tenant": "00000000-0000-0000-0000-000000081e50",
+      "createdAt": "2026-08-13T19:00:43.16339+00:00",
+      "classification": "batch creation"
+    },
+    {
+      "action": "historical_file.register",
+      "entityType": "import_file",
+      "entityId": "78c48eb0-e73e-4eb2-a376-e76cc2719c36",
+      "actor": "00000000-0000-0000-0000-000000081e61",
+      "tenant": "00000000-0000-0000-0000-000000081e50",
+      "createdAt": "2026-08-13T19:01:00.524453+00:00",
+      "classification": "file registration (upload)"
+    },
+    {
+      "action": "historical_staging_row.insert",
+      "entityType": "import_staging_row",
+      "entityId": "a70e277a-e4f8-41df-bbca-cadb3c495420",
+      "actor": "00000000-0000-0000-0000-000000081e61",
+      "tenant": "00000000-0000-0000-0000-000000081e50",
+      "createdAt": "2026-08-13T19:01:04.84084+00:00",
+      "classification": "staging row insert (from upload parse)"
+    },
+    {
+      "action": "historical_staging_row.insert",
+      "entityType": "import_staging_row",
+      "entityId": "9ff8dc85-71c5-4402-9e99-d42d79e83b59",
+      "actor": "00000000-0000-0000-0000-000000081e61",
+      "tenant": "00000000-0000-0000-0000-000000081e50",
+      "createdAt": "2026-08-13T19:01:07.985672+00:00",
+      "classification": "staging row insert (from upload parse)"
+    },
+    {
+      "action": "historical_staging_row.insert",
+      "entityType": "import_staging_row",
+      "entityId": "9426ca29-21ba-4bba-abb3-8912b1b3e8b8",
+      "actor": "00000000-0000-0000-0000-000000081e61",
+      "tenant": "00000000-0000-0000-0000-000000081e50",
+      "createdAt": "2026-08-13T19:01:11.130466+00:00",
+      "classification": "staging row insert (from upload parse)"
+    }
+  ],
+  "idempotencyRows": [
+    {
+      "operation": "historical_batch.create",
+      "key": "batch-d991bf51-4bdd-441e-b350-5383b4f3cddc",
+      "state": "succeeded",
+      "entityType": "import_batch",
+      "entityId": "32fd0ab8-b52a-4a8e-927e-326e634f02b0",
+      "requestHash": "9010c25312a841c7...",
+      "responseCode": 200,
+      "createdAt": "2026-08-13T19:00:41.585179+00:00",
+      "classification": "batch creation"
+    },
+    {
+      "operation": "historical_file.register",
+      "key": "upload-32fd0ab8-b52a-4a8e-927e-326e634f02b0-cc19701f-b086-425e-8074-6bb82600d7a6",
+      "state": "succeeded",
+      "entityType": "import_file",
+      "entityId": "78c48eb0-e73e-4eb2-a376-e76cc2719c36",
+      "requestHash": "99ca1c2201427a07...",
+      "responseCode": 200,
+      "createdAt": "2026-08-13T19:00:58.513385+00:00",
+      "classification": "file registration (upload)"
+    },
+    {
+      "operation": "historical_staging_row.insert",
+      "key": "upload-upload-32fd0ab8-b52a-4a8e-927e-326e634f02b0-cc19701f-b086-425e-8074-6bb82600d7a6-row-1",
+      "state": "succeeded",
+      "entityType": "import_staging_row",
+      "entityId": "a70e277a-e4f8-41df-bbca-cadb3c495420",
+      "requestHash": "8b0a6596c3211699...",
+      "responseCode": 200,
+      "createdAt": "2026-08-13T19:01:03.274217+00:00",
+      "classification": "staging row insert (from upload parse)"
+    },
+    {
+      "operation": "historical_staging_row.insert",
+      "key": "upload-upload-32fd0ab8-b52a-4a8e-927e-326e634f02b0-cc19701f-b086-425e-8074-6bb82600d7a6-row-2",
+      "state": "succeeded",
+      "entityType": "import_staging_row",
+      "entityId": "9ff8dc85-71c5-4402-9e99-d42d79e83b59",
+      "requestHash": "d88289bae215c40d...",
+      "responseCode": 200,
+      "createdAt": "2026-08-13T19:01:06.429774+00:00",
+      "classification": "staging row insert (from upload parse)"
+    },
+    {
+      "operation": "historical_staging_row.insert",
+      "key": "upload-upload-32fd0ab8-b52a-4a8e-927e-326e634f02b0-cc19701f-b086-425e-8074-6bb82600d7a6-row-3",
+      "state": "succeeded",
+      "entityType": "import_staging_row",
+      "entityId": "9426ca29-21ba-4bba-abb3-8912b1b3e8b8",
+      "requestHash": "66efca92c773cab2...",
+      "responseCode": 200,
+      "createdAt": "2026-08-13T19:01:09.553581+00:00",
+      "classification": "staging row insert (from upload parse)"
+    }
+  ],
+  "correctedDeltas": {
+    "previousReport_auditDelta": 2,
+    "previousReport_idempotencyDelta": 3,
+    "actual_auditDelta": 5,
+    "actual_idempotencyDelta": 5,
+    "explanation": "The upload action parses the CSV and inserts each row as a staging row. valid.csv has 3 data rows → 3 staging_row.insert operations, each with its own audit log and idempotency record. Total: 1 batch.create + 1 file.register + 3 staging_row.insert = 5 audit rows + 5 idempotency rows. The previous report incorrectly counted only batch.create + file.register."
+  }
+}
