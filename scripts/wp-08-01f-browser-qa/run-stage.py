@@ -279,8 +279,13 @@ def stage_A2(run_id):
         else:
             browser.close(); return False
 
-        # Finalize cutover manifest
+        # Finalize cutover manifest — reload page to ensure form is visible
+        goto_batch(page, bid)
         print("  Finalize manifest...")
+        try:
+            page.wait_for_selector('form[data-action="finalize-cutover-manifest"]', timeout=15000)
+        except:
+            print("  WARN manifest form not found")
         di = page.query_selector('input[name="domain"]')
         if di: di.fill("inventory")
         ci = page.query_selector('input[name="cutoffDate"]')
@@ -288,15 +293,25 @@ def stage_A2(run_id):
         if submit_form(page, "finalize-cutover-manifest", run_id):
             goto_batch(page, bid)
             ss(page, "A05-manifest-finalized", run_id)
+            # Verify manifest hash
+            out = db_query(bid)
+            lines = out.split('\n')
+            if lines:
+                data = json.loads(lines[0])
+                mh = data.get("cutover_manifest_hash", "")
+                print(f"  cutoverManifestHash={'non-empty' if mh else 'EMPTY'}")
 
-        # Run validation
+        # Run validation — reload page
+        goto_batch(page, bid)
         print("  Run validation...")
         if submit_form(page, "run-validation", run_id):
             goto_batch(page, bid)
             ss(page, "A06-validation", run_id)
-            # Check findings
             out = db_query(bid)
             lines = out.split('\n')
+            if lines:
+                data = json.loads(lines[0])
+                print(f"  DB status={data.get('status')} validationStatus={data.get('validation_status')}")
             if len(lines) >= 2:
                 counts = json.loads(lines[1])
                 print(f"  findings={counts.get('findings', 0)}")
@@ -395,24 +410,53 @@ def stage_A4(run_id):
         print("  Finalize corrected staging...")
         if submit_form(page, "finalize-staging", run_id):
             goto_batch(page, bid)
+            # Verify staged
+            status = db_query(bid, "status")
+            print(f"  DB status after finalize-staging={status}")
+            if status != "staged":
+                print(f"  FAIL expected staged, got {status}")
+                ss(page, "A09-fail-not-staged", run_id)
+                browser.close()
+                return False
             ss(page, "A09-corrected-staging", run_id)
 
-        # Finalize manifest
+        # Finalize manifest — reload page first to ensure form is visible
+        goto_batch(page, bid)
         print("  Finalize corrected manifest...")
+        # Wait for manifest form to appear
+        try:
+            page.wait_for_selector('form[data-action="finalize-cutover-manifest"]', timeout=15000)
+        except:
+            print("  WARN manifest form not found — may already be set")
+            ss(page, "A09b-no-manifest-form", run_id)
         di = page.query_selector('input[name="domain"]')
         if di: di.fill("inventory")
         ci = page.query_selector('input[name="cutoffDate"]')
         if ci: ci.fill("2024-01-01")
         if submit_form(page, "finalize-cutover-manifest", run_id):
             goto_batch(page, bid)
+            # Verify manifest hash
+            out = db_query(bid)
+            lines = out.split('\n')
+            if lines:
+                data = json.loads(lines[0])
+                manifest_hash = data.get("cutover_manifest_hash", "")
+                print(f"  cutoverManifestHash={'non-empty' if manifest_hash else 'EMPTY'}")
+                if not manifest_hash:
+                    print("  FAIL manifest hash is empty")
+                    ss(page, "A09c-fail-empty-manifest", run_id)
 
-        # Run validation
+        # Run validation — reload page first
+        goto_batch(page, bid)
         print("  Run corrected validation...")
         if submit_form(page, "run-validation", run_id):
             goto_batch(page, bid)
             ss(page, "A10-corrected-validation", run_id)
             out = db_query(bid)
             lines = out.split('\n')
+            if lines:
+                data = json.loads(lines[0])
+                print(f"  DB status={data.get('status')} validationStatus={data.get('validation_status')}")
             if len(lines) >= 2:
                 counts = json.loads(lines[1])
                 print(f"  findings={counts.get('findings', 0)}")
