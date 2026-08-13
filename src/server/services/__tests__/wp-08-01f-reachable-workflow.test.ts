@@ -77,7 +77,7 @@ function makeServices() {
   const docSeq = new InProcessDocumentSequenceStore();
 
   const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq });
-  const validationService = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem });
+  const validationService = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createRepository: () => valRepo, createAudit: () => audit, createIdempotency: () => idem });
   const reconciliationService = new HistoricalReconciliationService({ repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo });
   const txRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work("tx");
   const txFactories = {

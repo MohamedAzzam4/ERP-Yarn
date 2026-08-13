@@ -173,7 +173,7 @@ describe("WP-08-01F DEFECT 4 — Service lifecycle guards (zero-effect)", () => 
       const valRepo = new InMemoryHistoricalValidationRepository();
       const audit = new InProcessAuditStore();
       const idem = new InProcessIdempotencyStore();
-      const svc = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem });
+      const svc = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createRepository: () => valRepo, createAudit: () => audit, createIdempotency: () => idem });
       const batch = makeBatch("committed", { stagedRowCount: 5 });
       stagingRepo.seedBatch(TENANT_A, batch);
       valRepo.seedBatch(TENANT_A, batch);
@@ -195,7 +195,7 @@ describe("WP-08-01F DEFECT 4 — Service lifecycle guards (zero-effect)", () => 
       const valRepo = new InMemoryHistoricalValidationRepository();
       const audit = new InProcessAuditStore();
       const idem = new InProcessIdempotencyStore();
-      const svc = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem });
+      const svc = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createRepository: () => valRepo, createAudit: () => audit, createIdempotency: () => idem });
       const batch = makeBatch("committing", { stagedRowCount: 5 });
       stagingRepo.seedBatch(TENANT_A, batch);
       valRepo.seedBatch(TENANT_A, batch);

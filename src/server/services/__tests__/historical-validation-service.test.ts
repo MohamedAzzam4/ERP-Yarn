@@ -58,7 +58,7 @@ function makeDeps() {
   const repository = new InMemoryHistoricalValidationRepository();
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
-  const service = new HistoricalValidationService({ repository, audit, idempotency });
+  const service = new HistoricalValidationService({ repository, audit, idempotency, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createRepository: () => repository, createAudit: () => audit, createIdempotency: () => idempotency });
   return { repository, audit, idempotency, service };
 }
 

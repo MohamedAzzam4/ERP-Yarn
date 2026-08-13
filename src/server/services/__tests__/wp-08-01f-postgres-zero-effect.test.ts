@@ -518,7 +518,7 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
     const idem = new IdempotencyDbRepository(db);
     const docSeq = new DocumentSequenceDbRepository(db);
     const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq });
-    const validationService = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem });
+    const validationService = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)), createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any), createAudit: (tx: unknown) => new AuditDbRepository(tx as any), createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any) });
     const reconciliationService = new HistoricalReconciliationService({ repository: reconRepo, audit, idempotency: idem });
     const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
       (db as any).transaction(async (tx: any) => work(tx));

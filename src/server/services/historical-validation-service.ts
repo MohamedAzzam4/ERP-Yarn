@@ -112,11 +112,12 @@ export interface HistoricalValidationServiceDeps {
   repository: HistoricalValidationRepository;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
-  /** WP-08-01F R6: Transaction runner for atomic validation writes. */
-  transactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
-  createRepository?: (tx: unknown) => HistoricalValidationRepository;
-  createAudit?: (tx: unknown) => AuditTransactionHandle;
-  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
+  /** WP-08-01F R7: Transaction runner — MANDATORY for production validation.
+   * Missing transactionRunner causes runValidation to throw before any write. */
+  transactionRunner: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+  createRepository: (tx: unknown) => HistoricalValidationRepository;
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,12 +424,14 @@ export class HistoricalValidationService {
     if (claim.action === "conflict") throw new HistoricalValidationError("IDEMPOTENCY_CONFLICT", `Idempotency key conflict.`);
     if (claim.action === "in_progress") throw new HistoricalValidationError("OPERATION_IN_PROGRESS", `Operation in progress.`);
 
-    // WP-08-01F R6: Wrap ALL validation writes in a single transaction.
-    // This ensures atomicity: if updateBatchStatus fails, all findings,
-    // alias mappings, review items, and status updates roll back.
-    // The idempotency claim is made BEFORE the transaction (root DB).
-    // markSucceeded is called INSIDE the transaction (tx-scoped).
-    const useTx = this.deps.transactionRunner && this.deps.createRepository && this.deps.createAudit && this.deps.createIdempotency;
+    // WP-08-01F R7: Transaction is MANDATORY — no silent fallback.
+    // If transactionRunner or factories are missing, throw before any write.
+    if (!this.deps.transactionRunner || !this.deps.createRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
+      throw new HistoricalValidationError(
+        "VALIDATION_FAILED",
+        "Validation requires transactionRunner + tx-scoped factories. Missing transaction configuration.",
+      );
+    }
 
     const executeValidation = async (repo: HistoricalValidationRepository, auditHandle: AuditTransactionHandle, idemHandle: IdempotencyTransactionHandle): Promise<RunValidationResult> => {
     // Delete old findings (re-run is safe — old findings are replaced)
@@ -625,18 +628,14 @@ export class HistoricalValidationService {
     return result;
     }; // end executeValidation
 
-    // Execute with or without transaction
-    if (useTx) {
-      return await this.deps.transactionRunner!(async (tx: unknown) => {
-        const txRepo = this.deps.createRepository!(tx);
-        const txAudit = this.deps.createAudit!(tx);
-        const txIdem = this.deps.createIdempotency!(tx);
-        return executeValidation(txRepo, txAudit, txIdem);
-      });
-    } else {
-      // Backward-compatible non-transactional path (for in-memory tests)
-      return executeValidation(this.deps.repository, this.deps.audit, this.deps.idempotency);
-    }
+    // WP-08-01F R7: Execute ALL validation writes in a single transaction.
+    // No fallback — transactionRunner is mandatory.
+    return await this.deps.transactionRunner(async (tx: unknown) => {
+      const txRepo = this.deps.createRepository(tx);
+      const txAudit = this.deps.createAudit(tx);
+      const txIdem = this.deps.createIdempotency(tx);
+      return executeValidation(txRepo, txAudit, txIdem);
+    });
   }
 
   /**
