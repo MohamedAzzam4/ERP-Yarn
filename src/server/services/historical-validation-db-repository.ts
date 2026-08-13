@@ -178,17 +178,23 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
   }
 
   async updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null> {
-    // WP-08-01F R3 QA FIX: Use raw SQL with explicit enum cast.
-    // The Supabase pooler (PgBouncer) doesn't properly handle Drizzle's
-    // parameterized enum updates — the status column is a custom enum type
-    // (import_batch_status) and needs an explicit cast.
-    const [result] = await this.db.execute(sql`
+    // WP-08-01F R3/R5 QA FIX: Use raw SQL with explicit enum cast.
+    // Don't use RETURNING — Drizzle's execute() with postgres-js in
+    // prepare:false mode doesn't reliably return rows from UPDATE...RETURNING.
+    // Instead, execute the UPDATE and verify with a separate SELECT.
+    await this.db.execute(sql`
       UPDATE import_batches
       SET status = ${status}::import_batch_status, updated_at = NOW()
       WHERE tenant_id = ${tenantId} AND id = ${batchId}
-      RETURNING *
     `);
-    return (result as unknown as ImportBatch) ?? null;
+    // Verify the update matched
+    const verifyResult = await this.db.execute(sql`
+      SELECT 1 FROM import_batches
+      WHERE tenant_id = ${tenantId} AND id = ${batchId} AND status = ${status}::import_batch_status
+    `);
+    return (verifyResult as unknown as unknown[]).length > 0
+      ? ({ id: batchId, status } as unknown as ImportBatch)
+      : null;
   }
 
   // WP-08-01F DEFECT 1A: lifecycle transition support

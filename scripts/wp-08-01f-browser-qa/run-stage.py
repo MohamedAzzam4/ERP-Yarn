@@ -56,6 +56,14 @@ def db_query(batch_id, mode=""):
     out, err = run_node("db-proof.mjs", DB_URL, batch_id, mode) if mode else run_node("db-proof.mjs", DB_URL, batch_id)
     return out
 
+def get_batch_status(batch_id):
+    """Query DB for batch status + counts. Returns (data_dict, counts_dict)."""
+    out = db_query(batch_id)
+    lines = out.split('\n')
+    data = json.loads(lines[0]) if lines and lines[0] else {}
+    counts = json.loads(lines[1]) if len(lines) > 1 and lines[1] else {}
+    return data, counts
+
 def get_batch_id_by_description(description):
     """Get exact batch ID from DB by source description using a proper helper script."""
     # Write description to a temp file to avoid shell escaping issues

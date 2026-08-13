@@ -58,14 +58,19 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
   }
 
   async updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null> {
-    // WP-08-01F R3 QA FIX: Use raw SQL with explicit enum cast for Supabase pooler compatibility.
-    const [updated] = await this.db.execute(drizzleSql`
+    // WP-08-01F R3/R5 QA FIX: Use raw SQL without RETURNING for Supabase pooler.
+    await this.db.execute(drizzleSql`
       UPDATE import_batches
       SET status = ${status}::import_batch_status, updated_at = NOW()
       WHERE tenant_id = ${tenantId} AND id = ${batchId}
-      RETURNING *
     `);
-    return (updated as unknown as ImportBatch) ?? null;
+    const verifyResult = await this.db.execute(drizzleSql`
+      SELECT 1 FROM import_batches
+      WHERE tenant_id = ${tenantId} AND id = ${batchId} AND status = ${status}::import_batch_status
+    `);
+    return (verifyResult as unknown as unknown[]).length > 0
+      ? ({ id: batchId, status } as unknown as ImportBatch)
+      : null;
   }
 
   async updateBatchCommitMetadata(
