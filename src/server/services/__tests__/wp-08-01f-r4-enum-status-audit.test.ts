@@ -25,31 +25,16 @@ import { HistoricalReconciliationDbRepository } from "@/server/services/historic
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
-const DEDICATED_DB_NAME = "erp_yarn_wp0801f_disposable";
-
-type SafetyResult = { kind: "ok" } | { kind: "skip"; reason: string } | { kind: "fail"; message: string };
-
-function checkDatabaseSafety(): SafetyResult {
-  if (!DATABASE_URL) {
-    if (REQUIRE_PROOF) return { kind: "fail", message: "PROOF required but DATABASE_URL absent" };
-    return { kind: "skip", reason: "DATABASE_URL not set" };
-  }
-  if (!DATABASE_URL.startsWith("postgres")) return { kind: "fail", message: "Must start with postgres" };
-  let parsed: URL;
-  try { parsed = new URL(DATABASE_URL); } catch { return { kind: "fail", message: "Invalid URL" }; }
-  if (!new Set(["localhost", "127.0.0.1", "::1"]).has(parsed.hostname)) return { kind: "fail", message: "Non-local host" };
-  if (parsed.pathname.replace(/^\//, "") !== DEDICATED_DB_NAME) return { kind: "fail", message: "Wrong DB name" };
-  if (!ALLOW_DESTRUCTIVE) {
-    if (REQUIRE_PROOF) return { kind: "fail", message: "PROOF required but destructive not set" };
-    return { kind: "skip", reason: "Destructive not set" };
-  }
-  return { kind: "ok" };
-}
-
-const SAFETY = checkDatabaseSafety();
-const describeOrSkip = SAFETY.kind === "fail" ? describe.skip : (SAFETY.kind === "skip" ? describe.skip : describe);
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+// WP-08-01F Milestone C Task 1: Use shared destructive-test guard
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
 
 const T = randomUUID();
 const U = randomUUID();
@@ -92,12 +77,12 @@ async function cleanup(): Promise<void> {
 
 describeOrSkip("WP-08-01F R4 — Enum status fix audit (all 4 repos)", () => {
   beforeAll(async () => {
-    if (SAFETY.kind === "fail") throw new Error(SAFETY.message);
+    if (SAFETY_RESULT.kind === "fail") throw new Error(SAFETY_RESULT.message);
     sql = postgres(DATABASE_URL!, { prepare: false, max: 5, idle_timeout: 10, connect_timeout: 10 });
     db = drizzle(sql, { schema });
     await sql`SET statement_timeout = 30000`;
     const dbResult = await sql`SELECT current_database() AS db_name`;
-    if (dbResult[0]?.db_name !== DEDICATED_DB_NAME) {
+    if (dbResult[0]?.db_name !== "erp_yarn_wp0801f_disposable") {
       await sql.end();
       throw new Error(`Wrong DB: ${dbResult[0]?.db_name}`);
     }

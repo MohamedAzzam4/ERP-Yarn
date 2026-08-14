@@ -56,54 +56,17 @@ import { parseCsv } from "@/server/services/migration-csv-parser";
 import { InMemoryPrivateFileStorage } from "./in-memory-private-file-storage";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
-
-const DEDICATED_DB_NAME = "erp_yarn_wp0801f_disposable";
-
-type SafetyResult =
-  | { kind: "ok" }
-  | { kind: "skip"; reason: string }
-  | { kind: "fail"; message: string };
-
-function checkDatabaseSafety(): SafetyResult {
-  if (!DATABASE_URL) {
-    if (REQUIRE_PROOF) {
-      return { kind: "fail", message: "SAFETY: ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 is set but DATABASE_URL is absent. FAILING — refusing to skip." };
-    }
-    return { kind: "skip", reason: "DATABASE_URL not set — PostgreSQL proof skipped." };
-  }
-  if (!DATABASE_URL.startsWith("postgres")) {
-    return { kind: "fail", message: `SAFETY: DATABASE_URL must start with 'postgres'. Got: '${DATABASE_URL.slice(0, 20)}...'. FAILING.` };
-  }
-  let parsed: URL;
-  try { parsed = new URL(DATABASE_URL); } catch (e) {
-    return { kind: "fail", message: `SAFETY: DATABASE_URL is not a valid URL. FAILING. ${(e as Error).message}` };
-  }
-  const hostname = parsed.hostname;
-  const database = parsed.pathname.replace(/^\//, "");
-  const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-  if (!ALLOWED_HOSTS.has(hostname)) {
-    return { kind: "fail", message: `SAFETY: hostname '${hostname}' not in [localhost, 127.0.0.1, ::1]. FAILING.` };
-  }
-  if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler")) {
-    return { kind: "fail", message: `SAFETY: URL appears to point to Supabase. FAILING.` };
-  }
-  if (database !== DEDICATED_DB_NAME) {
-    return { kind: "fail", message: `SAFETY: database '${database}' is not '${DEDICATED_DB_NAME}'. FAILING.` };
-  }
-  if (!ALLOW_DESTRUCTIVE) {
-    if (REQUIRE_PROOF) {
-      return { kind: "fail", message: `SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 not set but proof required. FAILING.` };
-    }
-    return { kind: "skip", reason: `ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 not set — skipping.` };
-  }
-  return { kind: "ok" };
-}
-
-const SAFETY_RESULT = checkDatabaseSafety();
-const describeOrSkip = SAFETY_RESULT.kind === "fail" ? describe.skip : (SAFETY_RESULT.kind === "skip" ? describe.skip : describe);
-let SAFETY_ERROR_MESSAGE: string | null = null;
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+// WP-08-01F Milestone C Task 1: Use shared destructive-test guard
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+let SAFETY_ERROR_MESSAGE: string | null = SAFETY_RESULT.kind === "fail" ? SAFETY_RESULT.message : null;
+const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
 
 if (SAFETY_RESULT.kind === "skip") {
   console.log(`\n[WP-08-01F R1 PostgreSQL test] SKIPPED: ${SAFETY_RESULT.reason}\n`);
@@ -376,9 +339,9 @@ describeOrSkip("WP-08-01F R1 — Real PostgreSQL file-replacement proof", () => 
 
     const dbResult = (await sql`SELECT current_database() AS db_name`) as any[];
     const currentDb = dbResult[0]?.db_name;
-    if (currentDb !== DEDICATED_DB_NAME) {
+    if (currentDb !== "erp_yarn_wp0801f_disposable") {
       await sql.end();
-      throw new Error(`SAFETY: Connected to '${currentDb}' but expected '${DEDICATED_DB_NAME}'. FAILING.`);
+      throw new Error(`SAFETY: Connected to '${currentDb}' but expected '${"erp_yarn_wp0801f_disposable"}'. FAILING.`);
     }
     await seedTenantAndUser();
   }, 30000);

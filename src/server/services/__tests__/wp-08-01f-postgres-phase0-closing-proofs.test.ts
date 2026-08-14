@@ -64,40 +64,17 @@ import { StaleApprovalError } from "@/server/services/historical-commit-service"
 import { BatchNotFoundError, HistoricalStagingError } from "@/server/services/historical-staging-service";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
-const DEDICATED_DB_NAME = "erp_yarn_wp0801f_disposable";
-
-type SafetyResult =
-  | { kind: "ok" }
-  | { kind: "skip"; reason: string }
-  | { kind: "fail"; message: string };
-
-function checkDatabaseSafety(): SafetyResult {
-  if (!DATABASE_URL) {
-    if (REQUIRE_PROOF) return { kind: "fail", message: "SAFETY: ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 but DATABASE_URL absent." };
-    return { kind: "skip", reason: "DATABASE_URL not set" };
-  }
-  if (!DATABASE_URL.startsWith("postgres")) return { kind: "fail", message: "SAFETY: non-postgres URL" };
-  let parsed: URL;
-  try { parsed = new URL(DATABASE_URL); } catch { return { kind: "fail", message: "SAFETY: invalid URL" }; }
-  const hostname = parsed.hostname;
-  const database = parsed.pathname.replace(/^\//, "");
-  const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-  if (!ALLOWED_HOSTS.has(hostname)) return { kind: "fail", message: `SAFETY: non-local host '${hostname}'` };
-  if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler"))
-    return { kind: "fail", message: "SAFETY: Supabase/pooler URL" };
-  if (database !== DEDICATED_DB_NAME) return { kind: "fail", message: `SAFETY: database '${database}' != '${DEDICATED_DB_NAME}'` };
-  if (!ALLOW_DESTRUCTIVE) {
-    if (REQUIRE_PROOF) return { kind: "fail", message: "SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 required for proof" };
-    return { kind: "skip", reason: "ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 not set" };
-  }
-  return { kind: "ok" };
-}
-
-const SAFETY_RESULT = checkDatabaseSafety();
-const describeOrSkip = SAFETY_RESULT.kind === "fail" ? describe.skip : (SAFETY_RESULT.kind === "skip" ? describe.skip : describe);
-let SAFETY_ERROR_MESSAGE: string | null = null;
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+// WP-08-01F Milestone C Task 1: Use shared destructive-test guard
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+let SAFETY_ERROR_MESSAGE: string | null = SAFETY_RESULT.kind === "fail" ? SAFETY_RESULT.message : null;
+const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
 if (SAFETY_RESULT.kind === "skip") {
   console.log(`\n[WP-08-01F Phase 0 closing proofs] SKIPPED: ${SAFETY_RESULT.reason}\n`);
 } else if (SAFETY_RESULT.kind === "fail") {
@@ -302,9 +279,9 @@ describeOrSkip("WP-08-01F Phase 0 — Closing proofs", () => {
     db = drizzle(sql, { schema });
     await sql`SET statement_timeout = 30000`;
     const dbResult = await sql`SELECT current_database() AS db_name`;
-    if (dbResult[0]?.db_name !== DEDICATED_DB_NAME) {
+    if (dbResult[0]?.db_name !== "erp_yarn_wp0801f_disposable") {
       await sql.end();
-      throw new Error(`SAFETY: Connected to '${dbResult[0]?.db_name}' but expected '${DEDICATED_DB_NAME}'`);
+      throw new Error(`SAFETY: Connected to '${dbResult[0]?.db_name}' but expected '${"erp_yarn_wp0801f_disposable"}'`);
     }
     await seedTenantAndUser();
   }, 30000);

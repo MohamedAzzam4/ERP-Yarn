@@ -33,37 +33,17 @@ import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
-const DEDICATED_DB_NAME = "erp_yarn_wp0801f_disposable";
-
-// Safety guard
-type SafetyResult = { kind: "ok" } | { kind: "skip"; reason: string } | { kind: "fail"; message: string };
-function checkDatabaseSafety(): SafetyResult {
-  if (!DATABASE_URL) {
-    if (REQUIRE_PROOF) return { kind: "fail", message: "SAFETY: DATABASE_URL absent but proof required" };
-    return { kind: "skip", reason: "DATABASE_URL not set" };
-  }
-  if (!DATABASE_URL.startsWith("postgres")) return { kind: "fail", message: "SAFETY: non-postgres URL" };
-  let parsed: URL;
-  try { parsed = new URL(DATABASE_URL); } catch { return { kind: "fail", message: "SAFETY: invalid URL" }; }
-  const hostname = parsed.hostname;
-  const database = parsed.pathname.replace(/^\//, "");
-  if (!new Set(["localhost", "127.0.0.1", "::1"]).has(hostname))
-    return { kind: "fail", message: `SAFETY: non-local host '${hostname}'` };
-  if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler"))
-    return { kind: "fail", message: "SAFETY: Supabase/pooler URL" };
-  if (database !== DEDICATED_DB_NAME)
-    return { kind: "fail", message: `SAFETY: database '${database}' != '${DEDICATED_DB_NAME}'` };
-  if (!ALLOW_DESTRUCTIVE) {
-    if (REQUIRE_PROOF) return { kind: "fail", message: "SAFETY: destructive flag required for proof" };
-    return { kind: "skip", reason: "ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 not set" };
-  }
-  return { kind: "ok" };
-}
-const SAFETY_RESULT = checkDatabaseSafety();
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+// WP-08-01F Milestone C Task 1: Use shared destructive-test guard
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+let SAFETY_ERROR_MESSAGE: string | null = SAFETY_RESULT.kind === "fail" ? SAFETY_RESULT.message : null;
 const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
-let SAFETY_ERROR_MESSAGE: string | null = null;
 if (SAFETY_RESULT.kind === "fail") SAFETY_ERROR_MESSAGE = SAFETY_RESULT.message;
 
 const RUN_ID = randomUUID();
@@ -87,9 +67,9 @@ describeOrSkip("WP-08-01F Production Correction Hook — PostgreSQL proof", () =
 
     // Verify DB marker
     const dbResult = await sql`SELECT current_database() AS db_name`;
-    if (dbResult[0]?.db_name !== DEDICATED_DB_NAME) {
+    if (dbResult[0]?.db_name !== "erp_yarn_wp0801f_disposable") {
       await sql.end();
-      throw new Error(`SAFETY: expected '${DEDICATED_DB_NAME}' but got '${dbResult[0]?.db_name}'`);
+      throw new Error(`SAFETY: expected '${"erp_yarn_wp0801f_disposable"}' but got '${dbResult[0]?.db_name}'`);
     }
 
     // Foundational fixtures only

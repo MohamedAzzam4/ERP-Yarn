@@ -61,91 +61,17 @@ import type { RoleCode } from "@/server/security/role-codes";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
-
-// ===========================================================================
-// DEFECT 5 — Fail-closed disposable-database guard
-//
-// Behavior:
-// - When DATABASE_URL is absent during ordinary full gates, skip with an
-//   explicit reason.
-// - When DATABASE_URL is present but unsafe, FAIL the test file (not skip).
-// - When ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1, absence of a valid safe DB or
-//   the explicit destructive-test acknowledgment must FAIL, never skip.
-// - Supabase/pooler/non-loopback URLs must FAIL before opening a connection.
-// - Require one exact dedicated database name: erp_yarn_wp0801f_disposable.
-// - After connecting, verify a dedicated DB marker before any DELETE/fixture.
-// ===========================================================================
-
-/** The one exact dedicated database name for WP-08-01F disposable tests. */
-const DEDICATED_DB_NAME = "erp_yarn_wp0801f_disposable";
-
-/**
- * Parse the DATABASE_URL and verify it points to a safe local disposable DB.
- * Returns "skip" (with reason) or "fail" (with error message) or "ok".
- */
-type SafetyResult =
-  | { kind: "ok" }
-  | { kind: "skip"; reason: string }
-  | { kind: "fail"; message: string };
-
-function checkDatabaseSafety(): SafetyResult {
-  // Case 1: DATABASE_URL absent
-  if (!DATABASE_URL) {
-    if (REQUIRE_PROOF) {
-      return { kind: "fail", message: "SAFETY: ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 is set but DATABASE_URL is absent. PostgreSQL proof is required — refusing to skip." };
-    }
-    return { kind: "skip", reason: "DATABASE_URL not set — PostgreSQL proof skipped (set ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 to require it)." };
-  }
-
-  // Case 2: DATABASE_URL present but doesn't start with postgres
-  if (!DATABASE_URL.startsWith("postgres")) {
-    return { kind: "fail", message: `SAFETY: DATABASE_URL must start with 'postgres'. Got: '${DATABASE_URL.slice(0, 20)}...'. FAILING — refusing to run against non-postgres URL.` };
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(DATABASE_URL);
-  } catch (e) {
-    return { kind: "fail", message: `SAFETY: DATABASE_URL is not a valid URL. FAILING. ${(e as Error).message}` };
-  }
-
-  const hostname = parsed.hostname;
-  const database = parsed.pathname.replace(/^\//, "");
-
-  // Case 3: Hostname must be exactly localhost, 127.0.0.1, or ::1
-  const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-  if (!ALLOWED_HOSTS.has(hostname)) {
-    return { kind: "fail", message: `SAFETY: DATABASE_URL hostname '${hostname}' is not in [localhost, 127.0.0.1, ::1]. FAILING — refusing to run against non-local databases.` };
-  }
-
-  // Case 4: Supabase/pooler rejection
-  if (hostname.includes("supabase") || DATABASE_URL.includes("supabase") || DATABASE_URL.includes("pooler")) {
-    return { kind: "fail", message: `SAFETY: DATABASE_URL appears to point to a Supabase pooler/direct host. FAILING — refusing to run against Supabase.` };
-  }
-
-  // Case 5: Database name must be the EXACT dedicated disposable DB
-  if (database !== DEDICATED_DB_NAME) {
-    return { kind: "fail", message: `SAFETY: DATABASE_URL database '${database}' is not the dedicated disposable DB '${DEDICATED_DB_NAME}'. FAILING — refusing to run against non-disposable databases.` };
-  }
-
-  // Case 6: Explicit destructive-test acknowledgment
-  if (!ALLOW_DESTRUCTIVE) {
-    if (REQUIRE_PROOF) {
-      return { kind: "fail", message: `SAFETY: ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 is not set but ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 is set. FAILING — destructive acknowledgment required for proof.` };
-    }
-    return { kind: "skip", reason: `ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1 not set — skipping (set ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 to require it).` };
-  }
-
-  return { kind: "ok" };
-}
-
-const SAFETY_RESULT = checkDatabaseSafety();
-
-// Determine describeOrSkip vs fail
-const describeOrSkip = SAFETY_RESULT.kind === "fail" ? describe.skip : (SAFETY_RESULT.kind === "skip" ? describe.skip : describe);
-let SAFETY_ERROR_MESSAGE: string | null = null;
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+// WP-08-01F Milestone C Task 1: Use shared destructive-test guard
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
+let SAFETY_ERROR_MESSAGE: string | null = SAFETY_RESULT.kind === "fail" ? SAFETY_RESULT.message : null;
 
 if (SAFETY_RESULT.kind === "skip") {
   console.log(`\n[WP-08-01F PostgreSQL test] SKIPPED: ${SAFETY_RESULT.reason}\n`);
@@ -472,10 +398,10 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
     // The current_database() must be the exact dedicated disposable DB.
     const dbResult = await sql`SELECT current_database() AS db_name`;
     const currentDb = dbResult[0]?.db_name;
-    if (currentDb !== DEDICATED_DB_NAME) {
+    if (currentDb !== "erp_yarn_wp0801f_disposable") {
       await sql.end();
       throw new Error(
-        `SAFETY: Connected to database '${currentDb}' but expected '${DEDICATED_DB_NAME}'. ` +
+        `SAFETY: Connected to database '${currentDb}' but expected '${"erp_yarn_wp0801f_disposable"}'. ` +
         `FAILING — refusing to run against non-disposable database.`
       );
     }

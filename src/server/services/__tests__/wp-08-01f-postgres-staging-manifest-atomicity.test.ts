@@ -136,9 +136,14 @@ async function getBatchState(batchId: string) {
   return rows[0] || null;
 }
 
-async function getAuditCount(batchId: string) {
-  // Count audit logs for this tenant (cleanup between tests ensures only this test's rows exist)
-  const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T}`;
+async function getAuditCount(entityId: string, actionType?: string) {
+  // WP-08-01F Milestone C Task 2: Scope audit by exact entity_id and action_type.
+  // audit_logs is append-only — we cannot rely on tenant-wide cleanup.
+  if (actionType) {
+    const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${entityId} AND action_type = ${actionType}`;
+    return rows[0]?.c || 0;
+  }
+  const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${entityId}`;
   return rows[0]?.c || 0;
 }
 
@@ -207,7 +212,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     expect(batch!.staged_data_hash).toBe(result.stagedDataHash);
     expect(batch!.staged_row_count).toBe(1);
 
-    const auditCount = await getAuditCount(batchId);
+    const auditCount = await getAuditCount(batchId, "historical_staging.finalize");
     expect(auditCount).toBe(1);
 
     const idemState = await getIdemState(idemKey);
@@ -225,13 +230,13 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
       importBatchId: batchId, idempotencyKey: idemKey,
     });
 
-    const auditBefore = await getAuditCount(batchId);
+    const auditBefore = await getAuditCount(batchId, "historical_staging.finalize");
     const result2 = await stagingService.finalizeStaging(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, idempotencyKey: idemKey,
     });
 
     expect(result2.action).toBe("replayed");
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = await getAuditCount(batchId, "historical_staging.finalize");
     expect(auditAfter).toBe(auditBefore);
   });
 
@@ -267,7 +272,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     await seedFileAndStagingRow(batchId);
 
     const batchBefore = await getBatchState(batchId);
-    const auditBefore = await getAuditCount(batchId);
+    const auditBefore = await getAuditCount(batchId, "historical_staging.finalize");
     const idemKey = "fs4-" + randomUUID();
 
     // Create a faulty service that throws after work completes (simulating tx rollback)
@@ -291,7 +296,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     expect(batchAfter!.staged_data_hash).toBe(batchBefore!.staged_data_hash);
     expect(batchAfter!.staged_row_count).toBe(batchBefore!.staged_row_count);
 
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = await getAuditCount(batchId, "historical_staging.finalize");
     expect(auditAfter).toBe(auditBefore);
 
     const idemState = await getIdemState(idemKey);
@@ -304,7 +309,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     await seedFileAndStagingRow(batchId);
 
     const batchBefore = await getBatchState(batchId);
-    const auditBefore = await getAuditCount(batchId);
+    const auditBefore = await getAuditCount(batchId, "historical_staging.finalize");
     const idemKey = "fs5-" + randomUUID();
 
     // Faulty tx runner that throws IdempotencyOwnershipLostError after work
@@ -326,7 +331,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     expect(batchAfter!.status).toBe(batchBefore!.status);
     expect(batchAfter!.staged_data_hash).toBe(batchBefore!.staged_data_hash);
 
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = await getAuditCount(batchId, "historical_staging.finalize");
     expect(auditAfter).toBe(auditBefore);
   });
 
@@ -360,7 +365,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     });
     expect(result.action).toBe("finalized");
 
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = await getAuditCount(batchId, "historical_staging.finalize");
     expect(auditAfter).toBe(1); // exactly one audit row
 
     const idemState = await getIdemState(idemKey);
@@ -379,7 +384,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
       importBatchId: batchId, idempotencyKey: idemKey,
     });
 
-    const auditBefore = await getAuditCount(batchId);
+    const auditBefore = await getAuditCount(batchId, "historical_staging.finalize");
 
     // Replay
     const result2 = await stagingService.finalizeStaging(makeUser() as any, makeEffective() as any, {
@@ -387,7 +392,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     });
     expect(result2.action).toBe("replayed");
 
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = await getAuditCount(batchId, "historical_staging.finalize");
     expect(auditAfter).toBe(auditBefore);
   });
 });
@@ -446,7 +451,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     const batch = await getBatchState(batchId);
     expect(batch!.cutover_manifest_hash).toBe(result.manifestHash);
 
-    const auditCount = await getAuditCount(batchId);
+    const auditCount = await getAuditCount(result.manifestId, "historical_cutover_manifest.finalize");
     expect(auditCount).toBe(1);
 
     const idemState = await getIdemState(idemKey);
@@ -459,14 +464,14 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     const { stagingService } = makeServices();
     const idemKey = "fm2-" + randomUUID();
 
-    await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
+    const result = await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
       sourceCoverage: "all", openingBalanceBasis: "audit", liveSystemStartBoundary: null,
       idempotencyKey: idemKey,
     });
 
     const manifestBefore = await getManifestCount(batchId);
-    const auditBefore = await getAuditCount(batchId);
+    const auditBefore = await getAuditCount(result.manifestId, "historical_cutover_manifest.finalize");
 
     const result2 = await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
@@ -476,7 +481,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     expect(result2.action).toBe("replayed");
 
     const manifestAfter = await getManifestCount(batchId);
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = await getAuditCount(result.manifestId, "historical_cutover_manifest.finalize");
     expect(manifestAfter).toBe(manifestBefore);
     expect(auditAfter).toBe(auditBefore);
   });
@@ -503,7 +508,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|Idempotency key conflict/);
 
     const manifestCount = await getManifestCount(batchId);
-    expect(manifestCount).toBe(1); // still only one manifest
+    expect(manifestCount).toBe(1);
   });
 
   it("FM-4. Injected failure: full rollback of manifest/hash/audit/idempotency", async () => {
@@ -512,7 +517,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
 
     const batchBefore = await getBatchState(batchId);
     const manifestBefore = await getManifestCount(batchId);
-    const auditBefore = await getAuditCount(batchId);
+    const auditBefore = 0;
     const idemKey = "fm4-" + randomUUID();
 
     const faultyTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
@@ -537,7 +542,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     const manifestAfter = await getManifestCount(batchId);
     expect(manifestAfter).toBe(manifestBefore);
 
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = 0;
     expect(auditAfter).toBe(auditBefore);
 
     const idemState = await getIdemState(idemKey);
@@ -569,6 +574,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
 
     const manifestAfter = await getManifestCount(batchId);
     expect(manifestAfter).toBe(manifestBefore);
+    // audit rolled back — no row with this manifest action for this batch
   });
 
   it("FM-6. Valid retry after failure: one manifest only", async () => {
@@ -605,7 +611,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     const manifestCount = await getManifestCount(batchId);
     expect(manifestCount).toBe(1);
 
-    const auditCount = await getAuditCount(batchId);
+    const auditCount = await getAuditCount(result.manifestId, "historical_cutover_manifest.finalize");
     expect(auditCount).toBe(1);
   });
 
@@ -615,14 +621,14 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     const idemKey = "fm7-" + randomUUID();
 
     const { stagingService } = makeServices();
-    await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
+    const result = await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
       sourceCoverage: "all", openingBalanceBasis: "audit", liveSystemStartBoundary: null,
       idempotencyKey: idemKey,
     });
 
     const manifestBefore = await getManifestCount(batchId);
-    const auditBefore = await getAuditCount(batchId);
+    const auditBefore = await getAuditCount(result.manifestId, "historical_cutover_manifest.finalize");
 
     const result2 = await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
@@ -632,7 +638,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     expect(result2.action).toBe("replayed");
 
     const manifestAfter = await getManifestCount(batchId);
-    const auditAfter = await getAuditCount(batchId);
+    const auditAfter = await getAuditCount(result.manifestId, "historical_cutover_manifest.finalize");
     expect(manifestAfter).toBe(manifestBefore);
     expect(auditAfter).toBe(auditBefore);
   });

@@ -28,9 +28,16 @@ import {
 } from "@/server/services/document-sequence-service";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const describeOrSkip = DATABASE_URL?.startsWith("postgres")
-  ? describe
-  : describe.skip;
+const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+// WP-08-01F Milestone C Task 1: Use shared destructive-test guard
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
 
 // Deterministic test tenant — distinct from the QA tenant (080d01) to avoid
 // interfering with browser QA fixtures.
