@@ -475,7 +475,21 @@ describeOrSkip("WP-08-01F Phase 0 — Validation atomicity proofs", () => {
   });
 
   // ===========================================================================
-  // VA-6: Owner-token loss before markSucceeded → full rollback
+  // VA-6: Owner-token loss before markSucceeded → full rollback, zero effects
+  //
+  // Required sequence (per WP-08-01F Milestone C Task 3):
+  //   1. owner loss: every business value unchanged, audit delta 0, idempotency not succeeded
+  //   2. retry: exactly one final effect set and one scoped audit
+  //   3. replay: zero additional effects
+  //   4. payload conflict: zero additional effects
+  //
+  // Asserts exact counts for:
+  //   - batch validation_status (before / failure / retry / replay / conflict)
+  //   - validation error / finding count
+  //   - alias-mapping count
+  //   - human-review-item count
+  //   - scoped audit count (entity_id + action_type scoped)
+  //   - idempotency state
   // ===========================================================================
   it("VA-6. owner-token loss before markSucceeded: full rollback, zero effects", async () => {
     const batchId = randomUUID();
@@ -485,12 +499,15 @@ describeOrSkip("WP-08-01F Phase 0 — Validation atomicity proofs", () => {
     const rowId = randomUUID();
     await sql`INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name, source_sheet_name, source_row_number, raw_row_json, transformed_row_json, transformation_notes, validation_status, review_status, ai_confidence, committed_entity_type, committed_entity_id, staging_version, is_current, created_by, created_at) VALUES (${rowId}, ${T}, ${batchId}, ${fileId}, ${"t"}, ${"s"}, 1, ${JSON.stringify({ name: "Test", code: "C001", quantity: "100", date: "2024-01-01" })}::jsonb, ${JSON.stringify({ name: "Test", code: "C001", quantity: "100", date: "2024-01-01" })}::jsonb, null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${U}, NOW())`;
 
+    // --- BEFORE: capture baseline counts for every business value. ---
     const batchBefore = (await sql`SELECT status, validation_status FROM import_batches WHERE id = ${batchId}`)[0];
     const findingsBefore = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const aliasBefore = (await sql`SELECT count(*)::int AS c FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const reviewBefore = (await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
     const auditBefore = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
     const idemKey = "va6-owner-loss-" + randomUUID();
 
-    // Build a faulty service with owner-token loss at markSucceeded
+    // --- Build a faulty service with owner-token loss at markSucceeded. ---
     const valRepo = new HistoricalValidationDbRepository(db);
     const audit = new AuditDbRepository(db);
     const idem = new IdempotencyDbRepository(db);
@@ -508,33 +525,44 @@ describeOrSkip("WP-08-01F Phase 0 — Validation atomicity proofs", () => {
       createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
     });
 
+    // --- (1) OWNER LOSS: every business value unchanged, audit delta 0, idempotency not succeeded. ---
     await expect(
       faultyService.runValidation(makeUser() as any, makeEffective() as any, {
         importBatchId: batchId, idempotencyKey: idemKey,
       }),
     ).rejects.toThrow();
 
-    // Verify rollback
+    // Verify rollback: batch status unchanged.
     const batchAfter = (await sql`SELECT status, validation_status FROM import_batches WHERE id = ${batchId}`)[0];
-    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.status).toBe(batchBefore!.status);                       // L519-520
     expect(batchAfter!.validation_status).toBe(batchBefore!.validation_status);
 
+    // Verify rollback: findings count unchanged.
     const findingsAfter = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
-    expect(findingsAfter).toBe(findingsBefore);
+    expect(findingsAfter).toBe(findingsBefore);                                  // L523
 
+    // Verify rollback: alias-mapping count unchanged (delta = 0).
+    const aliasAfter = (await sql`SELECT count(*)::int AS c FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    expect(aliasAfter).toBe(aliasBefore);
+
+    // Verify rollback: human-review-item count unchanged (delta = 0).
+    const reviewAfter = (await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    expect(reviewAfter).toBe(reviewBefore);
+
+    // Verify rollback: scoped audit count unchanged (delta = 0).
     const auditAfter = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
-    expect(auditAfter).toBe(auditBefore); // delta = 0
+    expect(auditAfter).toBe(auditBefore);                                        // L526
 
-    // Idempotency not succeeded
+    // Idempotency state: not succeeded (in_progress or failed).
     const idemRecord = await sql`SELECT state FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
     if (idemRecord.length > 0) {
-      expect(idemRecord[0]!.state).not.toBe("succeeded");
+      expect(idemRecord[0]!.state).not.toBe("succeeded");                       // L531
     }
 
-    // Expire lease for retry
+    // --- Expire lease for retry. ---
     await sql`UPDATE idempotency_records SET lease_expires_at = NOW() - interval '1 second' WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
 
-    // Valid retry
+    // --- (2) RETRY: exactly one final effect set and one scoped audit. ---
     const goodService = new HistoricalValidationService({
       repository: valRepo, audit, idempotency: idem,
       transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)),
@@ -545,18 +573,81 @@ describeOrSkip("WP-08-01F Phase 0 — Validation atomicity proofs", () => {
     const retryResult = await goodService.runValidation(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, idempotencyKey: idemKey,
     });
-    expect(retryResult.action).toBe("executed");
+    expect(retryResult.action).toBe("executed");                                 // L548
 
+    // Retry: exactly one new scoped audit row.
     const auditAfterRetry = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
-    expect(auditAfterRetry).toBe(auditBefore + 1); // exactly one new audit
+    expect(auditAfterRetry).toBe(auditBefore + 1);                               // L551
 
-    // Replay creates zero new effects
+    // Retry: idempotency state = succeeded.
+    const idemAfterRetry = await sql`SELECT state FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
+    expect(idemAfterRetry[0]!.state).toBe("succeeded");
+
+    // Retry: exactly one final effect set — findings, aliases, review items
+    // are non-zero (validation completed and persisted findings/aliases/review items).
+    const findingsAfterRetry = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const aliasAfterRetry = (await sql`SELECT count(*)::int AS c FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const reviewAfterRetry = (await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    // Validation runs rules against the seeded staging row; at least one finding
+    // and at least one alias mapping (the row has a `name` field) must be present.
+    expect(findingsAfterRetry).toBeGreaterThan(0);
+    expect(aliasAfterRetry).toBeGreaterThan(0);
+    expect(reviewAfterRetry).toBeGreaterThan(0);
+
+    // --- (3) REPLAY: zero additional effects. ---
     const replayResult = await goodService.runValidation(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, idempotencyKey: idemKey,
     });
-    expect(replayResult.action).toBe("replayed");
+    expect(replayResult.action).toBe("replayed");                               // L557
 
+    // Replay: zero new audit rows.
     const auditAfterReplay = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
-    expect(auditAfterReplay).toBe(auditAfterRetry); // zero new audit
+    expect(auditAfterReplay).toBe(auditAfterRetry);                             // L560
+
+    // Replay: zero new findings, alias mappings, or review items.
+    const findingsAfterReplay = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const aliasAfterReplay = (await sql`SELECT count(*)::int AS c FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const reviewAfterReplay = (await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    expect(findingsAfterReplay).toBe(findingsAfterRetry);
+    expect(aliasAfterReplay).toBe(aliasAfterRetry);
+    expect(reviewAfterReplay).toBe(reviewAfterRetry);
+
+    // --- (4) PAYLOAD CONFLICT: zero additional effects. ---
+    // Same idempotency key, DIFFERENT request body (different importBatchId).
+    // The service should reject this as IDEMPOTENCY_CONFLICT, and no new
+    // business effects (findings, aliases, review items, audits) should appear.
+    const otherBatchId = randomUUID();
+    await seedBatch(otherBatchId, "staged");
+    const otherFileId = randomUUID();
+    await sql`INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash, file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at) VALUES (${otherFileId}, ${T}, ${otherBatchId}, ${"d2.csv"}, ${"local://t"}, ${"h"}, 100, ${"text/csv"}, ${"source"}, 1, true, ${U}, NOW())`;
+    const otherRowId = randomUUID();
+    await sql`INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name, source_sheet_name, source_row_number, raw_row_json, transformed_row_json, transformation_notes, validation_status, review_status, ai_confidence, committed_entity_type, committed_entity_id, staging_version, is_current, created_by, created_at) VALUES (${otherRowId}, ${T}, ${otherBatchId}, ${otherFileId}, ${"t"}, ${"s"}, 1, ${JSON.stringify({ name: "OtherTest", code: "C002", quantity: "200", date: "2024-01-02" })}::jsonb, ${JSON.stringify({ name: "OtherTest", code: "C002", quantity: "200", date: "2024-01-02" })}::jsonb, null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${U}, NOW())`;
+
+    await expect(
+      goodService.runValidation(makeUser() as any, makeEffective() as any, {
+        importBatchId: otherBatchId, idempotencyKey: idemKey,
+      }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|conflict/i);
+
+    // Conflict: zero additional effects on the ORIGINAL batch.
+    const findingsAfterConflict = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const aliasAfterConflict = (await sql`SELECT count(*)::int AS c FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const reviewAfterConflict = (await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const auditAfterConflict = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
+    expect(findingsAfterConflict).toBe(findingsAfterReplay);
+    expect(aliasAfterConflict).toBe(aliasAfterReplay);
+    expect(reviewAfterConflict).toBe(reviewAfterReplay);
+    expect(auditAfterConflict).toBe(auditAfterReplay);
+
+    // Conflict: zero additional effects on the OTHER batch too — the conflict
+    // is rejected before any business write is committed.
+    const otherFindings = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${otherBatchId}`)[0]!.c;
+    const otherAlias = (await sql`SELECT count(*)::int AS c FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${otherBatchId}`)[0]!.c;
+    const otherReview = (await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${otherBatchId}`)[0]!.c;
+    const otherAudit = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${otherBatchId} AND action_type = 'historical_validation.run'`)[0]!.c;
+    expect(otherFindings).toBe(0);
+    expect(otherAlias).toBe(0);
+    expect(otherReview).toBe(0);
+    expect(otherAudit).toBe(0);
   });
 });
