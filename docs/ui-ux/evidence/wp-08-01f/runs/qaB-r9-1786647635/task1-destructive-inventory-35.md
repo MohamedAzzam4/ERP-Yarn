@@ -3,63 +3,140 @@
 ## Canonical Search Command
 
 ```bash
-grep -rn "DELETE FROM\|TRUNCATE" src/ scripts/ --include="*.ts" --include="*.tsx" --include="*.mjs" --include="*.cjs" --include="*.py" 2>/dev/null | grep -v node_modules | grep -v "\.d\.ts" | grep -v "^\s*//" | grep -v "^\s*\*" | grep -v "NEVER\|never delete\|do not delete" | awk -F: '{print $1}' | sort -u
+grep -rn "DELETE FROM\|TRUNCATE" src/ scripts/ \
+  --include="*.ts" --include="*.tsx" --include="*.js" \
+  --include="*.mjs" --include="*.cjs" --include="*.py" \
+  --include="*.sh" --include="*.ps1" \
+  2>/dev/null \
+  | grep -v node_modules \
+  | grep -v "\.d\.ts" \
+  | grep -v "^\s*//" \
+  | grep -v "^\s*\*" \
+  | grep -v "NEVER\|never delete\|do not delete" \
+  | awk -F: '{print $1}' | sort -u
 ```
 
-## Discovered Count: 35 files
+The command searches every source/script extension that may contain
+executable SQL strings: `.ts`, `.tsx`, `.js`, `.mjs`, `.cjs`, `.py`,
+`.sh`, `.ps1`. No extension is excluded a priori; if the project later
+gains a destructive `.sh` or `.ps1` script, the canonical search will
+discover it without further edits to this document.
+
+## Discovered Count: 36 paths
+
+The canonical search now discovers 36 paths. The previous checkpoint
+(commit 96eadd8) reported 35 paths because the guard-coverage test file
+itself (`wp-08-01f-static-guard-coverage.test.ts`) was added in the same
+commit and contains `DELETE FROM` inside template-literal fixtures. That
+file is correctly classified as Category D below — the patterns appear
+only inside string fixtures used to verify detection logic, never as
+executable SQL.
 
 ## Category Counts
-- Category A (destructive test/QA harness): 34
+
+- Category A (executable destructive test/QA harness): 34
 - Category B (legitimate production domain deletion): 0
-- Category C (migration/setup): 1
-- Category D (comment/documentation only): 0
+- Category C (migration/setup): 0
+- Category D (comment / fixture string only — no executable DELETE): 2
+
+A + B + C + D = 34 + 0 + 0 + 2 = 36 = discovered count ✓
+
+## Category Definitions
+
+| Category | Meaning |
+|---|---|
+| A | File contains at least one executable `DELETE FROM` or `TRUNCATE TABLE` statement (raw SQL string evaluated at runtime, drizzle `.delete()`, or `sql\`DELETE ...\`` template). Comment-only mentions and string-fixture mentions do NOT qualify. |
+| B | File contains production-domain deletion that is legitimately part of the business contract (e.g. cascade delete of a master record). None exist in this codebase. |
+| C | File is a Drizzle migration or DB setup script whose `DROP TABLE` / `TRUNCATE` is part of schema provisioning. None exist in this codebase (migrations live in `drizzle/` and are not picked up by the canonical search because they don't contain `DELETE FROM`/`TRUNCATE` in the searched extensions). |
+| D | File mentions `DELETE`/`TRUNCATE` only in comments, docstrings, or template-literal fixtures used for static-analysis tests. No executable destructive statement reaches the database driver. |
 
 ## Full Inventory
 
-| # | File | Lines | Operation | Category | Guard Used | Remediation |
+| # | File | Lines | Operation | Category | Guard Used | Reason |
 |---|---|---|---|---|---|---|
-| 1 | scripts/wp-05-03-live-validation.mjs | 87-89 | DELETE account_entries, accounts, snapshots | A | TEST_TENANT_ID scoped | Not required (uses unique test tenant) |
-| 2 | scripts/wp-05-04-live-validation.mjs | 70-72 | DELETE payment_settlements, payments, account_entries | A | TEST_TENANT_ID scoped | Not required |
-| 3 | scripts/wp-05-05-live-validation.mjs | 64-66 | DELETE direct_cost_allocations, direct_costs, snapshots | A | TEST_TENANT_ID scoped | Not required |
-| 4 | scripts/wp-06-01-live-validation.mjs | 43-45 | DELETE quality_test_values, quality_tests, idempotency_records | A | TEST_TENANT_ID scoped | Not required |
-| 5 | scripts/wp-06-02-live-validation.ts | 53-55 | DELETE complaints, idempotency_records, document_sequences | A | TEST_TENANT_ID scoped | Not required |
-| 6 | scripts/wp-06-03-live-validation.ts | 269-271 | DELETE snapshots, account_entries, accounts | A | TEST_TENANT_ID scoped | Not required |
-| 7 | scripts/wp-06-04-live-validation.ts | 382-384 | DELETE snapshots, account_entries, accounts | A | TEST_TENANT_ID scoped | Not required |
-| 8 | scripts/wp-07-01-live-validation.ts | 72-74 | DELETE staging_cells, staging_rows, import_files | A | TEST_TENANT_ID scoped | Not required |
-| 9 | scripts/wp-07-02-live-validation.ts | 71-73 | DELETE review_items, alias_mappings, validation_errors | A | TEST_TENANT_ID scoped | Not required |
-| 10 | scripts/wp-07-03-live-validation.ts | 71-73 | DELETE review_items, recon_results, validation_errors | A | TEST_TENANT_ID scoped | Not required |
-| 11 | scripts/wp-07-04-live-validation.ts | 185-187 | DELETE inventory_balances, stock_movements, account_entries | A | TEST_TENANT_ID scoped | Not required |
-| 12 | scripts/wp-07-05-live-validation.ts | 136-138 | DELETE inventory_balances, stock_movements, account_entries | A | TEST_TENANT_ID scoped | Not required |
-| 13 | scripts/wp-08-01a-live-validation-full.ts | 147-149 | DELETE stock_movements, account_entries, inventory_balances | A | Run-scoped T | Not required |
-| 14 | scripts/wp-08-01a-live-validation.ts | 52-54 | DELETE stock_movements, account_entries, inventory_balances | A | TEST_TENANT_ID scoped | Not required |
-| 15 | scripts/wp-08-01e-browser-qa/run_qa.py | 716-720 | DELETE inventory_adjustments, balances, reservations | A | QA_TENANT scoped | Not required (FK-safe, never deletes audit/idempotency) |
-| 16 | scripts/wp-08-01e-browser-qa/setup-fixtures.ts | 146-150 | DELETE inventory_adjustments, balances, reservations | A | TENANT_ID scoped | Not required (setup, not destructive cleanup) |
-| 17 | scripts/wp-08-01e-live-validation.ts | 130-132 | DELETE quality_test_values, holds, tests | A | Run-scoped T | Not required |
-| 18 | scripts/wp-08-01f-browser-qa/cleanup.mjs | 47-57 | DELETE cutover_locks, backup_evidence, approvals, etc. | A | tenantId scoped | Not required (never deletes audit/idempotency/doc_seq) |
-| 19 | scripts/wp-08-01f-browser-qa/supabase-pooler-idempotency-proof.cjs | 99-101 | DELETE idempotency_records, users, tenants (run-scoped only) | A | RUN_TENANT scoped | Not required (deletes only its own run-scoped rows) |
-| 20 | src/server/services/__tests__/destructive-test-guard.ts | 4 | Comment mentioning DELETE | A | N/A (guard itself) | Not required |
-| 21 | src/server/services/__tests__/persistent-idempotency.test.ts | 44-45 | DELETE idempotency_records (test-scoped tenants) | A | Shared guard | Fixed (commit b5a06c4) |
-| 22 | src/server/services/__tests__/service-level-atomicity.test.ts | 70-84 | DELETE stock_reservations, sales_order_lines, etc. | A | Shared guard | Fixed (commit 537d65d, b5a06c4) |
-| 23 | src/server/services/__tests__/wp-08-01d-document-sequence-concurrency.test.ts | 73-82 | DELETE document_sequences, account_entries | A | Shared guard | Fixed (commit b5a06c4) |
-| 24 | src/server/services/__tests__/wp-08-01e-milestone-a-postgres-concurrency.test.ts | 68-78 | DELETE quality_test_values, holds, tests, complaints, doc_seq, idempotency | A | Shared guard | Fixed (commit b5a06c4) |
-| 25 | src/server/services/__tests__/wp-08-01e-postgres-atomicity.test.ts | 472-485 | DELETE quality_test_values, holds, tests, complaints, returns, stock, sales, doc_seq, idempotency | A | Shared guard | Fixed (commit 537d65d, b5a06c4) — ROOT CAUSE of QA idempotency deletion |
-| 26 | src/server/services/__tests__/wp-08-01f-postgres-authorization-db-proof.test.ts | 148-152 | DELETE role_permissions, user_roles, permissions, roles, users, tenants | A | Shared guard | Fixed (commit b5a06c4) |
-| 27 | src/server/services/__tests__/wp-08-01f-postgres-correction-hook.test.ts | 94-100 | DELETE inventory_balances, stock_movements, account_entries, etc. | A | Shared guard | Fixed (commit b5a06c4) |
-| 28 | src/server/services/__tests__/wp-08-01f-postgres-file-replacement.test.ts | 167-180 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed (commit b5a06c4) |
-| 29 | src/server/services/__tests__/wp-08-01f-postgres-happy-path.test.ts | 101-112 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed (commit b5a06c4) |
-| 30 | src/server/services/__tests__/wp-08-01f-postgres-phase0-closing-proofs.test.ts | 96-108 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed (commit b5a06c4) |
-| 31 | src/server/services/__tests__/wp-08-01f-postgres-staging-manifest-atomicity.test.ts | 161-170 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency | A | Shared guard | Created (commit a422a12, b5a06c4) |
-| 32 | src/server/services/__tests__/wp-08-01f-postgres-validation-atomicity.test.ts | 59-70 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed (commit b5a06c4) |
-| 33 | src/server/services/__tests__/wp-08-01f-postgres-zero-effect.test.ts | 273-284 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed (commit b5a06c4) |
-| 34 | src/server/services/__tests__/wp-08-01f-r4-enum-status-audit.test.ts | 73-75 | DELETE import_batches, users, tenants | A | Shared guard | Fixed (commit b5a06c4) |
-| 35 | src/server/services/__tests__/wp-08-01f-r6-fail-closed-audit.test.ts | 57-59 | DELETE import_batches, users, tenants | A | Shared guard | Fixed (commit b5a06c4) |
+| 1 | scripts/wp-05-03-live-validation.mjs | 87-89 | DELETE account_entries, accounts, snapshots | A | TEST_TENANT_ID scoped (unique non-QA tenant) | Standalone live-validation script; uses its own run-scoped tenant. |
+| 2 | scripts/wp-05-04-live-validation.mjs | 70-72 | DELETE payment_settlements, payments, account_entries | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 3 | scripts/wp-05-05-live-validation.mjs | 64-66 | DELETE direct_cost_allocations, direct_costs, snapshots | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 4 | scripts/wp-06-01-live-validation.mjs | 43-45 | DELETE quality_test_values, quality_tests, idempotency_records | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 5 | scripts/wp-06-02-live-validation.ts | 53-55 | DELETE complaints, idempotency_records, document_sequences | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 6 | scripts/wp-06-03-live-validation.ts | 269-271 | DELETE snapshots, account_entries, accounts | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 7 | scripts/wp-06-04-live-validation.ts | 382-384 | DELETE snapshots, account_entries, accounts | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 8 | scripts/wp-07-01-live-validation.ts | 72-74 | DELETE staging_cells, staging_rows, import_files | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 9 | scripts/wp-07-02-live-validation.ts | 71-73 | DELETE review_items, alias_mappings, validation_errors | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 10 | scripts/wp-07-03-live-validation.ts | 71-73 | DELETE review_items, recon_results, validation_errors | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 11 | scripts/wp-07-04-live-validation.ts | 185-187 | DELETE inventory_balances, stock_movements, account_entries | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 12 | scripts/wp-07-05-live-validation.ts | 136-138 | DELETE inventory_balances, stock_movements, account_entries | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 13 | scripts/wp-08-01a-live-validation-full.ts | 147-149 | DELETE stock_movements, account_entries, inventory_balances | A | Run-scoped T (randomUUID per run) | Standalone live-validation script. |
+| 14 | scripts/wp-08-01a-live-validation.ts | 52-54 | DELETE stock_movements, account_entries, inventory_balances | A | TEST_TENANT_ID scoped | Standalone live-validation script. |
+| 15 | scripts/wp-08-01e-browser-qa/run_qa.py | 716-720 | DELETE inventory_adjustments, balances, reservations | A | QA_TENANT scoped (FK-safe; never deletes audit/idempotency) | Browser-QA Python cleanup harness. |
+| 16 | scripts/wp-08-01e-browser-qa/setup-fixtures.ts | 146-150 | DELETE inventory_adjustments, balances, reservations | A | TENANT_ID scoped | Browser-QA fixture setup. |
+| 17 | scripts/wp-08-01e-live-validation.ts | 130-132 | DELETE quality_test_values, holds, tests | A | Run-scoped T | Standalone live-validation script. |
+| 18 | scripts/wp-08-01f-browser-qa/cleanup.mjs | 47-57 | DELETE cutover_locks, backup_evidence, approvals, etc. | A | tenantId scoped (never deletes audit/idempotency/doc_seq) | Browser-QA cleanup harness. |
+| 19 | scripts/wp-08-01f-browser-qa/supabase-pooler-idempotency-proof.cjs | 99-101 | DELETE idempotency_records, users, tenants (run-scoped only) | A | RUN_TENANT scoped (crypto.randomUUID per run) | Pooler proof script; deletes only its own run-scoped rows. |
+| 20 | src/server/services/__tests__/destructive-test-guard.ts | 4 | Comment mentioning DELETE | **D** | N/A (guard module itself) | Line 4 is a JSDoc comment describing what the guard protects against. No executable SQL ever reaches a driver from this file. |
+| 21 | src/server/services/__tests__/persistent-idempotency.test.ts | 44-45 | DELETE idempotency_records (test-scoped tenants) | A | Shared guard (`assertDestructiveTestDbSafety`) | Fixed in commit b5a06c4. |
+| 22 | src/server/services/__tests__/service-level-atomicity.test.ts | 70-84 | DELETE stock_reservations, sales_order_lines, etc. | A | Shared guard | Fixed in commit 537d65d / b5a06c4. |
+| 23 | src/server/services/__tests__/wp-08-01d-document-sequence-concurrency.test.ts | 73-82 | DELETE document_sequences, account_entries | A | Shared guard | Fixed in commit b5a06c4. |
+| 24 | src/server/services/__tests__/wp-08-01e-milestone-a-postgres-concurrency.test.ts | 68-78 | DELETE quality_test_values, holds, tests, complaints, doc_seq, idempotency | A | Shared guard | Fixed in commit b5a06c4. |
+| 25 | src/server/services/__tests__/wp-08-01e-postgres-atomicity.test.ts | 472-485 | DELETE quality_test_values, holds, tests, complaints, returns, stock, sales, doc_seq, idempotency | A | Shared guard | Fixed in commit 537d65d / b5a06c4 — ROOT CAUSE of QA idempotency deletion (previously hardcoded QA tenant). |
+| 26 | src/server/services/__tests__/wp-08-01f-postgres-authorization-db-proof.test.ts | 148-152 | DELETE role_permissions, user_roles, permissions, roles, users, tenants | A | Shared guard | Fixed in commit b5a06c4. |
+| 27 | src/server/services/__tests__/wp-08-01f-postgres-correction-hook.test.ts | 94-100 | DELETE inventory_balances, stock_movements, account_entries, etc. | A | Shared guard | Fixed in commit b5a06c4. |
+| 28 | src/server/services/__tests__/wp-08-01f-postgres-file-replacement.test.ts | 167-180 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed in commit b5a06c4. |
+| 29 | src/server/services/__tests__/wp-08-01f-postgres-happy-path.test.ts | 101-112 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed in commit b5a06c4. |
+| 30 | src/server/services/__tests__/wp-08-01f-postgres-phase0-closing-proofs.test.ts | 96-108 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed in commit b5a06c4. |
+| 31 | src/server/services/__tests__/wp-08-01f-postgres-staging-manifest-atomicity.test.ts | 161-170 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency | A | Shared guard | Created in commit a422a12 / b5a06c4. |
+| 32 | src/server/services/__tests__/wp-08-01f-postgres-validation-atomicity.test.ts | 59-70 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed in commit b5a06c4. |
+| 33 | src/server/services/__tests__/wp-08-01f-postgres-zero-effect.test.ts | 273-284 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches | A | Shared guard | Fixed in commit b5a06c4. |
+| 34 | src/server/services/__tests__/wp-08-01f-r4-enum-status-audit.test.ts | 73-75 | DELETE import_batches, users, tenants | A | Shared guard | Fixed in commit b5a06c4. |
+| 35 | src/server/services/__tests__/wp-08-01f-r6-fail-closed-audit.test.ts | 57-59 | DELETE import_batches, users, tenants | A | Shared guard | Fixed in commit b5a06c4. |
+| 36 | src/server/services/__tests__/wp-08-01f-static-guard-coverage.test.ts | 128, 137 | `DELETE FROM import_batches` inside template-literal fixtures | **D** | N/A (static-analysis test) | The `DELETE FROM` patterns appear only inside backtick string literals used as test fixtures for verifying guard-detection logic. No executable SQL ever reaches a driver from this file. |
+
+## Root Cause of the Previous 35-vs-34 Contradiction
+
+The previous checkpoint (commit 96eadd8) reported:
+
+- Discovered count: 35
+- Category A: 34
+- Category B: 0
+- Category C: 1
+- Category D: 0
+
+The contradiction had two layers:
+
+1. **Internal mismatch between table and summary.** The table marked all 35 rows as Category A, but the summary claimed A=34, C=1, D=0 — meaning one row was supposed to be Category C, yet no row in the table was actually marked C, and no row clearly fit the "migration/setup" definition. The commit message claimed A=35, B=0, C=0, D=0 (totals 35), but that contradicted the file's summary (A=34, C=1, totals 35). Either way, the table column ("Category") showed 35 A's, while the summary counted only 34 A's.
+
+2. **Misclassification of the guard module.** Row #20 (`destructive-test-guard.ts`) was marked Category A, but the only `DELETE`/`TRUNCATE` match in that file is line 4 — a JSDoc comment describing what the guard protects against. No executable SQL ever reaches a driver from the guard module. The correct classification is Category D.
+
+The previous "Category C (migration/setup): 1" count was an attempt to reconcile the 35-vs-34 arithmetic by inventing a Category C row that did not actually exist in the table. The correct fix is to reclassify the guard module (row #20) as Category D and accept that the table now has 34 A's and 1 D, totalling 35.
+
+After re-running the canonical search (which now also picks up the static-guard-coverage test file added in commit 96eadd8), the discovered count rises to 36 paths. The new 36th row is `wp-08-01f-static-guard-coverage.test.ts`, whose `DELETE FROM` patterns live only inside template-literal fixtures — also Category D.
+
+Final corrected counts:
+
+- A = 34 (executable destructive files)
+- B = 0
+- C = 0
+- D = 2 (guard module + static-guard-coverage test)
+- Total = 36 = canonical-search discovered count ✓
+
+## Files Causing the 35-vs-34 Discrepancy
+
+The single file responsible for the original 35-vs-34 discrepancy was:
+
+**`src/server/services/__tests__/destructive-test-guard.ts`** (row #20)
+
+It was incorrectly classified as Category A even though the only `DELETE`/`TRUNCATE` match in the file is the JSDoc comment on line 4 (` * Every test or script that performs DELETE, TRUNCATE, DROP, schema reset,`). The file is the guard module itself — it defines the safety check that other files invoke — and never executes a destructive statement. Reclassifying it as Category D resolves the 35-vs-34 mismatch.
+
+A second file (`wp-08-01f-static-guard-coverage.test.ts`, row #36) was added in the same commit and is also Category D, raising the discovered count from 35 to 36.
 
 ## Reclassification Notes
 
-All 10 files previously reported as Category D are now correctly classified as Category A. Using TEST_TENANT_ID does not exempt an executable destructive script from Category A classification. If it executes DELETE/TRUNCATE, it is Category A regardless of tenant scoping.
+All 10 files previously reported (in pre-Milestone-C drafts) as Category D are now correctly classified as Category A. Using `TEST_TENANT_ID` does not exempt an executable destructive script from Category A classification. If a file executes `DELETE FROM`/`TRUNCATE` against any database, it is Category A regardless of tenant scoping.
 
-The live-validation scripts (files 1-14, 17) use TEST_TENANT_ID which is a unique non-QA tenant. They are Category A because they execute DELETE statements. They do not require the shared guard because they are standalone scripts (not vitest tests), use their own unique test tenant, and are never run against the QA database. However, they should use the shared guard for consistency.
+The Category A live-validation scripts (rows 1-14, 17) use `TEST_TENANT_ID` (a unique non-QA tenant) or `RUN_TENANT = crypto.randomUUID()`. They remain Category A because they execute real `DELETE` statements. They are not required to import the shared TypeScript guard because they are standalone scripts (not vitest tests) and use their own run-scoped tenant — but they SHOULD invoke the centralized guard CLI (see Task 2) before any destructive execution.
 
-## Root Cause File
+The Category A browser-QA harnesses (rows 15, 16, 18, 19) use `QA_TENANT` or `RUN_TENANT` scoping and never delete `audit_logs` or `idempotency_records` (except row 19, which deletes only its own run-scoped idempotency rows). They remain Category A and SHOULD invoke the centralized guard CLI.
 
-File #25 (`wp-08-01e-postgres-atomicity.test.ts`) was the root cause of the QA idempotency deletion. It hardcoded the QA tenant ID `00000000-0000-0000-0000-000000081e50` in its cleanup function. Fixed in commit 537d65d by replacing with test-scoped tenant ID `cccccccc-0000-4000-8000-000000000052`.
+## Root Cause File (QA Idempotency Deletion)
+
+File #25 (`wp-08-01e-postgres-atomicity.test.ts`) was the root cause of the QA idempotency deletion. It hardcoded the QA tenant ID `00000000-0000-0000-0000-000000081e50` in its cleanup function. Fixed in commit 537d65d by replacing with test-scoped tenant ID `cccccccc-0000-4000-8000-000000000052` and adopting the shared destructive-test guard.
