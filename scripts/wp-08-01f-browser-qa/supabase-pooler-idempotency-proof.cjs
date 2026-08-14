@@ -13,6 +13,7 @@
  * If credentials are unavailable, exit with code 2.
  */
 const crypto = require('crypto');
+const { execSync } = require("node:child_process");
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -25,6 +26,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY || !DB_URL || !DB_URL.includes('supabase')) {
 }
 
 const postgres = require('postgres');
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --pooler-proof", { stdio: "inherit" });
 const sql = postgres(DB_URL, { prepare: false, max: 2, connect_timeout: 15, idle_timeout: 10 });
 
 const RUN_TENANT = crypto.randomUUID();

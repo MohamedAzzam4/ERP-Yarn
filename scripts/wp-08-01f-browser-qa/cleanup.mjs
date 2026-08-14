@@ -11,12 +11,14 @@ import { resolve } from "node:path";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const postgres = require(resolve(process.cwd(), "node_modules/postgres"));
+const { execSync } = require("node:child_process");
 const { createClient } = require(resolve(process.cwd(), "node_modules/@supabase/supabase-js"));
 
 const [dbUrl, supabaseUrl, supabaseKey, tenantId] = process.argv.slice(2);
 const BUCKET = "migration-private-files";
 
 async function main() {
+  execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
   const sql = postgres(dbUrl, { prepare: false, max: 3, connect_timeout: 15, idle_timeout: 10 });
   const supabase = createClient(supabaseUrl, supabaseKey);
 

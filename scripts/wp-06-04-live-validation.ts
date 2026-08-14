@@ -1,4 +1,5 @@
 /**
+import { execSync } from "node:child_process";
  * WP-06-04 Live Supabase Validation — Replacement Return Workflow (production path).
  *
  * Production-path validation:
@@ -56,6 +57,7 @@ import type { EffectivePermissions } from "../src/server/security/effective-perm
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) { console.error("ERROR: DATABASE_URL required."); process.exit(2); }
 
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
 const pgSql = postgres(DATABASE_URL, {
   prepare: false,
   max: 10,

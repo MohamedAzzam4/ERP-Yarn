@@ -22,6 +22,7 @@
  * TEST-ONLY. Not for production use.
  */
 import postgres from "postgres";
+import { execSync } from "node:child_process";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { randomUUID } from "node:crypto";
 import * as schema from "../src/server/db/schema/index";
@@ -52,6 +53,7 @@ const DIRECT_DB_URL = (() => {
   return url.toString();
 })();
 
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
 const pgSql = postgres(DIRECT_DB_URL, {
   prepare: false,
   max: 5,

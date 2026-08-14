@@ -34,7 +34,8 @@ interface InventoryRow {
 function runCanonicalSearch(): string[] {
   // The canonical search command (must match the inventory's documented command).
   // We run it via bash so the test always re-discovers from the live tree.
-  const cmd = "grep -rn 'DELETE FROM\\|TRUNCATE' src/ scripts/ --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.py' --include='*.sh' --include='*.ps1' 2>/dev/null | grep -v node_modules | grep -v '\\.d\\.ts' | grep -v '^\\s*//' | grep -v '^\\s*\\*' | grep -v 'NEVER\\|never delete\\|do not delete' | awk -F: '{print $1}' | sort -u";
+  // Excludes the __guard-coverage-fixtures__ directory (test fixtures, not real scripts).
+  const cmd = "grep -rn 'DELETE FROM\\|TRUNCATE' src/ scripts/ --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.py' --include='*.sh' --include='*.ps1' 2>/dev/null | grep -v node_modules | grep -v '\\.d\\.ts' | grep -v '^\\s*//' | grep -v '^\\s*\\*' | grep -v 'NEVER\\|never delete\\|do not delete' | grep -v '__guard-coverage-fixtures__' | awk -F: '{print $1}' | sort -u";
   const out = execSync(cmd, { cwd: REPO_ROOT, encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 });
   return out.trim().split("\n").filter(Boolean);
 }
@@ -66,11 +67,11 @@ function parseInventoryRows(): InventoryRow[] {
     // cells[0] is empty (leading |), cells[1]=#, cells[2]=file, cells[3]=lines,
     // cells[4]=operation, cells[5]=category, cells[6]=guard, cells[7]=reason
     if (cells.length < 6) continue;
-    const numCell = cells[1];
+    const numCell = cells[1] ?? "";
     if (!/^\d+$/.test(numCell)) continue; // skip header/separator rows
-    const path = cells[2];
+    const path = cells[2] ?? "";
     // Strip markdown bold/italic markers from category cell (e.g. **D** → D).
-    const categoryRaw = cells[5].replace(/[*_`]/g, "").trim();
+    const categoryRaw = (cells[5] ?? "").replace(/[*_`]/g, "").trim();
     const category = categoryRaw as "A" | "B" | "C" | "D";
     if (!path || !["A", "B", "C", "D"].includes(category)) {
       throw new Error(`Invalid inventory row: ${line}`);
@@ -97,7 +98,8 @@ function parseReportedCounts(): { discovered: number; A: number; B: number; C: n
   const bMatch = catSection.match(/^- Category B[^:]*:\s*(\d+)/m);
   const cMatch = catSection.match(/^- Category C[^:]*:\s*(\d+)/m);
   const dMatch = catSection.match(/^- Category D[^:]*:\s*(\d+)/m);
-  if (!discoveredMatch || !aMatch || !bMatch || !cMatch || !dMatch) {
+  if (!discoveredMatch || !aMatch || !bMatch || !cMatch || !dMatch ||
+      !discoveredMatch[1] || !aMatch[1] || !bMatch[1] || !cMatch[1] || !dMatch[1]) {
     throw new Error("Could not parse reported counts from inventory.");
   }
   return {
@@ -175,9 +177,9 @@ describe("WP-08-01F Task 1 — Destructive inventory matches canonical search", 
       if (!inTable) continue;
       const cells = line.split("|").map((c) => c.trim());
       if (cells.length < 6) continue;
-      if (!/^\d+$/.test(cells[1])) continue;
-      const category = cells[5].replace(/[*_`]/g, "").trim();
-      const guard = cells[6];
+      if (!/^\d+$/.test(cells[1] ?? "")) continue;
+      const category = (cells[5] ?? "").replace(/[*_`]/g, "").trim();
+      const guard = cells[6] ?? "";
       const reason = cells[7] ?? "";
       if (category === "A") {
         // For Category A, the guard column must be non-empty.

@@ -1,4 +1,5 @@
 /**
+import { execSync } from "node:child_process";
  * WP-08-01A Comprehensive Live Supabase Validation.
  *
  * Tests production-path through actual service factories + DB-backed repos.
@@ -66,6 +67,7 @@ const DIRECT_DB_URL = (() => {
   return url.toString();
 })();
 
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
 const pgSql = postgres(DIRECT_DB_URL, { prepare: false, max: 5, idle_timeout: 10, connect_timeout: 15, max_lifetime: 60 });
 const db = drizzle(pgSql, { schema });
 

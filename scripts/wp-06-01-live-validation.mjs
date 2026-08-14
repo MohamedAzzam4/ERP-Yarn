@@ -8,6 +8,7 @@
  * TEST-ONLY. Not for production use.
  */
 import postgres from "postgres";
+import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -16,6 +17,7 @@ if (!DATABASE_URL) {
   process.exit(2);
 }
 
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
 const sql = postgres(DATABASE_URL, { prepare: false, max: 1, idle_timeout: 30 });
 const cryptoRandomUUID = randomUUID;
 

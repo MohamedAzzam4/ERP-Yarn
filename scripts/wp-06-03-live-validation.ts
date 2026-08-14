@@ -1,4 +1,5 @@
 /**
+import { execSync } from "node:child_process";
  * WP-06-03 Live Supabase Validation — Customer Return Approval (production path).
  *
  * Production-path validation:
@@ -55,6 +56,7 @@ if (!DATABASE_URL) { console.error("ERROR: DATABASE_URL required."); process.exi
 // consumes one connection for the outer transaction; inner queries use the
 // same connection via savepoints). idle_timeout + connect_timeout +
 // max_lifetime ensure connections don't hang when the script exits.
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
 const pgSql = postgres(DATABASE_URL, {
   prepare: false,
   max: 10,

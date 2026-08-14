@@ -23,6 +23,7 @@
  * Outputs JSON with the created fixture IDs to stdout.
  */
 import postgres from "postgres";
+import { execSync } from "node:child_process";
 import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "../../src/server/db/schema/index";
 import { randomUUID } from "node:crypto";
@@ -60,6 +61,7 @@ const CUSTOMER_ID = "00000000-0000-0000-0000-000000081e83";
 const INVENTORY_ITEM_ID = "00000000-0000-0000-0000-000000081e85";
 const LOCATION_ID = "00000000-0000-0000-0000-000000081e86";
 
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
 const pgSql = postgres(DATABASE_URL, {
   prepare: false,
   max: 10,

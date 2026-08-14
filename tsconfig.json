@@ -46,6 +46,7 @@
   ],
   "exclude": [
     "node_modules",
-    "scripts"
+    "scripts",
+    "src/server/services/__tests__/__guard-coverage-fixtures"
   ]
 }

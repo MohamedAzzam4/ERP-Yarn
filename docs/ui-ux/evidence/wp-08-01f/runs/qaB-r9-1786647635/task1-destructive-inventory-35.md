@@ -13,6 +13,7 @@ grep -rn "DELETE FROM\|TRUNCATE" src/ scripts/ \
   | grep -v "^\s*//" \
   | grep -v "^\s*\*" \
   | grep -v "NEVER\|never delete\|do not delete" \
+  | grep -v "__guard-coverage-fixtures__" \
   | awk -F: '{print $1}' | sort -u
 ```
 
@@ -21,6 +22,11 @@ executable SQL strings: `.ts`, `.tsx`, `.js`, `.mjs`, `.cjs`, `.py`,
 `.sh`, `.ps1`. No extension is excluded a priori; if the project later
 gains a destructive `.sh` or `.ps1` script, the canonical search will
 discover it without further edits to this document.
+
+The `__guard-coverage-fixtures__` directory is excluded because it
+contains test fixtures (intentionally unguarded / correctly guarded
+sample files) used by the static-guard-coverage test. These fixtures
+are test DATA, not real scripts that need the guard.
 
 ## Discovered Count: 36 paths
 

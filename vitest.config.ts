@@ -34,7 +34,16 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    exclude: ["node_modules/**", ".next/**", "coverage/**"],
+    exclude: [
+      "node_modules/**",
+      ".next/**",
+      "coverage/**",
+      // WP-08-01F Milestone C Task 2: fixtures used by the static-guard-coverage
+      // test. These files contain executable DELETE statements as text and
+      // are NOT meant to run as vitest tests — they are read as source by
+      // the static-guard-coverage test.
+      "src/server/services/__tests__/__guard-coverage-fixtures__/**",
+    ],
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],

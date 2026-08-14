@@ -38,6 +38,7 @@
  */
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
+import { execSync } from "node:child_process";
 import * as schema from "@/server/db/schema";
 import { QualityTestDbRepository } from "@/server/services/quality-test-db-repository";
 import { ComplaintDbRepository } from "@/server/services/complaint-db-repository";
@@ -65,6 +66,9 @@ if (!DATABASE_URL.startsWith("postgres")) {
   console.error("       Got:", DATABASE_URL.replace(/:[^:@/]+@/, ":***@"));
   process.exit(1);
 }
+
+// WP-08-01F Milestone C Task 2: invoke centralized guard CLI before any DB connection.
+execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
 
 const SECTION = process.argv[2];
 const RECOGNIZED_SECTIONS = new Set([
