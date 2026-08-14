@@ -323,7 +323,14 @@ function makeServices(storage: InMemoryPrivateFileStorage) {
   const audit = new AuditDbRepository(db);
   const idem = new IdempotencyDbRepository(db);
   const docSeq = new DocumentSequenceDbRepository(db);
-  const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq });
+  const stagingService = new HistoricalStagingService({
+    repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq,
+    // WP-08-01F Milestone C: tx-scoped factories for atomic finalizeStaging/finalizeCutoverManifest
+    transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)),
+    createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+  });
   const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
     (db as any).transaction(async (tx: any) => work(tx));
   const replacementService = new HistoricalReplacementService({

@@ -75,10 +75,17 @@ function getMigrationServices() {
   const reconciliationRepo = new HistoricalReconciliationDbRepository(db);
   const commitRepo = new HistoricalCommitDbRepository(db);
   const correctionRepo = new HistoricalCorrectionDbRepository(db);
-  const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency, documentSequence });
   // WP-08-01F R6: Define transactionRunner BEFORE services that need it.
   const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
     (db as any).transaction(async (tx: any) => work(tx));
+  const stagingService = new HistoricalStagingService({
+    repository: stagingRepo, audit, idempotency, documentSequence,
+    // WP-08-01F Milestone C Task 2: tx-scoped factories for atomic finalizeStaging/finalizeCutoverManifest
+    transactionRunner,
+    createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
+    createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+  });
   const validationService = new HistoricalValidationService({
     repository: validationRepo, audit, idempotency,
     // WP-08-01F R6: tx-scoped factories for atomic validation writes

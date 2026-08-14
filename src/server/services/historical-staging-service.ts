@@ -216,6 +216,15 @@ export interface HistoricalStagingServiceDeps {
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
+  /**
+   * WP-08-01F Milestone C Task 2: Mandatory transaction runner for atomic
+   * finalizeStaging and finalizeCutoverManifest operations.
+   * Missing transactionRunner causes these commands to throw before any write.
+   */
+  transactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+  createStagingRepository?: (tx: unknown) => HistoricalStagingRepository;
+  createAudit?: (tx: unknown) => AuditTransactionHandle;
+  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -680,24 +689,6 @@ export class HistoricalStagingService {
       .join("|");
     const stagedDataHash = crypto.createHash("sha256").update(hashInput).digest("hex");
 
-    // Update batch: set stagedDataHash + status = staged + stagedRowCount
-    await this.deps.repository.updateBatchStagedDataHash(user.tenantId, input.importBatchId, stagedDataHash, user.userId);
-    await this.deps.repository.updateBatchStagedRowCount(user.tenantId, input.importBatchId, rows.length);
-    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, "staged");
-
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: ENTITY_TYPE,
-      entityId: input.importBatchId,
-      actionType: "historical_staging.finalize",
-      newValuesJson: {
-        previousStatus: batch.status,
-        newStatus: "staged",
-        stagedDataHash,
-        stagedRowCount: rows.length,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
-
     const result: FinalizeStagingResult = {
       action: "finalized",
       batchId: input.importBatchId,
@@ -707,12 +698,47 @@ export class HistoricalStagingService {
       stagedRowCount: rows.length,
     };
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: ENTITY_TYPE, entityId: input.importBatchId,
-    }, claim.record.ownerToken!, nowForReplay);
+    // WP-08-01F Milestone C Task 2: Execute ALL writes in a single transaction.
+    // If transactionRunner or factories are missing, throw before any write.
+    if (!this.deps.transactionRunner || !this.deps.createStagingRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
+      throw new HistoricalStagingError(
+        "VALIDATION_FAILED",
+        "finalizeStaging requires transactionRunner + tx-scoped factories. Missing transaction configuration.",
+      );
+    }
 
-    return result;
+    return await this.deps.transactionRunner(async (tx: unknown) => {
+      const txRepo = this.deps.createStagingRepository!(tx);
+      const txAudit = this.deps.createAudit!(tx);
+      const txIdem = this.deps.createIdempotency!(tx);
+
+      // Business writes (tx-scoped)
+      await txRepo.updateBatchStagedDataHash(user.tenantId, input.importBatchId, stagedDataHash, user.userId);
+      await txRepo.updateBatchStagedRowCount(user.tenantId, input.importBatchId, rows.length);
+      await txRepo.updateBatchStatus(user.tenantId, input.importBatchId, "staged");
+
+      // Audit (tx-scoped)
+      await appendAuditLog(txAudit, user.tenantId, user.userId, {
+        entityType: ENTITY_TYPE,
+        entityId: input.importBatchId,
+        actionType: "historical_staging.finalize",
+        newValuesJson: {
+          previousStatus: batch.status,
+          newStatus: "staged",
+          stagedDataHash,
+          stagedRowCount: rows.length,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      // markSucceeded (tx-scoped, owner-token-fenced)
+      await markSucceeded(txIdem, claim.record.id, {
+        responseCode: 200, responseBody: result,
+        entityType: ENTITY_TYPE, entityId: input.importBatchId,
+      }, claim.record.ownerToken!, nowForReplay);
+
+      return result;
+    });
   }
 
   // ===========================================================================
@@ -810,52 +836,68 @@ export class HistoricalStagingService {
     });
     const manifestHash = crypto.createHash("sha256").update(manifestHashInput).digest("hex");
 
-    // Insert cutover manifest
-    const manifest = await this.deps.repository.insertCutoverManifest({
-      tenantId: user.tenantId,
-      importBatchId: input.importBatchId,
-      domain: input.domain,
-      importMode: "opening_balance",
-      cutoffDate: input.cutoffDate,
-      sourceCoverage: input.sourceCoverage,
-      openingBalanceBasis: input.openingBalanceBasis,
-      liveSystemStartBoundary: input.liveSystemStartBoundary,
-      manifestHash,
-      isApproved: true,
-      createdBy: user.userId,
-    });
+    // WP-08-01F Milestone C Task 3: Execute ALL writes in a single transaction.
+    if (!this.deps.transactionRunner || !this.deps.createStagingRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
+      throw new HistoricalStagingError(
+        "VALIDATION_FAILED",
+        "finalizeCutoverManifest requires transactionRunner + tx-scoped factories. Missing transaction configuration.",
+      );
+    }
 
-    // Bind manifest hash to batch
-    await this.deps.repository.updateBatchCutoverManifestHash(user.tenantId, input.importBatchId, manifestHash, user.userId);
+    return await this.deps.transactionRunner(async (tx: unknown) => {
+      const txRepo = this.deps.createStagingRepository!(tx);
+      const txAudit = this.deps.createAudit!(tx);
+      const txIdem = this.deps.createIdempotency!(tx);
 
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: "import_cutover_manifest",
-      entityId: manifest.id,
-      actionType: "historical_cutover_manifest.finalize",
-      newValuesJson: {
+      // Insert cutover manifest (tx-scoped)
+      const manifest = await txRepo.insertCutoverManifest({
+        tenantId: user.tenantId,
         importBatchId: input.importBatchId,
         domain: input.domain,
+        importMode: "opening_balance",
+        cutoffDate: input.cutoffDate,
+        sourceCoverage: input.sourceCoverage,
+        openingBalanceBasis: input.openingBalanceBasis,
+        liveSystemStartBoundary: input.liveSystemStartBoundary,
+        manifestHash,
+        isApproved: true,
+        createdBy: user.userId,
+      });
+
+      // Bind manifest hash to batch (tx-scoped)
+      await txRepo.updateBatchCutoverManifestHash(user.tenantId, input.importBatchId, manifestHash, user.userId);
+
+      // Audit (tx-scoped)
+      await appendAuditLog(txAudit, user.tenantId, user.userId, {
+        entityType: "import_cutover_manifest",
+        entityId: manifest.id,
+        actionType: "historical_cutover_manifest.finalize",
+        newValuesJson: {
+          importBatchId: input.importBatchId,
+          domain: input.domain,
+          manifestHash,
+          cutoverManifestHash: manifestHash,
+          cutoffDate: input.cutoffDate,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result: FinalizeCutoverManifestResult = {
+        action: "finalized",
+        batchId: input.importBatchId,
+        manifestId: manifest.id,
         manifestHash,
         cutoverManifestHash: manifestHash,
-        cutoffDate: input.cutoffDate,
-      },
-      idempotencyKey: input.idempotencyKey,
+      };
+
+      // markSucceeded (tx-scoped, owner-token-fenced)
+      await markSucceeded(txIdem, claim.record.id, {
+        responseCode: 200, responseBody: result,
+        entityType: "import_cutover_manifest", entityId: manifest.id,
+      }, claim.record.ownerToken!, now);
+
+      return result;
     });
-
-    const result: FinalizeCutoverManifestResult = {
-      action: "finalized",
-      batchId: input.importBatchId,
-      manifestId: manifest.id,
-      manifestHash,
-      cutoverManifestHash: manifestHash,
-    };
-
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: "import_cutover_manifest", entityId: manifest.id,
-    }, claim.record.ownerToken!, now);
-
-    return result;
   }
 
   /**

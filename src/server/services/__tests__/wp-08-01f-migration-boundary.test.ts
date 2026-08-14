@@ -48,7 +48,7 @@ function makeStagingDeps() {
   const audit = new InProcessAuditStore();
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
-  const service = new HistoricalStagingService({ repository, audit, idempotency, documentSequence });
+  const service = new HistoricalStagingService({ repository, audit, idempotency, documentSequence, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createStagingRepository: () => repository, createAudit: () => audit, createIdempotency: () => idempotency });
   return { service, repository, audit, idempotency, documentSequence };
 }
 

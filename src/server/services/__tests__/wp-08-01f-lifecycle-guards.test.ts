@@ -89,7 +89,7 @@ describe("WP-08-01F DEFECT 4 — Service lifecycle guards (zero-effect)", () => 
       const audit = new InProcessAuditStore();
       const idem = new InProcessIdempotencyStore();
       const docSeq = new InProcessDocumentSequenceStore();
-      const svc = new HistoricalStagingService({ repository: repo, audit, idempotency: idem, documentSequence: docSeq });
+      const svc = new HistoricalStagingService({ repository: repo, audit, idempotency: idem, documentSequence: docSeq, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createStagingRepository: () => repo, createAudit: () => audit, createIdempotency: () => idem });
       const batch = makeBatch("committed");
       repo.seedBatch(TENANT_A, batch);
 
@@ -147,7 +147,7 @@ describe("WP-08-01F DEFECT 4 — Service lifecycle guards (zero-effect)", () => 
       const audit = new InProcessAuditStore();
       const idem = new InProcessIdempotencyStore();
       const docSeq = new InProcessDocumentSequenceStore();
-      const svc = new HistoricalStagingService({ repository: repo, audit, idempotency: idem, documentSequence: docSeq });
+      const svc = new HistoricalStagingService({ repository: repo, audit, idempotency: idem, documentSequence: docSeq, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createStagingRepository: () => repo, createAudit: () => audit, createIdempotency: () => idem });
       const batch = makeBatch("committed");
       repo.seedBatch(TENANT_A, batch);
 
@@ -537,7 +537,7 @@ describe("WP-08-01F DEFECT 4 — Service lifecycle guards (zero-effect)", () => 
       const audit = new InProcessAuditStore();
       const idem = new InProcessIdempotencyStore();
       const docSeq = new InProcessDocumentSequenceStore();
-      const svc = new HistoricalStagingService({ repository: repo, audit, idempotency: idem, documentSequence: docSeq });
+      const svc = new HistoricalStagingService({ repository: repo, audit, idempotency: idem, documentSequence: docSeq, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createStagingRepository: () => repo, createAudit: () => audit, createIdempotency: () => idem });
       const batch = makeBatch("draft");
       repo.seedBatch(TENANT_A, batch);
 
