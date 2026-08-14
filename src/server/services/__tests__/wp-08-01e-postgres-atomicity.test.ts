@@ -37,14 +37,23 @@ import {
 } from "@/server/services/idempotency-service";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const describeOrSkip = DATABASE_URL?.startsWith("postgres") ? describe : describe.skip;
+const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+// WP-08-01F Milestone C Task 1: Use shared destructive-test guard
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
 
-const T = "00000000-0000-0000-0000-000000081e50";
-const U = "00000000-0000-0000-0000-000000081e51";
-const U2 = "00000000-0000-0000-0000-000000081e52";
-const CUST = "00000000-0000-4000-8000-cccc000e0050";
-const ITEM = "00000000-0000-4000-8000-cccc000e0051";
-const LOC = "00000000-0000-4000-8000-cccc000e0052";
+const T = "cccccccc-0000-4000-8000-000000000052";
+const U = "cccccccc-0000-4000-8000-000000000053";
+const U2 = "cccccccc-0000-4000-8000-000000000054";
+const CUST = "cccccccc-0000-4000-8000-000000000060";
+const ITEM = "cccccccc-0000-4000-8000-000000000061";
+const LOC = "cccccccc-0000-4000-8000-000000000062";
 
 let sql: ReturnType<typeof postgres>;
 let db: any;
@@ -56,8 +65,8 @@ describeOrSkip("WP-08-01E TASK 5 — Real PostgreSQL owner-loss proof", () => {
     await sql`SET statement_timeout = 30000`;
     // Seed foundational fixtures
     await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status) VALUES (${T}, ${"E5-PG"}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
-    await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${U}, ${T}, ${"e5-pg"}, ${"E5 PG"}, ${"e5-pg@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
-    await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${U2}, ${T}, ${"e5-pg2"}, ${"E5 PG2"}, ${"e5-pg2@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+    await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${U}, ${T}, ${"e5pg-atomicity-u1"}, ${"E5 PG"}, ${"e5-pg-atomicity@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+    await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${U2}, ${T}, ${"e5pg-atomicity-u2"}, ${"E5 PG2"}, ${"e5-pg2-atomicity@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO inventory_items (id, tenant_id, item_code, display_name_ar, item_kind, status) VALUES (${ITEM}, ${T}, ${"ITEM-E5"}, ${"Test"}, ${"raw_material"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO customers (id, tenant_id, customer_code, name_ar, normalized_name, status) VALUES (${CUST}, ${T}, ${"CUST-E5"}, ${"Test Customer"}, ${"test customer e5"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO locations (id, tenant_id, location_code, name_ar, location_type, status) VALUES (${LOC}, ${T}, ${"LOC-E5"}, ${"Test Location"}, ${"internal_warehouse"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
@@ -460,18 +469,18 @@ describeOrSkip("WP-08-01E TASK 5 — Real PostgreSQL owner-loss proof", () => {
 });
 
 async function cleanupTenant(sql: any) {
-  await sql`DELETE FROM quality_test_values WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM quality_holds WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM quality_tests WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM complaints WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM return_lines WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM return_requests WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM inventory_balances WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM stock_movements WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM account_entries WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM sales_profitability_snapshots WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM sales_order_lines WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM sales_orders WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM document_sequences WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
-  await sql`DELETE FROM idempotency_records WHERE tenant_id = ${"00000000-0000-0000-0000-000000081e50"}`;
+  await sql`DELETE FROM quality_test_values WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM quality_holds WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM quality_tests WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM complaints WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM return_lines WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM return_requests WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM inventory_balances WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM stock_movements WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM account_entries WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM sales_profitability_snapshots WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM sales_order_lines WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM sales_orders WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM document_sequences WHERE tenant_id = ${T}`;
+  await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T}`;
 }
