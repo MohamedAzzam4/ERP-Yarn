@@ -217,14 +217,14 @@ export interface HistoricalStagingServiceDeps {
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
   /**
-   * WP-08-01F Milestone C Task 2: Mandatory transaction runner for atomic
+   * WP-08-01F Milestone C Task 1: Mandatory transaction runner for atomic
    * finalizeStaging and finalizeCutoverManifest operations.
-   * Missing transactionRunner causes these commands to throw before any write.
+   * These are required at compile time — missing configuration is a type error.
    */
-  transactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
-  createStagingRepository?: (tx: unknown) => HistoricalStagingRepository;
-  createAudit?: (tx: unknown) => AuditTransactionHandle;
-  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
+  transactionRunner: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+  createStagingRepository: (tx: unknown) => HistoricalStagingRepository;
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -699,18 +699,11 @@ export class HistoricalStagingService {
     };
 
     // WP-08-01F Milestone C Task 2: Execute ALL writes in a single transaction.
-    // If transactionRunner or factories are missing, throw before any write.
-    if (!this.deps.transactionRunner || !this.deps.createStagingRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
-      throw new HistoricalStagingError(
-        "VALIDATION_FAILED",
-        "finalizeStaging requires transactionRunner + tx-scoped factories. Missing transaction configuration.",
-      );
-    }
-
+    // transactionRunner + tx-scoped factories are mandatory (compile-time enforced).
     return await this.deps.transactionRunner(async (tx: unknown) => {
-      const txRepo = this.deps.createStagingRepository!(tx);
-      const txAudit = this.deps.createAudit!(tx);
-      const txIdem = this.deps.createIdempotency!(tx);
+      const txRepo = this.deps.createStagingRepository(tx);
+      const txAudit = this.deps.createAudit(tx);
+      const txIdem = this.deps.createIdempotency(tx);
 
       // Business writes (tx-scoped)
       await txRepo.updateBatchStagedDataHash(user.tenantId, input.importBatchId, stagedDataHash, user.userId);
@@ -837,17 +830,11 @@ export class HistoricalStagingService {
     const manifestHash = crypto.createHash("sha256").update(manifestHashInput).digest("hex");
 
     // WP-08-01F Milestone C Task 3: Execute ALL writes in a single transaction.
-    if (!this.deps.transactionRunner || !this.deps.createStagingRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
-      throw new HistoricalStagingError(
-        "VALIDATION_FAILED",
-        "finalizeCutoverManifest requires transactionRunner + tx-scoped factories. Missing transaction configuration.",
-      );
-    }
-
+    // transactionRunner + tx-scoped factories are mandatory (compile-time enforced).
     return await this.deps.transactionRunner(async (tx: unknown) => {
-      const txRepo = this.deps.createStagingRepository!(tx);
-      const txAudit = this.deps.createAudit!(tx);
-      const txIdem = this.deps.createIdempotency!(tx);
+      const txRepo = this.deps.createStagingRepository(tx);
+      const txAudit = this.deps.createAudit(tx);
+      const txIdem = this.deps.createIdempotency(tx);
 
       // Insert cutover manifest (tx-scoped)
       const manifest = await txRepo.insertCutoverManifest({

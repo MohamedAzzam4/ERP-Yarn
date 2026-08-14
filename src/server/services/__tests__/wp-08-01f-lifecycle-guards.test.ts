@@ -109,7 +109,7 @@ describe("WP-08-01F DEFECT 4 — Service lifecycle guards (zero-effect)", () => 
   describe("registerFile against rejected batch", () => {
     it("rejects with InvalidBatchStatusError", async () => {
       const repo = new InMemoryHistoricalStagingRepository();
-      const svc = new HistoricalStagingService({ repository: repo, audit: new InProcessAuditStore(), idempotency: new InProcessIdempotencyStore(), documentSequence: new InProcessDocumentSequenceStore() });
+      const _audit = new InProcessAuditStore(); const _idem = new InProcessIdempotencyStore(); const svc = new HistoricalStagingService({ repository: repo, audit: _audit, idempotency: _idem, documentSequence: new InProcessDocumentSequenceStore(), transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createStagingRepository: () => repo, createAudit: () => _audit, createIdempotency: () => _idem });
       const batch = makeBatch("rejected");
       repo.seedBatch(TENANT_A, batch);
 
@@ -125,7 +125,7 @@ describe("WP-08-01F DEFECT 4 — Service lifecycle guards (zero-effect)", () => 
   describe("registerFile against cancelled batch", () => {
     it("rejects with InvalidBatchStatusError", async () => {
       const repo = new InMemoryHistoricalStagingRepository();
-      const svc = new HistoricalStagingService({ repository: repo, audit: new InProcessAuditStore(), idempotency: new InProcessIdempotencyStore(), documentSequence: new InProcessDocumentSequenceStore() });
+      const _audit = new InProcessAuditStore(); const _idem = new InProcessIdempotencyStore(); const svc = new HistoricalStagingService({ repository: repo, audit: _audit, idempotency: _idem, documentSequence: new InProcessDocumentSequenceStore(), transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work({}), createStagingRepository: () => repo, createAudit: () => _audit, createIdempotency: () => _idem });
       const batch = makeBatch("cancelled");
       repo.seedBatch(TENANT_A, batch);
 
