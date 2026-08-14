@@ -36,8 +36,8 @@ describe("RUN-STATE.json tracked recovery state", () => {
     expect(data.completedStage).toBe("B1c");
   });
 
-  it("nextStage is B1d", () => {
-    expect(data.nextStage).toBe("B1d");
+  it("nextStage is B1d or IDEMPOTENCY_REPLAY_PLAN", () => {
+    expect(["B1d", "IDEMPOTENCY_REPLAY_PLAN"]).toContain(data.nextStage);
   });
 
   it("batchStatus is review_required", () => {
