@@ -1,0 +1,50 @@
+{
+  "runId": "qaB-r9-1786647635",
+  "batchId": "32fd0ab8-b52a-4a8e-927e-326e634f02b0",
+  "tenantId": "00000000-0000-0000-0000-000000081e50",
+  "completedStage": "B1c",
+  "nextStage": "B1d",
+  "batchStatus": "review_required",
+  "validationStatus": "passed",
+  "blockingErrorCount": 0,
+  "warningCount": 6,
+  "reconciliationStatus": "matched",
+  "file": {
+    "id": "78c48eb0-e73e-4eb2-a376-e76cc2719c36",
+    "version": 1,
+    "checksum": "edc5ff70ffd783ada86e8e9d2e549d0baa2c3df0555af586f092e3ea185ff3c1"
+  },
+  "stagedDataHash": "84fb13a5e36b6d55758aa478f316087d65139f3578122184b070b3059c983d8e",
+  "manifest": {
+    "id": "f33e7008-da57-4ce5-807e-3bbd753add9f",
+    "version": 1,
+    "hash": "30970c444999a7c12fc22bf5e94a70d79529bbe556cdb94be9f20147553d3702"
+  },
+  "reconciliation": {
+    "reportVersion": 1,
+    "resultIds": [
+      "c0527ce1-7f6b-4810-8301-ad30a6322dad",
+      "cf58dcae-147d-4a01-be43-302a93009dfe"
+    ],
+    "resultCount": 2
+  },
+  "unresolvedReviewItems": [
+    {
+      "id": "29f3330c-6397-4863-8114-9baaa9554c29",
+      "reason": "Low-confidence master candidate 'Yarn 1' (confidence=0.500000) needs review."
+    },
+    {
+      "id": "a36c4964-bd64-4a4d-a1ba-ae33ba6200c2",
+      "reason": "Low-confidence master candidate 'Yarn 2' (confidence=0.500000) needs review."
+    },
+    {
+      "id": "1ec5d6d3-9b48-466f-aa21-60a484eabd5f",
+      "reason": "Low-confidence master candidate 'Yarn 3' (confidence=0.500000) needs review."
+    }
+  ],
+  "currentStagingRows": 3,
+  "evidenceDir": "docs/ui-ux/evidence/wp-08-01f/runs/qaB-r9-1786647635",
+  "serverGitSha": "726d3cd7f05948d41589c396f77ecafe71dbe279",
+  "b1dCommand": "NEXT_PUBLIC_SUPABASE_URL=<redacted> SUPABASE_SECRET_KEY=<redacted> DATABASE_URL=<redacted> python3 scripts/wp-08-01f-browser-qa/run-b1-stages.py B1d qaB-r9-1786647635",
+  "lastVerifiedAt": "2026-08-14T00:26:24.747Z"
+}

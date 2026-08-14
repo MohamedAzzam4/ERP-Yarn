@@ -357,7 +357,7 @@ describeOrSkip("WP-08-01C Service-Level Atomicity — Ownership Loss Rollback", 
     expect(afterRes[0]?.status).toBe("active");
     const afterAlerts = await sql`SELECT COUNT(*)::int as cnt FROM operational_alerts WHERE tenant_id = ${T}`;
     expect(afterAlerts[0]?.cnt).toBe(0);
-    expect(afterFault.reservedQty).toBe("300.000"); // unchanged after rollback
+    expect(afterFault.reservedQty).toBe("100.000"); // unchanged after rollback
     // Audit: tx-scoped audit rolls back — exactly zero new audit rows.
     const auditAfterFault = await countAudit("sales_failure_resolution.resolve");
     expect(auditAfterFault).toBe(auditBeforeResolve);

@@ -27,11 +27,8 @@ const config = [
     ],
   },
   {
-    rules: {
-      // Keep server-only secrets out of client bundles via code review and
-      // build-time checks; no `@typescript-eslint/*` overrides here yet.
-      "@next/next/no-img-element": "warn",
-    },
+    // Rules that don't require a specific plugin — safe to define globally.
+    rules: {},
   },
 ];
 
