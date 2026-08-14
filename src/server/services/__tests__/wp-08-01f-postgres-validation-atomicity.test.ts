@@ -24,6 +24,7 @@ import { HistoricalValidationDbRepository } from "@/server/services/historical-v
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { IdempotencyOwnershipLostError } from "@/server/services/idempotency-service";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { RoleCode } from "@/server/security/role-codes";
@@ -471,5 +472,91 @@ describeOrSkip("WP-08-01F Phase 0 — Validation atomicity proofs", () => {
     expect(batchB[0]!.validation_status).toBeNull();
     const findingsB = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchIdB}`)[0]!.c;
     expect(findingsB).toBe(0);
+  });
+
+  // ===========================================================================
+  // VA-6: Owner-token loss before markSucceeded → full rollback
+  // ===========================================================================
+  it("VA-6. owner-token loss before markSucceeded: full rollback, zero effects", async () => {
+    const batchId = randomUUID();
+    await seedBatch(batchId, "staged");
+    const fileId = randomUUID();
+    await sql`INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash, file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at) VALUES (${fileId}, ${T}, ${batchId}, ${"d.csv"}, ${"local://t"}, ${"h"}, 100, ${"text/csv"}, ${"source"}, 1, true, ${U}, NOW())`;
+    const rowId = randomUUID();
+    await sql`INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name, source_sheet_name, source_row_number, raw_row_json, transformed_row_json, transformation_notes, validation_status, review_status, ai_confidence, committed_entity_type, committed_entity_id, staging_version, is_current, created_by, created_at) VALUES (${rowId}, ${T}, ${batchId}, ${fileId}, ${"t"}, ${"s"}, 1, ${JSON.stringify({ name: "Test", code: "C001", quantity: "100", date: "2024-01-01" })}::jsonb, ${JSON.stringify({ name: "Test", code: "C001", quantity: "100", date: "2024-01-01" })}::jsonb, null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${U}, NOW())`;
+
+    const batchBefore = (await sql`SELECT status, validation_status FROM import_batches WHERE id = ${batchId}`)[0];
+    const findingsBefore = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    const auditBefore = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
+    const idemKey = "va6-owner-loss-" + randomUUID();
+
+    // Build a faulty service with owner-token loss at markSucceeded
+    const valRepo = new HistoricalValidationDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const faultyTransactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+      return (db as any).transaction(async (tx: any) => {
+        await work(tx);
+        throw new IdempotencyOwnershipLostError("injected", "injected-token");
+      });
+    };
+    const faultyService = new HistoricalValidationService({
+      repository: valRepo, audit, idempotency: idem,
+      transactionRunner: faultyTransactionRunner,
+      createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    });
+
+    await expect(
+      faultyService.runValidation(makeUser() as any, makeEffective() as any, {
+        importBatchId: batchId, idempotencyKey: idemKey,
+      }),
+    ).rejects.toThrow();
+
+    // Verify rollback
+    const batchAfter = (await sql`SELECT status, validation_status FROM import_batches WHERE id = ${batchId}`)[0];
+    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.validation_status).toBe(batchBefore!.validation_status);
+
+    const findingsAfter = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
+    expect(findingsAfter).toBe(findingsBefore);
+
+    const auditAfter = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
+    expect(auditAfter).toBe(auditBefore); // delta = 0
+
+    // Idempotency not succeeded
+    const idemRecord = await sql`SELECT state FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
+    if (idemRecord.length > 0) {
+      expect(idemRecord[0]!.state).not.toBe("succeeded");
+    }
+
+    // Expire lease for retry
+    await sql`UPDATE idempotency_records SET lease_expires_at = NOW() - interval '1 second' WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
+
+    // Valid retry
+    const goodService = new HistoricalValidationService({
+      repository: valRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)),
+      createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    });
+    const retryResult = await goodService.runValidation(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, idempotencyKey: idemKey,
+    });
+    expect(retryResult.action).toBe("executed");
+
+    const auditAfterRetry = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
+    expect(auditAfterRetry).toBe(auditBefore + 1); // exactly one new audit
+
+    // Replay creates zero new effects
+    const replayResult = await goodService.runValidation(makeUser() as any, makeEffective() as any, {
+      importBatchId: batchId, idempotencyKey: idemKey,
+    });
+    expect(replayResult.action).toBe("replayed");
+
+    const auditAfterReplay = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
+    expect(auditAfterReplay).toBe(auditAfterRetry); // zero new audit
   });
 });
