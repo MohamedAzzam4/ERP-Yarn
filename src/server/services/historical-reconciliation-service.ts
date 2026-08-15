@@ -667,123 +667,192 @@ export class HistoricalReconciliationService {
     const latestVersion = await this.deps.repository.findLatestReportVersion(user.tenantId, input.importBatchId);
     const reportVersion = latestVersion + 1;
 
-    // Mark old version as superseded (NOT deleted — evidence preserved)
-    if (latestVersion > 0) {
-      await this.deps.repository.markVersionAsSuperseded(user.tenantId, input.importBatchId, latestVersion);
-    }
-    // Note: old review items are also preserved — they remain for audit trail.
-
-    // Fetch staging rows
+    // Fetch staging rows (read-only — safe outside the transaction)
     const rows = await this.deps.repository.findStagingRowsForBatch(user.tenantId, input.importBatchId);
 
-    // Compute reconciliation metrics
+    // Compute reconciliation metrics (pure function — safe outside the transaction)
     const metrics = computeReconciliationMetrics(rows, input.expectedTotals);
-
-    let matched = 0;
-    let differences = 0;
-    let blocking = 0;
-    let reviewItemsCreated = 0;
-
-    // Persist each metric as a reconciliation result
-    for (const metric of metrics) {
-      const result = await this.deps.repository.insertReconciliationResult({
-        tenantId: user.tenantId,
-        importBatchId: input.importBatchId,
-        reportVersion,
-        metricKey: metric.metricKey,
-        expectedValue: metric.expectedValue,
-        stagedValue: metric.stagedValue,
-        committedValue: null, // No commit yet (WP-07-04)
-        differenceValue: metric.differenceValue,
-        status: metric.status,
-        notes: metric.reviewReason,
-        createdBy: user.userId,
-      });
-
-      // Audit each reconciliation result
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-        entityType: "import_reconciliation_result",
-        entityId: result.id,
-        actionType: "historical_reconciliation.result",
-        newValuesJson: {
-          importBatchId: input.importBatchId,
-          reportVersion,
-          metricKey: metric.metricKey,
-          expectedValue: metric.expectedValue,
-          stagedValue: metric.stagedValue,
-          differenceValue: metric.differenceValue,
-          status: metric.status,
-        },
-        idempotencyKey: input.idempotencyKey,
-      });
-
-      if (metric.status === "matched") matched++;
-      else if (metric.status === "difference") differences++;
-      else if (metric.status === "blocking") blocking++;
-
-      // Create review items for mismatches/blocking (§8.9 Human Review)
-      if (metric.reviewReason) {
-        const reviewItem = await this.deps.repository.insertReviewItem({
-          tenantId: user.tenantId,
-          importBatchId: input.importBatchId,
-          stagingRowId: null,
-          reviewReason: metric.reviewReason,
-          createdBy: user.userId,
-        });
-        reviewItemsCreated++;
-
-        // Audit each review item
-        await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-          entityType: "import_human_review_item",
-          entityId: reviewItem.id,
-          actionType: "historical_reconciliation.review_created",
-          newValuesJson: {
-            importBatchId: input.importBatchId,
-            reconciliationResultId: result.id,
-            reviewReason: metric.reviewReason,
-            status: "pending",
-          },
-          idempotencyKey: input.idempotencyKey,
-        });
-      }
-    }
-
-    // Update batch status and reconciliationStatus.
-    // WP-08-01F DEFECT 1A: Set reconciliationStatus = "matched" (no blocking),
-    // "difference" (differences but no blocking), or "blocking" (blocking results).
-    // Transition to review_required after reconciliation (submission requires it).
-    const newReconStatus = blocking > 0 ? "blocking" : (differences > 0 ? "difference" : "matched");
-    await this.deps.repository.updateBatchReconciliationStatus(user.tenantId, input.importBatchId, newReconStatus, user.userId);
-    await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, "review_required");
-
-    // Audit reconciliation run
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: "import_batch",
-      entityId: input.importBatchId,
-      actionType: "historical_reconciliation.run",
-      newValuesJson: {
-        importBatchId: input.importBatchId,
-        reportVersion,
-        totalMetrics: metrics.length,
-        matched, differences, blocking,
-        reviewItemsCreated,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
 
     const result: RunReconciliationResult = {
       action: "executed",
       batchId: input.importBatchId,
       reportVersion,
       totalMetrics: metrics.length,
-      matched, differences, blocking,
-      reviewItemsCreated,
+      matched: 0, differences: 0, blocking: 0,
+      reviewItemsCreated: 0,
     };
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200, responseBody: result,
-      entityType: "import_batch", entityId: input.importBatchId,
-    }, claim.record.ownerToken!, now);
+    // -----------------------------------------------------------------------
+    // WP-08-01F Milestone C Task 4: Atomic reconciliation.
+    //
+    // If transactionRunner + tx-scoped factories are provided, ALL business
+    // writes (markVersionAsSuperseded, insertReconciliationResult,
+    // insertReviewItem, updateBatchReconciliationStatus, updateBatchStatus,
+    // audit, markSucceeded) execute inside a single transaction. If ANY
+    // write fails (including injected owner-token loss at markSucceeded),
+    // the entire transaction rolls back — no partial results, no partial
+    // review items, no partial audit rows, no partial idempotency.
+    //
+    // When transactionRunner is NOT provided (in-memory tests), writes
+    // execute directly without a transaction (backward compatibility).
+    // -----------------------------------------------------------------------
+    const useAtomicTransaction = !!(
+      this.deps.transactionRunner &&
+      this.deps.createReconciliationRepository &&
+      this.deps.createAudit &&
+      this.deps.createIdempotency
+    );
+
+    const executeAtomically = async (): Promise<void> => {
+      // Note: when useAtomicTransaction is true, the transactionRunner closure
+      // below temporarily swaps this.deps.repository / .audit / .idempotency
+      // to tx-scoped instances BEFORE calling this function. So all writes
+      // through this.deps.* participate in the transaction.
+      // When useAtomicTransaction is false, this.deps.* are the original
+      // (non-tx) handles, and writes execute directly (in-memory tests).
+
+      // Mark old version as superseded (NOT deleted — evidence preserved).
+      if (latestVersion > 0) {
+        await this.deps.repository.markVersionAsSuperseded(user.tenantId, input.importBatchId, latestVersion);
+      }
+
+      let matched = 0;
+      let differences = 0;
+      let blocking = 0;
+      let reviewItemsCreated = 0;
+
+      // Persist each metric as a reconciliation result.
+      for (const metric of metrics) {
+        const reconResult = await this.deps.repository.insertReconciliationResult({
+          tenantId: user.tenantId,
+          importBatchId: input.importBatchId,
+          reportVersion,
+          metricKey: metric.metricKey,
+          expectedValue: metric.expectedValue,
+          stagedValue: metric.stagedValue,
+          committedValue: null, // No commit yet (WP-07-04)
+          differenceValue: metric.differenceValue,
+          status: metric.status,
+          notes: metric.reviewReason,
+          createdBy: user.userId,
+        });
+
+        // Audit each reconciliation result.
+        await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+          entityType: "import_reconciliation_result",
+          entityId: reconResult.id,
+          actionType: "historical_reconciliation.result",
+          newValuesJson: {
+            importBatchId: input.importBatchId,
+            reportVersion,
+            metricKey: metric.metricKey,
+            expectedValue: metric.expectedValue,
+            stagedValue: metric.stagedValue,
+            differenceValue: metric.differenceValue,
+            status: metric.status,
+          },
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        if (metric.status === "matched") matched++;
+        else if (metric.status === "difference") differences++;
+        else if (metric.status === "blocking") blocking++;
+
+        // Create review items for mismatches/blocking (§8.9 Human Review).
+        if (metric.reviewReason) {
+          const reviewItem = await this.deps.repository.insertReviewItem({
+            tenantId: user.tenantId,
+            importBatchId: input.importBatchId,
+            stagingRowId: null,
+            reviewReason: metric.reviewReason,
+            createdBy: user.userId,
+          });
+          reviewItemsCreated++;
+
+          // Audit each review item.
+          await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+            entityType: "import_human_review_item",
+            entityId: reviewItem.id,
+            actionType: "historical_reconciliation.review_created",
+            newValuesJson: {
+              importBatchId: input.importBatchId,
+              reconciliationResultId: reconResult.id,
+              reviewReason: metric.reviewReason,
+              status: "pending",
+            },
+            idempotencyKey: input.idempotencyKey,
+          });
+        }
+      }
+
+      // Update batch status and reconciliationStatus.
+      // WP-08-01F DEFECT 1A: Set reconciliationStatus = "matched" (no blocking),
+      // "difference" (differences but no blocking), or "blocking" (blocking results).
+      // Transition to review_required after reconciliation (submission requires it).
+      const newReconStatus = blocking > 0 ? "blocking" : (differences > 0 ? "difference" : "matched");
+      await this.deps.repository.updateBatchReconciliationStatus(user.tenantId, input.importBatchId, newReconStatus, user.userId);
+      await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, "review_required");
+
+      // Audit reconciliation run.
+      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+        entityType: "import_batch",
+        entityId: input.importBatchId,
+        actionType: "historical_reconciliation.run",
+        newValuesJson: {
+          importBatchId: input.importBatchId,
+          reportVersion,
+          totalMetrics: metrics.length,
+          matched, differences, blocking,
+          reviewItemsCreated,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      result.matched = matched;
+      result.differences = differences;
+      result.blocking = blocking;
+      result.reviewItemsCreated = reviewItemsCreated;
+
+      // markSucceeded (owner-token-fenced) — must be inside the transaction
+      // so that an owner-token loss rolls back ALL business writes.
+      await markSucceeded(this.deps.idempotency, claim.record.id, {
+        responseCode: 200, responseBody: result,
+        entityType: "import_batch", entityId: input.importBatchId,
+      }, claim.record.ownerToken!, now);
+    };
+
+    if (useAtomicTransaction) {
+      // -------------------------------------------------------------------
+      // Atomic path: wrap executeAtomically in transactionRunner. Inside
+      // the closure, swap the deps' repository/audit/idempotency handles
+      // to tx-scoped instances so ALL writes participate in the transaction.
+      // -------------------------------------------------------------------
+      await this.deps.transactionRunner!(async (tx: unknown) => {
+        const txRepo = this.deps.createReconciliationRepository!(tx);
+        const txAudit = this.deps.createAudit!(tx);
+        const txIdem = this.deps.createIdempotency!(tx);
+
+        // Temporarily swap deps to tx-scoped instances.
+        const savedRepo = this.deps.repository;
+        const savedAudit = this.deps.audit;
+        const savedIdem = this.deps.idempotency;
+        (this.deps as any).repository = txRepo;
+        (this.deps as any).audit = txAudit;
+        (this.deps as any).idempotency = txIdem;
+
+        try {
+          await executeAtomically();
+        } finally {
+          // Restore original deps (non-tx) for any subsequent calls.
+          (this.deps as any).repository = savedRepo;
+          (this.deps as any).audit = savedAudit;
+          (this.deps as any).idempotency = savedIdem;
+        }
+      });
+    } else {
+      // Non-atomic path (in-memory tests): execute directly.
+      await executeAtomically();
+    }
 
     return result;
   }
