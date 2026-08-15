@@ -118,8 +118,9 @@ describe("WP-08-01F Task 1 — Destructive inventory matches canonical search", 
 
   it("canonical search discovers a non-empty file set", () => {
     expect(discovered.length).toBeGreaterThan(0);
-    // Snapshot for visibility — should be 36 at the time of writing.
-    expect(discovered.length).toBe(36);
+    // Snapshot for visibility — should be 37 at the time of writing
+    // (34 original Category A + 1 new RCA test from Task 4 + 2 Category D).
+    expect(discovered.length).toBe(37);
   });
 
   it("inventory row count equals discovered path count", () => {

@@ -1,0 +1,19 @@
+SAFETY: Environment is safe for pooler-proof destructive operations (pooler host=aws-1-eu-central-2.pooler.supabase.com).
+WARNING: Pooler-proof mode allows pooler URLs ONLY for run-scoped compatibility proofs. The script MUST use crypto.randomUUID()-scoped tenant/user IDs and delete only its own run-scoped rows.
+=== Supabase Pooler Idempotency Proof ===
+Run tenant: eb6fa6c5-00fb-49ef-920d-dc72c0026b01
+Run scope: pooler_proof_1786752528923
+Before counts (run-scoped): {"idem_count":"0","user_count":"1","tenant_count":"1"}
+1. Insert succeeded, ownerToken non-null: true
+2. Row found, state: in_progress has_token: true
+3. Owner-fenced markSucceeded succeeded: true
+4. State after markSucceeded: succeeded code: 200
+5. Stale-owner update rejected: true
+6. Replay returned existing row, state: succeeded code: 200
+7. Conflict detected (hash mismatch): true
+8. QA tenant idempotency_records unchanged (before=0, after=0): true
+After cleanup (run-scoped): {"idem_count":"0","user_count":"0","tenant_count":"0"}
+9. Run-scoped cleanup complete (all run rows deleted): true
+10. QA tenant idempotency_records preserved (count=0): true
+
+All Supabase pooler proofs PASSED.
