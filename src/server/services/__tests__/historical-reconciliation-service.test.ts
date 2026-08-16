@@ -227,11 +227,18 @@ describe("WP-07-03 negative/unmatched/versioning", () => {
     expect(result2.reportVersion).toBe(2);
 
     // WP-07-03 correction: Old version 1 results are PRESERVED (not deleted)
+    // and NOT mutated — their notes/evidence fields remain unchanged.
+    // (Milestone C proof correction: markVersionAsSuperseded was removed
+    // because it overwrote the notes field, destroying original review
+    // reasons. The report_version column itself is the supersession
+    // mechanism — latest version is current, older versions are immutable
+    // audit history.)
     const v1Results = await deps.repository.findReconciliationResultsForBatchVersion(TEST_TENANT_ID, "batch-001", 1);
     expect(v1Results.length).toBeGreaterThan(0); // V1 still exists!
 
-    // V1 results are marked as superseded
-    expect(v1Results.every(r => r.notes?.includes("SUPERSEDED"))).toBe(true);
+    // V1 results' notes are NOT overwritten with SUPERSEDED — they retain
+    // their original values (immutable evidence).
+    expect(v1Results.every(r => !r.notes?.includes("SUPERSEDED"))).toBe(true);
 
     // New version 2 results exist
     const v2Results = await deps.repository.findReconciliationResultsForBatchVersion(TEST_TENANT_ID, "batch-001", 2);
