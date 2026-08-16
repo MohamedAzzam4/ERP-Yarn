@@ -644,9 +644,11 @@ export class HistoricalReconciliationService {
     if (!batch) throw new ReconBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // WP-08-01F DEFECT 1: Enforce lifecycle state before any write
-    guardRunReconciliation(batch);
-
+    // ---- Claim idempotency BEFORE the lifecycle guard. ----
+    // This ensures that replay/conflict is determined before any lifecycle
+    // check. A replay must return the cached response even if the batch
+    // state has since changed (the reconciliation already happened). A
+    // conflict must be rejected regardless of batch state.
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -664,6 +666,11 @@ export class HistoricalReconciliationService {
     }
     if (claim.action === "conflict") throw new HistoricalReconciliationError("IDEMPOTENCY_CONFLICT", `Idempotency key conflict.`);
     if (claim.action === "in_progress") throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", `Operation in progress.`);
+
+    // WP-08-01F DEFECT 1: Pre-check lifecycle state (fail-fast).
+    // The AUTHORITATIVE lifecycle check runs AFTER the batch row lock
+    // (see guardRunReconciliation call inside the transactionRunner closure).
+    guardRunReconciliation(batch);
 
     // -----------------------------------------------------------------------
     // WP-08-01F Milestone C Task 6: Atomic reconciliation WITHOUT mutable
@@ -1343,26 +1350,17 @@ export class HistoricalReconciliationService {
       );
     }
 
-    // 2. Load + tenant-scope the batch
+    // 2. Load + tenant-scope the batch (for pre-check only — the
+    //    authoritative lifecycle check happens AFTER the lock).
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
     if (!batch) throw new ReconBatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // 9. Reject committed/rejected/cancelled/committing states
-    const allowedSources = Object.keys(HistoricalReconciliationService.REWORK_BRANCHES);
-    if (!allowedSources.includes(batch.status)) {
-      throw new ReworkInvalidSourceStateError(input.importBatchId, batch.status);
-    }
-
-    // Validate the target state is permitted for this source
-    const allowedTargets = HistoricalReconciliationService.REWORK_BRANCHES[batch.status]!;
-    if (!allowedTargets.has(input.targetState)) {
-      throw new ReworkInvalidTargetStateError(
-        input.importBatchId, batch.status, input.targetState, [...allowedTargets],
-      );
-    }
-
-    // ---- All prerequisites verified. Now claim idempotency. ----
+    // ---- Claim idempotency BEFORE the lifecycle guard. ----
+    // This ensures that replay/conflict is determined before any lifecycle
+    // check. A replay must return the cached response even if the batch
+    // state has since changed (the rework already happened). A conflict
+    // must be rejected regardless of batch state.
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -1389,6 +1387,22 @@ export class HistoricalReconciliationService {
     }
     if (claim.action === "in_progress") {
       throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", "Rework already in progress.");
+    }
+
+    // 9. Pre-check: reject committed/rejected/cancelled/committing states.
+    // This is a fail-fast pre-check — the authoritative check runs after
+    // the batch row lock.
+    const allowedSources = Object.keys(HistoricalReconciliationService.REWORK_BRANCHES);
+    if (!allowedSources.includes(batch.status)) {
+      throw new ReworkInvalidSourceStateError(input.importBatchId, batch.status);
+    }
+
+    // Validate the target state is permitted for this source (pre-check).
+    const allowedTargets = HistoricalReconciliationService.REWORK_BRANCHES[batch.status]!;
+    if (!allowedTargets.has(input.targetState)) {
+      throw new ReworkInvalidTargetStateError(
+        input.importBatchId, batch.status, input.targetState, [...allowedTargets],
+      );
     }
 
     // -----------------------------------------------------------------------
