@@ -28,31 +28,26 @@ contains test fixtures (intentionally unguarded / correctly guarded
 sample files) used by the static-guard-coverage test. These fixtures
 are test DATA, not real scripts that need the guard.
 
-## Discovered Count: 37 paths
+## Discovered Count: 38 paths
 
-The canonical search now discovers 37 paths:
-- 34 executable destructive test/QA harness files (Category A)
+The canonical search now discovers 38 paths:
+- 35 executable destructive test/QA harness files (Category A)
 - 2 comment/fixture-only files (Category D — the guard module itself
   and the static-guard-coverage test that contains `DELETE FROM` inside
   template-literal fixtures)
 - 1 new Category A file added in Task 4: `wp-08-01f-postgres-reconciliation-atomicity.test.ts`
-  (the RCA-1 through RCA-7 PostgreSQL proof file)
-
-The previous checkpoint (commit 96eadd8) reported 35 paths because the
-guard-coverage test file itself (`wp-08-01f-static-guard-coverage.test.ts`)
-was added in the same commit and contains `DELETE FROM` inside
-template-literal fixtures. That file is correctly classified as
-Category D below — the patterns appear only inside string fixtures used
-to verify detection logic, never as executable SQL.
+  (the RCA-1 through RCA-8 PostgreSQL proof file)
+- 1 new Category A file added in Task 2: `wp-08-01f-postgres-rework-atomicity.test.ts`
+  (the RW-1 through RW-6 rework atomicity proof file)
 
 ## Category Counts
 
-- Category A (executable destructive test/QA harness): 35
+- Category A (executable destructive test/QA harness): 36
 - Category B (legitimate production domain deletion): 0
 - Category C (migration/setup): 0
 - Category D (comment / fixture string only — no executable DELETE): 2
 
-A + B + C + D = 35 + 0 + 0 + 2 = 37 = discovered count ✓
+A + B + C + D = 36 + 0 + 0 + 2 = 38 = discovered count ✓
 
 ## Category Definitions
 
@@ -104,6 +99,7 @@ A + B + C + D = 35 + 0 + 0 + 2 = 37 = discovered count ✓
 | 35 | src/server/services/__tests__/wp-08-01f-r6-fail-closed-audit.test.ts | 57-59 | DELETE import_batches, users, tenants | A | Shared guard | Fixed in commit b5a06c4. |
 | 36 | src/server/services/__tests__/wp-08-01f-static-guard-coverage.test.ts | 128, 137 | `DELETE FROM import_batches` inside template-literal fixtures | **D** | N/A (static-analysis test) | The `DELETE FROM` patterns appear only inside backtick string literals used as test fixtures for verifying guard-detection logic. No executable SQL ever reaches a driver from this file. |
 | 37 | src/server/services/__tests__/wp-08-01f-postgres-reconciliation-atomicity.test.ts | 288-301 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Task 4 (commit 9aec204), corrected in Milestone C proof corrections: removed all audit_logs deletion and trigger-disable; uses per-test unique tenants; audit_logs left immutable. |
+| 38 | src/server/services/__tests__/wp-08-01f-postgres-rework-atomicity.test.ts | 288-301 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Task 2 (commit 6b4003d) — RW-1 through RW-6 rework atomicity proofs. Uses per-test unique tenants; audit_logs left immutable. |
 
 ## Root Cause of the Previous 35-vs-34 Contradiction
 
