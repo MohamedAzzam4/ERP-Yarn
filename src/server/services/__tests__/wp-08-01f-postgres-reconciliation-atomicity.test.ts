@@ -898,18 +898,116 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     expect(batch!.status).toBe("review_required");
     expect(batch!.reconciliation_status).toBe("matched");
 
-    // Winning idempotency succeeded; losing idempotency NOT succeeded.
+    // Winning idempotency succeeded; losing idempotency = business_failed
+    // (deterministic post-claim lifecycle rejection).
     const idem1 = await getIdemState(scope, idemKey1);
     const idem2 = await getIdemState(scope, idemKey2);
     const winnerIdem = winner.value === (result1 as PromiseFulfilledResult<any>)?.value ? idem1 : idem2;
     const loserIdem = winner.value === (result1 as PromiseFulfilledResult<any>)?.value ? idem2 : idem1;
     expect(winnerIdem?.state).toBe("succeeded");
-    // The loser's idempotency record may or may not exist (depending on
-    // whether it was claimed before the rejection). If it exists, it must
-    // NOT be succeeded.
-    if (loserIdem) {
-      expect(loserIdem.state).not.toBe("succeeded");
-    }
+    // WP-08-01F Milestone C Task 2: The loser's idempotency record MUST be
+    // in the exact approved business_failed state (durable, retry returns
+    // the same failure). NOT in_progress, NOT succeeded.
+    expect(loserIdem).not.toBeNull();
+    expect(loserIdem!.state).toBe("business_failed");
+    // The loser has no persisted success response.
+    expect(loserIdem!.response_body).not.toBeNull();
+    expect((loserIdem!.response_body as any)?.code).toBe("LIFECYCLE_VIOLATION");
+
+    // WP-08-01F Milestone C Task 2: Retry the loser key — it must throw
+    // the same LIFECYCLE_VIOLATION error (durable business_failed replay).
+    // The batch is still in review_required with non-null reconciliationStatus.
+    const loserKey = winner.value === (result1 as PromiseFulfilledResult<any>)?.value ? idemKey2 : idemKey1;
+    await expect(
+      reconciliationService.runReconciliation(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, expectedTotals: {}, idempotencyKey: loserKey },
+      ),
+    ).rejects.toThrow(/LIFECYCLE_VIOLATION|already completed/i);
+
+    // No additional business effects from the loser retry.
+    const auditAfterLoserRetry = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    expect(auditAfterLoserRetry).toBe(auditAfter); // unchanged
+    const resultsAfterLoserRetry = await getReconResultCount(scope, batchId);
+    expect(resultsAfterLoserRetry).toBe(totalResults); // unchanged
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // RCA-9 — AUTHORITATIVE STAGING SNAPSHOT
+  //
+  // Proves that runReconciliation() does NOT consume pre-lock staging data.
+  // The staging read and metric calculation happen INSIDE the transaction,
+  // AFTER the batch row lock and lifecycle guard.
+  //
+  // This test uses a deterministic repository-boundary proof: it wraps the
+  // NON-tx repository's findStagingRowsForBatch to track whether it was
+  // called on the atomic production path. If the production path ever
+  // regresses to reading staging data before the lock, this test fails.
+  // ===========================================================================
+  it("RCA-9. authoritative staging snapshot: staging read happens inside the transaction, not before the lock", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+
+    // Track whether the NON-tx repository's findStagingRowsForBatch is
+    // called. On the atomic production path, it must NOT be called —
+    // staging reads must go through the tx-scoped repository.
+    let nonTxStagingReadCount = 0;
+
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+
+    // Wrap the NON-tx repo to count staging reads. Use a Proxy to intercept
+    // only findStagingRowsForBatch while delegating everything else.
+    const wrappedNonTxRepo = new Proxy(reconRepo, {
+      get(target, prop, receiver) {
+        if (prop === "findStagingRowsForBatch") {
+          return async (tenantId: string, importBatchId: string) => {
+            nonTxStagingReadCount++;
+            return target.findStagingRowsForBatch(tenantId, importBatchId);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as HistoricalReconciliationRepository;
+
+    const reconciliationService = new HistoricalReconciliationService({
+      repository: wrappedNonTxRepo, audit, idempotency: idem, commitRepository: commitRepo,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+    });
+
+    const idemKey = "rca9-snapshot-" + randomUUID();
+    const result = await reconciliationService.runReconciliation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
+    );
+
+    expect(result.action).toBe("executed");
+    expect(result.reportVersion).toBe(1);
+    expect(result.totalMetrics).toBeGreaterThan(0);
+
+    // CRITICAL: The NON-tx repository's findStagingRowsForBatch must NOT
+    // have been called. The staging read must go through the tx-scoped
+    // repository (createReconciliationRepository), not the non-tx one.
+    // If this count is > 0, the production path has regressed to reading
+    // staging data before the lock.
+    expect(nonTxStagingReadCount).toBe(0);
+
+    // The reconciliation results must reflect the authoritative (tx-scoped)
+    // staging data, which is the actual staged data.
+    const resultsAfter = await getReconResultCount(scope, batchId);
+    expect(resultsAfter).toBe(result.totalMetrics);
 
     await cleanupScope(scope);
   });

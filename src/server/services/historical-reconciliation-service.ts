@@ -661,6 +661,16 @@ export class HistoricalReconciliationService {
     });
 
     if (claim.action === "replay") {
+      // WP-08-01F Milestone C Task 2: If the replayed record is
+      // business_failed, re-throw the original business error so the
+      // caller sees the same failure on retry.
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
+        throw new HistoricalReconciliationError(
+          errorBody?.code ?? "BUSINESS_FAILED",
+          errorBody?.message ?? "Previous business failure (durable).",
+        );
+      }
       const responseBody = claim.record.responseBody as Partial<RunReconciliationResult> | null;
       if (responseBody?.batchId) return { ...responseBody, action: "replayed" } as RunReconciliationResult;
     }
@@ -673,42 +683,38 @@ export class HistoricalReconciliationService {
     guardRunReconciliation(batch);
 
     // -----------------------------------------------------------------------
-    // WP-08-01F Milestone C Task 6: Atomic reconciliation WITHOUT mutable
-    // dependency swapping.
+    // WP-08-01F Milestone C Task 1 (Snapshot correction): The staging read
+    // and metric calculation MUST happen INSIDE the authoritative
+    // transaction, AFTER the batch row lock and lifecycle guard.
     //
-    // The report version is allocated INSIDE the transaction (not before it)
-    // to prevent two concurrent reconciliations from allocating the same
-    // version number. The batch row is locked (SELECT ... FOR UPDATE)
-    // inside the transaction so that concurrent reconciliations serialize
-    // on the batch row. This is the smallest contract-consistent locking
-    // approach — it does not invent a new business rule, it just uses
-    // PostgreSQL's row-level locking to preserve a deterministic version
-    // sequence.
+    // Audit of staging mutation paths:
+    //   - `replaceMigrationFile` is allowed in `validation_complete` and
+    //     `review_required` states (REPLACEMENT_ELIGIBLE_STATES), which
+    //     overlap with RECONCILIATION_ELIGIBLE_STATES.
+    //   - A concurrent `replaceMigrationFile` transitions the batch to
+    //     `source_uploaded`, resetting staged_data_hash, validation_status,
+    //     and reconciliation_status.
+    //   - This means a pre-lock staging read CAN become stale if a
+    //     concurrent file replacement races with reconciliation.
     //
-    // If transactionRunner + tx-scoped factories are provided, ALL business
-    // writes execute inside a single transaction with EXPLICIT tx-scoped
-    // deps passed to executeAtomically (no mutation of this.deps).
+    // Contract 08 §8.7 says "a material staged-row/file/mapping change
+    // invalidates prior reconciliation" — but this is enforced at the
+    // lifecycle level (batch status transition), NOT at the row-level
+    // physical immutability. A pre-lock staging read is NOT safe.
     //
-    // WP-08-01F Milestone C Task 5: Old reconciliation evidence is NEVER
-    // mutated. The `report_version` column itself is the supersession
-    // mechanism — the latest version is "current", older versions remain
-    // as immutable audit history (Contract 08 §8.7, DEC-019 principle:
-    // "older versions are retained as superseded audit history"). The
-    // previous markVersionAsSuperseded call was removed because it
-    // overwrote the `notes` field, destroying the original review reason.
+    // The authoritative reconciliation calculation now uses staging data
+    // read through the tx-scoped reconciliation repository AFTER:
+    //   1. transaction start;
+    //   2. batch SELECT ... FOR UPDATE;
+    //   3. authoritative batch re-read;
+    //   4. authoritative lifecycle guard.
     // -----------------------------------------------------------------------
-
-    // Fetch staging rows (read-only — safe outside the transaction)
-    const rows = await this.deps.repository.findStagingRowsForBatch(user.tenantId, input.importBatchId);
-
-    // Compute reconciliation metrics (pure function — safe outside the transaction)
-    const metrics = computeReconciliationMetrics(rows, input.expectedTotals);
 
     const result: RunReconciliationResult = {
       action: "executed",
       batchId: input.importBatchId,
       reportVersion: 0, // allocated inside the transaction
-      totalMetrics: metrics.length,
+      totalMetrics: 0, // computed inside the transaction
       matched: 0, differences: 0, blocking: 0,
       reviewItemsCreated: 0,
     };
@@ -724,6 +730,10 @@ export class HistoricalReconciliationService {
     // executeAtomically: takes EXPLICIT tx-scoped deps (repo, audit, idem)
     // instead of reading from this.deps. This eliminates the need to mutate
     // this.deps during the transaction.
+    //
+    // WP-08-01F Milestone C Task 1: Staging rows are read and metrics are
+    // computed INSIDE this function, using the tx-scoped repo. The pre-lock
+    // staging read has been removed.
     // -----------------------------------------------------------------------
     const executeAtomically = async (
       repo: HistoricalReconciliationRepository,
@@ -739,6 +749,16 @@ export class HistoricalReconciliationService {
       const latestVersion = await repo.findLatestReportVersion(user.tenantId, input.importBatchId);
       const reportVersion = latestVersion + 1;
       result.reportVersion = reportVersion;
+
+      // WP-08-01F Milestone C Task 1: Read staging rows through the
+      // tx-scoped repo AFTER the lock. This ensures the metrics are
+      // computed from the authoritative staging state, not a stale
+      // pre-lock snapshot.
+      const rows = await repo.findStagingRowsForBatch(user.tenantId, input.importBatchId);
+
+      // Compute reconciliation metrics from the authoritative staging read.
+      const metrics = computeReconciliationMetrics(rows, input.expectedTotals);
+      result.totalMetrics = metrics.length;
 
       // WP-08-01F Milestone C Task 5: Do NOT call markVersionAsSuperseded.
       // Old reconciliation results remain unchanged as immutable audit
@@ -861,70 +881,80 @@ export class HistoricalReconciliationService {
       // UPDATE) inside the transaction, then RE-READ the batch and RE-RUN
       // the lifecycle guard against the authoritative locked state.
       //
-      // The pre-lock lifecycle check (line 648) is a fail-fast pre-check
-      // only — it is NOT authoritative. Between the pre-check and the lock
-      // acquisition, another concurrent reconciliation may have moved the
-      // batch from `validation_complete` to `review_required`. The
-      // authoritative guard runs AFTER the lock, against the locked state.
-      //
-      // This prevents a second concurrent reconciliation from operating on
-      // stale lifecycle eligibility: it will observe `review_required`
-      // (not `validation_complete`) and be rejected by the guard.
+      // WP-08-01F Milestone C Task 2: If the authoritative lifecycle guard
+      // rejects the call AFTER a successful idempotency claim, the
+      // idempotency record is marked as business_failed using the NON-tx
+      // handle (so it commits independently of the rolling-back transaction).
+      // This makes the loser state deterministic: business_failed (durable,
+      // retry returns the same failure) rather than in_progress (ambiguous,
+      // waits for lease expiry).
       // -------------------------------------------------------------------
-      await this.deps.transactionRunner!(async (tx: unknown) => {
-        // Lock the batch row and RE-READ its current status.
-        const batchRows = await (tx as any).execute(
-          drizzleSql`SELECT id, status, validation_status, reconciliation_status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
-        );
-        if (!batchRows || (batchRows as any[]).length === 0) {
-          throw new ReconBatchNotFoundError(input.importBatchId);
-        }
-        const lockedBatchRow = (batchRows as any[])[0]!;
-
-        // AUTHORITATIVE lifecycle guard: run against the locked state.
-        // If a concurrent reconciliation already moved the batch to
-        // `review_required`, this guard rejects the second call with
-        // LIFECYCLE_VIOLATION — zero business effects.
-        const lockedBatch: ImportBatch = {
-          ...batch,
-          status: lockedBatchRow.status as any,
-          validationStatus: lockedBatchRow.validation_status,
-          reconciliationStatus: lockedBatchRow.reconciliation_status,
-        };
-        guardRunReconciliation(lockedBatch);
-
-        // WP-08-01F Milestone C Task 4: Prevent concurrent double-reconciliation.
-        // If the locked batch is in `review_required` with a non-null
-        // `reconciliationStatus`, it means a prior reconciliation has already
-        // completed and the batch has NOT been through rework (which resets
-        // reconciliationStatus to null). Absent an explicit approved
-        // contract/DEC authorizing a new reconciliation version without
-        // intervening rework/revalidation, reject this call.
-        //
-        // Contract 08 §8.7 lifecycle:
-        //   validation_complete → reconciliation_in_progress → review_required
-        // From review_required, the only contract-defined paths are:
-        //   submitForApproval → pending_dual_approval
-        //   reopenBatchForRework → normalized/staged/validation_in_progress
-        // (which resets reconciliationStatus to null, allowing re-reconciliation
-        // after re-validation).
-        if (lockedBatch.status === "review_required" && lockedBatch.reconciliationStatus !== null) {
-          throw new HistoricalReconciliationError(
-            "LIFECYCLE_VIOLATION",
-            `Reconciliation has already completed for batch '${input.importBatchId}' (status='${lockedBatch.status}', reconciliationStatus='${lockedBatch.reconciliationStatus}'). A new reconciliation version requires intervening rework (reopenBatchForRework) to reset the reconciliation status.`,
+      try {
+        await this.deps.transactionRunner!(async (tx: unknown) => {
+          // Lock the batch row and RE-READ its current status.
+          const batchRows = await (tx as any).execute(
+            drizzleSql`SELECT id, status, validation_status, reconciliation_status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
           );
-        }
+          if (!batchRows || (batchRows as any[]).length === 0) {
+            throw new ReconBatchNotFoundError(input.importBatchId);
+          }
+          const lockedBatchRow = (batchRows as any[])[0]!;
 
-        // Re-fetch staging rows INSIDE the transaction so the calculation
-        // is bound to the authoritative eligible batch/staging state.
-        // (Staging rows are immutable while the batch is eligible for
-        // reconciliation — Contract 08 §8.7 — so this re-fetch is
-        // defensive, not strictly required.)
-        const txRepo = this.deps.createReconciliationRepository!(tx);
-        const txAudit = this.deps.createAudit!(tx);
-        const txIdem = this.deps.createIdempotency!(tx);
-        await executeAtomically(txRepo, txAudit, txIdem);
-      });
+          // AUTHORITATIVE lifecycle guard: run against the locked state.
+          const lockedBatch: ImportBatch = {
+            ...batch,
+            status: lockedBatchRow.status as any,
+            validationStatus: lockedBatchRow.validation_status,
+            reconciliationStatus: lockedBatchRow.reconciliation_status,
+          };
+          guardRunReconciliation(lockedBatch);
+
+          // WP-08-01F Milestone C Task 4: Prevent concurrent double-reconciliation.
+          if (lockedBatch.status === "review_required" && lockedBatch.reconciliationStatus !== null) {
+            throw new HistoricalReconciliationError(
+              "LIFECYCLE_VIOLATION",
+              `Reconciliation has already completed for batch '${input.importBatchId}' (status='${lockedBatch.status}', reconciliationStatus='${lockedBatch.reconciliationStatus}'). A new reconciliation version requires intervening rework (reopenBatchForRework) to reset the reconciliation status.`,
+            );
+          }
+
+          // WP-08-01F Milestone C Task 1: Staging rows are read INSIDE
+          // executeAtomically via the tx-scoped repo, AFTER the lock and
+          // lifecycle guard.
+          const txRepo = this.deps.createReconciliationRepository!(tx);
+          const txAudit = this.deps.createAudit!(tx);
+          const txIdem = this.deps.createIdempotency!(tx);
+          await executeAtomically(txRepo, txAudit, txIdem);
+        });
+      } catch (error) {
+        // WP-08-01F Milestone C Task 2: If the error is a lifecycle
+        // violation that occurred AFTER a successful idempotency claim
+        // (i.e., the authoritative post-lock guard rejected the call),
+        // mark the idempotency record as business_failed using the
+        // NON-tx handle. This commits independently of the rolled-back
+        // transaction, making the loser state deterministic.
+        //
+        // business_failed is the approved state for "business precondition
+        // failed — durable" (Contract 06 §7.1). Retry with same key returns
+        // the same failure. This is correct for a lifecycle violation:
+        // the batch is no longer eligible, so retrying with the same key
+        // should return the same failure until the batch is reworked.
+        if (error instanceof HistoricalReconciliationError && error.code === "LIFECYCLE_VIOLATION") {
+          try {
+            await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+              responseCode: 409,
+              responseBody: { code: error.code, message: error.message },
+              lastErrorClass: "HistoricalReconciliationError",
+              entityType: "import_batch",
+              entityId: input.importBatchId,
+            }, claim.record.ownerToken!, now);
+          } catch {
+            // If markBusinessFailed fails (e.g., owner token already
+            // changed), the record stays in_progress and will expire
+            // via lease. This is a fallback, not the primary path.
+          }
+        }
+        throw error;
+      }
     } else {
       // Non-atomic path (in-memory tests): execute directly with the
       // original (non-tx) deps. No batch row locking (in-memory store
@@ -1377,6 +1407,15 @@ export class HistoricalReconciliationService {
     });
 
     if (claim.action === "replay") {
+      // WP-08-01F Milestone C Task 2: If the replayed record is
+      // business_failed, re-throw the original business error.
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
+        throw new HistoricalReconciliationError(
+          errorBody?.code ?? "BUSINESS_FAILED",
+          errorBody?.message ?? "Previous business failure (durable).",
+        );
+      }
       const responseBody = claim.record.responseBody as Partial<ReworkBatchResult> | null;
       if (responseBody?.batchId) {
         return { ...responseBody, action: "replayed" } as ReworkBatchResult;
@@ -1513,45 +1552,66 @@ export class HistoricalReconciliationService {
       // Lock the batch row (SELECT ... FOR UPDATE) and RE-READ the batch
       // inside the transaction. The lifecycle guard is run against this
       // authoritative locked state, not the pre-lock snapshot.
+      //
+      // WP-08-01F Milestone C Task 2: If the authoritative post-lock
+      // lifecycle guard rejects the call, mark the idempotency record as
+      // business_failed using the NON-tx handle (commits independently of
+      // the rolled-back transaction).
       // -------------------------------------------------------------------
-      return await this.deps.transactionRunner!(async (tx: unknown) => {
-        // Lock the batch row for the duration of this transaction.
-        const batchRows = await (tx as any).execute(
-          drizzleSql`SELECT id, status, validation_status, reconciliation_status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
-        );
-        if (!batchRows || (batchRows as any[]).length === 0) {
-          throw new ReconBatchNotFoundError(input.importBatchId);
-        }
-        const lockedBatchRow = (batchRows as any[])[0]!;
-
-        // Re-run the lifecycle guard against the AUTHORITATIVE locked state.
-        // The pre-lock batch may be stale if another concurrent rework or
-        // reconciliation changed the status between the pre-check and the
-        // lock acquisition.
-        const allowedSources = Object.keys(HistoricalReconciliationService.REWORK_BRANCHES);
-        if (!allowedSources.includes(lockedBatchRow.status)) {
-          throw new ReworkInvalidSourceStateError(input.importBatchId, lockedBatchRow.status);
-        }
-        const allowedTargets = HistoricalReconciliationService.REWORK_BRANCHES[lockedBatchRow.status]!;
-        if (!allowedTargets.has(input.targetState)) {
-          throw new ReworkInvalidTargetStateError(
-            input.importBatchId, lockedBatchRow.status, input.targetState, [...allowedTargets],
+      try {
+        return await this.deps.transactionRunner!(async (tx: unknown) => {
+          const batchRows = await (tx as any).execute(
+            drizzleSql`SELECT id, status, validation_status, reconciliation_status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
           );
+          if (!batchRows || (batchRows as any[]).length === 0) {
+            throw new ReconBatchNotFoundError(input.importBatchId);
+          }
+          const lockedBatchRow = (batchRows as any[])[0]!;
+
+          // Re-run the lifecycle guard against the AUTHORITATIVE locked state.
+          const allowedSources = Object.keys(HistoricalReconciliationService.REWORK_BRANCHES);
+          if (!allowedSources.includes(lockedBatchRow.status)) {
+            throw new ReworkInvalidSourceStateError(input.importBatchId, lockedBatchRow.status);
+          }
+          const allowedTargets = HistoricalReconciliationService.REWORK_BRANCHES[lockedBatchRow.status]!;
+          if (!allowedTargets.has(input.targetState)) {
+            throw new ReworkInvalidTargetStateError(
+              input.importBatchId, lockedBatchRow.status, input.targetState, [...allowedTargets],
+            );
+          }
+
+          const lockedBatch: ImportBatch = {
+            ...batch,
+            status: lockedBatchRow.status as any,
+            validationStatus: lockedBatchRow.validation_status,
+            reconciliationStatus: lockedBatchRow.reconciliation_status,
+          };
+
+          const txRepo = this.deps.createReconciliationRepository!(tx);
+          const txCommitRepo = this.deps.createCommitRepository!(tx);
+          const txAudit = this.deps.createAudit!(tx);
+          const txIdem = this.deps.createIdempotency!(tx);
+          return executeReworkAtomically(txRepo, txCommitRepo, txAudit, txIdem, lockedBatch);
+        });
+      } catch (error) {
+        // WP-08-01F Milestone C Task 2: Mark idempotency as business_failed
+        // for post-claim lifecycle rejections. ReworkInvalidSourceStateError
+        // and ReworkInvalidTargetStateError are lifecycle violations.
+        if (error instanceof ReworkInvalidSourceStateError || error instanceof ReworkInvalidTargetStateError) {
+          try {
+            await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+              responseCode: 409,
+              responseBody: { code: "LIFECYCLE_VIOLATION", message: error.message },
+              lastErrorClass: error.constructor.name,
+              entityType: "import_batch",
+              entityId: input.importBatchId,
+            }, claim.record.ownerToken!, now);
+          } catch {
+            // Fallback: record stays in_progress, expires via lease.
+          }
         }
-
-        const lockedBatch: ImportBatch = {
-          ...batch,
-          status: lockedBatchRow.status as any,
-          validationStatus: lockedBatchRow.validation_status,
-          reconciliationStatus: lockedBatchRow.reconciliation_status,
-        };
-
-        const txRepo = this.deps.createReconciliationRepository!(tx);
-        const txCommitRepo = this.deps.createCommitRepository!(tx);
-        const txAudit = this.deps.createAudit!(tx);
-        const txIdem = this.deps.createIdempotency!(tx);
-        return executeReworkAtomically(txRepo, txCommitRepo, txAudit, txIdem, lockedBatch);
-      });
+        throw error;
+      }
     } else {
       // Non-atomic path (in-memory tests): execute directly with the
       // original (non-tx) deps. No batch row locking (in-memory store
