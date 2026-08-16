@@ -45,11 +45,20 @@
  *   scripts blocked instead."
  *
  *   The live-validation scripts (wp-05-03, wp-06-01, etc.) are now
- *   BLOCKED by the guard. They must be run WITHOUT the guard CLI
- *   invocation (the scripts still work if invoked directly without the
- *   guard — but the static-guard-coverage test will flag them as
- *   unguarded). This is the intended behavior: the conflict is reported,
- *   not bypassed.
+ *   BLOCKED by the guard. They invoke the guard CLI in default mode,
+ *   which requires a local disposable DB. When pointed at remote
+ *   Supabase, the guard rejects them (exit 1).
+ *
+ *   Direct bypass (invoking a destructive live-validation script
+ *   without the guard CLI) is NOT an accepted operating mode. The
+ *   static-guard-coverage test enforces that every Category A script
+ *   invokes the centralized guard before any DB connection or
+ *   destructive operation. Scripts that do not invoke the guard are
+ *   flagged as violations and must be corrected.
+ *
+ *   This is the intended behavior: the conflict is reported, not
+ *   bypassed. Remote destructive live validation remains blocked
+ *   until an explicit DEC entry authorizes it.
  *
  * Exit codes:
  *   0 — environment is safe for the requested mode

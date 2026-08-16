@@ -601,15 +601,18 @@ describeOrSkip("WP-08-01F Phase 0 — Validation atomicity proofs", () => {
     expect(idemAfterRetry[0]!.state).toBe("succeeded");
 
     // Retry: exactly one final effect set — findings, aliases, review items
-    // are non-zero (validation completed and persisted findings/aliases/review items).
+    // are exact integers (validation completed and persisted findings/aliases/review items).
     const findingsAfterRetry = (await sql`SELECT count(*)::int AS c FROM import_validation_errors WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
     const aliasAfterRetry = (await sql`SELECT count(*)::int AS c FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
     const reviewAfterRetry = (await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`)[0]!.c;
-    // Validation runs rules against the seeded staging row; at least one finding
-    // and at least one alias mapping (the row has a `name` field) must be present.
-    expect(findingsAfterRetry).toBeGreaterThan(0);
-    expect(aliasAfterRetry).toBeGreaterThan(0);
-    expect(reviewAfterRetry).toBeGreaterThan(0);
+    // The seeded staging row { name: "Test", code: "C001", quantity: "100", date: "2024-01-01" }
+    // produces deterministic validation outputs:
+    //   - 3 findings (validation rules produce 3 findings for this row's field set)
+    //   - 1 alias mapping (the row has a `name` field → customer master candidate)
+    //   - 1 human review item (all candidates require human review per Contract 08 §8.4)
+    expect(findingsAfterRetry).toBe(3);
+    expect(aliasAfterRetry).toBe(1);
+    expect(reviewAfterRetry).toBe(1);
 
     // --- (3) REPLAY: zero additional effects. ---
     const replayResult = await goodService.runValidation(makeUser() as any, makeEffective() as any, {
