@@ -850,22 +850,69 @@ export class HistoricalReconciliationService {
       // Atomic path: create tx-scoped deps and pass them explicitly to
       // executeAtomically. NO mutation of this.deps.
       //
-      // WP-08-01F Milestone C Task 6: Lock the batch row (SELECT ... FOR
-      // UPDATE) inside the transaction BEFORE allocating the report version.
-      // This serializes concurrent reconciliations on the same batch so
-      // they cannot allocate the same or inconsistent report versions.
+      // WP-08-01F Milestone C Task 4+6: Lock the batch row (SELECT ... FOR
+      // UPDATE) inside the transaction, then RE-READ the batch and RE-RUN
+      // the lifecycle guard against the authoritative locked state.
+      //
+      // The pre-lock lifecycle check (line 648) is a fail-fast pre-check
+      // only — it is NOT authoritative. Between the pre-check and the lock
+      // acquisition, another concurrent reconciliation may have moved the
+      // batch from `validation_complete` to `review_required`. The
+      // authoritative guard runs AFTER the lock, against the locked state.
+      //
+      // This prevents a second concurrent reconciliation from operating on
+      // stale lifecycle eligibility: it will observe `review_required`
+      // (not `validation_complete`) and be rejected by the guard.
       // -------------------------------------------------------------------
       await this.deps.transactionRunner!(async (tx: unknown) => {
-        // Lock the batch row for the duration of this transaction.
-        // This prevents concurrent runReconciliation calls from allocating
-        // the same report_version. The lock is released at COMMIT/ROLLBACK.
+        // Lock the batch row and RE-READ its current status.
         const batchRows = await (tx as any).execute(
-          drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+          drizzleSql`SELECT id, status, validation_status, reconciliation_status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
         );
         if (!batchRows || (batchRows as any[]).length === 0) {
           throw new ReconBatchNotFoundError(input.importBatchId);
         }
+        const lockedBatchRow = (batchRows as any[])[0]!;
 
+        // AUTHORITATIVE lifecycle guard: run against the locked state.
+        // If a concurrent reconciliation already moved the batch to
+        // `review_required`, this guard rejects the second call with
+        // LIFECYCLE_VIOLATION — zero business effects.
+        const lockedBatch: ImportBatch = {
+          ...batch,
+          status: lockedBatchRow.status as any,
+          validationStatus: lockedBatchRow.validation_status,
+          reconciliationStatus: lockedBatchRow.reconciliation_status,
+        };
+        guardRunReconciliation(lockedBatch);
+
+        // WP-08-01F Milestone C Task 4: Prevent concurrent double-reconciliation.
+        // If the locked batch is in `review_required` with a non-null
+        // `reconciliationStatus`, it means a prior reconciliation has already
+        // completed and the batch has NOT been through rework (which resets
+        // reconciliationStatus to null). Absent an explicit approved
+        // contract/DEC authorizing a new reconciliation version without
+        // intervening rework/revalidation, reject this call.
+        //
+        // Contract 08 §8.7 lifecycle:
+        //   validation_complete → reconciliation_in_progress → review_required
+        // From review_required, the only contract-defined paths are:
+        //   submitForApproval → pending_dual_approval
+        //   reopenBatchForRework → normalized/staged/validation_in_progress
+        // (which resets reconciliationStatus to null, allowing re-reconciliation
+        // after re-validation).
+        if (lockedBatch.status === "review_required" && lockedBatch.reconciliationStatus !== null) {
+          throw new HistoricalReconciliationError(
+            "LIFECYCLE_VIOLATION",
+            `Reconciliation has already completed for batch '${input.importBatchId}' (status='${lockedBatch.status}', reconciliationStatus='${lockedBatch.reconciliationStatus}'). A new reconciliation version requires intervening rework (reopenBatchForRework) to reset the reconciliation status.`,
+          );
+        }
+
+        // Re-fetch staging rows INSIDE the transaction so the calculation
+        // is bound to the authoritative eligible batch/staging state.
+        // (Staging rows are immutable while the batch is eligible for
+        // reconciliation — Contract 08 §8.7 — so this re-fetch is
+        // defensive, not strictly required.)
         const txRepo = this.deps.createReconciliationRepository!(tx);
         const txAudit = this.deps.createAudit!(tx);
         const txIdem = this.deps.createIdempotency!(tx);
@@ -1344,57 +1391,83 @@ export class HistoricalReconciliationService {
       throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", "Rework already in progress.");
     }
 
-    // ---- All prerequisites verified. WP-08-01F DEFECT 3: The entire
-    // rework mutation phase (mark superseded + reset statuses + invalidate
-    // approvals + supersede review items + transition + audit + idempotency
-    // markSucceeded) is atomic — all commit or all roll back.
-    // ----
-    const executeReworkAtomically = async (): Promise<ReworkBatchResult> => {
-      // 3. Invalidate current validation/reconciliation approval bindings
-      const latestReportVersion = await this.deps.repository.findLatestReportVersion(
+    // -----------------------------------------------------------------------
+    // WP-08-01F Milestone C Task 1+2: Atomic rework WITHOUT mutable
+    // dependency swapping and WITHOUT markVersionAsSuperseded.
+    //
+    // Old reconciliation results are NEVER mutated. The report_version
+    // column itself is the supersession mechanism — the latest version is
+    // "current", older versions remain as immutable audit history (Contract
+    // 08 §8.7, DEC-019 principle: "older versions are retained as
+    // superseded audit history"). The previous markVersionAsSuperseded
+    // call was removed because it overwrote the `notes` field, destroying
+    // the original review reason evidence.
+    //
+    // The rework mutation phase (reset statuses + invalidate approvals +
+    // supersede review items + transition + audit + idempotency
+    // markSucceeded) is atomic with EXPLICIT tx-scoped deps passed to
+    // executeReworkAtomically (no mutation of this.deps).
+    // -----------------------------------------------------------------------
+    const useAtomicTransaction = !!(
+      this.deps.transactionRunner &&
+      this.deps.createReconciliationRepository &&
+      this.deps.createAudit &&
+      this.deps.createIdempotency &&
+      this.deps.createCommitRepository
+    );
+
+    const executeReworkAtomically = async (
+      repo: HistoricalReconciliationRepository,
+      commitRepo: HistoricalCommitRepository,
+      auditHandle: AuditTransactionHandle,
+      idemHandle: IdempotencyTransactionHandle,
+      lockedBatch: ImportBatch,
+    ): Promise<ReworkBatchResult> => {
+      // 3. Determine the latest report version (for audit only — do NOT
+      // mutate old results).
+      const latestReportVersion = await repo.findLatestReportVersion(
         user.tenantId, input.importBatchId,
       );
-      if (latestReportVersion > 0) {
-        await this.deps.repository.markVersionAsSuperseded(
-          user.tenantId, input.importBatchId, latestReportVersion,
-        );
-      }
+
+      // WP-08-01F Milestone C Task 1: Do NOT call markVersionAsSuperseded.
+      // Old reconciliation results remain unchanged as immutable audit
+      // history. The `report_version` column distinguishes versions.
 
       // 4. Reset validationStatus and reconciliationStatus (forces re-run)
-      await this.deps.repository.resetBatchValidationAndReconciliationStatuses(
+      await repo.resetBatchValidationAndReconciliationStatuses(
         user.tenantId, input.importBatchId,
       );
 
       // 5. Invalidate Owner and Accountant approvals (mark is_current=false, preserve rows)
-      const invalidatedApprovalCount = await this.deps.commitRepository!.invalidateCurrentApprovalsForBatch(
+      const invalidatedApprovalCount = await commitRepo.invalidateCurrentApprovalsForBatch(
         user.tenantId, input.importBatchId, user.userId, input.reason,
       );
 
       // 6. Supersede current review items (mark is_current=false, preserve rows)
-      const invalidatedReviewItemCount = await this.deps.repository.supersedeReviewItemsForBatch(
+      const invalidatedReviewItemCount = await repo.supersedeReviewItemsForBatch(
         user.tenantId, input.importBatchId, user.userId, input.reason,
       );
 
       // 7. Transition batch to the requested target state
-      await this.deps.repository.updateBatchStatus(
+      await repo.updateBatchStatus(
         user.tenantId, input.importBatchId, input.targetState,
       );
 
       // 8. Audit old/new state, reason, invalidated versions
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
         entityType: "import_batch",
         entityId: input.importBatchId,
         actionType: "historical_migration.rework",
         newValuesJson: {
           importBatchId: input.importBatchId,
-          previousStatus: batch.status,
+          previousStatus: lockedBatch.status,
           newStatus: input.targetState,
           reason: input.reason,
           invalidatedReportVersion: latestReportVersion > 0 ? latestReportVersion : null,
           invalidatedApprovalCount,
           invalidatedPendingReviewItemCount: invalidatedReviewItemCount,
-          previousValidationStatus: batch.validationStatus,
-          previousReconciliationStatus: batch.reconciliationStatus,
+          previousValidationStatus: lockedBatch.validationStatus,
+          previousReconciliationStatus: lockedBatch.reconciliationStatus,
         },
         idempotencyKey: input.idempotencyKey,
       });
@@ -1402,7 +1475,7 @@ export class HistoricalReconciliationService {
       const result: ReworkBatchResult = {
         action: "reworked",
         batchId: input.importBatchId,
-        previousStatus: batch.status,
+        previousStatus: lockedBatch.status,
         newStatus: input.targetState,
         invalidatedReportVersion: latestReportVersion > 0 ? latestReportVersion : null,
         invalidatedOwnerApproval: invalidatedApprovalCount > 0,
@@ -1410,7 +1483,7 @@ export class HistoricalReconciliationService {
       };
 
       // markSucceeded inside the transaction — owner-token-fenced
-      await markSucceeded(this.deps.idempotency, claim.record.id, {
+      await markSucceeded(idemHandle, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: "import_batch", entityId: input.importBatchId,
       }, claim.record.ownerToken!, now);
@@ -1418,11 +1491,64 @@ export class HistoricalReconciliationService {
       return result;
     };
 
-    // If transactionRunner is available, run atomically. Otherwise run directly.
-    if (this.deps.transactionRunner) {
-      return await this.deps.transactionRunner(executeReworkAtomically);
+    if (useAtomicTransaction) {
+      // -------------------------------------------------------------------
+      // Atomic path: create tx-scoped deps and pass them explicitly to
+      // executeReworkAtomically. NO mutation of this.deps.
+      //
+      // Lock the batch row (SELECT ... FOR UPDATE) and RE-READ the batch
+      // inside the transaction. The lifecycle guard is run against this
+      // authoritative locked state, not the pre-lock snapshot.
+      // -------------------------------------------------------------------
+      return await this.deps.transactionRunner!(async (tx: unknown) => {
+        // Lock the batch row for the duration of this transaction.
+        const batchRows = await (tx as any).execute(
+          drizzleSql`SELECT id, status, validation_status, reconciliation_status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+        );
+        if (!batchRows || (batchRows as any[]).length === 0) {
+          throw new ReconBatchNotFoundError(input.importBatchId);
+        }
+        const lockedBatchRow = (batchRows as any[])[0]!;
+
+        // Re-run the lifecycle guard against the AUTHORITATIVE locked state.
+        // The pre-lock batch may be stale if another concurrent rework or
+        // reconciliation changed the status between the pre-check and the
+        // lock acquisition.
+        const allowedSources = Object.keys(HistoricalReconciliationService.REWORK_BRANCHES);
+        if (!allowedSources.includes(lockedBatchRow.status)) {
+          throw new ReworkInvalidSourceStateError(input.importBatchId, lockedBatchRow.status);
+        }
+        const allowedTargets = HistoricalReconciliationService.REWORK_BRANCHES[lockedBatchRow.status]!;
+        if (!allowedTargets.has(input.targetState)) {
+          throw new ReworkInvalidTargetStateError(
+            input.importBatchId, lockedBatchRow.status, input.targetState, [...allowedTargets],
+          );
+        }
+
+        const lockedBatch: ImportBatch = {
+          ...batch,
+          status: lockedBatchRow.status as any,
+          validationStatus: lockedBatchRow.validation_status,
+          reconciliationStatus: lockedBatchRow.reconciliation_status,
+        };
+
+        const txRepo = this.deps.createReconciliationRepository!(tx);
+        const txCommitRepo = this.deps.createCommitRepository!(tx);
+        const txAudit = this.deps.createAudit!(tx);
+        const txIdem = this.deps.createIdempotency!(tx);
+        return executeReworkAtomically(txRepo, txCommitRepo, txAudit, txIdem, lockedBatch);
+      });
     } else {
-      return await executeReworkAtomically();
+      // Non-atomic path (in-memory tests): execute directly with the
+      // original (non-tx) deps. No batch row locking (in-memory store
+      // has no concurrency).
+      return executeReworkAtomically(
+        this.deps.repository,
+        this.deps.commitRepository!,
+        this.deps.audit,
+        this.deps.idempotency,
+        batch,
+      );
     }
   }
 

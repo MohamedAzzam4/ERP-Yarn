@@ -67,18 +67,24 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
   }
 
   async markVersionAsSuperseded(tenantId: string, importBatchId: string, reportVersion: number): Promise<void> {
-    // Mark old version results as 'blocking' status with a note — they are superseded.
-    // We use the notes field to indicate supersession since the schema doesn't have
-    // a dedicated superseded flag. The status remains as-is for audit trail;
-    // the notes field records that this version was superseded.
-    // This preserves old evidence without deletion (Contract 08 §8.8 versioning).
-    await this.db.update(importReconciliationResults)
-      .set({ notes: `SUPERSEDED by later report version`, updatedAt: new Date() })
-      .where(and(
-        eq(importReconciliationResults.tenantId, tenantId),
-        eq(importReconciliationResults.importBatchId, importBatchId),
-        eq(importReconciliationResults.reportVersion, reportVersion),
-      ));
+    // WP-08-01F Milestone C Task 1: DEPRECATED — this method is now a no-op.
+    //
+    // The previous implementation overwrote the `notes` field of old
+    // reconciliation-result rows with "SUPERSEDED by later report version",
+    // destroying the original review reason evidence. This is unacceptable:
+    // historical reconciliation-result rows are evidence and must NOT be
+    // mutated.
+    //
+    // The `report_version` column itself is the supersession mechanism:
+    // the latest version is "current", older versions remain as immutable
+    // audit history (Contract 08 §8.7, DEC-019 principle: "older versions
+    // are retained as superseded audit history").
+    //
+    // This method is retained in the interface for backward compatibility
+    // but does nothing. Production code no longer calls it.
+    //
+    // DO NOT add any mutation logic here.
+    return;
   }
 
   async insertReviewItem(row: NewReconciliationReviewItemInput): Promise<ImportHumanReviewItem> {

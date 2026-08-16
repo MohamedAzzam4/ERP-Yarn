@@ -789,9 +789,9 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
   });
 
   // ===========================================================================
-  // RCA-8 — CONCURRENCY: two concurrent reconciliations serialize on batch lock
+  // RCA-8 — CONCURRENCY: second call rejected after first moves batch state
   // ===========================================================================
-  it("RCA-8. concurrency: two concurrent reconciliations against same batch allocate distinct report versions (serialized by batch row lock)", async () => {
+  it("RCA-8. concurrency: two concurrent reconciliations — exactly one succeeds, second rejected with zero effects", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
@@ -802,10 +802,17 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     const idemKey2 = "rca8-concurrent-2-" + randomUUID();
     const { reconciliationService } = makeServices(scope);
 
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsBefore = await getReconResultCount(scope, batchId);
+
     // Launch two concurrent reconciliations with different idempotency keys.
-    // Both target the same batch. The batch row lock (SELECT ... FOR UPDATE)
-    // serializes them — one acquires the lock first, allocates version 1,
-    // commits; the other waits, acquires the lock, allocates version 2.
+    // Both target the same batch initially in `validation_complete`.
+    // The batch row lock (SELECT ... FOR UPDATE) serializes them:
+    //   - One acquires the lock first, sees `validation_complete`, proceeds,
+    //     allocates version 1, commits (batch → `review_required`).
+    //   - The other waits, acquires the lock, re-reads `review_required` with
+    //     non-null reconciliationStatus, and is REJECTED with
+    //     LIFECYCLE_VIOLATION — zero business effects.
     const [result1, result2] = await Promise.allSettled([
       reconciliationService.runReconciliation(
         makeUser(scope) as any, makeEffective() as any,
@@ -817,39 +824,46 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
       ),
     ]);
 
-    // Both should succeed (they serialize on the batch lock).
-    expect(result1.status).toBe("fulfilled");
-    expect(result2.status).toBe("fulfilled");
+    // Exactly one operation succeeds (the one that acquired the lock first).
+    const fulfilled = [result1, result2].filter(r => r.status === "fulfilled");
+    const rejected = [result1, result2].filter(r => r.status === "rejected");
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
 
-    const r1 = (result1 as PromiseFulfilledResult<any>).value;
-    const r2 = (result2 as PromiseFulfilledResult<any>).value;
+    // The rejected operation must be rejected with LIFECYCLE_VIOLATION.
+    const rejectedError = (rejected[0] as PromiseRejectedResult).reason;
+    expect(String(rejectedError?.message || rejectedError)).toMatch(/LIFECYCLE_VIOLATION|already completed/i);
 
-    // Distinct report versions (no duplicate/ambiguous version).
-    expect(r1.reportVersion).not.toBe(r2.reportVersion);
-    expect(new Set([r1.reportVersion, r2.reportVersion])).toEqual(new Set([1, 2]));
+    // Exactly one new reconciliation version exists.
+    const latestVersion = await getLatestReportVersion(scope, batchId);
+    expect(latestVersion).toBe(1);
 
-    // Final batch state is deterministic.
+    // Total results = only the winning operation's results.
+    const totalResults = await getReconResultCount(scope, batchId);
+    const winner = fulfilled[0] as PromiseFulfilledResult<any>;
+    expect(totalResults).toBe(resultsBefore + winner.value.totalMetrics);
+
+    // Exactly one reconciliation audit row (only the winner).
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    expect(auditAfter).toBe(auditBefore + 1);
+
+    // Final batch state: review_required with matched reconciliation.
     const batch = await getBatchState(scope, batchId);
     expect(batch!.status).toBe("review_required");
     expect(batch!.reconciliation_status).toBe("matched");
 
-    // Two distinct report versions exist.
-    const latestVersion = await getLatestReportVersion(scope, batchId);
-    expect(latestVersion).toBe(2);
-
-    // Total results = r1.totalMetrics + r2.totalMetrics (both versions persisted).
-    const totalResults = await getReconResultCount(scope, batchId);
-    expect(totalResults).toBe(r1.totalMetrics + r2.totalMetrics);
-
-    // Two scoped audit rows (one per reconciliation run).
-    const auditCount = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
-    expect(auditCount).toBe(2);
-
-    // Both idempotency records succeeded.
+    // Winning idempotency succeeded; losing idempotency NOT succeeded.
     const idem1 = await getIdemState(scope, idemKey1);
     const idem2 = await getIdemState(scope, idemKey2);
-    expect(idem1?.state).toBe("succeeded");
-    expect(idem2?.state).toBe("succeeded");
+    const winnerIdem = winner.value === (result1 as PromiseFulfilledResult<any>)?.value ? idem1 : idem2;
+    const loserIdem = winner.value === (result1 as PromiseFulfilledResult<any>)?.value ? idem2 : idem1;
+    expect(winnerIdem?.state).toBe("succeeded");
+    // The loser's idempotency record may or may not exist (depending on
+    // whether it was claimed before the rejection). If it exists, it must
+    // NOT be succeeded.
+    if (loserIdem) {
+      expect(loserIdem.state).not.toBe("succeeded");
+    }
 
     await cleanupScope(scope);
   });
