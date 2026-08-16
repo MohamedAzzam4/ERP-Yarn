@@ -49,6 +49,7 @@ import {
   MigrationLifecycleError,
 } from "./migration-lifecycle-guard";
 import { APPROVAL_ELIGIBLE_STATES } from "./migration-lifecycle-predicates";
+import { sql as drizzleSql } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -622,7 +623,10 @@ export class HistoricalReconciliationService {
    * Run reconciliation on staged data.
    *
    * Permission: migration.review (Owner/Accountant).
-   * Idempotent: replay deletes old results and re-runs.
+   * Idempotent: replay returns the persisted response without re-running.
+   * Old reconciliation results are NEVER deleted or overwritten — each
+   * run creates a new report_version, and old versions remain as
+   * immutable audit history (Contract 08 §8.7, DEC-019 principle).
    * Non-operational: no stock/account/sales effects.
    */
   async runReconciliation(
@@ -661,11 +665,31 @@ export class HistoricalReconciliationService {
     if (claim.action === "conflict") throw new HistoricalReconciliationError("IDEMPOTENCY_CONFLICT", `Idempotency key conflict.`);
     if (claim.action === "in_progress") throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", `Operation in progress.`);
 
-    // WP-07-03 correction: Get next report version and mark old version as superseded.
-    // Old reconciliation evidence is PRESERVED (not deleted) for audit/approval binding.
-    // Contract 08 §8.8: "Versioned reconciliation reports" — old versions remain queryable.
-    const latestVersion = await this.deps.repository.findLatestReportVersion(user.tenantId, input.importBatchId);
-    const reportVersion = latestVersion + 1;
+    // -----------------------------------------------------------------------
+    // WP-08-01F Milestone C Task 6: Atomic reconciliation WITHOUT mutable
+    // dependency swapping.
+    //
+    // The report version is allocated INSIDE the transaction (not before it)
+    // to prevent two concurrent reconciliations from allocating the same
+    // version number. The batch row is locked (SELECT ... FOR UPDATE)
+    // inside the transaction so that concurrent reconciliations serialize
+    // on the batch row. This is the smallest contract-consistent locking
+    // approach — it does not invent a new business rule, it just uses
+    // PostgreSQL's row-level locking to preserve a deterministic version
+    // sequence.
+    //
+    // If transactionRunner + tx-scoped factories are provided, ALL business
+    // writes execute inside a single transaction with EXPLICIT tx-scoped
+    // deps passed to executeAtomically (no mutation of this.deps).
+    //
+    // WP-08-01F Milestone C Task 5: Old reconciliation evidence is NEVER
+    // mutated. The `report_version` column itself is the supersession
+    // mechanism — the latest version is "current", older versions remain
+    // as immutable audit history (Contract 08 §8.7, DEC-019 principle:
+    // "older versions are retained as superseded audit history"). The
+    // previous markVersionAsSuperseded call was removed because it
+    // overwrote the `notes` field, destroying the original review reason.
+    // -----------------------------------------------------------------------
 
     // Fetch staging rows (read-only — safe outside the transaction)
     const rows = await this.deps.repository.findStagingRowsForBatch(user.tenantId, input.importBatchId);
@@ -676,26 +700,12 @@ export class HistoricalReconciliationService {
     const result: RunReconciliationResult = {
       action: "executed",
       batchId: input.importBatchId,
-      reportVersion,
+      reportVersion: 0, // allocated inside the transaction
       totalMetrics: metrics.length,
       matched: 0, differences: 0, blocking: 0,
       reviewItemsCreated: 0,
     };
 
-    // -----------------------------------------------------------------------
-    // WP-08-01F Milestone C Task 4: Atomic reconciliation.
-    //
-    // If transactionRunner + tx-scoped factories are provided, ALL business
-    // writes (markVersionAsSuperseded, insertReconciliationResult,
-    // insertReviewItem, updateBatchReconciliationStatus, updateBatchStatus,
-    // audit, markSucceeded) execute inside a single transaction. If ANY
-    // write fails (including injected owner-token loss at markSucceeded),
-    // the entire transaction rolls back — no partial results, no partial
-    // review items, no partial audit rows, no partial idempotency.
-    //
-    // When transactionRunner is NOT provided (in-memory tests), writes
-    // execute directly without a transaction (backward compatibility).
-    // -----------------------------------------------------------------------
     const useAtomicTransaction = !!(
       this.deps.transactionRunner &&
       this.deps.createReconciliationRepository &&
@@ -703,18 +713,30 @@ export class HistoricalReconciliationService {
       this.deps.createIdempotency
     );
 
-    const executeAtomically = async (): Promise<void> => {
-      // Note: when useAtomicTransaction is true, the transactionRunner closure
-      // below temporarily swaps this.deps.repository / .audit / .idempotency
-      // to tx-scoped instances BEFORE calling this function. So all writes
-      // through this.deps.* participate in the transaction.
-      // When useAtomicTransaction is false, this.deps.* are the original
-      // (non-tx) handles, and writes execute directly (in-memory tests).
+    // -----------------------------------------------------------------------
+    // executeAtomically: takes EXPLICIT tx-scoped deps (repo, audit, idem)
+    // instead of reading from this.deps. This eliminates the need to mutate
+    // this.deps during the transaction.
+    // -----------------------------------------------------------------------
+    const executeAtomically = async (
+      repo: HistoricalReconciliationRepository,
+      auditHandle: AuditTransactionHandle,
+      idemHandle: IdempotencyTransactionHandle,
+    ): Promise<void> => {
 
-      // Mark old version as superseded (NOT deleted — evidence preserved).
-      if (latestVersion > 0) {
-        await this.deps.repository.markVersionAsSuperseded(user.tenantId, input.importBatchId, latestVersion);
-      }
+      // WP-08-01F Milestone C Task 6: Allocate report version INSIDE the
+      // transaction. When useAtomicTransaction is true, the batch row has
+      // already been locked (SELECT ... FOR UPDATE) by the transactionRunner
+      // closure below, so two concurrent reconciliations will serialize and
+      // get distinct version numbers.
+      const latestVersion = await repo.findLatestReportVersion(user.tenantId, input.importBatchId);
+      const reportVersion = latestVersion + 1;
+      result.reportVersion = reportVersion;
+
+      // WP-08-01F Milestone C Task 5: Do NOT call markVersionAsSuperseded.
+      // Old reconciliation results remain unchanged as immutable audit
+      // history. The `report_version` column distinguishes versions; the
+      // latest version is current, older versions are superseded history.
 
       let matched = 0;
       let differences = 0;
@@ -723,7 +745,7 @@ export class HistoricalReconciliationService {
 
       // Persist each metric as a reconciliation result.
       for (const metric of metrics) {
-        const reconResult = await this.deps.repository.insertReconciliationResult({
+        const reconResult = await repo.insertReconciliationResult({
           tenantId: user.tenantId,
           importBatchId: input.importBatchId,
           reportVersion,
@@ -738,7 +760,7 @@ export class HistoricalReconciliationService {
         });
 
         // Audit each reconciliation result.
-        await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+        await appendAuditLog(auditHandle, user.tenantId, user.userId, {
           entityType: "import_reconciliation_result",
           entityId: reconResult.id,
           actionType: "historical_reconciliation.result",
@@ -760,7 +782,7 @@ export class HistoricalReconciliationService {
 
         // Create review items for mismatches/blocking (§8.9 Human Review).
         if (metric.reviewReason) {
-          const reviewItem = await this.deps.repository.insertReviewItem({
+          const reviewItem = await repo.insertReviewItem({
             tenantId: user.tenantId,
             importBatchId: input.importBatchId,
             stagingRowId: null,
@@ -770,7 +792,7 @@ export class HistoricalReconciliationService {
           reviewItemsCreated++;
 
           // Audit each review item.
-          await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+          await appendAuditLog(auditHandle, user.tenantId, user.userId, {
             entityType: "import_human_review_item",
             entityId: reviewItem.id,
             actionType: "historical_reconciliation.review_created",
@@ -786,15 +808,12 @@ export class HistoricalReconciliationService {
       }
 
       // Update batch status and reconciliationStatus.
-      // WP-08-01F DEFECT 1A: Set reconciliationStatus = "matched" (no blocking),
-      // "difference" (differences but no blocking), or "blocking" (blocking results).
-      // Transition to review_required after reconciliation (submission requires it).
       const newReconStatus = blocking > 0 ? "blocking" : (differences > 0 ? "difference" : "matched");
-      await this.deps.repository.updateBatchReconciliationStatus(user.tenantId, input.importBatchId, newReconStatus, user.userId);
-      await this.deps.repository.updateBatchStatus(user.tenantId, input.importBatchId, "review_required");
+      await repo.updateBatchReconciliationStatus(user.tenantId, input.importBatchId, newReconStatus, user.userId);
+      await repo.updateBatchStatus(user.tenantId, input.importBatchId, "review_required");
 
       // Audit reconciliation run.
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
         entityType: "import_batch",
         entityId: input.importBatchId,
         actionType: "historical_reconciliation.run",
@@ -815,7 +834,12 @@ export class HistoricalReconciliationService {
 
       // markSucceeded (owner-token-fenced) — must be inside the transaction
       // so that an owner-token loss rolls back ALL business writes.
-      await markSucceeded(this.deps.idempotency, claim.record.id, {
+      // The real production fence is exercised here: idemHandle.updateState
+      // uses WHERE owner_token = expectedOwnerToken AND state = 'in_progress'.
+      // If the owner_token has been changed (by a concurrent takeover), the
+      // UPDATE returns 0 rows and markSucceeded throws
+      // IdempotencyOwnershipLostError, which rolls back the entire transaction.
+      await markSucceeded(idemHandle, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: "import_batch", entityId: input.importBatchId,
       }, claim.record.ownerToken!, now);
@@ -823,35 +847,35 @@ export class HistoricalReconciliationService {
 
     if (useAtomicTransaction) {
       // -------------------------------------------------------------------
-      // Atomic path: wrap executeAtomically in transactionRunner. Inside
-      // the closure, swap the deps' repository/audit/idempotency handles
-      // to tx-scoped instances so ALL writes participate in the transaction.
+      // Atomic path: create tx-scoped deps and pass them explicitly to
+      // executeAtomically. NO mutation of this.deps.
+      //
+      // WP-08-01F Milestone C Task 6: Lock the batch row (SELECT ... FOR
+      // UPDATE) inside the transaction BEFORE allocating the report version.
+      // This serializes concurrent reconciliations on the same batch so
+      // they cannot allocate the same or inconsistent report versions.
       // -------------------------------------------------------------------
       await this.deps.transactionRunner!(async (tx: unknown) => {
+        // Lock the batch row for the duration of this transaction.
+        // This prevents concurrent runReconciliation calls from allocating
+        // the same report_version. The lock is released at COMMIT/ROLLBACK.
+        const batchRows = await (tx as any).execute(
+          drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+        );
+        if (!batchRows || (batchRows as any[]).length === 0) {
+          throw new ReconBatchNotFoundError(input.importBatchId);
+        }
+
         const txRepo = this.deps.createReconciliationRepository!(tx);
         const txAudit = this.deps.createAudit!(tx);
         const txIdem = this.deps.createIdempotency!(tx);
-
-        // Temporarily swap deps to tx-scoped instances.
-        const savedRepo = this.deps.repository;
-        const savedAudit = this.deps.audit;
-        const savedIdem = this.deps.idempotency;
-        (this.deps as any).repository = txRepo;
-        (this.deps as any).audit = txAudit;
-        (this.deps as any).idempotency = txIdem;
-
-        try {
-          await executeAtomically();
-        } finally {
-          // Restore original deps (non-tx) for any subsequent calls.
-          (this.deps as any).repository = savedRepo;
-          (this.deps as any).audit = savedAudit;
-          (this.deps as any).idempotency = savedIdem;
-        }
+        await executeAtomically(txRepo, txAudit, txIdem);
       });
     } else {
-      // Non-atomic path (in-memory tests): execute directly.
-      await executeAtomically();
+      // Non-atomic path (in-memory tests): execute directly with the
+      // original (non-tx) deps. No batch row locking (in-memory store
+      // has no concurrency).
+      await executeAtomically(this.deps.repository, this.deps.audit, this.deps.idempotency);
     }
 
     return result;

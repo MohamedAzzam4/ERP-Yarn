@@ -8,27 +8,35 @@
  *   RCA-1. Success: exactly one new reconciliation run/version, exact result
  *          count, exact review-item count, expected batch reconciliation
  *          status, exactly one scoped audit, idempotency succeeded.
- *   RCA-2. Injected failure after first business write: reconciliation
- *          runs/results/review items equal pre-call counts, batch status
- *          unchanged, audit delta 0, idempotency not succeeded.
- *   RCA-3. Owner-token loss before markSucceeded: full rollback with the
- *          same exact assertions as RCA-2.
+ *   RCA-2. Real failure after first business write: failure is injected
+ *          immediately after the first insertReconciliationResult write.
+ *          Complete rollback: no new results, no new review items, batch
+ *          state unchanged, audit delta 0, report version unchanged,
+ *          idempotency not succeeded.
+ *   RCA-3. Real owner-token loss: the persisted owner_token is changed
+ *          BEFORE the production markSucceeded call. The real production
+ *          owner-token fence (WHERE owner_token = expectedOwnerToken AND
+ *          state = 'in_progress') rejects the stale owner. Full rollback.
  *   RCA-4. Valid retry after RCA-3 failure: exactly one final run/effect
  *          set, exactly one scoped audit, idempotency succeeded.
  *   RCA-5. Same-key/same-payload replay: same persisted response, zero
  *          additional runs/results/review items/audits.
  *   RCA-6. Same-key/different-payload conflict: rejected, zero additional
  *          effects.
- *   RCA-7. Version preservation: previous report versions and result rows
- *          remain queryable; no previous version is deleted or overwritten;
- *          superseded state/notes follow the existing project contract; new
- *          version is created only when contractually appropriate.
+ *   RCA-7. Immutable version preservation: previous report versions and
+ *          result rows remain queryable; NO previous business/evidence
+ *          field is overwritten (notes, status, expected/staged/difference
+ *          values all unchanged); report_version itself is the supersession
+ *          mechanism.
+ *   RCA-8. Concurrency: two concurrent reconciliation attempts against the
+ *          same batch with different idempotency keys serialize on the
+ *          batch row lock and allocate distinct report versions.
  *
  * Audit queries are scoped by tenant, entity type, entity ID, and action.
  * Never deletes audit_logs to prepare tests. Uses unique test-scoped
- * tenants/entities.
+ * tenants/entities per test.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -37,11 +45,14 @@ import { HistoricalReconciliationService } from "@/server/services/historical-re
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
-import { IdempotencyOwnershipLostError } from "@/server/services/idempotency-service";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { ErpUserContext } from "@/server/auth/erp-context";
+import type { HistoricalReconciliationRepository } from "@/server/services/historical-reconciliation-repository";
+import type { AuditTransactionHandle } from "@/server/services/audit-service";
+import type { IdempotencyTransactionHandle } from "@/server/services/idempotency-service";
 import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+import { sql as drizzleSql } from "drizzle-orm";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
@@ -54,21 +65,30 @@ const SAFETY_RESULT = checkDestructiveTestDbSafety({
 });
 const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
 
-const RUN_ID = randomUUID();
-const T = RUN_ID; // unique test-scoped tenant per run
-const U = randomUUID();
-
 let sql: ReturnType<typeof postgres>;
 let db: any;
 
-function makeUser(): ErpUserContext {
-  return { authenticated: true, userId: U, tenantId: T, authId: `auth-${U}`, name: "T", email: `t-${U}@test.local` };
+interface TestScope {
+  tenantId: string;
+  userId: string;
+  runSuffix: string;
+}
+
+function newScope(): TestScope {
+  const tenantId = randomUUID();
+  const userId = randomUUID();
+  const runSuffix = tenantId.slice(0, 8);
+  return { tenantId, userId, runSuffix };
+}
+
+function makeUser(scope: TestScope): ErpUserContext {
+  return { authenticated: true, userId: scope.userId, tenantId: scope.tenantId, authId: `auth-${scope.userId}`, name: "T", email: `t-${scope.userId}@test.local` };
 }
 function makeEffective() {
   return resolveEffectivePermissions(["owner"], TEST_ROLE_PERMISSION_MATRIX);
 }
 
-function makeServices(faultyTransactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>) {
+function makeServices(scope: TestScope, faultyTransactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>) {
   const reconRepo = new HistoricalReconciliationDbRepository(db);
   const audit = new AuditDbRepository(db);
   const idem = new IdempotencyDbRepository(db);
@@ -84,51 +104,111 @@ function makeServices(faultyTransactionRunner?: <T>(work: (tx: unknown) => Promi
   return { reconciliationService, reconRepo, audit, idem };
 }
 
-function makeFaultyTransactionRunner(failAfter: "business_write" | "markSucceeded") {
-  return async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-    return (db as any).transaction(async (tx: any) => {
-      await work(tx);
-      if (failAfter === "markSucceeded") {
-        // The work already completed including markSucceeded. To simulate
-        // owner-token loss, throw AFTER the work — this rolls back the
-        // entire transaction.
-        throw new IdempotencyOwnershipLostError("injected", "injected");
-      }
-      return undefined as T;
-    });
+// ---------------------------------------------------------------------------
+// Task 3 / Task 4: Real owner-token loss fault injector.
+//
+// This wrapper wraps the REAL IdempotencyDbRepository but, immediately
+// before delegating to the REAL markSucceeded (via updateState), it
+// changes the persisted owner_token in the DB (using the same tx) so
+// that the real fenced UPDATE finds 0 rows. The production fence itself
+// is what rejects the stale owner — we do NOT throw
+// IdempotencyOwnershipLostError manually.
+// ---------------------------------------------------------------------------
+
+function makeRealOwnerLossIdempotencyWrapper(realIdem: IdempotencyDbRepository, tx: any): IdempotencyTransactionHandle {
+  return {
+    findByTenantScopeKey: (t: string, s: string, k: string) => realIdem.findByTenantScopeKey(t, s, k),
+    insert: (r: any) => realIdem.insert(r),
+    claimExpiredLease: (id: string, a: Date, b: Date, c: Date) => realIdem.claimExpiredLease(id, a, b, c),
+    heartbeat: (id: string, n: Date) => realIdem.heartbeat(id, n),
+    updateState: async (id: string, update: any) => {
+      // REAL OWNER-TOKEN LOSS: change the persisted owner_token BEFORE
+      // delegating to the real updateState. The real UPDATE will use
+      // WHERE owner_token = update.expectedOwnerToken, which no longer
+      // matches → returns 0 rows → production markSucceeded throws
+      // IdempotencyOwnershipLostError.
+      //
+      // We use the drizzle transaction's execute() method with a raw SQL
+      // template so the owner_token change participates in the same
+      // transaction as the real markSucceeded call.
+      const newToken = 'stale-' + randomUUID();
+      await (tx as any).execute(drizzleSql`UPDATE idempotency_records SET owner_token = ${newToken} WHERE id = ${id}`);
+      // Now delegate to the REAL updateState — the production fence.
+      // The WHERE clause (owner_token = expectedOwnerToken) will NOT match
+      // because we just changed it. Returns 0 → markSucceeded throws.
+      return realIdem.updateState(id, update);
+    },
   };
 }
 
-async function seedTenantAndUser() {
-  const runSuffix = RUN_ID.slice(0, 8);
-  await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status)
-            VALUES (${T}, ${"RCA-" + runSuffix}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
-  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
-            VALUES (${U}, ${T}, ${"rca-" + runSuffix}, ${"RCA User"}, ${"rca-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+// ---------------------------------------------------------------------------
+// Task 4: Real failure after first business write.
+//
+// This wrapper wraps the REAL HistoricalReconciliationDbRepository but
+// throws AFTER the first insertReconciliationResult write completes.
+// The failure is injected at a real internal write boundary, not after
+// the entire service callback returns.
+// ---------------------------------------------------------------------------
+
+function makeFirstWriteFailureRepoWrapper(realRepo: HistoricalReconciliationDbRepository, tx: any): HistoricalReconciliationRepository {
+  let insertCount = 0;
+  return {
+    findImportBatchById: (t: string, id: string) => realRepo.findImportBatchById(t, id),
+    updateBatchStatus: (t: string, id: string, s: string) => realRepo.updateBatchStatus(t, id, s),
+    updateBatchReconciliationStatus: (t: string, id: string, s: string, u: string) => realRepo.updateBatchReconciliationStatus(t, id, s, u),
+    resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
+    findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+    findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
+    markVersionAsSuperseded: (t: string, id: string, v: number) => realRepo.markVersionAsSuperseded(t, id, v),
+    insertReconciliationResult: async (row: any) => {
+      const result = await realRepo.insertReconciliationResult(row);
+      insertCount++;
+      if (insertCount === 1) {
+        // FAIL immediately after the first insertReconciliationResult.
+        // This proves the transaction rolls back the first write too.
+        throw new Error("INJECTED_FAILURE_AFTER_FIRST_BUSINESS_WRITE");
+      }
+      return result;
+    },
+    insertReviewItem: (row: any) => realRepo.insertReviewItem(row),
+    findReconciliationResultsForBatch: (t: string, id: string) => realRepo.findReconciliationResultsForBatch(t, id),
+    findReconciliationResultsForBatchVersion: (t: string, id: string, v: number) => realRepo.findReconciliationResultsForBatchVersion(t, id, v),
+    findReviewItemsForBatch: (t: string, id: string) => realRepo.findReviewItemsForBatch(t, id),
+    findReviewItemsForBatchVersion: (t: string, id: string) => realRepo.findReviewItemsForBatchVersion(t, id),
+    findReviewItemById: (t: string, id: string) => realRepo.findReviewItemById(t, id),
+    updateReviewItemDecision: (t: string, id: string, p: any) => realRepo.updateReviewItemDecision(t, id, p),
+    supersedeReviewItemsForBatch: (t: string, id: string, b: string, r: string) => realRepo.supersedeReviewItemsForBatch(t, id, b, r),
+    findCurrentReviewItemsForBatch: (t: string, id: string) => realRepo.findCurrentReviewItemsForBatch(t, id),
+  };
 }
 
-async function seedStagedBatch(batchId: string) {
+async function seedTenantAndUser(scope: TestScope) {
+  const runSuffix = scope.runSuffix;
+  await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status)
+            VALUES (${scope.tenantId}, ${"RCA-" + runSuffix}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
+            VALUES (${scope.userId}, ${scope.tenantId}, ${"rca-" + runSuffix}, ${"RCA User"}, ${"rca-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+}
+
+async function seedStagedBatch(scope: TestScope, batchId: string) {
   await sql`
     INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version,
       mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count,
       blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status,
       warning_summary, committed_at, commit_effect_counts, created_by, created_at)
-    VALUES (${batchId}, ${T}, ${"RCA-" + batchId.slice(-6)}, ${"validation_complete"}::import_batch_status, ${"test"},
+    VALUES (${batchId}, ${scope.tenantId}, ${"RCA-" + batchId.slice(-6)}, ${"validation_complete"}::import_batch_status, ${"test"},
       ${"opening_balance_inventory"}, ${"1.0"}, ${"1.0"}, null, ${"opening_balance"}, ${"sha256:test"}, 1,
-      0, 0, 0, ${"passed"}, null, null, null, null, ${U}, NOW())`;
+      0, 0, 0, ${"passed"}, null, null, null, null, ${scope.userId}, NOW())`;
 }
 
-async function seedFileAndStagingRow(batchId: string): Promise<string> {
+async function seedFileAndStagingRow(scope: TestScope, batchId: string): Promise<string> {
   const fileId = randomUUID();
   await sql`
     INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash,
       file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at)
-    VALUES (${fileId}, ${T}, ${batchId}, ${"data.csv"}, ${"local://test"}, ${"sha256:test"},
-      100, ${"text/csv"}, ${"source"}, 1, true, ${U}, NOW())`;
+    VALUES (${fileId}, ${scope.tenantId}, ${batchId}, ${"data.csv"}, ${"local://test"}, ${"sha256:test"},
+      100, ${"text/csv"}, ${"source"}, 1, true, ${scope.userId}, NOW())`;
   const rowId = randomUUID();
-  // Include customer_id so the row has a resolved master reference — this
-  // avoids the 'unmatched_alias' blocking metric and lets the reconciliation
-  // produce a clean 'matched' status (no review items, no blocking).
   const rowData = { name: "TestYarn", code: "TY001", quantity: "100", entity_type: "single_yarn", customer_id: "cust-001" };
   await sql`
     INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
@@ -136,100 +216,103 @@ async function seedFileAndStagingRow(batchId: string): Promise<string> {
       transformation_notes, validation_status, review_status, ai_confidence,
       committed_entity_type, committed_entity_id, staging_version, is_current,
       created_by, created_at)
-    VALUES (${rowId}, ${T}, ${batchId}, ${fileId}, ${"opening_balance_inventory"}, ${"data.csv"}, 1,
+    VALUES (${rowId}, ${scope.tenantId}, ${batchId}, ${fileId}, ${"opening_balance_inventory"}, ${"data.csv"}, 1,
       ${JSON.stringify(rowData)}::jsonb,
       ${JSON.stringify(rowData)}::jsonb,
-      null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${U}, NOW())`;
+      null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${scope.userId}, NOW())`;
   return fileId;
 }
 
-async function getBatchState(batchId: string) {
-  const rows = await sql`SELECT status, reconciliation_status, validation_status FROM import_batches WHERE id = ${batchId}`;
+async function getBatchState(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT status, reconciliation_status, validation_status FROM import_batches WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
   return rows[0] || null;
 }
 
-async function getReconResultCount(batchId: string) {
-  const rows = await sql`SELECT count(*)::int AS c FROM import_reconciliation_results WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`;
+async function getReconResultCount(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT count(*)::int AS c FROM import_reconciliation_results WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
   return rows[0]?.c || 0;
 }
 
-async function getReviewItemCount(batchId: string) {
-  const rows = await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${T} AND import_batch_id = ${batchId}`;
+async function getReviewItemCount(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
   return rows[0]?.c || 0;
 }
 
-async function getScopedAuditCount(batchId: string, actionType?: string) {
-  // Scope by tenant + entity_id + action_type (audit_logs is append-only;
-  // never delete to prepare tests).
+async function getScopedAuditCount(scope: TestScope, batchId: string, actionType?: string) {
   if (actionType) {
-    const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = ${actionType}`;
+    const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${scope.tenantId} AND entity_id = ${batchId} AND action_type = ${actionType}`;
     return rows[0]?.c || 0;
   }
-  const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId}`;
+  const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${scope.tenantId} AND entity_id = ${batchId}`;
   return rows[0]?.c || 0;
 }
 
-async function getLatestReportVersion(batchId: string) {
-  const rows = await sql`SELECT report_version FROM import_reconciliation_results WHERE tenant_id = ${T} AND import_batch_id = ${batchId} ORDER BY report_version DESC LIMIT 1`;
+async function getLatestReportVersion(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT report_version FROM import_reconciliation_results WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} ORDER BY report_version DESC LIMIT 1`;
   return rows[0]?.report_version || 0;
 }
 
-async function getReconResultsForVersion(batchId: string, version: number) {
-  return sql`SELECT id, report_version, metric_key, status, notes FROM import_reconciliation_results WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND report_version = ${version} ORDER BY metric_key`;
+interface ReconResultSnapshot {
+  id: string;
+  report_version: number;
+  metric_key: string;
+  expected_value: string | null;
+  staged_value: string | null;
+  committed_value: string | null;
+  difference_value: string | null;
+  status: string;
+  notes: string | null;
+  created_by: string;
+  created_at: Date;
 }
 
-async function getIdemState(idemKey: string) {
-  const rows = await sql`SELECT state, response_body FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
+async function getReconResultsForVersion(scope: TestScope, batchId: string, version: number): Promise<ReconResultSnapshot[]> {
+  return sql`SELECT id, report_version, metric_key, expected_value, staged_value, committed_value, difference_value, status, notes, created_by, created_at FROM import_reconciliation_results WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND report_version = ${version} ORDER BY metric_key` as any as Promise<ReconResultSnapshot[]>;
+}
+
+async function getIdemState(scope: TestScope, idemKey: string) {
+  const rows = await sql`SELECT state, response_body FROM idempotency_records WHERE tenant_id = ${scope.tenantId} AND idempotency_key = ${idemKey}`;
   return rows[0] || null;
 }
 
-async function cleanupRunScopedData() {
-  await sql`DELETE FROM import_cutover_locks WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_backup_evidence WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_batch_approvals WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_reconciliation_results WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_human_review_items WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_validation_errors WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_alias_mappings WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_staging_cells WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_staging_rows WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_files WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM import_batches WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T}`;
-  await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`; await sql`DELETE FROM audit_logs WHERE tenant_id = ${T}`; await sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_delete`;
-  await sql`DELETE FROM users WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM tenants WHERE id = ${T}`;
+// cleanupScope: delete business rows for a test-scoped tenant in FK-safe
+// order. Does NOT delete audit_logs, users, or tenants — they are
+// immutable/referenced by audit_logs (audit_logs.user_id → users.id,
+// audit_logs.tenant_id → tenants.id). The audit_logs_no_delete trigger
+// prevents audit_logs deletion, so users/tenants cannot be deleted while
+// audit_logs reference them. All three are left behind as immutable
+// evidence, which is acceptable per the Milestone C safety requirements:
+// "Leaving immutable local disposable-test audit evidence behind is
+// preferable to bypassing audit immutability."
+async function cleanupScope(scope: TestScope) {
+  await sql`DELETE FROM import_cutover_locks WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_backup_evidence WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_batch_approvals WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_human_review_items WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_reconciliation_results WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_validation_errors WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_staging_cells WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_staging_rows WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_files WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_batches WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM idempotency_records WHERE tenant_id = ${scope.tenantId}`;
+  // NOTE: audit_logs, users, and tenants are intentionally NOT deleted.
+  // audit_logs is immutable (trigger-enforced); users/tenants are
+  // referenced by audit_logs via FK. Each test uses a unique tenant, so
+  // leftover rows do not interfere with subsequent tests.
 }
 
-describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs (RCA-1 through RCA-7)", () => {
+describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs (RCA-1 through RCA-8)", () => {
   beforeAll(async () => {
     sql = postgres(DATABASE_URL!, { prepare: false, max: 5, idle_timeout: 10, connect_timeout: 15 });
     db = drizzle(sql, { schema });
-    await seedTenantAndUser();
+    // No shared tenant/user — each test allocates its own via newScope().
   }, 30000);
-
-  beforeEach(async () => {
-    // Delete in FK-safe order (children first, parents last).
-    await sql`DELETE FROM import_cutover_locks WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_backup_evidence WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_batch_approvals WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_human_review_items WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_reconciliation_results WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_validation_errors WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_alias_mappings WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_staging_cells WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_staging_rows WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_files WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM import_batches WHERE tenant_id = ${T}`;
-    await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T}`;
-    await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`; await sql`DELETE FROM audit_logs WHERE tenant_id = ${T}`; await sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_delete`;
-  }, 15000);
 
   afterAll(async () => {
     if (sql) {
-      await cleanupRunScopedData();
       await sql.end();
     }
   }, 30000);
@@ -238,414 +321,536 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
   // RCA-1 — SUCCESS
   // ===========================================================================
   it("RCA-1. success: one new run/version, exact result count, exact review-item count, expected batch status, exactly one scoped audit, idempotency succeeded", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
     const batchId = randomUUID();
-    await seedStagedBatch(batchId);
-    await seedFileAndStagingRow(batchId);
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
 
     const idemKey = "rca1-success-" + randomUUID();
-    const { reconciliationService } = makeServices();
+    const { reconciliationService } = makeServices(scope);
 
-    const auditBefore = await getScopedAuditCount(batchId, "historical_reconciliation.run");
-    const resultsBefore = await getReconResultCount(batchId);
-    const reviewBefore = await getReviewItemCount(batchId);
-    const versionBefore = await getLatestReportVersion(batchId);
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsBefore = await getReconResultCount(scope, batchId);
+    const reviewBefore = await getReviewItemCount(scope, batchId);
+    const versionBefore = await getLatestReportVersion(scope, batchId);
 
     const result = await reconciliationService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
     );
 
     expect(result.action).toBe("executed");
     expect(result.reportVersion).toBe(versionBefore + 1);
+    expect(result.reportVersion).toBe(1);
 
-    // Exactly one new reconciliation run audit row.
-    const auditAfter = await getScopedAuditCount(batchId, "historical_reconciliation.run");
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
     expect(auditAfter).toBe(auditBefore + 1);
+    expect(auditAfter).toBe(1);
 
-    // Exact result count: metrics computed from the seeded staging row.
-    // The staging row has quantity=100, entity_type=single_yarn → produces
-    // inventory_opening_qty and single_yarn_opening_qty metrics.
-    const resultsAfter = await getReconResultCount(batchId);
+    const resultsAfter = await getReconResultCount(scope, batchId);
     expect(resultsAfter).toBeGreaterThan(0);
     expect(result.totalMetrics).toBe(resultsAfter - resultsBefore);
+    expect(resultsAfter).toBe(result.totalMetrics);
 
-    // Review items: created only for metrics with reviewReason (negative qty,
-    // blocking, or difference). The seeded row has qty=100 (positive) and no
-    // expected totals → all metrics should be 'matched' (no review items).
-    const reviewAfter = await getReviewItemCount(batchId);
+    const reviewAfter = await getReviewItemCount(scope, batchId);
     expect(reviewAfter).toBe(reviewBefore + result.reviewItemsCreated);
+    expect(reviewAfter).toBe(0); // matched status → no review items
 
-    // Batch reconciliation status: matched (no blocking, no differences).
-    const batch = await getBatchState(batchId);
+    const batch = await getBatchState(scope, batchId);
     expect(batch!.status).toBe("review_required");
     expect(batch!.reconciliation_status).toBe("matched");
 
-    // Idempotency state: succeeded.
-    const idemState = await getIdemState(idemKey);
+    const idemState = await getIdemState(scope, idemKey);
     expect(idemState?.state).toBe("succeeded");
+
+    await cleanupScope(scope);
   });
 
   // ===========================================================================
-  // RCA-2 — INJECTED FAILURE AFTER FIRST BUSINESS WRITE
+  // RCA-2 — REAL FAILURE AFTER FIRST BUSINESS WRITE
   // ===========================================================================
-  it("RCA-2. injected failure after first business write: full rollback, batch unchanged, audit delta 0, idempotency not succeeded", async () => {
+  it("RCA-2. real failure after first insertReconciliationResult: full rollback, batch unchanged, audit delta 0, idempotency not succeeded", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
     const batchId = randomUUID();
-    await seedStagedBatch(batchId);
-    await seedFileAndStagingRow(batchId);
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
 
-    const idemKey = "rca2-injected-failure-" + randomUUID();
-    const auditBefore = await getScopedAuditCount(batchId, "historical_reconciliation.run");
-    const resultsBefore = await getReconResultCount(batchId);
-    const reviewBefore = await getReviewItemCount(batchId);
-    const batchBefore = await getBatchState(batchId);
-    const versionBefore = await getLatestReportVersion(batchId);
+    const idemKey = "rca2-first-write-failure-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsBefore = await getReconResultCount(scope, batchId);
+    const reviewBefore = await getReviewItemCount(scope, batchId);
+    const batchBefore = await getBatchState(scope, batchId);
+    const versionBefore = await getLatestReportVersion(scope, batchId);
 
-    // Use a faulty transaction runner that throws AFTER business writes
-    // complete (simulating an injected failure after the first write).
-    // This rolls back the entire transaction.
-    const faultyRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-      return (db as any).transaction(async (tx: any) => {
-        // Swap deps to tx-scoped (same pattern as the service).
-        await work(tx);
-        // Inject failure AFTER all business writes (including markSucceeded).
-        throw new Error("INJECTED_FAILURE_AFTER_BUSINESS_WRITE");
-      });
-    };
-    const { reconciliationService } = makeServices(faultyRunner);
+    // Custom service with a createReconciliationRepository that wraps the
+    // real repo to inject failure after the first insertReconciliationResult.
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const customService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          await work(tx);
+        }),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => makeFirstWriteFailureRepoWrapper(new HistoricalReconciliationDbRepository(tx as any), tx as any),
+    });
 
     await expect(
-      reconciliationService.runReconciliation(
-        makeUser() as any, makeEffective() as any,
+      customService.runReconciliation(
+        makeUser(scope) as any, makeEffective() as any,
         { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
       ),
-    ).rejects.toThrow(/INJECTED_FAILURE_AFTER_BUSINESS_WRITE/);
+    ).rejects.toThrow(/INJECTED_FAILURE_AFTER_FIRST_BUSINESS_WRITE/);
 
-    // Reconciliation results equal pre-call count (rollback).
-    const resultsAfter = await getReconResultCount(batchId);
+    const resultsAfter = await getReconResultCount(scope, batchId);
     expect(resultsAfter).toBe(resultsBefore);
+    expect(resultsAfter).toBe(0);
 
-    // Review items equal pre-call count (rollback).
-    const reviewAfter = await getReviewItemCount(batchId);
+    const reviewAfter = await getReviewItemCount(scope, batchId);
     expect(reviewAfter).toBe(reviewBefore);
+    expect(reviewAfter).toBe(0);
 
-    // Batch status unchanged (rollback).
-    const batchAfter = await getBatchState(batchId);
+    const batchAfter = await getBatchState(scope, batchId);
     expect(batchAfter!.status).toBe(batchBefore!.status);
     expect(batchAfter!.reconciliation_status).toBe(batchBefore!.reconciliation_status);
 
-    // Audit delta = 0 (rollback — no 'historical_reconciliation.run' row committed).
-    const auditAfter = await getScopedAuditCount(batchId, "historical_reconciliation.run");
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
     expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
 
-    // Report version unchanged (no new version committed).
-    const versionAfter = await getLatestReportVersion(batchId);
+    const versionAfter = await getLatestReportVersion(scope, batchId);
     expect(versionAfter).toBe(versionBefore);
+    expect(versionAfter).toBe(0);
 
-    // Idempotency state: not succeeded (rolled back).
-    const idemState = await getIdemState(idemKey);
+    const idemState = await getIdemState(scope, idemKey);
     if (idemState) {
       expect(idemState.state).not.toBe("succeeded");
     }
+
+    await cleanupScope(scope);
   });
 
   // ===========================================================================
-  // RCA-3 — OWNER-TOKEN LOSS BEFORE markSucceeded
+  // RCA-3 — REAL OWNER-TOKEN LOSS (production fence rejects stale owner)
   // ===========================================================================
-  it("RCA-3. owner-token loss before markSucceeded: full rollback with same exact assertions as RCA-2", async () => {
+  it("RCA-3. real owner-token loss: production fence rejects stale owner, full rollback", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
     const batchId = randomUUID();
-    await seedStagedBatch(batchId);
-    await seedFileAndStagingRow(batchId);
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
 
-    const idemKey = "rca3-owner-loss-" + randomUUID();
-    const auditBefore = await getScopedAuditCount(batchId, "historical_reconciliation.run");
-    const resultsBefore = await getReconResultCount(batchId);
-    const reviewBefore = await getReviewItemCount(batchId);
-    const batchBefore = await getBatchState(batchId);
-    const versionBefore = await getLatestReportVersion(batchId);
+    const idemKey = "rca3-real-owner-loss-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsBefore = await getReconResultCount(scope, batchId);
+    const reviewBefore = await getReviewItemCount(scope, batchId);
+    const batchBefore = await getBatchState(scope, batchId);
+    const versionBefore = await getLatestReportVersion(scope, batchId);
 
-    // Faulty runner that throws IdempotencyOwnershipLostError AFTER work
-    // completes (simulating owner-token loss at markSucceeded).
-    const { reconciliationService } = makeServices(makeFaultyTransactionRunner("markSucceeded"));
+    // Custom service that wraps the tx-scoped idempotency repo to change
+    // the persisted owner_token BEFORE the real markSucceeded call.
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const customService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          await work(tx);
+        }),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => makeRealOwnerLossIdempotencyWrapper(new IdempotencyDbRepository(tx as any), tx as any),
+      createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+    });
 
+    // The production markSucceeded should throw IdempotencyOwnershipLostError
+    // because the owner_token was changed by the wrapper.
     await expect(
-      reconciliationService.runReconciliation(
-        makeUser() as any, makeEffective() as any,
+      customService.runReconciliation(
+        makeUser(scope) as any, makeEffective() as any,
         { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/owner.*token|ownership/i);
 
-    // Same exact assertions as RCA-2:
-
-    // Reconciliation results equal pre-call count (rollback).
-    const resultsAfter = await getReconResultCount(batchId);
+    // Full rollback assertions (same as RCA-2):
+    const resultsAfter = await getReconResultCount(scope, batchId);
     expect(resultsAfter).toBe(resultsBefore);
+    expect(resultsAfter).toBe(0);
 
-    // Review items equal pre-call count (rollback).
-    const reviewAfter = await getReviewItemCount(batchId);
+    const reviewAfter = await getReviewItemCount(scope, batchId);
     expect(reviewAfter).toBe(reviewBefore);
+    expect(reviewAfter).toBe(0);
 
-    // Batch status unchanged (rollback).
-    const batchAfter = await getBatchState(batchId);
+    const batchAfter = await getBatchState(scope, batchId);
     expect(batchAfter!.status).toBe(batchBefore!.status);
     expect(batchAfter!.reconciliation_status).toBe(batchBefore!.reconciliation_status);
 
-    // Audit delta = 0 (rollback).
-    const auditAfter = await getScopedAuditCount(batchId, "historical_reconciliation.run");
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
     expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
 
-    // Report version unchanged.
-    const versionAfter = await getLatestReportVersion(batchId);
+    const versionAfter = await getLatestReportVersion(scope, batchId);
     expect(versionAfter).toBe(versionBefore);
+    expect(versionAfter).toBe(0);
 
-    // Idempotency state: not succeeded (rolled back).
-    const idemState = await getIdemState(idemKey);
+    const idemState = await getIdemState(scope, idemKey);
     if (idemState) {
       expect(idemState.state).not.toBe("succeeded");
     }
+
+    await cleanupScope(scope);
   });
 
   // ===========================================================================
   // RCA-4 — VALID RETRY AFTER RCA-3 FAILURE
   // ===========================================================================
   it("RCA-4. valid retry: exactly one final run/effect set, exactly one scoped audit, idempotency succeeded", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
     const batchId = randomUUID();
-    await seedStagedBatch(batchId);
-    await seedFileAndStagingRow(batchId);
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
 
     const idemKey = "rca4-retry-" + randomUUID();
-    const auditBefore = await getScopedAuditCount(batchId, "historical_reconciliation.run");
-    const resultsBefore = await getReconResultCount(batchId);
-    const reviewBefore = await getReviewItemCount(batchId);
-    const versionBefore = await getLatestReportVersion(batchId);
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsBefore = await getReconResultCount(scope, batchId);
+    const reviewBefore = await getReviewItemCount(scope, batchId);
+    const versionBefore = await getLatestReportVersion(scope, batchId);
 
-    // Step 1: fail with owner-token loss.
-    const faultyService = makeServices(makeFaultyTransactionRunner("markSucceeded"));
+    // Step 1: fail with real owner-token loss.
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const faultyService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          await work(tx);
+        }),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => makeRealOwnerLossIdempotencyWrapper(new IdempotencyDbRepository(tx as any), tx as any),
+      createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+    });
     await expect(
-      faultyService.reconciliationService.runReconciliation(
-        makeUser() as any, makeEffective() as any,
+      faultyService.runReconciliation(
+        makeUser(scope) as any, makeEffective() as any,
         { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/owner.*token|ownership/i);
 
     // Step 2: expire lease for retry.
-    await sql`UPDATE idempotency_records SET lease_expires_at = NOW() - interval '1 second' WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
+    await sql`UPDATE idempotency_records SET lease_expires_at = NOW() - interval '1 second' WHERE tenant_id = ${scope.tenantId} AND idempotency_key = ${idemKey}`;
 
     // Step 3: valid retry with a good service.
-    const { reconciliationService: goodService } = makeServices();
+    const { reconciliationService: goodService } = makeServices(scope);
     const retryResult = await goodService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
     );
     expect(retryResult.action).toBe("executed");
 
-    // Exactly one new scoped audit row (audit count = before + 1).
-    const auditAfterRetry = await getScopedAuditCount(batchId, "historical_reconciliation.run");
+    const auditAfterRetry = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
     expect(auditAfterRetry).toBe(auditBefore + 1);
+    expect(auditAfterRetry).toBe(1);
 
-    // Exactly one final effect set: results/review items > 0.
-    const resultsAfterRetry = await getReconResultCount(batchId);
-    const reviewAfterRetry = await getReviewItemCount(batchId);
+    const resultsAfterRetry = await getReconResultCount(scope, batchId);
+    const reviewAfterRetry = await getReviewItemCount(scope, batchId);
     expect(resultsAfterRetry).toBeGreaterThan(resultsBefore);
+    expect(resultsAfterRetry).toBe(retryResult.totalMetrics);
     expect(reviewAfterRetry).toBe(reviewBefore + retryResult.reviewItemsCreated);
+    expect(reviewAfterRetry).toBe(0);
 
-    // Report version = before + 1.
-    const versionAfterRetry = await getLatestReportVersion(batchId);
+    const versionAfterRetry = await getLatestReportVersion(scope, batchId);
     expect(versionAfterRetry).toBe(versionBefore + 1);
+    expect(versionAfterRetry).toBe(1);
 
-    // Idempotency state: succeeded.
-    const idemState = await getIdemState(idemKey);
+    const idemState = await getIdemState(scope, idemKey);
     expect(idemState?.state).toBe("succeeded");
+
+    await cleanupScope(scope);
   });
 
   // ===========================================================================
   // RCA-5 — SAME-KEY/SAME-PAYLOAD REPLAY
   // ===========================================================================
   it("RCA-5. same-key/same-payload replay: same persisted response, zero additional runs/results/review items/audits", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
     const batchId = randomUUID();
-    await seedStagedBatch(batchId);
-    await seedFileAndStagingRow(batchId);
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
 
     const idemKey = "rca5-replay-" + randomUUID();
-    const { reconciliationService } = makeServices();
+    const { reconciliationService } = makeServices(scope);
 
-    // Step 1: initial run.
     const initialResult = await reconciliationService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
     );
     expect(initialResult.action).toBe("executed");
 
-    const auditAfterInitial = await getScopedAuditCount(batchId, "historical_reconciliation.run");
-    const resultsAfterInitial = await getReconResultCount(batchId);
-    const reviewAfterInitial = await getReviewItemCount(batchId);
-    const versionAfterInitial = await getLatestReportVersion(batchId);
-    const idemAfterInitial = await getIdemState(idemKey);
+    const auditAfterInitial = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsAfterInitial = await getReconResultCount(scope, batchId);
+    const reviewAfterInitial = await getReviewItemCount(scope, batchId);
+    const versionAfterInitial = await getLatestReportVersion(scope, batchId);
+    const idemAfterInitial = await getIdemState(scope, idemKey);
 
-    // Step 2: replay with same key + same payload.
     const replayResult = await reconciliationService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
     );
     expect(replayResult.action).toBe("replayed");
 
-    // Same persisted response_body (idempotency record unchanged).
-    const idemAfterReplay = await getIdemState(idemKey);
+    const idemAfterReplay = await getIdemState(scope, idemKey);
     expect(idemAfterReplay?.state).toBe("succeeded");
     expect(JSON.stringify(idemAfterReplay?.response_body)).toBe(JSON.stringify(idemAfterInitial?.response_body));
 
-    // Zero additional runs/results/review items/audits.
-    const auditAfterReplay = await getScopedAuditCount(batchId, "historical_reconciliation.run");
-    const resultsAfterReplay = await getReconResultCount(batchId);
-    const reviewAfterReplay = await getReviewItemCount(batchId);
-    const versionAfterReplay = await getLatestReportVersion(batchId);
+    const auditAfterReplay = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsAfterReplay = await getReconResultCount(scope, batchId);
+    const reviewAfterReplay = await getReviewItemCount(scope, batchId);
+    const versionAfterReplay = await getLatestReportVersion(scope, batchId);
     expect(auditAfterReplay).toBe(auditAfterInitial);
     expect(resultsAfterReplay).toBe(resultsAfterInitial);
     expect(reviewAfterReplay).toBe(reviewAfterInitial);
     expect(versionAfterReplay).toBe(versionAfterInitial);
+
+    await cleanupScope(scope);
   });
 
   // ===========================================================================
   // RCA-6 — SAME-KEY/DIFFERENT-PAYLOAD CONFLICT
   // ===========================================================================
   it("RCA-6. same-key/different-payload conflict: rejected, zero additional effects", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
     const batchId1 = randomUUID();
-    await seedStagedBatch(batchId1);
-    await seedFileAndStagingRow(batchId1);
+    await seedStagedBatch(scope, batchId1);
+    await seedFileAndStagingRow(scope, batchId1);
 
     const batchId2 = randomUUID();
-    await seedStagedBatch(batchId2);
-    await seedFileAndStagingRow(batchId2);
+    await seedStagedBatch(scope, batchId2);
+    await seedFileAndStagingRow(scope, batchId2);
 
     const idemKey = "rca6-conflict-" + randomUUID();
-    const { reconciliationService } = makeServices();
+    const { reconciliationService } = makeServices(scope);
 
-    // Step 1: initial run on batch1.
     const initialResult = await reconciliationService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId1, expectedTotals: {}, idempotencyKey: idemKey },
     );
     expect(initialResult.action).toBe("executed");
 
-    const audit1AfterInitial = await getScopedAuditCount(batchId1, "historical_reconciliation.run");
-    const results1AfterInitial = await getReconResultCount(batchId1);
-    const audit2AfterInitial = await getScopedAuditCount(batchId2, "historical_reconciliation.run");
-    const results2AfterInitial = await getReconResultCount(batchId2);
+    const audit1AfterInitial = await getScopedAuditCount(scope, batchId1, "historical_reconciliation.run");
+    const results1AfterInitial = await getReconResultCount(scope, batchId1);
+    const audit2AfterInitial = await getScopedAuditCount(scope, batchId2, "historical_reconciliation.run");
+    const results2AfterInitial = await getReconResultCount(scope, batchId2);
 
-    // Step 2: replay with same key but DIFFERENT payload (batch2 instead of batch1).
     await expect(
       reconciliationService.runReconciliation(
-        makeUser() as any, makeEffective() as any,
+        makeUser(scope) as any, makeEffective() as any,
         { importBatchId: batchId2, expectedTotals: {}, idempotencyKey: idemKey },
       ),
     ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|conflict/i);
 
-    // Zero additional effects on batch1 (the originally-succeeded batch).
-    const audit1AfterConflict = await getScopedAuditCount(batchId1, "historical_reconciliation.run");
-    const results1AfterConflict = await getReconResultCount(batchId1);
+    const audit1AfterConflict = await getScopedAuditCount(scope, batchId1, "historical_reconciliation.run");
+    const results1AfterConflict = await getReconResultCount(scope, batchId1);
     expect(audit1AfterConflict).toBe(audit1AfterInitial);
     expect(results1AfterConflict).toBe(results1AfterInitial);
 
-    // Zero additional effects on batch2 (the conflicting batch — never written).
-    const audit2AfterConflict = await getScopedAuditCount(batchId2, "historical_reconciliation.run");
-    const results2AfterConflict = await getReconResultCount(batchId2);
+    const audit2AfterConflict = await getScopedAuditCount(scope, batchId2, "historical_reconciliation.run");
+    const results2AfterConflict = await getReconResultCount(scope, batchId2);
     expect(audit2AfterConflict).toBe(audit2AfterInitial);
     expect(results2AfterConflict).toBe(results2AfterInitial);
+    expect(results2AfterConflict).toBe(0);
+
+    await cleanupScope(scope);
   });
 
   // ===========================================================================
-  // RCA-7 — VERSION PRESERVATION
+  // RCA-7 — IMMUTABLE VERSION PRESERVATION
   // ===========================================================================
-  it("RCA-7. version preservation: previous report versions and result rows remain queryable; superseded state/notes follow project contract", async () => {
+  it("RCA-7. immutable version preservation: previous report versions and result rows remain queryable; NO business/evidence field is overwritten", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
     const batchId = randomUUID();
-    await seedStagedBatch(batchId);
-    await seedFileAndStagingRow(batchId);
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
 
-    const { reconciliationService } = makeServices();
+    const { reconciliationService } = makeServices(scope);
 
     // Step 1: run reconciliation → creates version 1.
     const idemKey1 = "rca7-v1-" + randomUUID();
     const result1 = await reconciliationService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey1 },
     );
     expect(result1.action).toBe("executed");
     expect(result1.reportVersion).toBe(1);
 
-    const v1Results = await getReconResultsForVersion(batchId, 1);
+    // Snapshot ALL V1 business/evidence fields.
+    const v1Results = await getReconResultsForVersion(scope, batchId, 1);
     expect(v1Results.length).toBeGreaterThan(0);
-    // Version 1 results should NOT have a SUPERSEDED note initially.
-    // (notes may be null for matched metrics — coerce to string for .toMatch.)
-    for (const r of v1Results) {
-      expect(String(r.notes ?? "")).not.toMatch(/^SUPERSEDED/);
-    }
+    const v1Snapshot = v1Results.map(r => ({ ...r }));
 
-    // WP-08-01F DEFECT 2: reopenBatchForRework resets validationStatus and
-    // reconciliationStatus to null (forces re-validation and re-reconciliation).
-    // To run reconciliation again, we need to reset the batch status. The
-    // service's guardRunReconciliation requires status='validation_complete'
-    // (or reconciliation_in_progress / review_required). We reset directly
-    // here to simulate the rework flow.
-    await sql`UPDATE import_batches SET status = 'validation_complete'::import_batch_status, reconciliation_status = NULL WHERE id = ${batchId}`;
+    // Reset batch status to allow re-reconciliation (simulates rework).
+    await sql`UPDATE import_batches SET status = 'validation_complete'::import_batch_status, reconciliation_status = NULL WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
 
-    // Step 2: run reconciliation again → creates version 2, marks version 1 as superseded.
+    // Step 2: run reconciliation again → creates version 2.
     const idemKey2 = "rca7-v2-" + randomUUID();
     const result2 = await reconciliationService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey2 },
     );
     expect(result2.action).toBe("executed");
     expect(result2.reportVersion).toBe(2);
 
-    // Version 1 results must STILL be queryable (not deleted).
-    const v1ResultsAfterV2 = await getReconResultsForVersion(batchId, 1);
-    expect(v1ResultsAfterV2.length).toBe(v1Results.length);
-    // Same row IDs (not overwritten).
-    for (let i = 0; i < v1Results.length; i++) {
-      expect(v1ResultsAfterV2[i]!.id).toBe(v1Results[i]!.id);
-    }
-    // Version 1 notes should now contain "SUPERSEDED" (per project contract:
-    // markVersionAsSuperseded sets notes = 'SUPERSEDED by later report version').
-    for (const r of v1ResultsAfterV2) {
-      expect(String(r.notes ?? "")).toMatch(/^SUPERSEDED/);
+    // V1 results must STILL be queryable with ALL fields UNCHANGED.
+    const v1ResultsAfterV2 = await getReconResultsForVersion(scope, batchId, 1);
+    expect(v1ResultsAfterV2.length).toBe(v1Snapshot.length);
+    for (let i = 0; i < v1Snapshot.length; i++) {
+      const before = v1Snapshot[i]!;
+      const after = v1ResultsAfterV2[i]!;
+      expect(after.id).toBe(before.id);                         // same row ID
+      expect(after.report_version).toBe(before.report_version); // version unchanged
+      expect(after.metric_key).toBe(before.metric_key);         // metric key unchanged
+      expect(after.expected_value).toBe(before.expected_value); // expected value unchanged
+      expect(after.staged_value).toBe(before.staged_value);     // staged value unchanged
+      expect(after.committed_value).toBe(before.committed_value); // committed value unchanged
+      expect(after.difference_value).toBe(before.difference_value); // difference unchanged
+      expect(after.status).toBe(before.status);                 // status unchanged
+      expect(after.notes).toBe(before.notes);                   // notes/review reason UNCHANGED (not overwritten)
+      expect(after.created_by).toBe(before.created_by);         // creator unchanged
     }
 
-    // Version 2 results exist and are queryable.
-    const v2Results = await getReconResultsForVersion(batchId, 2);
+    // Snapshot V2 fields.
+    const v2Results = await getReconResultsForVersion(scope, batchId, 2);
     expect(v2Results.length).toBeGreaterThan(0);
-    // Version 2 results should NOT have a SUPERSEDED note.
-    for (const r of v2Results) {
-      expect(String(r.notes ?? "")).not.toMatch(/^SUPERSEDED/);
-    }
+    const v2Snapshot = v2Results.map(r => ({ ...r }));
 
     // Latest report version = 2.
-    const latestVersion = await getLatestReportVersion(batchId);
+    const latestVersion = await getLatestReportVersion(scope, batchId);
     expect(latestVersion).toBe(2);
 
-    // Step 3: run reconciliation a third time → creates version 3, marks version 2 as superseded.
-    await sql`UPDATE import_batches SET status = 'validation_complete'::import_batch_status, reconciliation_status = NULL WHERE id = ${batchId}`;
+    // Step 3: run reconciliation a third time → creates version 3.
+    await sql`UPDATE import_batches SET status = 'validation_complete'::import_batch_status, reconciliation_status = NULL WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
     const idemKey3 = "rca7-v3-" + randomUUID();
     const result3 = await reconciliationService.runReconciliation(
-      makeUser() as any, makeEffective() as any,
+      makeUser(scope) as any, makeEffective() as any,
       { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey3 },
     );
     expect(result3.action).toBe("executed");
     expect(result3.reportVersion).toBe(3);
 
     // All three versions remain queryable.
-    const v1Final = await getReconResultsForVersion(batchId, 1);
-    const v2Final = await getReconResultsForVersion(batchId, 2);
-    const v3Final = await getReconResultsForVersion(batchId, 3);
-    expect(v1Final.length).toBe(v1Results.length);
-    expect(v2Final.length).toBe(v2Results.length);
+    const v1Final = await getReconResultsForVersion(scope, batchId, 1);
+    const v2Final = await getReconResultsForVersion(scope, batchId, 2);
+    const v3Final = await getReconResultsForVersion(scope, batchId, 3);
+    expect(v1Final.length).toBe(v1Snapshot.length);
+    expect(v2Final.length).toBe(v2Snapshot.length);
     expect(v3Final.length).toBeGreaterThan(0);
 
-    // Versions 1 and 2 are superseded; version 3 is current.
-    for (const r of v1Final) expect(String(r.notes ?? "")).toMatch(/^SUPERSEDED/);
-    for (const r of v2Final) expect(String(r.notes ?? "")).toMatch(/^SUPERSEDED/);
-    for (const r of v3Final) expect(String(r.notes ?? "")).not.toMatch(/^SUPERSEDED/);
+    // V1 fields STILL unchanged after V3 (no mutation across two versions).
+    for (let i = 0; i < v1Snapshot.length; i++) {
+      const before = v1Snapshot[i]!;
+      const after = v1Final[i]!;
+      expect(after.id).toBe(before.id);
+      expect(after.notes).toBe(before.notes); // critical: notes NOT overwritten
+      expect(after.status).toBe(before.status);
+      expect(after.expected_value).toBe(before.expected_value);
+      expect(after.staged_value).toBe(before.staged_value);
+      expect(after.difference_value).toBe(before.difference_value);
+    }
 
-    // Latest version = 3.
-    const latestFinal = await getLatestReportVersion(batchId);
+    // V2 fields unchanged after V3.
+    for (let i = 0; i < v2Snapshot.length; i++) {
+      const before = v2Snapshot[i]!;
+      const after = v2Final[i]!;
+      expect(after.id).toBe(before.id);
+      expect(after.notes).toBe(before.notes); // critical: notes NOT overwritten
+      expect(after.status).toBe(before.status);
+      expect(after.expected_value).toBe(before.expected_value);
+      expect(after.staged_value).toBe(before.staged_value);
+      expect(after.difference_value).toBe(before.difference_value);
+    }
+
+    // Latest version = 3 (unambiguous current version).
+    const latestFinal = await getLatestReportVersion(scope, batchId);
     expect(latestFinal).toBe(3);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // RCA-8 — CONCURRENCY: two concurrent reconciliations serialize on batch lock
+  // ===========================================================================
+  it("RCA-8. concurrency: two concurrent reconciliations against same batch allocate distinct report versions (serialized by batch row lock)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+
+    const idemKey1 = "rca8-concurrent-1-" + randomUUID();
+    const idemKey2 = "rca8-concurrent-2-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    // Launch two concurrent reconciliations with different idempotency keys.
+    // Both target the same batch. The batch row lock (SELECT ... FOR UPDATE)
+    // serializes them — one acquires the lock first, allocates version 1,
+    // commits; the other waits, acquires the lock, allocates version 2.
+    const [result1, result2] = await Promise.allSettled([
+      reconciliationService.runReconciliation(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey1 },
+      ),
+      reconciliationService.runReconciliation(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey2 },
+      ),
+    ]);
+
+    // Both should succeed (they serialize on the batch lock).
+    expect(result1.status).toBe("fulfilled");
+    expect(result2.status).toBe("fulfilled");
+
+    const r1 = (result1 as PromiseFulfilledResult<any>).value;
+    const r2 = (result2 as PromiseFulfilledResult<any>).value;
+
+    // Distinct report versions (no duplicate/ambiguous version).
+    expect(r1.reportVersion).not.toBe(r2.reportVersion);
+    expect(new Set([r1.reportVersion, r2.reportVersion])).toEqual(new Set([1, 2]));
+
+    // Final batch state is deterministic.
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+    expect(batch!.reconciliation_status).toBe("matched");
+
+    // Two distinct report versions exist.
+    const latestVersion = await getLatestReportVersion(scope, batchId);
+    expect(latestVersion).toBe(2);
+
+    // Total results = r1.totalMetrics + r2.totalMetrics (both versions persisted).
+    const totalResults = await getReconResultCount(scope, batchId);
+    expect(totalResults).toBe(r1.totalMetrics + r2.totalMetrics);
+
+    // Two scoped audit rows (one per reconciliation run).
+    const auditCount = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    expect(auditCount).toBe(2);
+
+    // Both idempotency records succeeded.
+    const idem1 = await getIdemState(scope, idemKey1);
+    const idem2 = await getIdemState(scope, idemKey2);
+    expect(idem1?.state).toBe("succeeded");
+    expect(idem2?.state).toBe("succeeded");
+
+    await cleanupScope(scope);
   });
 });

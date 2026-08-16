@@ -21,11 +21,11 @@ import { HistoricalStagingDbRepository } from "@/server/services/historical-stag
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
-import { IdempotencyOwnershipLostError } from "@/server/services/idempotency-service";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+import { sql as drizzleSql } from "drizzle-orm";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
@@ -67,28 +67,6 @@ function makeServices(faultyTransactionRunner?: <T>(work: (tx: unknown) => Promi
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
   });
   return { stagingService, stagingRepo, audit, idem, docSeq };
-}
-
-function makeFaultyTransactionRunner(failAfter: "business_write" | "markSucceeded") {
-  return async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-    return (db as any).transaction(async (tx: any) => {
-      // Wrap the tx-scoped idempotency repo to inject failure
-      const realIdem = new IdempotencyDbRepository(tx);
-      const wrappedTx = {
-        ...tx,
-      };
-      // We can't easily intercept the work function's internal calls,
-      // so we use a different approach: make the transaction throw after work completes
-      await work(wrappedTx);
-      if (failAfter === "markSucceeded") {
-        // The work already completed including markSucceeded.
-        // To simulate owner-token loss, we need a different approach.
-        // We'll throw AFTER the work, which rolls back the entire transaction.
-        throw new IdempotencyOwnershipLostError("injected", "injected");
-      }
-      return undefined as T;
-    });
-  };
 }
 
 async function seedTenantAndUser() {
@@ -171,9 +149,10 @@ async function cleanupRunScopedData() {
   await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${T}`;
   await sql`DELETE FROM import_batches WHERE tenant_id = ${T}`;
   await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T}`;
-  await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`; await sql`DELETE FROM audit_logs WHERE tenant_id = ${T}`; await sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_delete`;
-  await sql`DELETE FROM users WHERE tenant_id = ${T}`;
-  await sql`DELETE FROM tenants WHERE id = ${T}`;
+  // NOTE: audit_logs, users, and tenants are intentionally NOT deleted.
+  // audit_logs is immutable (audit_logs_no_delete trigger); users/tenants
+  // are referenced by audit_logs via FK. Each test run uses a unique
+  // tenant (RUN_ID = randomUUID), so leftover rows do not interfere.
 }
 
 describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atomicity proof", () => {
@@ -189,7 +168,9 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     await sql`DELETE FROM import_files WHERE tenant_id = ${T}`;
     await sql`DELETE FROM import_batches WHERE tenant_id = ${T}`;
     await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T}`;
-    await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`; await sql`DELETE FROM audit_logs WHERE tenant_id = ${T}`; await sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_delete`;
+    // NOTE: audit_logs is NOT deleted — immutable (trigger-enforced).
+    // Scoped audit queries use entity_id + action_type, so accumulated
+    // audit rows do not interfere.
   }, 15000);
 
   it("FS-1. Success: hash/count/status/audit/idempotency all updated once", async () => {
@@ -303,7 +284,7 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     expect(idemState).not.toBe("succeeded");
   });
 
-  it("FS-5. Owner-token loss at markSucceeded: full rollback", async () => {
+  it("FS-5. Owner-token loss at markSucceeded: full rollback (real production fence)", async () => {
     const batchId = randomUUID();
     await seedBatchWithSource(batchId);
     await seedFileAndStagingRow(batchId);
@@ -312,20 +293,41 @@ describeOrSkip("WP-08-01F Milestone C Task 2 — finalizeStaging PostgreSQL atom
     const auditBefore = await getAuditCount(batchId, "historical_staging.finalize");
     const idemKey = "fs5-" + randomUUID();
 
-    // Faulty tx runner that throws IdempotencyOwnershipLostError after work
-    const faultyTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-      return (db as any).transaction(async (tx: any) => {
-        await work(tx);
-        throw new IdempotencyOwnershipLostError("injected", "injected");
-      });
-    };
-    const { stagingService } = makeServices(faultyTxRunner);
+    // REAL owner-token loss: wrap the tx-scoped idempotency repo to
+    // change owner_token BEFORE the real markSucceeded call. The
+    // production fence (WHERE owner_token = expected) rejects the stale
+    // owner → returns 0 → markSucceeded throws.
+    const stagingRepo = new HistoricalStagingDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const docSeq = new DocumentSequenceDbRepository(db);
+    const stagingService = new HistoricalStagingService({
+      repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => {
+        const realIdem = new IdempotencyDbRepository(tx as any);
+        return {
+          findByTenantScopeKey: (t: string, s: string, k: string) => realIdem.findByTenantScopeKey(t, s, k),
+          insert: (r: any) => realIdem.insert(r),
+          claimExpiredLease: (id: string, a: Date, b: Date, c: Date) => realIdem.claimExpiredLease(id, a, b, c),
+          heartbeat: (id: string, n: Date) => realIdem.heartbeat(id, n),
+          updateState: async (id: string, update: any) => {
+            const newToken = 'stale-' + randomUUID();
+            await (tx as any).execute(drizzleSql`UPDATE idempotency_records SET owner_token = ${newToken} WHERE id = ${id}`);
+            return realIdem.updateState(id, update);
+          },
+        } as any;
+      },
+    });
 
     await expect(
       stagingService.finalizeStaging(makeUser() as any, makeEffective() as any, {
         importBatchId: batchId, idempotencyKey: idemKey,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/owner.*token|ownership/i);
 
     const batchAfter = await getBatchState(batchId);
     expect(batchAfter!.status).toBe(batchBefore!.status);
@@ -412,7 +414,9 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     await sql`DELETE FROM import_files WHERE tenant_id = ${T}`;
     await sql`DELETE FROM import_batches WHERE tenant_id = ${T}`;
     await sql`DELETE FROM idempotency_records WHERE tenant_id = ${T}`;
-    await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`; await sql`DELETE FROM audit_logs WHERE tenant_id = ${T}`; await sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_delete`;
+    // NOTE: audit_logs is NOT deleted — immutable (trigger-enforced).
+    // Scoped audit queries use entity_id + action_type, so accumulated
+    // audit rows do not interfere.
   }, 15000);
 
   async function seedStagedBatch(batchId: string) {
@@ -549,20 +553,39 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
     expect(idemState).not.toBe("succeeded");
   });
 
-  it("FM-5. Owner-token loss: full rollback", async () => {
+  it("FM-5. Owner-token loss: full rollback (real production fence)", async () => {
     const batchId = randomUUID();
     await seedStagedBatch(batchId);
 
     const manifestBefore = await getManifestCount(batchId);
     const idemKey = "fm5-" + randomUUID();
 
-    const faultyTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-      return (db as any).transaction(async (tx: any) => {
-        await work(tx);
-        throw new IdempotencyOwnershipLostError("injected", "injected");
-      });
-    };
-    const { stagingService } = makeServices(faultyTxRunner);
+    // REAL owner-token loss: wrap the tx-scoped idempotency repo.
+    const stagingRepo = new HistoricalStagingDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const docSeq = new DocumentSequenceDbRepository(db);
+    const stagingService = new HistoricalStagingService({
+      repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => {
+        const realIdem = new IdempotencyDbRepository(tx as any);
+        return {
+          findByTenantScopeKey: (t: string, s: string, k: string) => realIdem.findByTenantScopeKey(t, s, k),
+          insert: (r: any) => realIdem.insert(r),
+          claimExpiredLease: (id: string, a: Date, b: Date, c: Date) => realIdem.claimExpiredLease(id, a, b, c),
+          heartbeat: (id: string, n: Date) => realIdem.heartbeat(id, n),
+          updateState: async (id: string, update: any) => {
+            const newToken = 'stale-' + randomUUID();
+            await (tx as any).execute(drizzleSql`UPDATE idempotency_records SET owner_token = ${newToken} WHERE id = ${id}`);
+            return realIdem.updateState(id, update);
+          },
+        } as any;
+      },
+    });
 
     await expect(
       stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
@@ -570,7 +593,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
         sourceCoverage: "all", openingBalanceBasis: "audit", liveSystemStartBoundary: null,
         idempotencyKey: idemKey,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/owner.*token|ownership/i);
 
     const manifestAfter = await getManifestCount(batchId);
     expect(manifestAfter).toBe(manifestBefore);
@@ -648,9 +671,7 @@ describeOrSkip("WP-08-01F Milestone C Task 3 — finalizeCutoverManifest Postgre
 afterAll(async () => {
   if (sql) {
     try {
-      await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`;
       await cleanupRunScopedData();
-      await sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_delete`;
     } catch (e) {
       // Ignore cleanup errors
     }

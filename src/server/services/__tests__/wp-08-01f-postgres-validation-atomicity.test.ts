@@ -24,10 +24,10 @@ import { HistoricalValidationDbRepository } from "@/server/services/historical-v
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
-import { IdempotencyOwnershipLostError } from "@/server/services/idempotency-service";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { RoleCode } from "@/server/security/role-codes";
+import { sql as drizzleSql } from "drizzle-orm";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -507,22 +507,39 @@ describeOrSkip("WP-08-01F Phase 0 — Validation atomicity proofs", () => {
     const auditBefore = (await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${T} AND entity_id = ${batchId} AND action_type = 'historical_validation.run'`)[0]!.c;
     const idemKey = "va6-owner-loss-" + randomUUID();
 
-    // --- Build a faulty service with owner-token loss at markSucceeded. ---
+    // --- Build a faulty service with REAL owner-token loss at markSucceeded. ---
+    // The owner_token is changed in the DB BEFORE the real markSucceeded
+    // call. The production fence (WHERE owner_token = expectedOwnerToken
+    // AND state = 'in_progress') rejects the stale owner → returns 0 rows
+    // → markSucceeded throws IdempotencyOwnershipLostError.
+    // We do NOT throw the error manually.
     const valRepo = new HistoricalValidationDbRepository(db);
     const audit = new AuditDbRepository(db);
     const idem = new IdempotencyDbRepository(db);
-    const faultyTransactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
-      return (db as any).transaction(async (tx: any) => {
-        await work(tx);
-        throw new IdempotencyOwnershipLostError("injected", "injected-token");
-      });
-    };
     const faultyService = new HistoricalValidationService({
       repository: valRepo, audit, idempotency: idem,
-      transactionRunner: faultyTransactionRunner,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
       createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any),
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
-      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => {
+        // Wrap the real idempotency repo to change owner_token before
+        // the real updateState call.
+        const realIdem = new IdempotencyDbRepository(tx as any);
+        return {
+          findByTenantScopeKey: (t: string, s: string, k: string) => realIdem.findByTenantScopeKey(t, s, k),
+          insert: (r: any) => realIdem.insert(r),
+          claimExpiredLease: (id: string, a: Date, b: Date, c: Date) => realIdem.claimExpiredLease(id, a, b, c),
+          heartbeat: (id: string, n: Date) => realIdem.heartbeat(id, n),
+          updateState: async (id: string, update: any) => {
+            // Change owner_token BEFORE the real fenced UPDATE.
+            const newToken = 'stale-' + randomUUID();
+            await (tx as any).execute(drizzleSql`UPDATE idempotency_records SET owner_token = ${newToken} WHERE id = ${id}`);
+            // Delegate to the REAL updateState — the production fence.
+            return realIdem.updateState(id, update);
+          },
+        } as any;
+      },
     });
 
     // --- (1) OWNER LOSS: every business value unchanged, audit delta 0, idempotency not succeeded. ---
