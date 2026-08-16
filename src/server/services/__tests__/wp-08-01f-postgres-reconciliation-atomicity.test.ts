@@ -43,6 +43,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "@/server/db/schema";
 import { HistoricalReconciliationService } from "@/server/services/historical-reconciliation-service";
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
+import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
@@ -90,18 +91,20 @@ function makeEffective() {
 
 function makeServices(scope: TestScope, faultyTransactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>) {
   const reconRepo = new HistoricalReconciliationDbRepository(db);
+  const commitRepo = new HistoricalCommitDbRepository(db);
   const audit = new AuditDbRepository(db);
   const idem = new IdempotencyDbRepository(db);
   const transactionRunner = faultyTransactionRunner ?? (async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
     (db as any).transaction(async (tx: any) => work(tx)));
   const reconciliationService = new HistoricalReconciliationService({
-    repository: reconRepo, audit, idempotency: idem,
+    repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
     transactionRunner,
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
     createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+    createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
   });
-  return { reconciliationService, reconRepo, audit, idem };
+  return { reconciliationService, reconRepo, commitRepo, audit, idem };
 }
 
 // ---------------------------------------------------------------------------
@@ -675,9 +678,9 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
   });
 
   // ===========================================================================
-  // RCA-7 — IMMUTABLE VERSION PRESERVATION
+  // RCA-7 — IMMUTABLE VERSION PRESERVATION (via real production rework path)
   // ===========================================================================
-  it("RCA-7. immutable version preservation: previous report versions and result rows remain queryable; NO business/evidence field is overwritten", async () => {
+  it("RCA-7. immutable version preservation via real rework+validation path: V1/V2/V3 all queryable, NO field overwritten", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
@@ -686,7 +689,22 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
 
     const { reconciliationService } = makeServices(scope);
 
-    // Step 1: run reconciliation → creates version 1.
+    // Also need a validation service for re-validation after rework.
+    const { HistoricalValidationService } = await import("@/server/services/historical-validation-service");
+    const { HistoricalValidationDbRepository } = await import("@/server/services/historical-validation-db-repository");
+    const valRepo = new HistoricalValidationDbRepository(db);
+    const valAudit = new AuditDbRepository(db);
+    const valIdem = new IdempotencyDbRepository(db);
+    const validationService = new HistoricalValidationService({
+      repository: valRepo, audit: valAudit, idempotency: valIdem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    });
+
+    // Step 1: run reconciliation V1 → batch moves to review_required.
     const idemKey1 = "rca7-v1-" + randomUUID();
     const result1 = await reconciliationService.runReconciliation(
       makeUser(scope) as any, makeEffective() as any,
@@ -700,10 +718,27 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     expect(v1Results.length).toBeGreaterThan(0);
     const v1Snapshot = v1Results.map(r => ({ ...r }));
 
-    // Reset batch status to allow re-reconciliation (simulates rework).
-    await sql`UPDATE import_batches SET status = 'validation_complete'::import_batch_status, reconciliation_status = NULL WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
+    // Step 2: REAL production rework path — reopenBatchForRework.
+    // This transitions review_required → staged and resets
+    // validationStatus + reconciliationStatus to null.
+    const reworkKey1 = "rca7-rework1-" + randomUUID();
+    const reworkResult1 = await reconciliationService.reopenBatchForRework(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, reason: "rca7 rework for V2", targetState: "staged", idempotencyKey: reworkKey1 },
+    );
+    expect(reworkResult1.action).toBe("reworked");
+    expect(reworkResult1.newStatus).toBe("staged");
 
-    // Step 2: run reconciliation again → creates version 2.
+    // Step 3: REAL production re-validation — runValidation.
+    // This transitions staged → validation_complete.
+    const valKey1 = "rca7-val1-" + randomUUID();
+    const valResult1 = await validationService.runValidation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, idempotencyKey: valKey1 },
+    );
+    expect(valResult1.action).toBe("executed");
+
+    // Step 4: run reconciliation V2 → creates version 2.
     const idemKey2 = "rca7-v2-" + randomUUID();
     const result2 = await reconciliationService.runReconciliation(
       makeUser(scope) as any, makeEffective() as any,
@@ -739,8 +774,19 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     const latestVersion = await getLatestReportVersion(scope, batchId);
     expect(latestVersion).toBe(2);
 
-    // Step 3: run reconciliation a third time → creates version 3.
-    await sql`UPDATE import_batches SET status = 'validation_complete'::import_batch_status, reconciliation_status = NULL WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
+    // Step 5: repeat real rework + validation for V3.
+    const reworkKey2 = "rca7-rework2-" + randomUUID();
+    await reconciliationService.reopenBatchForRework(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, reason: "rca7 rework for V3", targetState: "staged", idempotencyKey: reworkKey2 },
+    );
+    const valKey2 = "rca7-val2-" + randomUUID();
+    await validationService.runValidation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, idempotencyKey: valKey2 },
+    );
+
+    // Step 6: run reconciliation V3 → creates version 3.
     const idemKey3 = "rca7-v3-" + randomUUID();
     const result3 = await reconciliationService.runReconciliation(
       makeUser(scope) as any, makeEffective() as any,
@@ -757,7 +803,7 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     expect(v2Final.length).toBe(v2Snapshot.length);
     expect(v3Final.length).toBeGreaterThan(0);
 
-    // V1 fields STILL unchanged after V3 (no mutation across two versions).
+    // V1 fields STILL unchanged after V3 (no mutation across two rework cycles).
     for (let i = 0; i < v1Snapshot.length; i++) {
       const before = v1Snapshot[i]!;
       const after = v1Final[i]!;
