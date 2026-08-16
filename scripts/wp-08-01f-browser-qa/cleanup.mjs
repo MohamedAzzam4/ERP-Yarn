@@ -18,7 +18,7 @@ const [dbUrl, supabaseUrl, supabaseKey, tenantId] = process.argv.slice(2);
 const BUCKET = "migration-private-files";
 
 async function main() {
-  execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
+  execSync("node scripts/wp-08-01f-destruction-guard.mjs", { stdio: "inherit" });
   const sql = postgres(dbUrl, { prepare: false, max: 3, connect_timeout: 15, idle_timeout: 10 });
   const supabase = createClient(supabaseUrl, supabaseKey);
 

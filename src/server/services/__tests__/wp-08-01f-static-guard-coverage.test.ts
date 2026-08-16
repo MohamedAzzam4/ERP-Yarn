@@ -149,8 +149,9 @@ function discoverFilesWithDelete(dir: string): DiscoveredFile[] {
 interface GuardCheckResult {
   ok: boolean;
   reason: string;
-  guardLine: number;   // 1-indexed line of guard invocation, or -1
-  deleteLine: number;  // 1-indexed line of first DELETE, or -1
+  guardLine: number;        // 1-indexed line of guard invocation, or -1
+  connectionLine: number;   // 1-indexed line of first DB connection/client construction, or -1
+  deleteLine: number;       // 1-indexed line of first DELETE, or -1
 }
 
 // Patterns that indicate the TypeScript shared guard is INVOKED (not just imported).
@@ -158,9 +159,20 @@ const TS_GUARD_INVOKE_PATTERN = /\b(assertDestructiveTestDbSafety|checkDestructi
 const TS_GUARD_IMPORT_PATTERN = /\bimport\s+\{[^}]*\b(assertDestructiveTestDbSafety|checkDestructiveTestDbSafety)\b[^}]*\}\s+from\s+["'][^"']*destructive-test-guard["']/;
 
 // Patterns that indicate the centralized guard CLI is invoked.
-// Accept any of: node scripts/wp-08-01f-destruction-guard.mjs,
-// "wp-08-01f-destruction-guard.mjs", or "wp-08-01f-destruction-guard".
 const CLI_GUARD_PATTERN = /(node\s+scripts\/wp-08-01f-destruction-guard\.mjs|wp-08-01f-destruction-guard\.mjs|wp-08-01f-destruction-guard)/;
+
+// Patterns that indicate a DB connection/client construction.
+// The guard MUST be invoked BEFORE any of these.
+const CONNECTION_PATTERNS: RegExp[] = [
+  /\bpostgres\s*\(/,              // postgres(...) — postgres-js
+  /\bdrizzle\s*\(/,              // drizzle(...) — drizzle-orm
+  /\bpsycopg2\.connect\s*\(/,    // Python psycopg2
+  /\bcreate_client\s*\(/,        // Supabase createClient
+  /\bcreateClient\s*\(/,         // Supabase createClient (camelCase)
+  /\bpsql\b/,                     // shell psql invocation
+  /\bnew\s+Client\s*\(/,         // generic DB client constructor
+  /\bnew\s+Pool\s*\(/,           // generic DB pool constructor
+];
 
 // Rejected patterns — these do NOT qualify as a guard.
 const REJECTED_PATTERNS: Array<{ name: string; re: RegExp }> = [
@@ -177,11 +189,28 @@ function findFirstLineMatching(lines: string[], re: RegExp): number {
   return -1;
 }
 
+// Find the first line that matches ANY of the connection patterns.
+// The guard MUST be invoked BEFORE this line (or this line must not exist).
+function findFirstConnectionLine(lines: string[]): number {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
+    // Skip comments
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+    if (trimmed.startsWith("#") && !trimmed.startsWith("#!")) continue;
+    for (const re of CONNECTION_PATTERNS) {
+      if (re.test(line)) return i + 1;
+    }
+  }
+  return -1;
+}
+
 function checkTsFile(file: DiscoveredFile): GuardCheckResult {
   const content = file.lines.join("\n");
   const invokeLine = findFirstLineMatching(file.lines, TS_GUARD_INVOKE_PATTERN);
   const cliLine = findFirstLineMatching(file.lines, CLI_GUARD_PATTERN);
   const guardLine = invokeLine > 0 ? invokeLine : cliLine;
+  const connectionLine = findFirstConnectionLine(file.lines);
 
   if (guardLine < 0) {
     // Check if it's imported but not invoked.
@@ -190,6 +219,7 @@ function checkTsFile(file: DiscoveredFile): GuardCheckResult {
         ok: false,
         reason: `guard imported but never invoked (call assertDestructiveTestDbSafety or checkDestructiveTestDbSafety before line ${file.firstDeleteLine})`,
         guardLine: -1,
+        connectionLine,
         deleteLine: file.firstDeleteLine,
       };
     }
@@ -200,6 +230,7 @@ function checkTsFile(file: DiscoveredFile): GuardCheckResult {
           ok: false,
           reason: `relies on rejected '${name}' pattern instead of centralized guard`,
           guardLine: -1,
+          connectionLine,
           deleteLine: file.firstDeleteLine,
         };
       }
@@ -208,6 +239,7 @@ function checkTsFile(file: DiscoveredFile): GuardCheckResult {
       ok: false,
       reason: `no centralized guard invocation found before DELETE/TRUNCATE on line ${file.firstDeleteLine}`,
       guardLine: -1,
+      connectionLine,
       deleteLine: file.firstDeleteLine,
     };
   }
@@ -218,20 +250,34 @@ function checkTsFile(file: DiscoveredFile): GuardCheckResult {
       ok: false,
       reason: `guard invoked on line ${guardLine} but first DELETE/TRUNCATE is on line ${file.firstDeleteLine} (guard must run BEFORE any destructive statement)`,
       guardLine,
+      connectionLine,
       deleteLine: file.firstDeleteLine,
     };
   }
 
-  return { ok: true, reason: "ok", guardLine, deleteLine: file.firstDeleteLine };
+  // Guard is before DELETE — now verify it's also BEFORE the first connection.
+  if (connectionLine > 0 && guardLine >= connectionLine) {
+    return {
+      ok: false,
+      reason: `guard invoked on line ${guardLine} but first DB connection/client construction is on line ${connectionLine} (guard must run BEFORE any DB connection)`,
+      guardLine,
+      connectionLine,
+      deleteLine: file.firstDeleteLine,
+    };
+  }
+
+  return { ok: true, reason: "ok", guardLine, connectionLine, deleteLine: file.firstDeleteLine };
 }
 
 function checkPythonFile(file: DiscoveredFile): GuardCheckResult {
   const cliLine = findFirstLineMatching(file.lines, CLI_GUARD_PATTERN);
+  const connectionLine = findFirstConnectionLine(file.lines);
   if (cliLine < 0) {
     return {
       ok: false,
       reason: `no centralized guard CLI invocation (subprocess.run(['node', 'scripts/wp-08-01f-destruction-guard.mjs'], ...)) found before DELETE/TRUNCATE on line ${file.firstDeleteLine}`,
       guardLine: -1,
+      connectionLine,
       deleteLine: file.firstDeleteLine,
     };
   }
@@ -240,19 +286,31 @@ function checkPythonFile(file: DiscoveredFile): GuardCheckResult {
       ok: false,
       reason: `guard CLI invoked on line ${cliLine} but first DELETE/TRUNCATE is on line ${file.firstDeleteLine} (guard must run BEFORE any destructive statement)`,
       guardLine: cliLine,
+      connectionLine,
       deleteLine: file.firstDeleteLine,
     };
   }
-  return { ok: true, reason: "ok", guardLine: cliLine, deleteLine: file.firstDeleteLine };
+  if (connectionLine > 0 && cliLine >= connectionLine) {
+    return {
+      ok: false,
+      reason: `guard CLI invoked on line ${cliLine} but first DB connection is on line ${connectionLine} (guard must run BEFORE any DB connection)`,
+      guardLine: cliLine,
+      connectionLine,
+      deleteLine: file.firstDeleteLine,
+    };
+  }
+  return { ok: true, reason: "ok", guardLine: cliLine, connectionLine, deleteLine: file.firstDeleteLine };
 }
 
 function checkShellFile(file: DiscoveredFile): GuardCheckResult {
   const cliLine = findFirstLineMatching(file.lines, CLI_GUARD_PATTERN);
+  const connectionLine = findFirstConnectionLine(file.lines);
   if (cliLine < 0) {
     return {
       ok: false,
       reason: `no centralized guard CLI invocation (node scripts/wp-08-01f-destruction-guard.mjs) found before DELETE/TRUNCATE on line ${file.firstDeleteLine}`,
       guardLine: -1,
+      connectionLine,
       deleteLine: file.firstDeleteLine,
     };
   }
@@ -261,10 +319,20 @@ function checkShellFile(file: DiscoveredFile): GuardCheckResult {
       ok: false,
       reason: `guard CLI invoked on line ${cliLine} but first DELETE/TRUNCATE is on line ${file.firstDeleteLine} (guard must run BEFORE any destructive statement)`,
       guardLine: cliLine,
+      connectionLine,
       deleteLine: file.firstDeleteLine,
     };
   }
-  return { ok: true, reason: "ok", guardLine: cliLine, deleteLine: file.firstDeleteLine };
+  if (connectionLine > 0 && cliLine >= connectionLine) {
+    return {
+      ok: false,
+      reason: `guard CLI invoked on line ${cliLine} but first DB connection (psql) is on line ${connectionLine} (guard must run BEFORE any DB connection)`,
+      guardLine: cliLine,
+      connectionLine,
+      deleteLine: file.firstDeleteLine,
+    };
+  }
+  return { ok: true, reason: "ok", guardLine: cliLine, connectionLine, deleteLine: file.firstDeleteLine };
 }
 
 function checkFile(file: DiscoveredFile): GuardCheckResult {
@@ -281,7 +349,7 @@ function checkFile(file: DiscoveredFile): GuardCheckResult {
     case ".ps1":
       return checkShellFile(file);
     default:
-      return { ok: false, reason: `unsupported extension ${file.ext}`, guardLine: -1, deleteLine: file.firstDeleteLine };
+      return { ok: false, reason: `unsupported extension ${file.ext}`, guardLine: -1, connectionLine: -1, deleteLine: file.firstDeleteLine };
   }
 }
 
@@ -314,12 +382,12 @@ describe("WP-08-01F Task 2 — Static guard coverage (multi-language, ordered)",
     expect(uniqueFiles.length).toBeGreaterThan(0);
   });
 
-  it("every discovered Category A file invokes the centralized guard BEFORE the first DELETE", () => {
+  it("every discovered Category A file invokes the centralized guard BEFORE the first DB connection AND before the first DELETE", () => {
     const failures: string[] = [];
     for (const f of filesToCheck) {
       const result = checkFile(f);
       if (!result.ok) {
-        failures.push(`  ${f.path} (line ${result.deleteLine}): ${result.reason}`);
+        failures.push(`  ${f.path} (guard=${result.guardLine}, conn=${result.connectionLine}, delete=${result.deleteLine}): ${result.reason}`);
       }
     }
     if (failures.length > 0) {
@@ -329,6 +397,7 @@ describe("WP-08-01F Task 2 — Static guard coverage (multi-language, ordered)",
         "\n\nEvery Category A file MUST invoke the centralized guard " +
         "(assertDestructiveTestDbSafety / checkDestructiveTestDbSafety in TS, " +
         "or `node scripts/wp-08-01f-destruction-guard.mjs` in non-TS scripts) " +
+        "BEFORE the first DB connection/client construction AND before " +
         "BEFORE any DELETE/TRUNCATE statement.",
       );
     }
@@ -438,6 +507,25 @@ describe("WP-08-01F Task 2 — Static guard coverage (multi-language, ordered)",
     const f = loadFixture("correctly-guarded-shell.sh");
     const r = checkFile(f);
     expect(r.ok).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // Pre-connection ordering fixtures (Task 2 correction).
+  // ---------------------------------------------------------------------
+
+  it("fixture: guard before connection AND DELETE → PASS", () => {
+    const f = loadFixture("guard-before-connection-and-delete.mjs");
+    const r = checkFile(f);
+    expect(r.ok).toBe(true);
+    expect(r.guardLine).toBeLessThan(r.connectionLine);
+    expect(r.connectionLine).toBeLessThan(r.deleteLine);
+  });
+
+  it("fixture: connection before guard, DELETE after guard → FAIL", () => {
+    const f = loadFixture("connection-before-guard-fail.mjs");
+    const r = checkFile(f);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/guard must run BEFORE any DB connection/);
   });
 
   // ---------------------------------------------------------------------

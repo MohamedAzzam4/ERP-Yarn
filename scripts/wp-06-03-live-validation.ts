@@ -56,7 +56,7 @@ if (!DATABASE_URL) { console.error("ERROR: DATABASE_URL required."); process.exi
 // consumes one connection for the outer transaction; inner queries use the
 // same connection via savepoints). idle_timeout + connect_timeout +
 // max_lifetime ensure connections don't hang when the script exits.
-execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
+execSync("node scripts/wp-08-01f-destruction-guard.mjs", { stdio: "inherit" });
 const pgSql = postgres(DATABASE_URL, {
   prepare: false,
   max: 10,

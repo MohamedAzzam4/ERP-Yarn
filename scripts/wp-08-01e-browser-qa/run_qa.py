@@ -224,7 +224,7 @@ def validate_env() -> dict[str, str]:
 
 def db_conn(env: dict[str, str]):
     # WP-08-01F Milestone C Task 2: invoke centralized guard CLI before any DB connection.
-    subprocess.run(["node", "scripts/wp-08-01f-destruction-guard.mjs", "--live-validation"], check=True)
+    subprocess.run(["node", "scripts/wp-08-01f-destruction-guard.mjs"], check=True)
     return psycopg2.connect(env["DATABASE_URL"])
 
 

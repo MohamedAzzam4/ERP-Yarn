@@ -22,7 +22,7 @@ import { InProcessDocumentSequenceStore } from "../src/server/services/document-
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) { console.error("ERROR: DATABASE_URL required."); process.exit(2); }
 
-execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
+execSync("node scripts/wp-08-01f-destruction-guard.mjs", { stdio: "inherit" });
 const pgSql = postgres(DATABASE_URL, { prepare: false, max: 1, idle_timeout: 30 });
 const db = drizzle(pgSql, { schema });
 const cryptoRandomUUID = randomUUID;

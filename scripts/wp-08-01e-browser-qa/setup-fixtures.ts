@@ -61,7 +61,7 @@ const CUSTOMER_ID = "00000000-0000-0000-0000-000000081e83";
 const INVENTORY_ITEM_ID = "00000000-0000-0000-0000-000000081e85";
 const LOCATION_ID = "00000000-0000-0000-0000-000000081e86";
 
-execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
+execSync("node scripts/wp-08-01f-destruction-guard.mjs", { stdio: "inherit" });
 const pgSql = postgres(DATABASE_URL, {
   prepare: false,
   max: 10,

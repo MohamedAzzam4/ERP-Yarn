@@ -19,15 +19,6 @@
  *                     5. ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1
  *                     6. ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1
  *
- *   --live-validation  — Live-QA policy. Allows direct Supabase project URLs
- *                     (NOT pooler URLs — poolers are transaction-mode and
- *                     cannot be used for destructive operations). Requires:
- *                     1. DATABASE_URL starts with postgresql:// or postgres://
- *                     2. URL contains no 'pooler' substring
- *                     3. URL host is NOT localhost (use default mode for that)
- *                     4. ERP_ALLOW_LIVE_VALIDATION_DESTRUCTIVE=1
- *                     5. ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1
- *
  *   --pooler-proof     — Pooler-compatibility-proof policy. The ONLY mode
  *                     that allows pooler URLs. Used exclusively by the
  *                     supabase-pooler-idempotency-proof.cjs script which
@@ -38,15 +29,32 @@
  *                     3. ERP_ALLOW_POOLER_PROOF=1
  *                     4. ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1
  *
+ * LIVE-VALIDATION MODE REMOVED (Milestone C proof corrections):
+ *   The previous --live-validation mode allowed destructive operations
+ *   against any remote non-pooler PostgreSQL URL with an opt-in flag.
+ *   This is NOT authorized by any approved project decision. DEC-056
+ *   states the Supabase project "does not authorize remote connectivity,
+ *   migrations, schema work, or data mutation outside the proper later
+ *   package." DEC-060 allows temporary credentials for "Supabase
+ *   development/test connectivity" but only for explicitly authorized
+ *   operations — not for destructive live validation scripts.
+ *
+ *   Per the Milestone C safety review: "If no approved project decision
+ *   authorizes destructive remote live validation, do not weaken the
+ *   guard to make scripts pass. Report the conflict and keep those
+ *   scripts blocked instead."
+ *
+ *   The live-validation scripts (wp-05-03, wp-06-01, etc.) are now
+ *   BLOCKED by the guard. They must be run WITHOUT the guard CLI
+ *   invocation (the scripts still work if invoked directly without the
+ *   guard — but the static-guard-coverage test will flag them as
+ *   unguarded). This is the intended behavior: the conflict is reported,
+ *   not bypassed.
+ *
  * Exit codes:
  *   0 — environment is safe for the requested mode
  *   1 — environment is NOT safe (with credential-free reason on stderr)
  *   2 — usage error
- *
- * Invocation:
- *   node scripts/wp-08-01f-destruction-guard.mjs
- *   node scripts/wp-08-01f-destruction-guard.mjs --live-validation
- *   node scripts/wp-08-01f-destruction-guard.mjs --pooler-proof
  *
  * NEVER prints DATABASE_URL, credentials, or connection strings.
  */
@@ -61,8 +69,6 @@ function fail(message) {
     "(host=localhost/127.0.0.1/::1, name=" + DISPOSABLE_DB_NAME + "), " +
     "ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB=1, and " +
     "ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1.\n" +
-    "For live-validation mode, add --live-validation and set " +
-    "ERP_ALLOW_LIVE_VALIDATION_DESTRUCTIVE=1.\n" +
     "For pooler-proof mode, add --pooler-proof and set " +
     "ERP_ALLOW_POOLER_PROOF=1.\n",
   );
@@ -71,17 +77,21 @@ function fail(message) {
 
 function main() {
   const args = process.argv.slice(2);
-  const liveValidationMode = args.includes("--live-validation");
   const poolerProofMode = args.includes("--pooler-proof");
 
-  if (liveValidationMode && poolerProofMode) {
-    process.stderr.write("SAFETY: --live-validation and --pooler-proof are mutually exclusive.\n");
+  // Reject --live-validation if passed (mode removed).
+  if (args.includes("--live-validation")) {
+    process.stderr.write(
+      "SAFETY: --live-validation mode has been REMOVED.\n" +
+      "No approved project decision authorizes destructive remote live validation.\n" +
+      "DEC-056 states the Supabase project does not authorize remote data mutation.\n" +
+      "Use default mode (local disposable DB) or --pooler-proof (run-scoped only).\n",
+    );
     process.exit(2);
   }
 
   const databaseUrl = process.env.DATABASE_URL;
   const allowDestructive = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
-  const allowLiveValidation = process.env.ERP_ALLOW_LIVE_VALIDATION_DESTRUCTIVE === "1";
   const allowPoolerProof = process.env.ERP_ALLOW_POOLER_PROOF === "1";
   const requireProof = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
 
@@ -120,8 +130,8 @@ function main() {
     if (!isPoolerUrl) {
       fail(
         "--pooler-proof mode requires a pooler URL, but the provided " +
-        "DATABASE_URL does not contain 'pooler'. Use --live-validation " +
-        "for direct project URLs or default mode for local disposable DB.",
+        "DATABASE_URL does not contain 'pooler'. Use default mode " +
+        "for local disposable DB.",
       );
     }
     if (!allowPoolerProof) {
@@ -141,57 +151,27 @@ function main() {
   }
 
   // -------------------------------------------------------------------
-  // Common check for non-pooler modes: NO POOLER URLS.
+  // Default mode: strict local-disposable-DB policy.
+  // No remote URLs allowed (no Supabase, no pooler, no remote hosts).
   // -------------------------------------------------------------------
+
+  // Common check: NO POOLER URLS in default mode.
   if (isPoolerUrl) {
     fail(
       "DATABASE_URL appears to point to a Supabase pooler. " +
-      "Poolers are transaction-mode and cannot be used for destructive operations. " +
-      "Use the direct project URL (--live-validation) or the local disposable DB " +
-      "(default mode). For the pooler compatibility proof only, use --pooler-proof.",
+      "Default mode requires a local disposable DB. For the pooler " +
+      "compatibility proof only, use --pooler-proof.",
     );
   }
-
-  // -------------------------------------------------------------------
-  // Live-validation mode: allow direct Supabase project URLs.
-  // -------------------------------------------------------------------
-  if (liveValidationMode) {
-    if (!allowLiveValidation) {
-      fail(
-        "ERP_ALLOW_LIVE_VALIDATION_DESTRUCTIVE=1 is not set. " +
-        "Live-validation mode requires explicit opt-in.",
-      );
-    }
-    if (!requireProof) {
-      fail("ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1 is not set.");
-    }
-
-    const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-    if (ALLOWED_HOSTS.has(parsed.hostname)) {
-      fail(
-        "Live-validation mode requires a remote project URL, but hostname is '" +
-        parsed.hostname + "'. Use the default mode (without --live-validation) " +
-        "for local disposable-test DB operations.",
-      );
-    }
-
-    process.stdout.write(
-      "SAFETY: Environment is safe for live-validation destructive operations " +
-      "(remote host=" + parsed.hostname + ").\n",
-    );
-    process.exit(0);
-  }
-
-  // -------------------------------------------------------------------
-  // Default mode: strict local-disposable-DB policy.
-  // -------------------------------------------------------------------
 
   // Host must be localhost / 127.0.0.1 / ::1
   const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
   if (!ALLOWED_HOSTS.has(parsed.hostname)) {
     fail(
       "hostname '" + parsed.hostname + "' is not in [localhost, 127.0.0.1, ::1]. " +
-      "Refusing to run destructive tests against non-local database.",
+      "Refusing to run destructive tests against non-local database. " +
+      "Remote destructive live validation is NOT authorized by any " +
+      "approved project decision (DEC-056, DEC-060).",
     );
   }
 

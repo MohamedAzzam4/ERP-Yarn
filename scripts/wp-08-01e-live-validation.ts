@@ -68,7 +68,7 @@ if (!DATABASE_URL.startsWith("postgres")) {
 }
 
 // WP-08-01F Milestone C Task 2: invoke centralized guard CLI before any DB connection.
-execSync("node scripts/wp-08-01f-destruction-guard.mjs --live-validation", { stdio: "inherit" });
+execSync("node scripts/wp-08-01f-destruction-guard.mjs", { stdio: "inherit" });
 
 const SECTION = process.argv[2];
 const RECOGNIZED_SECTIONS = new Set([
