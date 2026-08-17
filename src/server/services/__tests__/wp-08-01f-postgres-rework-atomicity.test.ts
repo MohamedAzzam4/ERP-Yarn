@@ -122,7 +122,6 @@ function makeFirstWriteFailureRepoWrapper(realRepo: HistoricalReconciliationRepo
     },
     findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
     findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
-    markVersionAsSuperseded: (t: string, id: string, v: number) => realRepo.markVersionAsSuperseded(t, id, v),
     insertReconciliationResult: (row: any) => realRepo.insertReconciliationResult(row),
     insertReviewItem: (row: any) => realRepo.insertReviewItem(row),
     findReconciliationResultsForBatch: (t: string, id: string) => realRepo.findReconciliationResultsForBatch(t, id),
@@ -233,6 +232,52 @@ async function getReconResultsForVersion(scope: TestScope, batchId: string, vers
   return sql`SELECT id, report_version, metric_key, expected_value, staged_value, committed_value, difference_value, status, notes, created_by FROM import_reconciliation_results WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND report_version = ${version} ORDER BY metric_key` as any as Promise<ReconResultSnapshot[]>;
 }
 
+// Seed a current Owner approval for the batch.
+async function seedCurrentApproval(scope: TestScope, batchId: string, role: string = "owner") {
+  const approvalId = randomUUID();
+  await sql`
+    INSERT INTO import_batch_approvals (id, tenant_id, import_batch_id, approver_role, approver_user_id,
+      staged_data_hash, cutover_manifest_hash, template_version, mapping_version,
+      validation_status, reconciliation_status, warning_summary, approved_at, reason,
+      approval_version, is_current, created_by, created_at)
+    VALUES (${approvalId}, ${scope.tenantId}, ${batchId}, ${role}::migration_approver_role, ${scope.userId},
+      ${"sha256:test"}, ${"sha256:manifest"}, ${"1.0"}, ${"1.0"},
+      ${"passed"}, ${"matched"}, null, NOW(), ${"test approval"},
+      1, true, ${scope.userId}, NOW())`;
+  return approvalId;
+}
+
+// Seed a current review item for the batch.
+async function seedCurrentReviewItem(scope: TestScope, batchId: string, reason: string = "test review item") {
+  const reviewItemId = randomUUID();
+  await sql`
+    INSERT INTO import_human_review_items (id, tenant_id, import_batch_id, staging_row_id, review_reason,
+      status, is_current, report_version, created_by, created_at)
+    VALUES (${reviewItemId}, ${scope.tenantId}, ${batchId}, null, ${reason},
+      ${"pending"}::review_item_decision, true, 1, ${scope.userId}, NOW())`;
+  return reviewItemId;
+}
+
+async function getCurrentApprovalCount(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT count(*)::int AS c FROM import_batch_approvals WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND is_current = true`;
+  return rows[0]?.c || 0;
+}
+
+async function getTotalApprovalCount(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT count(*)::int AS c FROM import_batch_approvals WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+  return rows[0]?.c || 0;
+}
+
+async function getCurrentReviewItemCount(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND is_current = true`;
+  return rows[0]?.c || 0;
+}
+
+async function getTotalReviewItemCount(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT count(*)::int AS c FROM import_human_review_items WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+  return rows[0]?.c || 0;
+}
+
 async function cleanupScope(scope: TestScope) {
   await sql`DELETE FROM import_cutover_locks WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM import_backup_evidence WHERE tenant_id = ${scope.tenantId}`;
@@ -261,9 +306,9 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
   }, 30000);
 
   // ===========================================================================
-  // RW-1 — SUCCESS
+  // RW-1 — SUCCESS (with approvals + review items)
   // ===========================================================================
-  it("RW-1. success: rework review_required→staged, old evidence unchanged, one scoped audit, idempotency succeeded", async () => {
+  it("RW-1. success: rework review_required→staged, old evidence unchanged, approvals invalidated, review items superseded, one scoped audit, idempotency succeeded", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
@@ -271,9 +316,25 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     await seedFileAndStagingRow(scope, batchId);
     const v1ResultId = await seedPriorReconciliationEvidence(scope, batchId, 1);
 
+    // Seed current Owner + Accountant approvals and current review items.
+    await seedCurrentApproval(scope, batchId, "owner");
+    await seedCurrentApproval(scope, batchId, "accountant");
+    await seedCurrentReviewItem(scope, batchId, "test review item 1");
+    await seedCurrentReviewItem(scope, batchId, "test review item 2");
+
     // Snapshot V1 evidence before rework.
     const v1Before = await getReconResultsForVersion(scope, batchId, 1);
     expect(v1Before.length).toBe(1);
+
+    // Snapshot approval/review state before rework.
+    const currentApprovalsBefore = await getCurrentApprovalCount(scope, batchId);
+    const totalApprovalsBefore = await getTotalApprovalCount(scope, batchId);
+    const currentReviewItemsBefore = await getCurrentReviewItemCount(scope, batchId);
+    const totalReviewItemsBefore = await getTotalReviewItemCount(scope, batchId);
+    expect(currentApprovalsBefore).toBe(2); // owner + accountant
+    expect(totalApprovalsBefore).toBe(2);
+    expect(currentReviewItemsBefore).toBe(2);
+    expect(totalReviewItemsBefore).toBe(2);
 
     const idemKey = "rw1-success-" + randomUUID();
     const { reconciliationService } = makeServices(scope);
@@ -291,7 +352,6 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     // Batch transitioned to staged.
     const batch = await getBatchState(scope, batchId);
     expect(batch!.status).toBe("staged");
-    // Rework resets validation/reconciliation statuses.
     expect(batch!.validation_status).toBeNull();
     expect(batch!.reconciliation_status).toBeNull();
 
@@ -304,10 +364,24 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     const v1After = await getReconResultsForVersion(scope, batchId, 1);
     expect(v1After.length).toBe(1);
     expect(v1After[0]!.id).toBe(v1ResultId);
-    expect(v1After[0]!.notes).toBe(v1Before[0]!.notes); // notes NOT overwritten
+    expect(v1After[0]!.notes).toBe(v1Before[0]!.notes);
     expect(v1After[0]!.status).toBe(v1Before[0]!.status);
     expect(v1After[0]!.expected_value).toBe(v1Before[0]!.expected_value);
     expect(v1After[0]!.staged_value).toBe(v1Before[0]!.staged_value);
+
+    // Approvals: current count = 0 (both invalidated), total count unchanged
+    // (historical evidence preserved).
+    const currentApprovalsAfter = await getCurrentApprovalCount(scope, batchId);
+    const totalApprovalsAfter = await getTotalApprovalCount(scope, batchId);
+    expect(currentApprovalsAfter).toBe(0);
+    expect(totalApprovalsAfter).toBe(totalApprovalsBefore); // preserved
+
+    // Review items: current count = 0 (all superseded), total count unchanged
+    // (historical evidence preserved).
+    const currentReviewItemsAfter = await getCurrentReviewItemCount(scope, batchId);
+    const totalReviewItemsAfter = await getTotalReviewItemCount(scope, batchId);
+    expect(currentReviewItemsAfter).toBe(0);
+    expect(totalReviewItemsAfter).toBe(totalReviewItemsBefore); // preserved
 
     // Idempotency succeeded.
     const idemState = await getIdemState(scope, idemKey);
@@ -317,23 +391,28 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
   });
 
   // ===========================================================================
-  // RW-2 — REAL FAILURE AFTER FIRST REWORK BUSINESS WRITE
+  // RW-2 — REAL FAILURE AFTER FIRST REWORK BUSINESS WRITE (with approvals + review items)
   // ===========================================================================
-  it("RW-2. real failure after first rework write: full rollback, batch unchanged, audit delta 0", async () => {
+  it("RW-2. real failure after first rework write: full rollback, batch/approvals/reviews unchanged, audit delta 0", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
     await seedReviewRequiredBatch(scope, batchId);
     await seedFileAndStagingRow(scope, batchId);
     await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedCurrentApproval(scope, batchId, "owner");
+    await seedCurrentApproval(scope, batchId, "accountant");
+    await seedCurrentReviewItem(scope, batchId, "test review item 1");
 
     const idemKey = "rw2-failure-" + randomUUID();
     const auditBefore = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
     const batchBefore = await getBatchState(scope, batchId);
     const resultsBefore = await getReconResultCount(scope, batchId);
+    const currentApprovalsBefore = await getCurrentApprovalCount(scope, batchId);
+    const currentReviewItemsBefore = await getCurrentReviewItemCount(scope, batchId);
+    const totalApprovalsBefore = await getTotalApprovalCount(scope, batchId);
+    const totalReviewItemsBefore = await getTotalReviewItemCount(scope, batchId);
 
-    // Custom service with a createReconciliationRepository that wraps the
-    // real repo to inject failure after the first rework write.
     const reconRepo = new HistoricalReconciliationDbRepository(db);
     const commitRepo = new HistoricalCommitDbRepository(db);
     const audit = new AuditDbRepository(db);
@@ -368,6 +447,14 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     const resultsAfter = await getReconResultCount(scope, batchId);
     expect(resultsAfter).toBe(resultsBefore);
 
+    // Full rollback: approvals unchanged (current + total).
+    expect(await getCurrentApprovalCount(scope, batchId)).toBe(currentApprovalsBefore);
+    expect(await getTotalApprovalCount(scope, batchId)).toBe(totalApprovalsBefore);
+
+    // Full rollback: review items unchanged (current + total).
+    expect(await getCurrentReviewItemCount(scope, batchId)).toBe(currentReviewItemsBefore);
+    expect(await getTotalReviewItemCount(scope, batchId)).toBe(totalReviewItemsBefore);
+
     // Full rollback: audit delta = 0.
     const auditAfter = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
     expect(auditAfter).toBe(auditBefore);
@@ -381,19 +468,26 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
   });
 
   // ===========================================================================
-  // RW-3 — REAL OWNER-TOKEN LOSS
+  // RW-3 — REAL OWNER-TOKEN LOSS (with approvals + review items)
   // ===========================================================================
-  it("RW-3. real owner-token loss: production fence rejects stale owner, full rollback", async () => {
+  it("RW-3. real owner-token loss: production fence rejects stale owner, full rollback of batch/approvals/reviews", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
     await seedReviewRequiredBatch(scope, batchId);
     await seedFileAndStagingRow(scope, batchId);
     await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedCurrentApproval(scope, batchId, "owner");
+    await seedCurrentApproval(scope, batchId, "accountant");
+    await seedCurrentReviewItem(scope, batchId, "test review item 1");
 
     const idemKey = "rw3-owner-loss-" + randomUUID();
     const auditBefore = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
     const batchBefore = await getBatchState(scope, batchId);
+    const currentApprovalsBefore = await getCurrentApprovalCount(scope, batchId);
+    const currentReviewItemsBefore = await getCurrentReviewItemCount(scope, batchId);
+    const totalApprovalsBefore = await getTotalApprovalCount(scope, batchId);
+    const totalReviewItemsBefore = await getTotalReviewItemCount(scope, batchId);
 
     const reconRepo = new HistoricalReconciliationDbRepository(db);
     const commitRepo = new HistoricalCommitDbRepository(db);
@@ -424,6 +518,14 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     expect(batchAfter!.status).toBe(batchBefore!.status);
     expect(batchAfter!.reconciliation_status).toBe(batchBefore!.reconciliation_status);
 
+    // Full rollback: approvals unchanged.
+    expect(await getCurrentApprovalCount(scope, batchId)).toBe(currentApprovalsBefore);
+    expect(await getTotalApprovalCount(scope, batchId)).toBe(totalApprovalsBefore);
+
+    // Full rollback: review items unchanged.
+    expect(await getCurrentReviewItemCount(scope, batchId)).toBe(currentReviewItemsBefore);
+    expect(await getTotalReviewItemCount(scope, batchId)).toBe(totalReviewItemsBefore);
+
     // Full rollback: audit delta = 0.
     const auditAfter = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
     expect(auditAfter).toBe(auditBefore);
@@ -437,18 +539,23 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
   });
 
   // ===========================================================================
-  // RW-4 — VALID RETRY AFTER RW-3 FAILURE
+  // RW-4 — VALID RETRY AFTER RW-3 FAILURE (with approvals + review items)
   // ===========================================================================
-  it("RW-4. valid retry: exactly one final rework effect set, one scoped audit, idempotency succeeded", async () => {
+  it("RW-4. valid retry: exactly one rework transition, approvals invalidated once, review items superseded once, one audit, idempotency succeeded", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
     await seedReviewRequiredBatch(scope, batchId);
     await seedFileAndStagingRow(scope, batchId);
     await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedCurrentApproval(scope, batchId, "owner");
+    await seedCurrentApproval(scope, batchId, "accountant");
+    await seedCurrentReviewItem(scope, batchId, "test review item 1");
 
     const idemKey = "rw4-retry-" + randomUUID();
     const auditBefore = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
+    const totalApprovalsBefore = await getTotalApprovalCount(scope, batchId);
+    const totalReviewItemsBefore = await getTotalReviewItemCount(scope, batchId);
 
     // Step 1: fail with real owner-token loss.
     const reconRepo = new HistoricalReconciliationDbRepository(db);
@@ -485,7 +592,7 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     );
     expect(retryResult.action).toBe("reworked");
 
-    // Exactly one scoped rework audit.
+    // Exactly one scoped rework audit (not duplicated by the failed attempt).
     const auditAfter = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
     expect(auditAfter).toBe(auditBefore + 1);
     expect(auditAfter).toBe(1);
@@ -495,6 +602,16 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     expect(batch!.status).toBe("staged");
     expect(batch!.reconciliation_status).toBeNull();
 
+    // Approvals invalidated exactly once: current = 0, total = original
+    // (no duplicate history rows from the failed attempt).
+    expect(await getCurrentApprovalCount(scope, batchId)).toBe(0);
+    expect(await getTotalApprovalCount(scope, batchId)).toBe(totalApprovalsBefore);
+
+    // Review items superseded exactly once: current = 0, total = original
+    // (no duplicate history rows from the failed attempt).
+    expect(await getCurrentReviewItemCount(scope, batchId)).toBe(0);
+    expect(await getTotalReviewItemCount(scope, batchId)).toBe(totalReviewItemsBefore);
+
     // Idempotency succeeded.
     const idemState = await getIdemState(scope, idemKey);
     expect(idemState?.state).toBe("succeeded");
@@ -503,15 +620,17 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
   });
 
   // ===========================================================================
-  // RW-5 — SAME-KEY/SAME-PAYLOAD REPLAY
+  // RW-5 — SAME-KEY/SAME-PAYLOAD REPLAY (with approvals + review items)
   // ===========================================================================
-  it("RW-5. replay: same response, zero additional business effects, zero additional audits", async () => {
+  it("RW-5. replay: same response, zero additional batch/approval/review effects, zero additional audits", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
     await seedReviewRequiredBatch(scope, batchId);
     await seedFileAndStagingRow(scope, batchId);
     await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedCurrentApproval(scope, batchId, "owner");
+    await seedCurrentReviewItem(scope, batchId, "test review item 1");
 
     const idemKey = "rw5-replay-" + randomUUID();
     const { reconciliationService } = makeServices(scope);
@@ -526,6 +645,10 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     const auditAfterInitial = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
     const idemAfterInitial = await getIdemState(scope, idemKey);
     const batchAfterInitial = await getBatchState(scope, batchId);
+    const currentApprovalsAfterInitial = await getCurrentApprovalCount(scope, batchId);
+    const currentReviewItemsAfterInitial = await getCurrentReviewItemCount(scope, batchId);
+    const totalApprovalsAfterInitial = await getTotalApprovalCount(scope, batchId);
+    const totalReviewItemsAfterInitial = await getTotalReviewItemCount(scope, batchId);
 
     // Step 2: replay with same key + same payload.
     const replayResult = await reconciliationService.reopenBatchForRework(
@@ -540,8 +663,15 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     expect(JSON.stringify(idemAfterReplay?.response_body)).toBe(JSON.stringify(idemAfterInitial?.response_body));
 
     // Zero additional audits.
-    const auditAfterReplay = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
-    expect(auditAfterReplay).toBe(auditAfterInitial);
+    expect(await getScopedAuditCount(scope, batchId, "historical_migration.rework")).toBe(auditAfterInitial);
+
+    // Zero additional approval effects.
+    expect(await getCurrentApprovalCount(scope, batchId)).toBe(currentApprovalsAfterInitial);
+    expect(await getTotalApprovalCount(scope, batchId)).toBe(totalApprovalsAfterInitial);
+
+    // Zero additional review-item effects.
+    expect(await getCurrentReviewItemCount(scope, batchId)).toBe(currentReviewItemsAfterInitial);
+    expect(await getTotalReviewItemCount(scope, batchId)).toBe(totalReviewItemsAfterInitial);
 
     // Batch state unchanged from replay.
     const batchAfterReplay = await getBatchState(scope, batchId);
@@ -551,20 +681,24 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
   });
 
   // ===========================================================================
-  // RW-6 — SAME-KEY/DIFFERENT-PAYLOAD CONFLICT
+  // RW-6 — SAME-KEY/DIFFERENT-PAYLOAD CONFLICT (with approvals + review items)
   // ===========================================================================
-  it("RW-6. conflict: same key + different payload → rejected, zero additional effects", async () => {
+  it("RW-6. conflict: same key + different payload → rejected, zero effects on alternate batch approvals/reviews", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId1 = randomUUID();
     await seedReviewRequiredBatch(scope, batchId1);
     await seedFileAndStagingRow(scope, batchId1);
     await seedPriorReconciliationEvidence(scope, batchId1, 1);
+    await seedCurrentApproval(scope, batchId1, "owner");
+    await seedCurrentReviewItem(scope, batchId1, "batch1 review item");
 
     const batchId2 = randomUUID();
     await seedReviewRequiredBatch(scope, batchId2);
     await seedFileAndStagingRow(scope, batchId2);
     await seedPriorReconciliationEvidence(scope, batchId2, 1);
+    await seedCurrentApproval(scope, batchId2, "owner");
+    await seedCurrentReviewItem(scope, batchId2, "batch2 review item");
 
     const idemKey = "rw6-conflict-" + randomUUID();
     const { reconciliationService } = makeServices(scope);
@@ -578,6 +712,8 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
 
     const audit1AfterInitial = await getScopedAuditCount(scope, batchId1, "historical_migration.rework");
     const audit2AfterInitial = await getScopedAuditCount(scope, batchId2, "historical_migration.rework");
+    const batch2ApprovalsBefore = await getCurrentApprovalCount(scope, batchId2);
+    const batch2ReviewItemsBefore = await getCurrentReviewItemCount(scope, batchId2);
 
     // Step 2: same key, different payload (batch2 instead of batch1).
     await expect(
@@ -588,13 +724,14 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|conflict/i);
 
     // Zero additional effects on batch1.
-    const audit1AfterConflict = await getScopedAuditCount(scope, batchId1, "historical_migration.rework");
-    expect(audit1AfterConflict).toBe(audit1AfterInitial);
+    expect(await getScopedAuditCount(scope, batchId1, "historical_migration.rework")).toBe(audit1AfterInitial);
 
     // Zero additional effects on batch2 (never written).
-    const audit2AfterConflict = await getScopedAuditCount(scope, batchId2, "historical_migration.rework");
-    expect(audit2AfterConflict).toBe(audit2AfterInitial);
-    expect(audit2AfterConflict).toBe(0);
+    expect(await getScopedAuditCount(scope, batchId2, "historical_migration.rework")).toBe(audit2AfterInitial);
+    expect(await getScopedAuditCount(scope, batchId2, "historical_migration.rework")).toBe(0);
+    // Batch2 approvals/reviews unchanged.
+    expect(await getCurrentApprovalCount(scope, batchId2)).toBe(batch2ApprovalsBefore);
+    expect(await getCurrentReviewItemCount(scope, batchId2)).toBe(batch2ReviewItemsBefore);
 
     await cleanupScope(scope);
   });

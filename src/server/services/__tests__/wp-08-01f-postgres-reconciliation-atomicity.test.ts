@@ -162,7 +162,6 @@ function makeFirstWriteFailureRepoWrapper(realRepo: HistoricalReconciliationDbRe
     resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
     findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
     findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
-    markVersionAsSuperseded: (t: string, id: string, v: number) => realRepo.markVersionAsSuperseded(t, id, v),
     insertReconciliationResult: async (row: any) => {
       const result = await realRepo.insertReconciliationResult(row);
       insertCount++;

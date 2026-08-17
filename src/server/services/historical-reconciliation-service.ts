@@ -127,18 +127,19 @@ export interface SubmitForApprovalResult {
 // permit arbitrary file/staging mutation in review_required — it transitions
 // state and invalidates dependent evidence atomically.
 //
-// Invalidation semantics:
+// Invalidation semantics (WP-08-01F Milestone C Task 4 — corrected):
 //   - For review_required → normalized/staged/validation_in_progress:
-//     * Mark current reconciliation report version as superseded.
+//     * Reconciliation-result rows remain IMMUTABLE. The report_version
+//       column determines old/current history. No notes overwritten.
 //     * Reset validationStatus to null (forces re-validation).
 //     * Reset reconciliationStatus to null (forces re-reconciliation).
-//     * Invalidate Owner and Accountant approvals (delete — they cannot be
-//       preserved because their bound hashes/versions no longer match).
+//     * Invalidate Owner and Accountant approvals using preserved-history
+//       mechanism (mark is_current=false, preserve rows). NOT deleted.
 //     * Audit old/new state, reason, invalidated versions.
 //   - For pending_dual_approval/approved_for_commit → review_required:
-//     * Mark current reconciliation report version as superseded.
+//     * Reconciliation-result rows remain IMMUTABLE.
 //     * Reset validationStatus and reconciliationStatus (forces re-run).
-//     * Invalidate Owner and Accountant approvals.
+//     * Invalidate Owner and Accountant approvals using preserved-history.
 //     * Transition to review_required (not to a preparation state — the
 //       rework branch from these states goes back to review_required).
 // ---------------------------------------------------------------------------
@@ -1330,12 +1331,18 @@ export class HistoricalReconciliationService {
   // arbitrary file/staging mutation in review_required — it transitions
   // state and invalidates dependent evidence atomically.
   //
-  // Invalidation semantics:
-  //   - Mark current reconciliation report version as superseded.
+  // Invalidation semantics (WP-08-01F Milestone C Task 4 — corrected):
+  //   - Reconciliation-result rows remain IMMUTABLE. The report_version
+  //     column determines old/current reconciliation history. No notes
+  //     or other business/evidence field is overwritten.
   //   - Reset validationStatus and reconciliationStatus to null.
-  //   - Invalidate Owner and Accountant approvals (delete — they cannot be
-  //     preserved because their bound hashes/versions no longer match).
-  //   - Invalidate pending review items (resolved items preserved for audit).
+  //   - Invalidate Owner and Accountant approvals using the project's
+  //     preserved-history mechanism (mark is_current=false, preserve rows
+  //     with invalidatedAt/invalidatedBy/invalidationReason). Approvals
+  //     are NOT deleted — historical evidence remains queryable.
+  //   - Supersede current review items using the project's preserved-
+  //     history/supersession mechanism (mark is_current=false, preserve
+  //     rows with supersededAt/supersededBy/supersededReason).
   //   - Audit old/new state, reason, invalidated versions.
   //
   // Produces zero operational effects. Rejects committed/rejected/cancelled/

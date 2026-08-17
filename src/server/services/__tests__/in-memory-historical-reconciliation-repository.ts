@@ -93,13 +93,8 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
     return Math.max(...results.map(r => r.reportVersion));
   }
 
-  async markVersionAsSuperseded(tenantId: string, importBatchId: string, reportVersion: number): Promise<void> {
-    for (const [key, r] of this.results.entries()) {
-      if (r.tenantId === tenantId && r.importBatchId === importBatchId && r.reportVersion === reportVersion) {
-        this.results.set(key, { ...r, notes: "SUPERSEDED by later report version", updatedAt: NOW() });
-      }
-    }
-  }
+  // WP-08-01F Milestone C Task 4: markVersionAsSuperseded has been REMOVED.
+  // Old reconciliation-result rows are NEVER mutated.
 
   async insertReviewItem(row: NewReconciliationReviewItemInput): Promise<ImportHumanReviewItem> {
     this.reviewCounter++;

@@ -53,17 +53,11 @@ export interface HistoricalReconciliationRepository {
   findReconciliationResultsForBatch(tenantId: string, importBatchId: string): Promise<ImportReconciliationResult[]>;
   findReconciliationResultsForBatchVersion(tenantId: string, importBatchId: string, reportVersion: number): Promise<ImportReconciliationResult[]>;
   findLatestReportVersion(tenantId: string, importBatchId: string): Promise<number>;
-  /**
-   * WP-08-01F Milestone C Task 1: DEPRECATED — this method is now a no-op.
-   *
-   * Old reconciliation-result rows are NEVER mutated. The `report_version`
-   * column itself is the supersession mechanism — the latest version is
-   * "current", older versions remain as immutable audit history.
-   *
-   * This method is retained in the interface for backward compatibility but
-   * does nothing. DO NOT call it in production code.
-   */
-  markVersionAsSuperseded(tenantId: string, importBatchId: string, reportVersion: number): Promise<void>;
+  // WP-08-01F Milestone C Task 4: markVersionAsSuperseded has been REMOVED
+  // from the interface. Old reconciliation-result rows are NEVER mutated.
+  // The `report_version` column itself is the supersession mechanism —
+  // the latest version is "current", older versions remain as immutable
+  // audit history (Contract 08 §8.7, DEC-019 principle).
 
   // Review item methods
   insertReviewItem(row: NewReconciliationReviewItemInput): Promise<ImportHumanReviewItem>;
