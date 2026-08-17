@@ -1173,6 +1173,16 @@ export class HistoricalReconciliationService {
       now: nowForReplay,
     });
     if (replayClaim.action === "replay") {
+      // WP-08-01F Milestone C Task 4: If the replayed record is
+      // business_failed, re-throw the original business error. Do NOT
+      // fall through into the execution path.
+      if (replayClaim.record.state === "business_failed") {
+        const errorBody = replayClaim.record.responseBody as { code?: string; error?: string; message?: string } | null;
+        throw new HistoricalReconciliationError(
+          errorBody?.code ?? "BUSINESS_FAILED",
+          errorBody?.error ?? errorBody?.message ?? "Previous business failure (durable).",
+        );
+      }
       const responseBody = replayClaim.record.responseBody as Partial<SubmitForApprovalResult> | null;
       if (responseBody?.batchId) {
         return { ...responseBody, action: "replayed" } as SubmitForApprovalResult;
@@ -1185,137 +1195,142 @@ export class HistoricalReconciliationService {
       throw new HistoricalReconciliationError("OPERATION_IN_PROGRESS", "Submission already in progress.");
     }
 
-    // 3. Require the exact contracted predecessor state: review_required
-    // All prerequisite checks are wrapped so that if any fails, we mark the
-    // idempotency claim as business_failed (so the same key can be retried
-    // after the prerequisite is fixed).
-    let reviewItems: ImportHumanReviewItem[] = [];
-    let pendingItems: ImportHumanReviewItem[] = [];
-    let blockingResults: ImportReconciliationResult[] = [];
-    let backupEvidence: { length: number } = { length: 0 };
-    try {
-      if (batch.status !== "review_required") {
-        throw new SubmissionInvalidStateError(input.importBatchId, batch.status, "review_required");
-      }
-
-      // 4. Validation completion (against current staged-data hash/version)
-      if (batch.validationStatus !== "passed") {
-        throw new MissingValidationCompletionError(input.importBatchId, batch.validationStatus);
-      }
-
-      // 5. Reconciliation completion (against current report/version)
-      if (batch.reconciliationStatus !== "matched") {
-        throw new MissingReconciliationCompletionError(input.importBatchId, batch.reconciliationStatus);
-      }
-
-      // 6. Reject unresolved blocking findings (reconciliation results with status='blocking')
-      const latestResults = await this.deps.commitRepository.findLatestReconciliationResults(
-        user.tenantId, input.importBatchId,
-      );
-      blockingResults = latestResults.filter(r => r.status === "blocking");
-      if (blockingResults.length > 0) {
-        throw new BlockingFindingsRemainError(input.importBatchId, blockingResults.length);
-      }
-
-      // Also reject blocking validation errors
-      const blockingValidationErrors = await this.deps.commitRepository.findBlockingValidationErrors(
-        user.tenantId, input.importBatchId,
-      );
-      if (blockingValidationErrors.length > 0) {
-        throw new BlockingFindingsRemainError(input.importBatchId, blockingValidationErrors.length);
-      }
-
-      // 7. Every required human-review item must be resolved
-      reviewItems = await this.deps.repository.findCurrentReviewItemsForBatch(
-        user.tenantId, input.importBatchId,
-      );
-      pendingItems = reviewItems.filter(r => r.status === "pending");
-      if (pendingItems.length > 0) {
-        throw new UnresolvedReviewItemsError(input.importBatchId, pendingItems.length);
-      }
-
-      // 8. Require staged-data hash
-      if (!batch.stagedDataHash) {
-        throw new MissingStagedDataHashError(input.importBatchId);
-      }
-
-      // 9. Require cutover-manifest hash
-      if (!batch.cutoverManifestHash) {
-        throw new MissingCutoverManifestHashError(input.importBatchId);
-      }
-
-      // 10. Require accepted-warning evidence (warningCount === acceptedWarningCount)
-      if (batch.warningCount > batch.acceptedWarningCount) {
-        throw new UnacknowledgedWarningsError(
-          input.importBatchId, batch.warningCount, batch.acceptedWarningCount,
-        );
-      }
-
-      // 12. warningSummary required when warningCount > 0
-      if (batch.warningCount > 0 && !input.warningSummary?.trim()) {
-        throw new SubmissionValidationError(
-          "MISSING_WARNING_SUMMARY",
-          `Cannot submit batch '${input.importBatchId}' for approval — warningSummary is required when warningCount > 0.`,
-        );
-      }
-
-      // 11. Require backup evidence (Contract 08 §8.9)
-      const backupEvidenceRows = await this.deps.commitRepository.findBackupEvidenceForBatch(
-        user.tenantId, input.importBatchId,
-      );
-      backupEvidence = { length: backupEvidenceRows.length };
-      if (backupEvidenceRows.length === 0) {
-        throw new MissingBackupEvidenceError(input.importBatchId);
-      }
-    } catch (e) {
-      // Mark the idempotency claim as business_failed so the same key can be
-      // retried after the prerequisite is fixed.
-      await markBusinessFailed(this.deps.idempotency, replayClaim.record.id, {
-        responseCode: 400,
-        responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "SUBMISSION_FAILED" },
-        lastErrorClass: (e as Error).name ?? "Error",
-      }, replayClaim.record.ownerToken!, nowForReplay);
-      throw e;
-    }
-
     // ---- All prerequisites verified. The idempotency claim was already
     // acquired above (before the status check) for replay handling.
-    // WP-08-01F DEFECT 4: The mutation phase (status transition + audit +
-    // idempotency markSucceeded) is atomic — all commit or all roll back.
+    // WP-08-01F Milestone C Task 3: The mutation phase (prerequisite
+    // recheck + status transition + audit + idempotency markSucceeded)
+    // is atomic with EXPLICIT tx-scoped deps. NO mutation of this.deps.
     // ----
     const now = nowForReplay;
-    const claim = replayClaim; // use the claim acquired above
+    const claim = replayClaim;
 
-    const executeAtomically = async (): Promise<SubmitForApprovalResult> => {
-      // 12. Transition exactly once to pending_dual_approval
-      const reportVersion = await this.deps.repository.findLatestReportVersion(
+    const useAtomicTransaction = !!(
+      this.deps.transactionRunner &&
+      this.deps.createReconciliationRepository &&
+      this.deps.createCommitRepository &&
+      this.deps.createAudit &&
+      this.deps.createIdempotency
+    );
+
+    // -----------------------------------------------------------------------
+    // executeAtomically: takes EXPLICIT tx-scoped deps. All prerequisite
+    // checks are re-run against the AUTHORITATIVE locked batch state.
+    // -----------------------------------------------------------------------
+    const executeAtomically = async (
+      repo: HistoricalReconciliationRepository,
+      commitRepo: HistoricalCommitRepository,
+      auditHandle: AuditTransactionHandle,
+      idemHandle: IdempotencyTransactionHandle,
+      lockedBatch: ImportBatch,
+    ): Promise<SubmitForApprovalResult> => {
+      // WP-08-01F Milestone C Task 3: Re-check ALL submission prerequisites
+      // against the AUTHORITATIVE locked batch state. The pre-lock batch
+      // may be stale if another concurrent operation changed it.
+      let reviewItems: ImportHumanReviewItem[] = [];
+      let pendingItems: ImportHumanReviewItem[] = [];
+      let blockingResults: ImportReconciliationResult[] = [];
+      let backupEvidenceCount = 0;
+
+      try {
+        if (lockedBatch.status !== "review_required") {
+          throw new SubmissionInvalidStateError(input.importBatchId, lockedBatch.status, "review_required");
+        }
+        if (lockedBatch.validationStatus !== "passed") {
+          throw new MissingValidationCompletionError(input.importBatchId, lockedBatch.validationStatus);
+        }
+        if (lockedBatch.reconciliationStatus !== "matched") {
+          throw new MissingReconciliationCompletionError(input.importBatchId, lockedBatch.reconciliationStatus);
+        }
+
+        const latestResults = await commitRepo.findLatestReconciliationResults(
+          user.tenantId, input.importBatchId,
+        );
+        blockingResults = latestResults.filter(r => r.status === "blocking");
+        if (blockingResults.length > 0) {
+          throw new BlockingFindingsRemainError(input.importBatchId, blockingResults.length);
+        }
+
+        const blockingValidationErrors = await commitRepo.findBlockingValidationErrors(
+          user.tenantId, input.importBatchId,
+        );
+        if (blockingValidationErrors.length > 0) {
+          throw new BlockingFindingsRemainError(input.importBatchId, blockingValidationErrors.length);
+        }
+
+        reviewItems = await repo.findCurrentReviewItemsForBatch(
+          user.tenantId, input.importBatchId,
+        );
+        pendingItems = reviewItems.filter(r => r.status === "pending");
+        if (pendingItems.length > 0) {
+          throw new UnresolvedReviewItemsError(input.importBatchId, pendingItems.length);
+        }
+
+        if (!lockedBatch.stagedDataHash) {
+          throw new MissingStagedDataHashError(input.importBatchId);
+        }
+        if (!lockedBatch.cutoverManifestHash) {
+          throw new MissingCutoverManifestHashError(input.importBatchId);
+        }
+        if (lockedBatch.warningCount > lockedBatch.acceptedWarningCount) {
+          throw new UnacknowledgedWarningsError(
+            input.importBatchId, lockedBatch.warningCount, lockedBatch.acceptedWarningCount,
+          );
+        }
+        if (lockedBatch.warningCount > 0 && !input.warningSummary?.trim()) {
+          throw new SubmissionValidationError(
+            "MISSING_WARNING_SUMMARY",
+            `Cannot submit batch '${input.importBatchId}' for approval — warningSummary is required when warningCount > 0.`,
+          );
+        }
+
+        const backupEvidenceRows = await commitRepo.findBackupEvidenceForBatch(
+          user.tenantId, input.importBatchId,
+        );
+        backupEvidenceCount = backupEvidenceRows.length;
+        if (backupEvidenceRows.length === 0) {
+          throw new MissingBackupEvidenceError(input.importBatchId);
+        }
+      } catch (e) {
+        // WP-08-01F Milestone C Task 4: Mark as business_failed (durable).
+        // Same key + same request returns the same business failure.
+        // The operator must use a NEW key after fixing the prerequisite.
+        await markBusinessFailed(idemHandle, claim.record.id, {
+          responseCode: 400,
+          responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "SUBMISSION_FAILED" },
+          lastErrorClass: (e as Error).name ?? "Error",
+        }, claim.record.ownerToken!, now);
+        throw e;
+      }
+
+      // Transition exactly once to pending_dual_approval.
+      const reportVersion = await repo.findLatestReportVersion(
         user.tenantId, input.importBatchId,
       );
-      await this.deps.repository.updateBatchStatus(
+      await repo.updateBatchStatus(
         user.tenantId, input.importBatchId, "pending_dual_approval",
       );
 
-      // 13. Write immutable audit
-      await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
+      // Write immutable audit through tx-scoped audit handle.
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
         entityType: "import_batch",
         entityId: input.importBatchId,
         actionType: "historical_migration.submit_for_approval",
         newValuesJson: {
           importBatchId: input.importBatchId,
-          previousStatus: batch.status,
+          previousStatus: lockedBatch.status,
           newStatus: "pending_dual_approval",
           reportVersion,
-          stagedDataHash: batch.stagedDataHash,
-          cutoverManifestHash: batch.cutoverManifestHash,
-          validationStatus: batch.validationStatus,
-          reconciliationStatus: batch.reconciliationStatus,
-          warningCount: batch.warningCount,
-          acceptedWarningCount: batch.acceptedWarningCount,
+          stagedDataHash: lockedBatch.stagedDataHash,
+          cutoverManifestHash: lockedBatch.cutoverManifestHash,
+          validationStatus: lockedBatch.validationStatus,
+          reconciliationStatus: lockedBatch.reconciliationStatus,
+          warningCount: lockedBatch.warningCount,
+          acceptedWarningCount: lockedBatch.acceptedWarningCount,
           warningSummary: input.warningSummary,
           reviewItemsTotal: reviewItems.length,
           reviewItemsPending: pendingItems.length,
           blockingResults: blockingResults.length,
-          backupEvidenceCount: backupEvidence.length,
+          backupEvidenceCount,
         },
         idempotencyKey: input.idempotencyKey,
       });
@@ -1323,15 +1338,15 @@ export class HistoricalReconciliationService {
       const result: SubmitForApprovalResult = {
         action: "submitted",
         batchId: input.importBatchId,
-        previousStatus: batch.status,
+        previousStatus: lockedBatch.status,
         newStatus: "pending_dual_approval",
         reportVersion,
-        stagedDataHash: batch.stagedDataHash!,
-        cutoverManifestHash: batch.cutoverManifestHash,
+        stagedDataHash: lockedBatch.stagedDataHash!,
+        cutoverManifestHash: lockedBatch.cutoverManifestHash,
       };
 
-      // markSucceeded inside the transaction — owner-token-fenced
-      await markSucceeded(this.deps.idempotency, claim.record.id, {
+      // markSucceeded through tx-scoped idempotency handle — owner-token-fenced.
+      await markSucceeded(idemHandle, claim.record.id, {
         responseCode: 200, responseBody: result,
         entityType: "import_batch", entityId: input.importBatchId,
       }, claim.record.ownerToken!, now);
@@ -1339,11 +1354,61 @@ export class HistoricalReconciliationService {
       return result;
     };
 
-    // If transactionRunner is available, run atomically. Otherwise run directly.
-    if (this.deps.transactionRunner) {
-      return await this.deps.transactionRunner(executeAtomically);
+    if (useAtomicTransaction) {
+      try {
+        return await this.deps.transactionRunner!(async (tx: unknown) => {
+          // Lock the batch row and RE-READ its current status.
+          const batchRows = await (tx as any).execute(
+            drizzleSql`SELECT id, status, validation_status, reconciliation_status, staged_data_hash, cutover_manifest_hash, warning_count, accepted_warning_count FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+          );
+          if (!batchRows || (batchRows as any[]).length === 0) {
+            throw new ReconBatchNotFoundError(input.importBatchId);
+          }
+          const lockedBatchRow = (batchRows as any[])[0]!;
+          const lockedBatch: ImportBatch = {
+            ...batch,
+            status: lockedBatchRow.status as any,
+            validationStatus: lockedBatchRow.validation_status,
+            reconciliationStatus: lockedBatchRow.reconciliation_status,
+            stagedDataHash: lockedBatchRow.staged_data_hash,
+            cutoverManifestHash: lockedBatchRow.cutover_manifest_hash,
+            warningCount: lockedBatchRow.warning_count,
+            acceptedWarningCount: lockedBatchRow.accepted_warning_count,
+          };
+
+          const txRepo = this.deps.createReconciliationRepository!(tx);
+          const txCommitRepo = this.deps.createCommitRepository!(tx);
+          const txAudit = this.deps.createAudit!(tx);
+          const txIdem = this.deps.createIdempotency!(tx);
+          return executeAtomically(txRepo, txCommitRepo, txAudit, txIdem, lockedBatch);
+        });
+      } catch (error) {
+        // WP-08-01F Milestone C Task 2: Separate failure classes.
+        const isOwnerLoss = error instanceof Error && error.constructor.name === "IdempotencyOwnershipLostError";
+        // Business failures are already marked inside executeAtomically.
+        // Only mark technical failures here.
+        if (!isOwnerLoss && !(error instanceof HistoricalReconciliationError)) {
+          try {
+            await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+              responseCode: 500,
+              responseBody: { message: error instanceof Error ? error.message : String(error) },
+              lastErrorClass: error instanceof Error ? error.constructor.name : "Unknown",
+            }, claim.record.ownerToken!, now);
+          } catch {
+            // Fallback: record stays in_progress, expires via lease.
+          }
+        }
+        throw error;
+      }
     } else {
-      return await executeAtomically();
+      // Non-atomic path (in-memory tests).
+      return executeAtomically(
+        this.deps.repository,
+        this.deps.commitRepository!,
+        this.deps.audit,
+        this.deps.idempotency,
+        batch,
+      );
     }
   }
 

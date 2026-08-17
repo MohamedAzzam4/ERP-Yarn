@@ -460,9 +460,28 @@ describeOrSkip("WP-08-01F Task 2 — Rework atomicity PostgreSQL proofs (RW-1 th
     expect(auditAfter).toBe(auditBefore);
     expect(auditAfter).toBe(0);
 
-    // Idempotency not succeeded.
+    // WP-08-01F Milestone C Task 2: Idempotency state = retryable_failed (exact).
     const idemState = await getIdemState(scope, idemKey);
-    if (idemState) { expect(idemState.state).not.toBe("succeeded"); }
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).toBe("retryable_failed");
+
+    // WP-08-01F Milestone C Task 2: Immediate same-key retry WITHOUT
+    // manual lease expiry. retryable_failed is reclaimable.
+    const { reconciliationService: goodService } = makeServices(scope);
+    const retryResult = await goodService.reopenBatchForRework(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, reason: "test rework fail", targetState: "staged", idempotencyKey: idemKey },
+    );
+    expect(retryResult.action).toBe("reworked");
+
+    // Exactly one rework audit (not duplicated by the failed attempt).
+    const auditAfterRetry = await getScopedAuditCount(scope, batchId, "historical_migration.rework");
+    expect(auditAfterRetry).toBe(auditBefore + 1);
+    expect(auditAfterRetry).toBe(1);
+
+    // Idempotency succeeded after retry.
+    const idemAfterRetry = await getIdemState(scope, idemKey);
+    expect(idemAfterRetry!.state).toBe("succeeded");
 
     await cleanupScope(scope);
   });
