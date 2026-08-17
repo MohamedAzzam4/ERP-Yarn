@@ -1231,6 +1231,7 @@ export class HistoricalReconciliationService {
       let pendingItems: ImportHumanReviewItem[] = [];
       let blockingResults: ImportReconciliationResult[] = [];
       let backupEvidenceCount = 0;
+      let currentReportVersion = 0;
 
       try {
         if (lockedBatch.status !== "review_required") {
@@ -1249,6 +1250,29 @@ export class HistoricalReconciliationService {
         blockingResults = latestResults.filter(r => r.status === "blocking");
         if (blockingResults.length > 0) {
           throw new BlockingFindingsRemainError(input.importBatchId, blockingResults.length);
+        }
+
+        // WP-08-01F Milestone C Task 2: Require a complete reconciliation
+        // report. Contract 08 §8.9: "reconciliation report version is
+        // complete." Fail closed if:
+        //   - no reconciliation results exist (reportVersion = 0)
+        //   - the latest report has zero result rows
+        //   - the batch's reconciliationStatus is "matched" but no results
+        //     are persisted for the current/latest version
+        const currentReportVersion = await repo.findLatestReportVersion(
+          user.tenantId, input.importBatchId,
+        );
+        if (currentReportVersion === 0) {
+          throw new HistoricalReconciliationError(
+            "INCOMPLETE_RECONCILIATION_REPORT",
+            `Cannot submit batch '${input.importBatchId}' — no reconciliation report version exists. Run reconciliation before submitting for approval.`,
+          );
+        }
+        if (latestResults.length === 0) {
+          throw new HistoricalReconciliationError(
+            "INCOMPLETE_RECONCILIATION_REPORT",
+            `Cannot submit batch '${input.importBatchId}' — reconciliation report version ${currentReportVersion} has zero result rows. The report is incomplete.`,
+          );
         }
 
         const blockingValidationErrors = await commitRepo.findBlockingValidationErrors(
@@ -1292,23 +1316,45 @@ export class HistoricalReconciliationService {
           throw new MissingBackupEvidenceError(input.importBatchId);
         }
       } catch (e) {
-        // WP-08-01F Milestone C Task 4: Mark as business_failed (durable).
-        // Use the NON-tx handle so the mark commits independently of
-        // the rolling-back transaction. Same key + same request returns
-        // the same business failure. The operator must use a NEW key
-        // after fixing the prerequisite.
-        await markBusinessFailed(nonTxIdemHandle, claim.record.id, {
-          responseCode: 400,
-          responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "SUBMISSION_FAILED" },
-          lastErrorClass: (e as Error).name ?? "Error",
-        }, claim.record.ownerToken!, now);
+        // WP-08-01F Milestone C Task 3: Classify submission failures.
+        //
+        // A) BUSINESS PRECONDITION failures (known deterministic
+        //    submission-domain errors) → business_failed (durable).
+        //    Same key + same request returns the same failure.
+        //
+        // B) TECHNICAL/SYSTEM failures (unexpected repository/DB/infra
+        //    errors) → do NOT mark business_failed. Let the outer
+        //    catch block handle them as retryable_failed.
+        //
+        // Business precondition errors are all subclasses of
+        // SubmissionValidationError or HistoricalReconciliationError
+        // with a known domain code. Technical errors are everything else.
+        const isBusinessError =
+          e instanceof SubmissionValidationError ||
+          e instanceof BlockingFindingsRemainError ||
+          (e instanceof HistoricalReconciliationError && e.code === "INCOMPLETE_RECONCILIATION_REPORT");
+
+        if (isBusinessError) {
+          // WP-08-01F Milestone C Task 4: Mark as business_failed (durable).
+          // Use the NON-tx handle so the mark commits independently of
+          // the rolling-back transaction. Same key + same request returns
+          // the same business failure. The operator must use a NEW key
+          // after fixing the prerequisite.
+          await markBusinessFailed(nonTxIdemHandle, claim.record.id, {
+            responseCode: 400,
+            responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "SUBMISSION_FAILED" },
+            lastErrorClass: (e as Error).name ?? "Error",
+          }, claim.record.ownerToken!, now);
+        }
+        // For technical errors, do NOT mark business_failed here.
+        // The outer catch block will mark as retryable_failed.
         throw e;
       }
 
       // Transition exactly once to pending_dual_approval.
-      const reportVersion = await repo.findLatestReportVersion(
-        user.tenantId, input.importBatchId,
-      );
+      // WP-08-01F Milestone C Task 2: Use the already-validated
+      // currentReportVersion from the prerequisite check above.
+      const reportVersion = currentReportVersion;
       await repo.updateBatchStatus(
         user.tenantId, input.importBatchId, "pending_dual_approval",
       );

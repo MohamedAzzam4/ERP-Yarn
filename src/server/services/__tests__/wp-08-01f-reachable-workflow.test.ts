@@ -180,6 +180,11 @@ async function driveToReviewReady(deps: ReturnType<typeof makeServices>): Promis
   if (batchAfterRecon) {
     deps.stagingRepo.seedBatch(TENANT_A, { ...batchAfterRecon, status: "review_required" as any, reconciliationStatus: "matched" as any });
   }
+  // WP-08-01F Milestone C Task 2: Seed a reconciliation result so the
+  // complete-report prerequisite check passes.
+  deps.commitRepo.seedReconciliationResults(TENANT_A, batchId, [
+    { id: "recon-1", tenantId: TENANT_A, importBatchId: batchId, reportVersion: 1, metricKey: "inventory_opening_qty", expectedValue: "100", stagedValue: "100", committedValue: null, differenceValue: null, status: "matched", notes: null, acceptedByOwner: null, acceptedByAccountant: null, acceptedAt: null, acceptanceReason: null, createdBy: OWNER_USER, createdAt: new Date(), updatedAt: null } as any,
+  ]);
   await deps.syncBatchToAllRepos(batchId);
 
   // 6. Resolve ALL pending review items (recon may have created some)
@@ -408,6 +413,11 @@ describe("WP-08-01F DEFECT 1 — Reachable workflow happy path", () => {
       const freshCommitRepo = new InMemoryHistoricalCommitRepository();
       const batch = await deps.stagingRepo.findImportBatchById(TENANT_A, batchId);
       freshCommitRepo.seedBatch(TENANT_A, batch!);
+      // WP-08-01F Milestone C Task 2: Seed recon results so the
+      // complete-report check passes (backup evidence is the failing check).
+      freshCommitRepo.seedReconciliationResults(TENANT_A, batchId, [
+        { id: "recon-backup-test", tenantId: TENANT_A, importBatchId: batchId, reportVersion: 1, metricKey: "test", expectedValue: "100", stagedValue: "100", committedValue: null, differenceValue: null, status: "matched", notes: null, acceptedByOwner: null, acceptedByAccountant: null, acceptedAt: null, acceptanceReason: null, createdBy: OWNER_USER, createdAt: new Date(), updatedAt: null } as any,
+      ]);
       // Re-create reconciliation service with fresh commit repo (no backup evidence)
       const freshReconService = new HistoricalReconciliationService({
         repository: deps.reconRepo, audit: deps.audit, idempotency: deps.idem,
