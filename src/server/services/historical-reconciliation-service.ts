@@ -1221,6 +1221,7 @@ export class HistoricalReconciliationService {
       commitRepo: HistoricalCommitRepository,
       auditHandle: AuditTransactionHandle,
       idemHandle: IdempotencyTransactionHandle,
+      nonTxIdemHandle: IdempotencyTransactionHandle,
       lockedBatch: ImportBatch,
     ): Promise<SubmitForApprovalResult> => {
       // WP-08-01F Milestone C Task 3: Re-check ALL submission prerequisites
@@ -1292,9 +1293,11 @@ export class HistoricalReconciliationService {
         }
       } catch (e) {
         // WP-08-01F Milestone C Task 4: Mark as business_failed (durable).
-        // Same key + same request returns the same business failure.
-        // The operator must use a NEW key after fixing the prerequisite.
-        await markBusinessFailed(idemHandle, claim.record.id, {
+        // Use the NON-tx handle so the mark commits independently of
+        // the rolling-back transaction. Same key + same request returns
+        // the same business failure. The operator must use a NEW key
+        // after fixing the prerequisite.
+        await markBusinessFailed(nonTxIdemHandle, claim.record.id, {
           responseCode: 400,
           responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "SUBMISSION_FAILED" },
           lastErrorClass: (e as Error).name ?? "Error",
@@ -1380,7 +1383,7 @@ export class HistoricalReconciliationService {
           const txCommitRepo = this.deps.createCommitRepository!(tx);
           const txAudit = this.deps.createAudit!(tx);
           const txIdem = this.deps.createIdempotency!(tx);
-          return executeAtomically(txRepo, txCommitRepo, txAudit, txIdem, lockedBatch);
+          return executeAtomically(txRepo, txCommitRepo, txAudit, txIdem, this.deps.idempotency, lockedBatch);
         });
       } catch (error) {
         // WP-08-01F Milestone C Task 2: Separate failure classes.
@@ -1406,6 +1409,7 @@ export class HistoricalReconciliationService {
         this.deps.repository,
         this.deps.commitRepository!,
         this.deps.audit,
+        this.deps.idempotency,
         this.deps.idempotency,
         batch,
       );
