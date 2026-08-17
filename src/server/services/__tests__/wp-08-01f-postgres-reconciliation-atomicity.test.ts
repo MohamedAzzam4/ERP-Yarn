@@ -370,9 +370,9 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
   });
 
   // ===========================================================================
-  // RCA-2 — REAL FAILURE AFTER FIRST BUSINESS WRITE
+  // RCA-2 — REAL FAILURE AFTER FIRST BUSINESS WRITE (retryable_failed + immediate retry)
   // ===========================================================================
-  it("RCA-2. real failure after first insertReconciliationResult: full rollback, batch unchanged, audit delta 0, idempotency not succeeded", async () => {
+  it("RCA-2. real failure after first insertReconciliationResult: full rollback, idempotency=retryable_failed, immediate retry succeeds", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
@@ -389,10 +389,11 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     // Custom service with a createReconciliationRepository that wraps the
     // real repo to inject failure after the first insertReconciliationResult.
     const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const commitRepo = new HistoricalCommitDbRepository(db);
     const audit = new AuditDbRepository(db);
     const idem = new IdempotencyDbRepository(db);
     const customService = new HistoricalReconciliationService({
-      repository: reconRepo, audit, idempotency: idem,
+      repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
       transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
         (db as any).transaction(async (tx: any) => {
           await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
@@ -401,6 +402,7 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
       createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
       createReconciliationRepository: (tx: unknown) => makeFirstWriteFailureRepoWrapper(new HistoricalReconciliationDbRepository(tx as any), tx as any),
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
     });
 
     await expect(
@@ -410,6 +412,7 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
       ),
     ).rejects.toThrow(/INJECTED_FAILURE_AFTER_FIRST_BUSINESS_WRITE/);
 
+    // Full rollback: results/reviews unchanged.
     const resultsAfter = await getReconResultCount(scope, batchId);
     expect(resultsAfter).toBe(resultsBefore);
     expect(resultsAfter).toBe(0);
@@ -418,22 +421,47 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     expect(reviewAfter).toBe(reviewBefore);
     expect(reviewAfter).toBe(0);
 
+    // Full rollback: batch unchanged.
     const batchAfter = await getBatchState(scope, batchId);
     expect(batchAfter!.status).toBe(batchBefore!.status);
     expect(batchAfter!.reconciliation_status).toBe(batchBefore!.reconciliation_status);
 
+    // Full rollback: audit delta = 0.
     const auditAfter = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
     expect(auditAfter).toBe(auditBefore);
     expect(auditAfter).toBe(0);
 
+    // Full rollback: report version unchanged.
     const versionAfter = await getLatestReportVersion(scope, batchId);
     expect(versionAfter).toBe(versionBefore);
     expect(versionAfter).toBe(0);
 
+    // WP-08-01F Milestone C Task 2: Idempotency state = retryable_failed (exact).
     const idemState = await getIdemState(scope, idemKey);
-    if (idemState) {
-      expect(idemState.state).not.toBe("succeeded");
-    }
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).toBe("retryable_failed");
+
+    // WP-08-01F Milestone C Task 2: Immediate same-key retry WITHOUT
+    // manual lease expiry. retryable_failed is reclaimable, so the retry
+    // should re-execute and succeed.
+    const { reconciliationService: goodService } = makeServices(scope);
+    const retryResult = await goodService.runReconciliation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, expectedTotals: {}, idempotencyKey: idemKey },
+    );
+    expect(retryResult.action).toBe("executed");
+
+    // Exactly one final result set + one scoped audit.
+    const auditAfterRetry = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    expect(auditAfterRetry).toBe(auditBefore + 1);
+    expect(auditAfterRetry).toBe(1);
+
+    const resultsAfterRetry = await getReconResultCount(scope, batchId);
+    expect(resultsAfterRetry).toBe(retryResult.totalMetrics);
+
+    // Idempotency succeeded after retry.
+    const idemAfterRetry = await getIdemState(scope, idemKey);
+    expect(idemAfterRetry!.state).toBe("succeeded");
 
     await cleanupScope(scope);
   });
@@ -677,8 +705,113 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
   });
 
   // ===========================================================================
-  // RCA-7 — IMMUTABLE VERSION PRESERVATION (via real production rework path)
+  // RCA-6A — SAME KEY / SAME BATCH / SAME TOTALS → REPLAY
   // ===========================================================================
+  it("RCA-6A. same key + same batch + same expectedTotals → replay, zero additional effects", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    const idemKey = "rca6a-same-totals-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+    const expectedTotals = { inventory_opening_qty: "100" };
+
+    const result1 = await reconciliationService.runReconciliation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, expectedTotals, idempotencyKey: idemKey },
+    );
+    expect(result1.action).toBe("executed");
+
+    const auditAfter1 = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsAfter1 = await getReconResultCount(scope, batchId);
+    const versionAfter1 = await getLatestReportVersion(scope, batchId);
+
+    // Replay with same key + same batch + same totals.
+    const result2 = await reconciliationService.runReconciliation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, expectedTotals, idempotencyKey: idemKey },
+    );
+    expect(result2.action).toBe("replayed");
+
+    // Zero additional effects.
+    expect(await getScopedAuditCount(scope, batchId, "historical_reconciliation.run")).toBe(auditAfter1);
+    expect(await getReconResultCount(scope, batchId)).toBe(resultsAfter1);
+    expect(await getLatestReportVersion(scope, batchId)).toBe(versionAfter1);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // RCA-6B — SAME KEY / SAME BATCH / DIFFERENT EXPECTED TOTALS → CONFLICT
+  // ===========================================================================
+  it("RCA-6B. same key + same batch + different expectedTotals → IDEMPOTENCY_CONFLICT, zero effects", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    const idemKey = "rca6b-diff-totals-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    // First call with expectedTotals = { inventory_opening_qty: "100" }
+    const result1 = await reconciliationService.runReconciliation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, expectedTotals: { inventory_opening_qty: "100" }, idempotencyKey: idemKey },
+    );
+    expect(result1.action).toBe("executed");
+
+    const auditAfter1 = await getScopedAuditCount(scope, batchId, "historical_reconciliation.run");
+    const resultsAfter1 = await getReconResultCount(scope, batchId);
+    const versionAfter1 = await getLatestReportVersion(scope, batchId);
+
+    // Second call with DIFFERENT expectedTotals = { inventory_opening_qty: "200" }
+    // This must conflict, not replay.
+    await expect(
+      reconciliationService.runReconciliation(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, expectedTotals: { inventory_opening_qty: "200" }, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|conflict/i);
+
+    // Zero additional effects.
+    expect(await getScopedAuditCount(scope, batchId, "historical_reconciliation.run")).toBe(auditAfter1);
+    expect(await getReconResultCount(scope, batchId)).toBe(resultsAfter1);
+    expect(await getLatestReportVersion(scope, batchId)).toBe(versionAfter1);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // RCA-6C — CANONICAL REQUEST HASH (key order independence)
+  // ===========================================================================
+  it("RCA-6C. canonical request hash: semantically identical expectedTotals with different key order → replay, not conflict", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedStagedBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    const idemKey = "rca6c-canonical-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    // First call with keys in one order.
+    const result1 = await reconciliationService.runReconciliation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, expectedTotals: { inventory_opening_qty: "100", single_yarn_opening_qty: "50" }, idempotencyKey: idemKey },
+    );
+    expect(result1.action).toBe("executed");
+
+    // Second call with same key + same values but DIFFERENT key order.
+    // computeRequestHash uses canonical JSON (sorted keys), so this must
+    // replay, not conflict.
+    const result2 = await reconciliationService.runReconciliation(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, expectedTotals: { single_yarn_opening_qty: "50", inventory_opening_qty: "100" }, idempotencyKey: idemKey },
+    );
+    expect(result2.action).toBe("replayed");
+
+    await cleanupScope(scope);
+  });
   it("RCA-7. immutable version preservation via real rework+validation path: V1/V2/V3 all queryable, NO field overwritten", async () => {
     const scope = newScope();
     await seedTenantAndUser(scope);

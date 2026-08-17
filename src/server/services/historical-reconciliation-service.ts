@@ -33,6 +33,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   type IdempotencyTransactionHandle,
 } from "./idempotency-service";
 import type { HistoricalReconciliationRepository } from "./historical-reconciliation-repository";
@@ -655,7 +656,15 @@ export class HistoricalReconciliationService {
       tenantId: user.tenantId,
       operationScope: "historical_reconciliation.run",
       idempotencyKey: input.idempotencyKey,
-      requestBody: { importBatchId: input.importBatchId } as Record<string, unknown>,
+      // WP-08-01F Milestone C Task 1: Bind BOTH importBatchId AND
+      // expectedTotals into the idempotency request hash. expectedTotals
+      // directly changes reconciliation metrics, expected values,
+      // difference values, and matching/blocking classification. Same key
+      // + same batch + different expectedTotals must conflict, not replay.
+      requestBody: {
+        importBatchId: input.importBatchId,
+        expectedTotals: input.expectedTotals ?? {},
+      } as Record<string, unknown>,
       initiatedBy: user.userId,
       leaseDurationMs: 30000,
       now,
@@ -927,33 +936,52 @@ export class HistoricalReconciliationService {
           await executeAtomically(txRepo, txAudit, txIdem);
         });
       } catch (error) {
-        // WP-08-01F Milestone C Task 2: If the error is a lifecycle
-        // violation that occurred AFTER a successful idempotency claim
-        // (i.e., the authoritative post-lock guard rejected the call),
-        // mark the idempotency record as business_failed using the
-        // NON-tx handle. This commits independently of the rolled-back
-        // transaction, making the loser state deterministic.
+        // WP-08-01F Milestone C Task 2: Separate failure classes correctly.
         //
-        // business_failed is the approved state for "business precondition
-        // failed — durable" (Contract 06 §7.1). Retry with same key returns
-        // the same failure. This is correct for a lifecycle violation:
-        // the batch is no longer eligible, so retrying with the same key
-        // should return the same failure until the batch is reworked.
-        if (error instanceof HistoricalReconciliationError && error.code === "LIFECYCLE_VIOLATION") {
+        // A) BUSINESS PRECONDITION / LIFECYCLE FAILURE
+        //    → business_failed (durable, same-key replay returns same failure)
+        //
+        // B) TECHNICAL / SYSTEM FAILURE while caller still owns the claim
+        //    → rollback business transaction (already done by tx rollback);
+        //    → after rollback, use NON-tx idempotency handle;
+        //    → owner-fenced markRetryableFailed;
+        //    → immediate same-key retry is allowed to execute.
+        //
+        // C) OWNER-TOKEN LOSS (IdempotencyOwnershipLostError)
+        //    → do NOT use the stale token to force retryable_failed;
+        //    → preserve existing ownership/lease fencing semantics;
+        //    → do not overwrite the new owner's state.
+        const isOwnerLoss = error instanceof Error && error.constructor.name === "IdempotencyOwnershipLostError";
+        const isLifecycleViolation = error instanceof HistoricalReconciliationError && error.code === "LIFECYCLE_VIOLATION";
+
+        if (!isOwnerLoss && !isLifecycleViolation) {
+          // Technical/system failure — mark as retryable_failed.
+          try {
+            await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+              responseCode: 500,
+              responseBody: { message: error instanceof Error ? error.message : String(error) },
+              lastErrorClass: error instanceof Error ? error.constructor.name : "Unknown",
+            }, claim.record.ownerToken!, now);
+          } catch {
+            // If markRetryableFailed fails (e.g., owner token already
+            // changed), the record stays in_progress and will expire
+            // via lease. This is a fallback, not the primary path.
+          }
+        } else if (isLifecycleViolation) {
+          // Business precondition failure — mark as business_failed.
           try {
             await markBusinessFailed(this.deps.idempotency, claim.record.id, {
               responseCode: 409,
-              responseBody: { code: error.code, message: error.message },
+              responseBody: { code: "LIFECYCLE_VIOLATION", message: (error as Error).message },
               lastErrorClass: "HistoricalReconciliationError",
               entityType: "import_batch",
               entityId: input.importBatchId,
             }, claim.record.ownerToken!, now);
           } catch {
-            // If markBusinessFailed fails (e.g., owner token already
-            // changed), the record stays in_progress and will expire
-            // via lease. This is a fallback, not the primary path.
+            // Fallback: record stays in_progress, expires via lease.
           }
         }
+        // For owner-token loss, do nothing — the fence already handled it.
         throw error;
       }
     } else {
@@ -1601,10 +1629,23 @@ export class HistoricalReconciliationService {
           return executeReworkAtomically(txRepo, txCommitRepo, txAudit, txIdem, lockedBatch);
         });
       } catch (error) {
-        // WP-08-01F Milestone C Task 2: Mark idempotency as business_failed
-        // for post-claim lifecycle rejections. ReworkInvalidSourceStateError
-        // and ReworkInvalidTargetStateError are lifecycle violations.
-        if (error instanceof ReworkInvalidSourceStateError || error instanceof ReworkInvalidTargetStateError) {
+        // WP-08-01F Milestone C Task 2: Separate failure classes correctly.
+        const isOwnerLoss = error instanceof Error && error.constructor.name === "IdempotencyOwnershipLostError";
+        const isLifecycleViolation = error instanceof ReworkInvalidSourceStateError || error instanceof ReworkInvalidTargetStateError;
+
+        if (!isOwnerLoss && !isLifecycleViolation) {
+          // Technical/system failure — mark as retryable_failed.
+          try {
+            await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+              responseCode: 500,
+              responseBody: { message: error instanceof Error ? error.message : String(error) },
+              lastErrorClass: error instanceof Error ? error.constructor.name : "Unknown",
+            }, claim.record.ownerToken!, now);
+          } catch {
+            // Fallback: record stays in_progress, expires via lease.
+          }
+        } else if (isLifecycleViolation) {
+          // Business precondition failure — mark as business_failed.
           try {
             await markBusinessFailed(this.deps.idempotency, claim.record.id, {
               responseCode: 409,
@@ -1617,6 +1658,7 @@ export class HistoricalReconciliationService {
             // Fallback: record stays in_progress, expires via lease.
           }
         }
+        // For owner-token loss, do nothing — the fence already handled it.
         throw error;
       }
     } else {
