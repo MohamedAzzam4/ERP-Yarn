@@ -284,6 +284,31 @@ export class MissingBackupEvidenceError extends SubmissionValidationError {
   }
 }
 
+// WP-08-01G (A7): alias-mapping prerequisite errors.
+export class UnresolvedAliasMappingError extends SubmissionValidationError {
+  constructor(batchId: string, unresolvedCount: number, examples: string[]) {
+    super(
+      "UNRESOLVED_ALIAS_MAPPING",
+      `Cannot submit batch '${batchId}' for approval — ${unresolvedCount} alias mapping(s) are unresolved. ` +
+      `Every required alias mapping must have status='approved' AND targetMasterId IS NOT NULL before submission. ` +
+      `Examples: ${examples.slice(0, 5).join(", ")}${examples.length > 5 ? " …" : ""}.`,
+    );
+    this.name = "UnresolvedAliasMappingError";
+  }
+}
+
+export class InvalidAliasTargetOnSubmitError extends SubmissionValidationError {
+  constructor(batchId: string, aliasMappingId: string, targetMasterId: string | null, entityType: string) {
+    super(
+      "INVALID_ALIAS_TARGET",
+      `Cannot submit batch '${batchId}' for approval — alias mapping '${aliasMappingId}' has status='approved' ` +
+      `but targetMasterId='${targetMasterId ?? "null"}' does not resolve to a valid master of type '${entityType}'. ` +
+      `The target master may have been inactivated or deleted since approval. Re-approve the alias with a valid target.`,
+    );
+    this.name = "InvalidAliasTargetOnSubmitError";
+  }
+}
+
 export class SubmissionInvalidStateError extends SubmissionValidationError {
   constructor(batchId: string, currentStatus: string, requiredStatus: string) {
     super(
@@ -1314,6 +1339,44 @@ export class HistoricalReconciliationService {
         backupEvidenceCount = backupEvidenceRows.length;
         if (backupEvidenceRows.length === 0) {
           throw new MissingBackupEvidenceError(input.importBatchId);
+        }
+
+        // WP-08-01G (A7): Alias-mapping prerequisite.
+        //
+        // Contract 08 §8.4.4: every required alias mapping must be approved
+        // with a non-null targetMasterId before the batch can transition
+        // to pending_dual_approval. Required alias mappings are the
+        // CURRENT mappings whose source labels appear in the current
+        // staging rows — i.e. all CURRENT alias mappings for this batch.
+        // (If a source label has disappeared from the staging rows after
+        // a file replacement, its superseded alias mapping is no longer
+        // required for submission; the partial unique index on
+        // (tenant, batch, entityType, sourceLabel) WHERE is_current=true
+        // means we only see the active ones here.)
+        //
+        // Failure modes:
+        //   - UNRESOLVED_ALIAS_MAPPING: any current alias mapping with
+        //     status != 'approved' OR targetMasterId IS NULL.
+        //   - INVALID_ALIAS_TARGET: a current alias mapping with
+        //     status='approved' and targetMasterId IS NOT NULL, but the
+        //     target master has since been inactivated/deleted (the
+        //     targetMasterId no longer resolves to a valid master). The
+        //     operator must re-approve the alias with a valid target.
+        //     This check is best-effort — the commit repository does not
+        //     have access to the MasterDataRepository, so we cannot
+        //     re-validate the target master here. The check is done at
+        //     approve-time in approveAliasMapping. At submit-time we only
+        //     check status + targetMasterId presence. Operators should
+        //     re-run approveAliasMapping if a master has been inactivated.
+        const currentAliasMappings = await commitRepo.findCurrentAliasMappingsForBatch(
+          user.tenantId, input.importBatchId,
+        );
+        const unresolvedAliases = currentAliasMappings.filter(
+          a => a.status !== "approved" || a.targetMasterId === null,
+        );
+        if (unresolvedAliases.length > 0) {
+          const examples = unresolvedAliases.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
+          throw new UnresolvedAliasMappingError(input.importBatchId, unresolvedAliases.length, examples);
         }
       } catch (e) {
         // WP-08-01F Milestone C Task 3: Classify submission failures.

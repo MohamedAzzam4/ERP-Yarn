@@ -134,6 +134,13 @@
       "when": 1786619234413,
       "tag": "0018_shallow_whistler",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787159092774,
+      "tag": "0019_bizarre_adam_warlock",
+      "breakpoints": true
     }
   ]
 }

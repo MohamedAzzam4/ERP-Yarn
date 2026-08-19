@@ -31,6 +31,7 @@ import type {
   ImportValidationError,
   ImportReconciliationResult,
   ImportCutoverManifest,
+  ImportAliasMapping,
 } from "@/server/db/schema/migration";
 
 // ---------------------------------------------------------------------------
@@ -181,6 +182,22 @@ export interface HistoricalCommitRepository {
 
   // ---- Cutover manifests ----
   findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]>;
+
+  // ---- Alias mappings (read-only cross-service lookup) ----
+  /**
+   * WP-08-01G (A7): Find only CURRENT alias mappings (is_current=true) for
+   * a batch. Used by the submission prerequisite check in
+   * submitForApproval to verify that every required alias has
+   * status='approved' and targetMasterId IS NOT NULL before the batch
+   * can transition to pending_dual_approval.
+   *
+   * This is a read-only cross-service lookup; the authoritative mutation
+   * methods live on HistoricalValidationRepository. The commit repository
+   * already exposes other cross-service lookups (blocking validation
+   * errors, latest reconciliation results, backup evidence) — this is the
+   * same pattern.
+   */
+  findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]>;
 }
 
 export type {
@@ -192,4 +209,5 @@ export type {
   ImportValidationError,
   ImportReconciliationResult,
   ImportCutoverManifest,
+  ImportAliasMapping,
 } from "@/server/db/schema/migration";

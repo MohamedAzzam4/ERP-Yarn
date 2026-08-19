@@ -98,6 +98,10 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       status: row.status as any,
       notes: row.notes,
       createdBy: row.createdBy,
+      // WP-08-01G (A1/A2) — group identity / occurrence metadata.
+      groupId: row.groupId ?? null,
+      occurrenceCount: row.occurrenceCount ?? 1,
+      exceptionSourceRowIds: row.exceptionSourceRowIds ?? null,
     }).returning();
     return result!;
   }
@@ -117,17 +121,116 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
         eq(importAliasMappings.importBatchId, importBatchId),
         eq(importAliasMappings.entityType, entityType),
         eq(importAliasMappings.sourceLabel, sourceLabel),
+        // WP-08-01G (A1): Only consider the CURRENT mapping. Superseded
+        // rows are preserved as audit history but are not active.
+        eq(importAliasMappings.isCurrent, true),
       ))
       .limit(1);
     return result ?? null;
   }
 
   async deleteAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<void> {
+    // WP-08-01G (A2): NEVER hard-delete alias mappings. The validation
+    // service is responsible for superseding (mark is_current=false) any
+    // existing CURRENT mappings before creating new ones — but it does
+    // NOT call this method on already-approved mappings, so approved
+    // mappings are preserved here too. This method is retained for the
+    // non-alias paths (validation errors, review items) that legitimately
+    // hard-delete on re-validation. For alias mappings the service calls
+    // supersedeAliasMappingsForBatch instead.
+    //
+    // For backwards compatibility with any caller that still hits this
+    // method (e.g. an in-memory test), we hard-delete only the
+    // non-current rows — current rows are protected. The service is the
+    // authority on which rows to supersede.
     await this.db.delete(importAliasMappings)
       .where(and(
         eq(importAliasMappings.tenantId, tenantId),
         eq(importAliasMappings.importBatchId, importBatchId),
+        // Only delete non-current rows (already superseded) — current
+        // rows are protected. This preserves approved mappings.
+        eq(importAliasMappings.isCurrent, false),
       ));
+  }
+
+  // WP-08-01G (A3) — Approve (or reject) a single alias mapping in place.
+  async updateAliasMappingStatus(
+    tenantId: string,
+    aliasMappingId: string,
+    update: {
+      status: string;
+      targetMasterId: string | null;
+      approvedBy: string;
+      approvedAt: Date;
+      mappingVersion: string | null;
+      notes: string | null;
+    },
+  ): Promise<ImportAliasMapping | null> {
+    const [result] = await this.db.update(importAliasMappings)
+      .set({
+        status: update.status as any,
+        targetMasterId: update.targetMasterId,
+        approvedBy: update.approvedBy,
+        approvedAt: update.approvedAt,
+        mappingVersion: update.mappingVersion,
+        notes: update.notes,
+        updatedBy: update.approvedBy,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.id, aliasMappingId),
+      ))
+      .returning();
+    return result ?? null;
+  }
+
+  // WP-08-01G (A3) — Find a single alias mapping by primary key.
+  async findAliasMappingById(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null> {
+    const [result] = await this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.id, aliasMappingId),
+      ))
+      .limit(1);
+    return result ?? null;
+  }
+
+  // WP-08-01G (A3) — Find only CURRENT alias mappings for a batch.
+  async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    return this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.isCurrent, true),
+      ));
+  }
+
+  // WP-08-01G (A3/A5) — Supersede a single alias mapping by id.
+  async supersedeAliasMapping(
+    tenantId: string,
+    aliasMappingId: string,
+    supersededBy: string,
+    supersededReason: string,
+  ): Promise<ImportAliasMapping | null> {
+    const [result] = await this.db.update(importAliasMappings)
+      .set({
+        isCurrent: false,
+        supersededAt: new Date(),
+        supersededBy,
+        supersededReason,
+        updatedBy: supersededBy,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.id, aliasMappingId),
+        // Only supersede the current row — already-superseded rows are
+        // immutable audit history.
+        eq(importAliasMappings.isCurrent, true),
+      ))
+      .returning();
+    return result ?? null;
   }
 
   // --- Human review item methods ---

@@ -40,6 +40,7 @@ import { HistoricalValidationDbRepository } from "@/server/services/historical-v
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
 import { HistoricalCorrectionDbRepository } from "@/server/services/historical-correction-db-repository";
+import { MasterDataDbRepository } from "@/server/services/master-data-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
@@ -93,6 +94,30 @@ function getMigrationServices() {
     createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    // WP-08-01G (A4): master-data repository + tx-scoped factory for
+    // approveAliasMapping target validation.
+    masterDataRepository: new MasterDataDbRepository(db),
+    createMasterDataRepository: (tx: unknown) => new MasterDataDbRepository(tx as any),
+    // WP-08-01G (A5): material-remap downstream invalidation callbacks.
+    // Wired to the reconciliation + commit repositories so a remap
+    // atomically invalidates approvals, review items, and batch
+    // statuses (mirrors the reopenBatchForRework pattern).
+    invalidateCurrentApprovals: async (_tx: unknown, tenantId: string, batchId: string, invalidatedBy: string, reason: string, _now: Date) => {
+      const txCommitRepo = new HistoricalCommitDbRepository(_tx as any);
+      return txCommitRepo.invalidateCurrentApprovalsForBatch(tenantId, batchId, invalidatedBy, reason);
+    },
+    supersedeReviewItemsForBatch: async (_tx: unknown, tenantId: string, batchId: string, supersededBy: string, reason: string) => {
+      const txReconRepo = new HistoricalReconciliationDbRepository(_tx as any);
+      return txReconRepo.supersedeReviewItemsForBatch(tenantId, batchId, supersededBy, reason);
+    },
+    resetBatchValidationAndReconciliationStatuses: async (_tx: unknown, tenantId: string, batchId: string) => {
+      const txReconRepo = new HistoricalReconciliationDbRepository(_tx as any);
+      return txReconRepo.resetBatchValidationAndReconciliationStatuses(tenantId, batchId);
+    },
+    findLatestReportVersion: async (_tx: unknown, tenantId: string, batchId: string) => {
+      const txReconRepo = new HistoricalReconciliationDbRepository(_tx as any);
+      return txReconRepo.findLatestReportVersion(tenantId, batchId);
+    },
   });
   // DEFECT 1: reconciliation service now needs commitRepository for
   // submitForApproval (backup evidence + blocking-validation lookups).
@@ -660,6 +685,88 @@ export async function runValidationAction(formData: FormData): Promise<void> {
   const { validationService } = getMigrationServices();
   await validationService.runValidation(authResult as any, effective as any, { importBatchId: batchId, idempotencyKey });
   revalidatePath(`/management/admin/migration/${batchId}`);
+}
+
+// ===========================================================================
+// WP-08-01G (A9) — approveAliasMappingAction
+//
+// Contract 08 §8.4.1-§8.4.8: alias approval workflow. An Owner or
+// Accountant selects a target master (or rejects the candidate) for an
+// alias mapping extracted by runValidation.
+//
+// Permission: migration.review (Owner OR Accountant). Worker rejected.
+//
+// Server-derived tenant/actor: the browser cannot submit
+// tenantId/userId/approverRole — these are derived from the authenticated
+// ERP context. The idempotencyKey is browser-supplied (per-call UUID).
+//
+// DEC-080 (separation of duties) does NOT apply — the same person may
+// both select the target and approve the mapping.
+//
+// Error normalization: the action catches HistoricalValidationError
+// subclasses (which carry stable error codes) and converts them into
+// controlled redirects with Arabic error messages. Other errors surface
+// as HTTP 500 (the dev server log shows the stack trace).
+// ===========================================================================
+
+export async function approveAliasMappingAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
+  const aliasMappingId = parseRequiredString(formData, "aliasMappingId");
+  const batchId = parseOptionalString(formData, "batchId");
+  const targetMasterId = parseOptionalString(formData, "targetMasterId");
+  const statusRaw = String(formData.get("status") ?? "");
+  // Validate status — must be 'approved' or 'rejected'.
+  if (statusRaw !== "approved" && statusRaw !== "rejected") {
+    throw new Error("VALIDATION_FAILED: status must be 'approved' or 'rejected'.");
+  }
+  const status = statusRaw as "approved" | "rejected";
+  // targetMasterId is required for approval, null for rejection.
+  const target = status === "approved" ? (targetMasterId ?? null) : null;
+  if (status === "approved" && !target) {
+    throw new Error("VALIDATION_FAILED: targetMasterId is required when status='approved'.");
+  }
+  const notes = parseOptionalString(formData, "notes");
+  const mappingVersion = parseOptionalString(formData, "mappingVersion");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  const { validationService } = getMigrationServices();
+  try {
+    await validationService.approveAliasMapping(authResult as any, effective as any, {
+      aliasMappingId,
+      targetMasterId: target,
+      status,
+      notes,
+      mappingVersion,
+      idempotencyKey,
+    });
+  } catch (e) {
+    // Controlled error normalization for known business-precondition
+    // failures. The redirect URL carries an Arabic error code the page
+    // can display. Technical errors (DB down, network) propagate as
+    // HTTP 500 to surface in dev logs.
+    if (e instanceof Error) {
+      const code = (e as any)?.code ?? e.name;
+      if (
+        code === "ALIAS_MAPPING_NOT_FOUND" ||
+        code === "ALIAS_NOT_CURRENT" ||
+        code === "INVALID_ALIAS_TARGET" ||
+        code === "ALIAS_ALREADY_APPROVED" ||
+        code === "CONFIGURATION_ERROR" ||
+        code === "IDEMPOTENCY_CONFLICT" ||
+        code === "OPERATION_IN_PROGRESS" ||
+        code === "VALIDATION_FAILED"
+      ) {
+        if (batchId) {
+          redirect(`/management/admin/migration/${batchId}?error=alias&code=${encodeURIComponent(code)}`);
+        } else {
+          redirect(`/management/admin/migration?error=alias&code=${encodeURIComponent(code)}`);
+        }
+      }
+    }
+    throw e;
+  }
+  if (batchId) {
+    revalidatePath(`/management/admin/migration/${batchId}`);
+  }
 }
 
 export async function runReconciliationAction(formData: FormData): Promise<void> {

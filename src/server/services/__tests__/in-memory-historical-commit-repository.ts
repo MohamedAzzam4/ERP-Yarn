@@ -20,6 +20,7 @@ import type {
   ImportValidationError,
   ImportReconciliationResult,
   ImportCutoverManifest,
+  ImportAliasMapping,
 } from "@/server/db/schema/migration";
 
 const NOW = () => new Date();
@@ -36,6 +37,8 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   private validationErrors = new Map<string, ImportValidationError[]>();
   private reconResults = new Map<string, ImportReconciliationResult[]>();
   private cutoverManifests = new Map<string, ImportCutoverManifest[]>();
+  // WP-08-01G (A7) — alias mappings (read-only cross-service lookup).
+  private aliasMappings = new Map<string, ImportAliasMapping[]>();
   private approvalCounter = 0;
   private backupCounter = 0;
   private lockCounter = 0;
@@ -55,6 +58,16 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   }
   seedCutoverManifests(tenantId: string, batchId: string, manifests: ImportCutoverManifest[]): void {
     this.cutoverManifests.set(`${tenantId}:${batchId}`, manifests);
+  }
+  /**
+   * WP-08-01G (A7): Seed current alias mappings directly for the
+   * submitForApproval prerequisite check. These rows are read-only —
+   * no mutation methods are exposed on the commit repository.
+   */
+  seedAliasMappings(tenantId: string, batchId: string, aliases: ImportAliasMapping[]): void {
+    // Only the current rows are stored — superseded rows are ignored
+    // (they're not relevant for the submission prerequisite check).
+    this.aliasMappings.set(`${tenantId}:${batchId}`, aliases.filter(a => a.isCurrent));
   }
   /** Seed an approval record directly (bypasses service for test setup). */
   seedApproval(
@@ -449,5 +462,15 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
 
   async findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]> {
     return this.cutoverManifests.get(`${tenantId}:${importBatchId}`) ?? [];
+  }
+
+  // ---- Alias mappings (read-only cross-service lookup) ----
+
+  /**
+   * WP-08-01G (A7): Find only CURRENT alias mappings for a batch. Used
+   * by submitForApproval's prerequisite check.
+   */
+  async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    return this.aliasMappings.get(`${tenantId}:${importBatchId}`) ?? [];
   }
 }

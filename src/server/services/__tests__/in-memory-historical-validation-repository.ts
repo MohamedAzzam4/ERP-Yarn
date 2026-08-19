@@ -82,7 +82,15 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
       status: row.status as any, approvedBy: null, approvedAt: null,
       notes: row.notes, createdBy: row.createdBy, createdAt: NOW(),
       updatedBy: null, updatedAt: null,
-    };
+      // WP-08-01G (A1) — version supersession fields. New mappings start as
+      // the current version. Re-approval (material remap) supersedes the old
+      // current row before inserting this one.
+      isCurrent: true, supersededAt: null, supersededBy: null, supersededReason: null,
+      // Group identity / occurrence metadata.
+      groupId: row.groupId ?? null,
+      occurrenceCount: row.occurrenceCount ?? 1,
+      exceptionSourceRowIds: row.exceptionSourceRowIds ?? null,
+    } as ImportAliasMapping;
     this.aliases.set(`${row.tenantId}:${id}`, alias);
     return alias;
   }
@@ -92,16 +100,93 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
   }
 
   async findAliasMappingBySourceLabel(tenantId: string, importBatchId: string, entityType: string, sourceLabel: string): Promise<ImportAliasMapping | null> {
+    // WP-08-01G (A1): Only consider the CURRENT mapping. Superseded rows
+    // are preserved as audit history but are not active.
     for (const a of this.aliases.values()) {
-      if (a.tenantId === tenantId && a.importBatchId === importBatchId && a.entityType === entityType && a.sourceLabel === sourceLabel) return a;
+      if (
+        a.tenantId === tenantId && a.importBatchId === importBatchId &&
+        a.entityType === entityType && a.sourceLabel === sourceLabel &&
+        a.isCurrent
+      ) return a;
     }
     return null;
   }
 
   async deleteAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<void> {
+    // WP-08-01G (A2): NEVER hard-delete current alias mappings. Only the
+    // non-current (already superseded) rows are deleted. Current rows are
+    // protected — the service is the authority on which rows to supersede.
     for (const [key, a] of this.aliases.entries()) {
-      if (a.tenantId === tenantId && a.importBatchId === importBatchId) this.aliases.delete(key);
+      if (a.tenantId === tenantId && a.importBatchId === importBatchId && !a.isCurrent) {
+        this.aliases.delete(key);
+      }
     }
+  }
+
+  // WP-08-01G (A3) — Approve (or reject) a single alias mapping in place.
+  async updateAliasMappingStatus(
+    tenantId: string,
+    aliasMappingId: string,
+    update: {
+      status: string;
+      targetMasterId: string | null;
+      approvedBy: string;
+      approvedAt: Date;
+      mappingVersion: string | null;
+      notes: string | null;
+    },
+  ): Promise<ImportAliasMapping | null> {
+    const key = `${tenantId}:${aliasMappingId}`;
+    const a = this.aliases.get(key);
+    if (!a) return null;
+    const updated: ImportAliasMapping = {
+      ...a,
+      status: update.status as any,
+      targetMasterId: update.targetMasterId,
+      approvedBy: update.approvedBy,
+      approvedAt: update.approvedAt,
+      mappingVersion: update.mappingVersion,
+      notes: update.notes,
+      updatedBy: update.approvedBy,
+      updatedAt: NOW(),
+    } as ImportAliasMapping;
+    this.aliases.set(key, updated);
+    return updated;
+  }
+
+  // WP-08-01G (A3) — Find a single alias mapping by primary key.
+  async findAliasMappingById(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null> {
+    return this.aliases.get(`${tenantId}:${aliasMappingId}`) ?? null;
+  }
+
+  // WP-08-01G (A3) — Find only CURRENT alias mappings for a batch.
+  async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    return [...this.aliases.values()].filter(
+      a => a.tenantId === tenantId && a.importBatchId === importBatchId && a.isCurrent,
+    );
+  }
+
+  // WP-08-01G (A3/A5) — Supersede a single alias mapping by id.
+  async supersedeAliasMapping(
+    tenantId: string,
+    aliasMappingId: string,
+    supersededBy: string,
+    supersededReason: string,
+  ): Promise<ImportAliasMapping | null> {
+    const key = `${tenantId}:${aliasMappingId}`;
+    const a = this.aliases.get(key);
+    if (!a || !a.isCurrent) return null;
+    const updated: ImportAliasMapping = {
+      ...a,
+      isCurrent: false,
+      supersededAt: NOW(),
+      supersededBy,
+      supersededReason,
+      updatedBy: supersededBy,
+      updatedAt: NOW(),
+    } as ImportAliasMapping;
+    this.aliases.set(key, updated);
+    return updated;
   }
 
   async insertHumanReviewItem(row: NewHumanReviewItemInput): Promise<ImportHumanReviewItem> {

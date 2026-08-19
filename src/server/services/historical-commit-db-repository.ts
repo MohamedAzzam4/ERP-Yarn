@@ -18,6 +18,7 @@ import {
   importValidationErrors,
   importReconciliationResults,
   importCutoverManifests,
+  importAliasMappings,
 } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -37,6 +38,7 @@ import type {
   ImportValidationError,
   ImportReconciliationResult,
   ImportCutoverManifest,
+  ImportAliasMapping,
 } from "@/server/db/schema/migration";
 
 type Db = NonNullable<typeof DbType>;
@@ -358,6 +360,24 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
       .where(and(
         eq(importCutoverManifests.tenantId, tenantId),
         eq(importCutoverManifests.importBatchId, importBatchId),
+      ));
+  }
+
+  // ---- Alias mappings (read-only cross-service lookup) ----
+
+  /**
+   * WP-08-01G (A7): Find only CURRENT alias mappings (is_current=true)
+   * for a batch. Used by submitForApproval's prerequisite check to
+   * verify that every required alias has status='approved' and
+   * targetMasterId IS NOT NULL before the batch can transition to
+   * pending_dual_approval.
+   */
+  async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    return this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.isCurrent, true),
       ));
   }
 }

@@ -320,11 +320,58 @@ export const importAliasMappings = pgTable("import_alias_mappings", {
   approvedBy: uuid("approved_by").references(() => users.id),
   approvedAt: timestamp("approved_at", { withTimezone: true, mode: "date" }),
   notes: text("notes"),
+  // WP-08-01G (A1) — Immutable alias-mapping version supersession fields.
+  // When an approved alias mapping is re-approved against a different target
+  // master (material remap), the old row is preserved (append-only) and
+  // marked is_current=false. New approvals create new rows with
+  // is_current=true. The partial unique index below permits only one current
+  // mapping per (tenant, batch, entityType, sourceLabel).
+  //
+  // Re-validation also supersedes existing candidate/needs_review mappings
+  // rather than hard-deleting them — old evidence is preserved per
+  // Contract 08 §7.1 (DEC-019 principle: older versions are retained as
+  // superseded audit history). Already-approved mappings are NOT superseded
+  // on re-validation: their approval is preserved (the same source label
+  // already maps to the same master; re-validation is a no-op for that key).
+  isCurrent: boolean("is_current").notNull().default(true),
+  supersededAt: timestamp("superseded_at", { withTimezone: true, mode: "date" }),
+  supersededBy: uuid("superseded_by"),
+  supersededReason: text("superseded_reason"),
+  // Stable group identity for repeated occurrences of the same source label
+  // across multiple staging rows. All staging rows sharing the same
+  // (tenant, batch, entityType, normalizedName) get the same groupId so the
+  // UI can group them. Re-validation reuses the same groupId if the alias
+  // still exists.
+  groupId: uuid("group_id"),
+  // How many staging rows share this group. Updated when staging rows are
+  // added/removed/replaced and on re-validation. For approved mappings this
+  // lets the submission prerequisite check quickly verify that every required
+  // alias has a resolved target.
+  occurrenceCount: integer("occurrence_count").notNull().default(1),
+  // Array of source row numbers that are explicitly split from the default
+  // group (e.g. one row in a group of "Same Name" rows was remapped to a
+  // different master). The remaining rows stay with the group's default
+  // mapping. JSONB array of integers.
+  exceptionSourceRowIds: jsonb("exception_source_row_ids"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   index("import_alias_mappings_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_alias_mappings_tenant_status_idx").on(t.tenantId, t.status),
   index("import_alias_mappings_tenant_entity_source_idx").on(t.tenantId, t.entityType, t.sourceLabel),
+  // WP-08-01G (A1) — current-row lookup indexes (one per tenant+batch+isCurrent,
+  // one per tenant+groupId+isCurrent). Without these, every list/approval
+  // query degrades to a full scan as supersession history grows.
+  index("import_alias_mappings_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
+  index("import_alias_mappings_tenant_group_current_idx").on(t.tenantId, t.groupId, t.isCurrent),
+  // WP-08-01G (A1) — Partial unique index: only one CURRENT mapping per
+  // (tenant, batch, entityType, sourceLabel). Superseded (is_current=false)
+  // rows may coexist with the current row for the same key, providing
+  // append-only audit history. Re-approval to a different target supersedes
+  // the old current row before inserting the new one, preserving this
+  // invariant at the DB level.
+  uniqueIndex("import_alias_mappings_tenant_batch_entity_source_current_unique_idx")
+    .on(t.tenantId, t.importBatchId, t.entityType, t.sourceLabel)
+    .where(sql`${t.isCurrent} = true`),
 ]);
 
 export type ImportAliasMapping = typeof importAliasMappings.$inferSelect;

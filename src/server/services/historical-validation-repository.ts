@@ -47,6 +47,25 @@ export interface NewAliasMappingInput {
   status: string; // 'candidate' | 'needs_review' | 'approved' | 'rejected'
   notes: string | null;
   createdBy: string;
+  /**
+   * WP-08-01G (A1/A2) — Stable group identity for repeated occurrences of
+   * the same source label across multiple staging rows. All staging rows
+   * sharing the same (tenant, batch, entityType, normalizedName) get the
+   * same groupId so the UI can group them. Re-validation reuses the same
+   * groupId if the alias already exists.
+   */
+  groupId?: string | null;
+  /**
+   * WP-08-01G (A1/A2) — How many staging rows share this group. Updated
+   * on re-validation. Defaults to 1 for the first occurrence.
+   */
+  occurrenceCount?: number;
+  /**
+   * WP-08-01G (A1/A2) — Array of source row numbers explicitly split from
+   * the default group (e.g. one row in a group of "Same Name" rows was
+   * remapped to a different master). Defaults to null.
+   */
+  exceptionSourceRowIds?: number[] | null;
 }
 
 export interface NewHumanReviewItemInput {
@@ -73,6 +92,57 @@ export interface HistoricalValidationRepository {
   findAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]>;
   findAliasMappingBySourceLabel(tenantId: string, importBatchId: string, entityType: string, sourceLabel: string): Promise<ImportAliasMapping | null>;
   deleteAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<void>;
+  /**
+   * WP-08-01G (A3) — Approve (or reject) a single alias mapping by setting
+   * its status, targetMasterId, approvedBy, approvedAt, mappingVersion, and
+   * notes. The alias must already exist as the CURRENT mapping for its
+   * (tenant, batch, entityType, sourceLabel) key. This is the in-place
+   * approval mutation — material remap (re-approval to a different target)
+   * goes through supersedeAliasMapping + insertAliasMapping instead.
+   *
+   * Returns the updated alias mapping, or null if the alias mapping does
+   * not exist or does not belong to the tenant.
+   */
+  updateAliasMappingStatus(
+    tenantId: string,
+    aliasMappingId: string,
+    update: {
+      status: string;
+      targetMasterId: string | null;
+      approvedBy: string;
+      approvedAt: Date;
+      mappingVersion: string | null;
+      notes: string | null;
+    },
+  ): Promise<ImportAliasMapping | null>;
+  /**
+   * WP-08-01G (A3) — Find a single alias mapping by its primary key within
+   * the caller's tenant. Used by approveAliasMapping to load the mapping
+   * being approved (and to re-check its current status after the idempotency
+   * claim is acquired).
+   */
+  findAliasMappingById(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null>;
+  /**
+   * WP-08-01G (A3) — Find only CURRENT alias mappings (is_current=true)
+   * for a batch. Used by the submission prerequisite check to verify that
+   * every required alias has status='approved' and targetMasterId IS NOT
+   * NULL.
+   */
+  findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]>;
+  /**
+   * WP-08-01G (A3/A5) — Supersede (mark is_current=false) a single alias
+   * mapping by id, preserving the row as audit history. Used by material
+   * remap (re-approval to a different target): the old current row is
+   * superseded before inserting the new current row with the new target.
+   * Returns the superseded row (with is_current=false) or null if the
+   * row was not found or was already superseded.
+   */
+  supersedeAliasMapping(
+    tenantId: string,
+    aliasMappingId: string,
+    supersededBy: string,
+    supersededReason: string,
+  ): Promise<ImportAliasMapping | null>;
 
   // Human review item methods
   insertHumanReviewItem(row: NewHumanReviewItemInput): Promise<ImportHumanReviewItem>;
