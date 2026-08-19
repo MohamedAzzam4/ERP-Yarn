@@ -99,6 +99,33 @@ export interface HistoricalCommitRepository {
   // ---- Batch access ----
   findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null>;
   updateBatchStatus(tenantId: string, batchId: string, status: string): Promise<ImportBatch | null>;
+  /**
+   * WP-08-01F Milestone B (COM-CONC-1) — Conditional status restore.
+   *
+   * Atomically set status='approved_for_commit' ONLY IF the current status
+   * is 'committing'. This is the rollback-restore primitive used by the
+   * commit-failure catch block.
+   *
+   * Rationale: an unconditional `updateBatchStatus('approved_for_commit')`
+   * in the catch block would overwrite a concurrent winner's `committed`
+   * status with `approved_for_commit`, undoing the winner's commit. By
+   * gating the restore on `status = 'committing'`, the catch block:
+   *   - Restores the in-memory path's "committing" status (no DB
+   *     transaction rolled it back).
+   *   - Is a no-op for the Postgres path when the transaction already
+   *     rolled back (status restored to `approved_for_commit` by the
+   *     ROLLBACK — does not match `committing`).
+   *   - Is a no-op when another concurrent commit has already transitioned
+   *     the batch to `committed` (the winner's commit must NOT be undone by
+   *     the loser's catch block).
+   *
+   * The conditional UPDATE is atomic at the DB level (single statement),
+   * so there is no read-then-write race window.
+   */
+  restoreApprovedForCommitIfCommitting(
+    tenantId: string,
+    batchId: string,
+  ): Promise<void>;
   updateBatchCommitMetadata(
     tenantId: string,
     batchId: string,
@@ -198,6 +225,59 @@ export interface HistoricalCommitRepository {
    * same pattern.
    */
   findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]>;
+  /**
+   * WP-08-01F Milestone B (COM-CONC-2B) — Detect alias supersession
+   * under the commit row lock.
+   *
+   * `findCurrentAliasMappingsForBatch` filters `is_current=true`, so a
+   * superseded approved mapping is silently filtered OUT of the result
+   * (leaving an empty list when all approved mappings have been
+   * superseded). That makes the existing `!a.isCurrent` filter dead code
+   * for the supersession case — the commit cannot see that an approved
+   * mapping was superseded since dual approval.
+   *
+   * This method returns approved alias mappings that have been
+   * superseded (`is_current=false` AND `status='approved'`) for the
+   * batch. If the result is non-empty, the commit revalidation throws
+   * `CommitAliasNotCurrentError` — the commit must fail closed because
+   * the approved alias is no longer the current mapping.
+   *
+   * Like `findCurrentAliasMappingsForBatch`, this is a read-only
+   * cross-service lookup. It is called INSIDE the commit transaction
+   * so it sees uncommitted supersessions from the same transaction
+   * (which is exactly the COM-CONC-2B scenario).
+   */
+  findSupersededApprovedAliasMappingsForBatch(
+    tenantId: string,
+    importBatchId: string,
+  ): Promise<ImportAliasMapping[]>;
+  /**
+   * WP-08-01F DEFECT 5/6/7/8 — Validate that the target master referenced by
+   * an alias mapping still exists, belongs to the caller's tenant, and
+   * matches the alias's entityType. Used by submitForApproval (DEFECT 6)
+   * and commitBatch (DEFECT 8) to re-validate alias target masters under
+   * the batch row lock so a master inactivated between approval and
+   * submission/commit is caught and the batch fails closed.
+   *
+   * Supported entity types:
+   *   - supplier, customer, location, factory (master-data tables)
+   *   - fiber_type (fiber_types table)
+   *   - product_type (product_types table)
+   *   - quality_parameter (quality_parameters table)
+   *   - item, batch, lot (inventory_items table — item_kind distinguishes
+   *     raw_material_batch vs. yarn_lot; for 'batch'/'lot' we only verify
+   *     existence + tenant scope)
+   *
+   * For unsupported entity types (e.g. 'unknown', 'party', custom
+   * strings), returns false (fail-closed). Never throws.
+   *
+   * Returns true if the master is found and tenant-scoped; false otherwise.
+   */
+  findMasterForAlias(
+    tenantId: string,
+    entityType: string,
+    targetMasterId: string,
+  ): Promise<boolean>;
 }
 
 export type {

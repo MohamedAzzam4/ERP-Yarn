@@ -234,18 +234,49 @@ export interface MasterDataRepository {
 
   insertFiberType(row: NewFiberTypeInput): Promise<FiberType>;
   findFiberTypeByCode(tenantId: string, code: string): Promise<FiberType | null>;
+  /**
+   * WP-08-01F DEFECT 5 — findById for fiber-type master. Used by alias
+   * approval + submitForApproval + commitBatch to re-validate that the
+   * target master still exists, belongs to the caller's tenant, and
+   * matches the alias's entityType. Throws nothing — returns null when
+   * not found (caller throws InvalidAliasTargetError).
+   */
+  findFiberTypeById(tenantId: string, id: string): Promise<FiberType | null>;
   listActiveFiberTypes(tenantId: string): Promise<FiberType[]>;
   updateFiberTypeStatus(tenantId: string, id: string, status: MasterDataStatus): Promise<FiberType | null>;
 
   insertProductType(row: NewProductTypeInput): Promise<ProductType>;
   findProductTypeByCode(tenantId: string, code: string): Promise<ProductType | null>;
+  /**
+   * WP-08-01F DEFECT 5 — findById for product-type master. Used by alias
+   * approval + submitForApproval + commitBatch to re-validate target
+   * master existence/tenant/entity-type match.
+   */
+  findProductTypeById(tenantId: string, id: string): Promise<ProductType | null>;
   listActiveProductTypes(tenantId: string): Promise<ProductType[]>;
   updateProductTypeStatus(tenantId: string, id: string, status: MasterDataStatus): Promise<ProductType | null>;
 
   insertQualityParameter(row: NewQualityParameterInput): Promise<QualityParameter>;
   findQualityParameterByCode(tenantId: string, code: string): Promise<QualityParameter | null>;
+  /**
+   * WP-08-01F DEFECT 5 — findById for quality-parameter master.
+   */
+  findQualityParameterById(tenantId: string, id: string): Promise<QualityParameter | null>;
   listActiveQualityParameters(tenantId: string): Promise<QualityParameter[]>;
   updateQualityParameterStatus(tenantId: string, id: string, status: MasterDataStatus): Promise<QualityParameter | null>;
+
+  /**
+   * WP-08-01F DEFECT 5 — findById for inventory-item master. Used by
+   * alias approval + submitForApproval + commitBatch to re-validate
+   * target master existence/tenant/entity-type match for item-type
+   * aliases (entity_type in {item, batch, lot}).
+   *
+   * NOTE: The inventory_items table is the canonical stock-tracking
+   * identity (Contract 03 §9.1). For 'batch' and 'lot' entity types,
+   * the caller resolves them through the same inventory_items table
+   * — the item_kind column distinguishes them.
+   */
+  findInventoryItemById(tenantId: string, id: string): Promise<{ id: string; tenantId: string; itemKind: string; itemCode: string; status: string } | null>;
 }
 
 // ---------------------------------------------------------------------------

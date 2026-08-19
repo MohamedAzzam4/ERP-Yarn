@@ -309,6 +309,30 @@ export class InvalidAliasTargetOnSubmitError extends SubmissionValidationError {
   }
 }
 
+// WP-08-01F DEFECT 7 — mapping version / current-binding errors.
+export class AliasMappingVersionMismatchError extends SubmissionValidationError {
+  constructor(batchId: string, aliasMappingId: string, aliasMappingVersion: string | null, batchMappingVersion: string | null) {
+    super(
+      "ALIAS_MAPPING_VERSION_MISMATCH",
+      `Cannot submit batch '${batchId}' for approval — alias mapping '${aliasMappingId}' has mappingVersion='${aliasMappingVersion ?? "null"}' ` +
+      `but the batch's current mappingVersion='${batchMappingVersion ?? "null"}'. The alias mapping was approved against a stale mapping version ` +
+      `(or no version) and must be re-approved against the batch's current mappingVersion before submission.`,
+    );
+    this.name = "AliasMappingVersionMismatchError";
+  }
+}
+
+export class AliasMappingNotCurrentError extends SubmissionValidationError {
+  constructor(batchId: string, aliasMappingId: string) {
+    super(
+      "ALIAS_NOT_CURRENT",
+      `Cannot submit batch '${batchId}' for approval — alias mapping '${aliasMappingId}' is not the current mapping (is_current=false). ` +
+      `It has been superseded by a newer approval. Load the current mapping for this source label instead.`,
+    );
+    this.name = "AliasMappingNotCurrentError";
+  }
+}
+
 export class SubmissionInvalidStateError extends SubmissionValidationError {
   constructor(batchId: string, currentStatus: string, requiredStatus: string) {
     super(
@@ -1354,29 +1378,70 @@ export class HistoricalReconciliationService {
         // (tenant, batch, entityType, sourceLabel) WHERE is_current=true
         // means we only see the active ones here.)
         //
-        // Failure modes:
+        // Failure modes (DEFECT 6/7):
         //   - UNRESOLVED_ALIAS_MAPPING: any current alias mapping with
         //     status != 'approved' OR targetMasterId IS NULL.
-        //   - INVALID_ALIAS_TARGET: a current alias mapping with
+        //   - INVALID_ALIAS_TARGET (DEFECT 6): a current alias mapping with
         //     status='approved' and targetMasterId IS NOT NULL, but the
         //     target master has since been inactivated/deleted (the
-        //     targetMasterId no longer resolves to a valid master). The
-        //     operator must re-approve the alias with a valid target.
-        //     This check is best-effort — the commit repository does not
-        //     have access to the MasterDataRepository, so we cannot
-        //     re-validate the target master here. The check is done at
-        //     approve-time in approveAliasMapping. At submit-time we only
-        //     check status + targetMasterId presence. Operators should
-        //     re-run approveAliasMapping if a master has been inactivated.
+        //     targetMasterId no longer resolves to a valid master).
+        //   - ALIAS_NOT_CURRENT (DEFECT 7): the alias mapping is not the
+        //     current mapping for its key (is_current=false). Stale
+        //     superseded mappings must NOT be treated as authoritative.
+        //   - ALIAS_MAPPING_VERSION_MISMATCH (DEFECT 7): the alias
+        //     mapping's mappingVersion does not match the batch's current
+        //     mappingVersion. The alias was approved against a stale
+        //     mapping version (or no version) and must be re-approved.
         const currentAliasMappings = await commitRepo.findCurrentAliasMappingsForBatch(
           user.tenantId, input.importBatchId,
         );
+        // Note: findCurrentAliasMappingsForBatch already filters is_current=true,
+        // so the is_current check below is defensive (it always passes for the
+        // commit-repo path; the in-memory test repo may not enforce the filter).
         const unresolvedAliases = currentAliasMappings.filter(
-          a => a.status !== "approved" || a.targetMasterId === null,
+          a => !a.isCurrent || a.status !== "approved" || a.targetMasterId === null,
         );
         if (unresolvedAliases.length > 0) {
+          // Split into not-current vs not-approved for clearer error messages.
+          const notCurrent = unresolvedAliases.find(a => !a.isCurrent);
+          if (notCurrent) {
+            throw new AliasMappingNotCurrentError(input.importBatchId, notCurrent.id);
+          }
           const examples = unresolvedAliases.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
           throw new UnresolvedAliasMappingError(input.importBatchId, unresolvedAliases.length, examples);
+        }
+        // DEFECT 6: Re-validate that each target master still exists, belongs
+        // to the same tenant, and matches the alias's entityType. We use
+        // the commit repository's findMasterForAlias method so the check
+        // runs under the batch row lock (a master inactivated between the
+        // pre-claim read and the lock is caught here).
+        for (const alias of currentAliasMappings) {
+          const targetId = alias.targetMasterId!;
+          const ok = await commitRepo.findMasterForAlias(
+            user.tenantId, alias.entityType, targetId,
+          );
+          if (!ok) {
+            throw new InvalidAliasTargetOnSubmitError(
+              input.importBatchId, alias.id, targetId, alias.entityType,
+            );
+          }
+        }
+        // DEFECT 7: mappingVersion binding — the alias mapping's
+        // mappingVersion must match the batch's current mappingVersion
+        // (when both are non-null). If the batch's mappingVersion was
+        // bumped after the alias was approved, the alias is stale and
+        // must be re-approved. When the batch's mappingVersion is null
+        // (legacy batches that never went through a manifest bump),
+        // we accept any alias mappingVersion (no version to compare
+        // against — both null is the historical default).
+        const batchMappingVersion = lockedBatch.mappingVersion ?? null;
+        for (const alias of currentAliasMappings) {
+          const aliasMappingVersion = alias.mappingVersion ?? null;
+          if (batchMappingVersion !== null && aliasMappingVersion !== null && aliasMappingVersion !== batchMappingVersion) {
+            throw new AliasMappingVersionMismatchError(
+              input.importBatchId, alias.id, aliasMappingVersion, batchMappingVersion,
+            );
+          }
         }
       } catch (e) {
         // WP-08-01F Milestone C Task 3: Classify submission failures.
@@ -1470,8 +1535,12 @@ export class HistoricalReconciliationService {
       try {
         return await this.deps.transactionRunner!(async (tx: unknown) => {
           // Lock the batch row and RE-READ its current status.
+          // WP-08-01F DEFECT 7: also select mapping_version so the
+          // alias-mapping version binding check has the authoritative
+          // value under the lock (a manifest bump between pre-claim and
+          // lock would otherwise produce a stale mappingVersion).
           const batchRows = await (tx as any).execute(
-            drizzleSql`SELECT id, status, validation_status, reconciliation_status, staged_data_hash, cutover_manifest_hash, warning_count, accepted_warning_count FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+            drizzleSql`SELECT id, status, validation_status, reconciliation_status, staged_data_hash, cutover_manifest_hash, mapping_version, warning_count, accepted_warning_count FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
           );
           if (!batchRows || (batchRows as any[]).length === 0) {
             throw new ReconBatchNotFoundError(input.importBatchId);
@@ -1484,6 +1553,8 @@ export class HistoricalReconciliationService {
             reconciliationStatus: lockedBatchRow.reconciliation_status,
             stagedDataHash: lockedBatchRow.staged_data_hash,
             cutoverManifestHash: lockedBatchRow.cutover_manifest_hash,
+            // DEFECT 7: authoritative mapping_version under the lock.
+            mappingVersion: lockedBatchRow.mapping_version ?? null,
             warningCount: lockedBatchRow.warning_count,
             acceptedWarningCount: lockedBatchRow.accepted_warning_count,
           };

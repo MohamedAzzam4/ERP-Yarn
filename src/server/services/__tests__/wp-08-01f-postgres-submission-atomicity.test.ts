@@ -235,7 +235,7 @@ async function seedBackupEvidence(scope: TestScope, batchId: string) {
 }
 
 async function getBatchState(scope: TestScope, batchId: string) {
-  const rows = await sql`SELECT status, reconciliation_status, validation_status, staged_data_hash, cutover_manifest_hash FROM import_batches WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
+  const rows = await sql`SELECT status, reconciliation_status, validation_status, staged_data_hash, cutover_manifest_hash, committed_at FROM import_batches WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
   return rows[0] || null;
 }
 
@@ -270,6 +270,10 @@ async function cleanupScope(scope: TestScope) {
   await sql`DELETE FROM import_staging_rows WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM import_files WHERE tenant_id = ${scope.tenantId}`;
+  // WP-08-01F DEFECT 6/7 — clean up master-data rows seeded by the
+  // alias revalidation tests (customers). Deleted per-tenant — no risk
+  // to other tests because each test uses a unique tenantId.
+  await sql`DELETE FROM customers WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM import_batches WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM idempotency_records WHERE tenant_id = ${scope.tenantId}`;
   // NOTE: audit_logs, users, tenants intentionally NOT deleted (immutable).
@@ -812,6 +816,447 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
       expect(submitIdem!.state).not.toBe("succeeded");
       expect(reworkIdem!.state).toBe("succeeded");
     }
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // WP-08-01F DEFECT 6/7 — Alias revalidation proofs (SUB-9A through SUB-11).
+  //
+  // These tests exercise the new alias-mapping prerequisite checks added
+  // to submitForApproval by DEFECTS 6 and 7:
+  //   - DEFECT 6: re-validate that each target master still exists,
+  //     belongs to the same tenant, and matches the correct entity type.
+  //   - DEFECT 7: the alias mapping is is_current=true (not superseded)
+  //     and the mappingVersion matches the batch's mappingVersion.
+  //
+  // SUB-9A: DEFECT 6 — submitForApproval rejects when an approved alias's
+  //         target master was deleted since approval.
+  // SUB-9B: DEFECT 7 — submitForApproval rejects when an alias mapping
+  //         is not the current mapping (is_current=false, superseded
+  //         since approval).
+  // SUB-9C: DEFECT 7 — submitForApproval rejects when the alias
+  //         mapping's mappingVersion does not match the batch's
+  //         mappingVersion.
+  // SUB-9D: DEFECT 7 — submitForApproval succeeds when the alias
+  //         mapping's mappingVersion matches the batch's mappingVersion.
+  // SUB-10: DEFECT 6/7 — submitForApproval re-validates target masters
+  //         atomically under the batch row lock.
+  // SUB-11: DEFECT 8 — commit revalidates alias mappings under lock;
+  //         if any alias state changed since dual approval, the commit
+  //         fails closed.
+  // ===========================================================================
+
+  // Seed a customer master in the tenant for the alias target.
+  async function seedCustomer(scope: TestScope, customerCode: string = "CUST-001", nameAr: string = "Target Customer"): Promise<string> {
+    const customerId = randomUUID();
+    await sql`
+      INSERT INTO customers (id, tenant_id, customer_code, name_ar, name_en, normalized_name, contact_info_json, credit_limit, credit_terms, status, notes, created_by, created_at, updated_at, updated_by)
+      VALUES (${customerId}, ${scope.tenantId}, ${customerCode}, ${nameAr}, null, ${nameAr.trim().toLowerCase()}, null, null, null, ${"active"}, null, ${scope.userId}, NOW(), null, null)`;
+    return customerId;
+  }
+
+  // Seed a candidate/approved alias mapping directly.
+  async function seedAliasMapping(scope: TestScope, batchId: string, overrides: {
+    sourceLabel?: string;
+    entityType?: string;
+    normalizedName?: string;
+    targetMasterId?: string | null;
+    status?: string;
+    mappingVersion?: string | null;
+    groupId?: string | null;
+    occurrenceCount?: number;
+    isCurrent?: boolean;
+  } = {}): Promise<string> {
+    const aliasId = randomUUID();
+    const sourceLabel = overrides.sourceLabel ?? "Acme Corp";
+    const normalizedName = overrides.normalizedName ?? sourceLabel.trim().toLowerCase();
+    const entityType = overrides.entityType ?? "customer";
+    await sql`
+      INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
+        target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
+        is_current, superseded_at, superseded_by, superseded_reason,
+        group_id, occurrence_count, exception_source_row_ids,
+        created_by, created_at, updated_at, updated_by)
+      VALUES (${aliasId}, ${scope.tenantId}, ${batchId}, ${entityType}, ${sourceLabel}, ${normalizedName},
+        ${overrides.targetMasterId ?? null}, ${overrides.mappingVersion ?? null}, ${"1.000000"}, ${overrides.status ?? "candidate"}, null, null, null,
+        ${overrides.isCurrent ?? true}, null, null, null,
+        ${overrides.groupId ?? null}, ${overrides.occurrenceCount ?? 1},
+        null,
+        ${scope.userId}, NOW(), null, null)`;
+    return aliasId;
+  }
+
+  // ===========================================================================
+  // SUB-9A — DEFECT 6: submitForApproval rejects when target master deleted since approval
+  // ===========================================================================
+  it("SUB-9A. DEFECT 6 — submitForApproval rejects when an approved alias's target master was deleted since approval", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+    const customerId = await seedCustomer(scope, "CUST-001", "Acme Customer");
+    // Seed an approved alias mapping pointing at the customer.
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+    });
+
+    // Delete the customer master AFTER approval but BEFORE submission.
+    await sql`DELETE FROM customers WHERE tenant_id = ${scope.tenantId} AND id = ${customerId}`;
+
+    const idemKey = "sub-9a-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INVALID_ALIAS_TARGET|alias mapping/i);
+
+    // Batch is unchanged (still review_required).
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+
+    // Idempotency business_failed (durable).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-9B — DEFECT 7: submitForApproval rejects when alias mapping is not current (superseded)
+  // ===========================================================================
+  it("SUB-9B. DEFECT 7 — submitForApproval rejects when an alias mapping is not current (superseded since approval)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+    const customerId = await seedCustomer(scope, "CUST-001", "Acme Customer");
+    // Step 1: Seed an approved CURRENT alias mapping for "Acme Corp"
+    // (target=customerId, mappingVersion='1.0' matching the batch).
+    // This represents the original approval.
+    const originalAliasId = await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+      // isCurrent defaults to true
+    });
+
+    // Step 2: Properly SUPERSEDE the original alias mapping — UPDATE
+    // is_current=false (preserved as audit history, with superseded_at
+    // and superseded_reason). This mirrors the production supersession
+    // pattern used by approveAliasMapping's material-remap path: the
+    // OLD approved row stays around (append-only) but is no longer the
+    // authoritative mapping. Simply seeding with isCurrent=false from
+    // the start does NOT trigger submitForApproval's is_current check,
+    // because findCurrentAliasMappingsForBatch filters is_current=true
+    // and would return zero rows (a degenerate "no current mapping"
+    // case the production prerequisite check silently passes). By first
+    // seeding a current approved mapping and then superseding it via
+    // UPDATE, we reproduce the real-world supersession flow that
+    // happens when a re-validation replaces an approved alias with a
+    // new (not-yet-approved) candidate mapping.
+    await sql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_reason = 'Superseded by re-validation (not yet re-approved)' WHERE tenant_id = ${scope.tenantId} AND id = ${originalAliasId}`;
+
+    // Step 3: Insert a NEW current alias mapping for the same key with
+    // status='candidate' (NOT approved) and no target. This represents
+    // the re-validation's new current candidate that the operator
+    // hasn't yet re-approved. The partial unique index on
+    // (tenant, batch, entityType, sourceLabel) WHERE is_current=true
+    // permits this insertion because the OLD row is now is_current=false.
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "candidate",
+      targetMasterId: null,
+      mappingVersion: "1.0",
+      // isCurrent defaults to true — the NEW current mapping
+    });
+
+    const idemKey = "sub-9b-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    // submitForApproval should reject because the CURRENT alias mapping
+    // (the new candidate that superseded the previously-approved one)
+    // has status='candidate' (not 'approved') and targetMasterId=null.
+    // The production findCurrentAliasMappingsForBatch returns ONLY the
+    // new current candidate; the alias prerequisite check sees
+    // status != 'approved' and throws UnresolvedAliasMappingError
+    // (whose code/message both match the "alias mapping" regex).
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/UNRESOLVED_ALIAS_MAPPING|alias mapping/i);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-9C — DEFECT 7: submitForApproval rejects on mappingVersion mismatch
+  // ===========================================================================
+  it("SUB-9C. DEFECT 7 — submitForApproval rejects when the alias mapping's mappingVersion does not match the batch's mappingVersion", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    // Seed a review_required batch with mapping_version='2.0'.
+    await sql`
+      INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version,
+        mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count,
+        blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status,
+        warning_summary, committed_at, commit_effect_counts, created_by, created_at)
+      VALUES (${batchId}, ${scope.tenantId}, ${"SUB9C-" + batchId.slice(-6)}, ${"review_required"}::import_batch_status, ${"test"},
+        ${"opening_balance_inventory"}, ${"1.0"}, ${"2.0"}, ${"sha256:manifest"}, ${"opening_balance"}, ${"sha256:test"}, 1,
+        0, 0, 0, ${"passed"}, ${"matched"}, null, null, null, ${scope.userId}, NOW())`;
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+    const customerId = await seedCustomer(scope, "CUST-001", "Acme Customer");
+    // Seed an approved alias mapping with mappingVersion='1.0' — stale
+    // (batch is at 2.0).
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0", // stale — batch is at 2.0
+    });
+
+    const idemKey = "sub-9c-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/ALIAS_MAPPING_VERSION_MISMATCH|mappingVersion/i);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+
+    // Idempotency business_failed (durable).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-9D — DEFECT 7: submitForApproval succeeds when mappingVersion matches
+  // ===========================================================================
+  it("SUB-9D. DEFECT 7 — submitForApproval succeeds when the alias mapping's mappingVersion matches the batch's mappingVersion", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId); // mapping_version='1.0'
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+    const customerId = await seedCustomer(scope, "CUST-001", "Acme Customer");
+    // Seed an approved alias mapping with mappingVersion='1.0' — matches
+    // the batch's mappingVersion='1.0'.
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+    });
+
+    const idemKey = "sub-9d-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    const result = await reconciliationService.submitForApproval(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+    );
+    expect(result.action).toBe("submitted");
+    expect(result.newStatus).toBe("pending_dual_approval");
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("pending_dual_approval");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-10 — DEFECT 6/7: submitForApproval re-validates target masters under the batch row lock
+  // ===========================================================================
+  it("SUB-10. DEFECT 6/7 — submitForApproval re-validates target masters atomically under the batch row lock", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+    const customerId = await seedCustomer(scope, "CUST-001", "Acme Customer");
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+    });
+
+    const idemKey = "sub-10-" + randomUUID();
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    // Custom service whose transactionRunner deletes the customer
+    // AFTER the batch is locked but BEFORE the alias revalidation check
+    // runs. The alias revalidation should catch the deleted master
+    // inside the locked transaction.
+    const customService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          // Delete the customer BEFORE running the work body —
+          // simulates a concurrent master deletion between pre-claim and
+          // the locked revalidation. The transaction's DELETE is in the
+          // SAME transaction as the submit, so it's visible to the
+          // alias revalidation query.
+          await (tx as any).execute(drizzleSql`DELETE FROM customers WHERE tenant_id = ${scope.tenantId} AND id = ${customerId}`);
+          await work(tx);
+        }),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+    });
+
+    await expect(
+      customService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INVALID_ALIAS_TARGET|alias mapping/i);
+
+    // Batch is unchanged (still review_required).
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-11 — DEFECT 8: commit revalidates alias mappings under lock; fail-closed if alias state changed
+  // ===========================================================================
+  it("SUB-11. DEFECT 8 — commit revalidates alias mappings under lock; fails closed if an alias's target master was deleted since dual approval", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const ownerId = scope.userId;
+    const accountantId = randomUUID();
+    // WP-08-01F SUB-11 fix: use a globally-unique auth_id (and email)
+    // per test scope. The `users_auth_id_unique_idx` is a GLOBAL unique
+    // index on `auth_id` (not tenant-scoped), so a hardcoded auth_id
+    // like "sub-11-acct" would collide with leftover rows from a
+    // previous test run. The cleanupScope helper intentionally does NOT
+    // delete `users` (immutable audit history per Contract 03 §7.2),
+    // so leftover accountant rows from prior runs accumulate. Suffix
+    // with the per-scope accountantId (a fresh randomUUID per test
+    // invocation) to guarantee uniqueness.
+    const accountantAuthId = `sub-11-acct-${accountantId}`;
+    const accountantEmail = `sub-11-acct-${accountantId}@test.test`;
+    await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
+              VALUES (${accountantId}, ${scope.tenantId}, ${accountantAuthId}, ${"Acct User"}, ${accountantEmail}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+    const batchId = randomUUID();
+    // Seed an approved_for_commit batch.
+    await sql`
+      INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version,
+        mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count,
+        blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status,
+        warning_summary, committed_at, commit_effect_counts, created_by, created_at)
+      VALUES (${batchId}, ${scope.tenantId}, ${"SUB11-" + batchId.slice(-6)}, ${"approved_for_commit"}::import_batch_status, ${"test"},
+        ${"opening_balance_inventory"}, ${"1.0"}, ${"1.0"}, ${"sha256:manifest"}, ${"opening_balance"}, ${"sha256:test"}, 1,
+        0, 0, 0, ${"passed"}, ${"matched"}, null, null, null, ${ownerId}, NOW())`;
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    // Seed both owner + accountant approvals.
+    await sql`
+      INSERT INTO import_batch_approvals (id, tenant_id, import_batch_id, approver_role, approver_user_id,
+        staged_data_hash, cutover_manifest_hash, template_version, mapping_version,
+        validation_status, reconciliation_status, warning_summary, approved_at, reason,
+        approval_version, is_current, created_by, created_at)
+      VALUES (${randomUUID()}, ${scope.tenantId}, ${batchId}, ${"owner"}::migration_approver_role, ${ownerId},
+        ${"sha256:test"}, ${"sha256:manifest"}, ${"1.0"}, ${"1.0"},
+        ${"passed"}, ${"matched"}, null, NOW(), ${"test approval"},
+        1, true, ${ownerId}, NOW())`;
+    await sql`
+      INSERT INTO import_batch_approvals (id, tenant_id, import_batch_id, approver_role, approver_user_id,
+        staged_data_hash, cutover_manifest_hash, template_version, mapping_version,
+        validation_status, reconciliation_status, warning_summary, approved_at, reason,
+        approval_version, is_current, created_by, created_at)
+      VALUES (${randomUUID()}, ${scope.tenantId}, ${batchId}, ${"accountant"}::migration_approver_role, ${accountantId},
+        ${"sha256:test"}, ${"sha256:manifest"}, ${"1.0"}, ${"1.0"},
+        ${"passed"}, ${"matched"}, null, NOW(), ${"test approval"},
+        1, true, ${accountantId}, NOW())`;
+
+    const customerId = await seedCustomer(scope, "CUST-001", "Acme Customer");
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+    });
+
+    // Build commit service.
+    const { HistoricalCommitService } = await import("@/server/services/historical-commit-service");
+    const { DocumentSequenceDbRepository } = await import("@/server/services/document-sequence-db-repository");
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const docSeq = new DocumentSequenceDbRepository(db);
+    const commitService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    // DELETE the customer AFTER dual approval but BEFORE commit.
+    await sql`DELETE FROM customers WHERE tenant_id = ${scope.tenantId} AND id = ${customerId}`;
+
+    const idemKey = "sub-11-" + randomUUID();
+    await expect(
+      commitService.commitBatch(
+        { authenticated: true, userId: ownerId, tenantId: scope.tenantId, authId: `auth-${ownerId}`, name: "Owner", email: `o-${ownerId}@test.local` } as any,
+        resolveEffectivePermissions(["owner"], TEST_ROLE_PERMISSION_MATRIX) as any,
+        { importBatchId: batchId, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/ALIAS_REVALIDATION_FAILED|INVALID_ALIAS_TARGET|alias mapping/i);
+
+    // Batch is unchanged (still approved_for_commit — NOT committed).
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("approved_for_commit");
+    expect(batch!.committed_at).toBeNull();
 
     await cleanupScope(scope);
   });

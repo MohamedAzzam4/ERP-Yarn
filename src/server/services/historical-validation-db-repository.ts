@@ -233,6 +233,36 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
     return result ?? null;
   }
 
+  // WP-08-01F DEFECT 2 — Update occurrenceCount on the CURRENT alias mapping
+  // for a (tenant, batch, entityType, sourceLabel) key. Persists the final
+  // occurrence count computed by the group tracker after iterating all
+  // staging rows. Only touches occurrence_count — never status, target,
+  // approval metadata. Idempotent: overwrites with the recomputed value.
+  async updateAliasMappingOccurrenceCount(
+    tenantId: string,
+    importBatchId: string,
+    entityType: string,
+    sourceLabel: string,
+    occurrenceCount: number,
+  ): Promise<ImportAliasMapping | null> {
+    const [result] = await this.db.update(importAliasMappings)
+      .set({
+        occurrenceCount,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.entityType, entityType),
+        eq(importAliasMappings.sourceLabel, sourceLabel),
+        // Only update the CURRENT mapping — superseded rows are immutable
+        // audit history.
+        eq(importAliasMappings.isCurrent, true),
+      ))
+      .returning();
+    return result ?? null;
+  }
+
   // --- Human review item methods ---
 
   async insertHumanReviewItem(row: NewHumanReviewItemInput): Promise<ImportHumanReviewItem> {

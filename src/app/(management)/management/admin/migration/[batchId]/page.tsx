@@ -50,6 +50,8 @@ import {
   approveCorrectionAsOwnerAction,
   approveCorrectionAsAccountantAction,
   executeCorrectionAction,
+  approveAliasMappingAction,
+  createAliasExceptionAction,
 } from "../actions";
 import { getAvailableTemplates } from "@/server/services/migration-templates";
 import {
@@ -64,6 +66,7 @@ import { ValidationFindingsPanel } from "./_components/validation-findings-panel
 import { StagingPagination } from "./_components/staging-pagination";
 import { ReplacementUploadForm } from "./_components/replacement-upload-form";
 import { StagingVersionSelector } from "./_components/staging-version-selector";
+import { AliasMappingPanel } from "./_components/alias-mapping-panel";
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -991,6 +994,45 @@ export default async function MigrationBatchDetailPage({
                 stagingPage={stagingPage}
               />
             )}
+          </CardContent>
+        </Card>
+
+        {/* WP-08-01F DEFECT 1 — Alias mapping panel.
+            Shows current alias mappings grouped by groupId with status,
+            occurrence count, target if approved, and approval metadata.
+            For unresolved aliases: a form to select an existing master
+            (by ID) and approve via the approveAliasMappingAction server
+            action. For approved mappings: shows current target,
+            approvedBy/approvedAt, and permits remap. Shows explicit
+            exceptions/subgroups separately. Shows backend validation
+            errors. If no master exists: shows "No valid master exists
+            yet. Create it through Master Data, then return here." */}
+        <Card className="mb-6">
+          <CardHeader><CardTitle>تعيينات الأسماء (Alias Mappings)</CardTitle></CardHeader>
+          <CardContent>
+            <AliasMappingPanel
+              batchId={b.id}
+              aliasMappings={detail.aliasMappings.map((a) => ({
+                id: a.id,
+                entityType: a.entityType,
+                sourceLabel: a.sourceLabel,
+                normalizedName: a.normalizedName,
+                targetMasterId: a.targetMasterId,
+                mappingVersion: a.mappingVersion,
+                confidenceScore: a.confidenceScore,
+                status: a.status,
+                approvedBy: a.approvedBy,
+                approvedAt: a.approvedAt,
+                groupId: a.groupId,
+                occurrenceCount: a.occurrenceCount,
+                exceptionSourceRowIds: a.exceptionSourceRowIds,
+                isCurrent: a.isCurrent,
+              }))}
+              batchMappingVersion={b.mappingVersion}
+              approveAliasAction={approveAliasMappingAction}
+              createAliasExceptionAction={createAliasExceptionAction}
+              errorCode={typeof sp.code === "string" ? sp.code : null}
+            />
           </CardContent>
         </Card>
 

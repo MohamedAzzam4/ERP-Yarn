@@ -146,6 +146,7 @@ function makeCommitFirstWriteFailureRepoWrapper(realRepo: HistoricalCommitReposi
   const wrapped: HistoricalCommitRepository = {
     findImportBatchById: (t: string, id: string) => realRepo.findImportBatchById(t, id),
     updateBatchStatus: (t: string, id: string, s: string) => realRepo.updateBatchStatus(t, id, s),
+    restoreApprovedForCommitIfCommitting: (t: string, id: string) => realRepo.restoreApprovedForCommitIfCommitting(t, id),
     updateBatchCommitMetadata: (t: string, id: string, p: any) => realRepo.updateBatchCommitMetadata(t, id, p),
     updateBatchStagedDataHash: (t: string, id: string, h: string, u: string) => realRepo.updateBatchStagedDataHash(t, id, h, u),
     insertApproval: (r: any) => realRepo.insertApproval(r),
@@ -173,6 +174,8 @@ function makeCommitFirstWriteFailureRepoWrapper(realRepo: HistoricalCommitReposi
     findLatestReconciliationResults: (t: string, id: string) => realRepo.findLatestReconciliationResults(t, id),
     findCutoverManifestsForBatch: (t: string, id: string) => realRepo.findCutoverManifestsForBatch(t, id),
     findCurrentAliasMappingsForBatch: (t: string, id: string) => realRepo.findCurrentAliasMappingsForBatch(t, id),
+    findSupersededApprovedAliasMappingsForBatch: (t: string, id: string) => realRepo.findSupersededApprovedAliasMappingsForBatch(t, id),
+    findMasterForAlias: (t: string, e: string, m: string) => realRepo.findMasterForAlias(t, e, m),
   };
   return wrapped;
 }
@@ -319,6 +322,14 @@ async function cleanupScope(scope: TestScope) {
   await sql`DELETE FROM import_staging_rows WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM import_files WHERE tenant_id = ${scope.tenantId}`;
+  // WP-08-01F DEFECT 6/8 — clean up master-data rows seeded by the
+  // alias revalidation tests (customers/fiber_types/product_types/
+  // inventory_items). These are deleted per-tenant — no risk to other
+  // tests because each test uses a unique tenantId.
+  await sql`DELETE FROM inventory_items WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM product_types WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM fiber_types WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM customers WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM import_batches WHERE tenant_id = ${scope.tenantId}`;
   await sql`DELETE FROM idempotency_records WHERE tenant_id = ${scope.tenantId}`;
   // NOTE: audit_logs, users, tenants intentionally NOT deleted (immutable).
@@ -519,12 +530,17 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
       },
     });
 
+    // The AuditDbRepository's appendAuditLog wraps the injected
+    // INJECTED_AUDIT_FAILURE error in an AuditWriteFailedError whose
+    // message is the production-safe "Required audit write failed;
+    // transaction rolled back." text (the original error is preserved
+    // on .cause). Match the wrapped message — that is what callers see.
     await expect(
       customService.commitBatch(
         makeOwnerUser(scope) as any, makeOwnerEffective() as any,
         { importBatchId: batchId, idempotencyKey: idemKey },
       ),
-    ).rejects.toThrow(/INJECTED_AUDIT_FAILURE/i);
+    ).rejects.toThrow(/Required audit write failed/i);
 
     // Full rollback: batch unchanged.
     const batchAfter = await getBatchState(scope, batchId);
@@ -772,12 +788,17 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     // Inject fault AFTER updateBatchCommitMetadata is written but BEFORE
     // markSucceeded. The transaction rolls back EVERYTHING: staging row
     // links, audit, batch commit metadata.
+    //
+    // CommitFaultInjectedError's `code` is COMMIT_FAULT_INJECTED, but its
+    // `message` is the human-readable "Fault injected at '<point>' for
+    // rollback testing..." text. Match the message text — that is what
+    // `.rejects.toThrow(regex)` checks against.
     await expect(
       commitService.commitBatch(
         makeOwnerUser(scope) as any, makeOwnerEffective() as any,
         { importBatchId: batchId, idempotencyKey: idemKey, faultInjection: "after_commit_metadata" },
       ),
-    ).rejects.toThrow(/COMMIT_FAULT_INJECTED/);
+    ).rejects.toThrow(/Fault injected at 'after_commit_metadata'/i);
 
     // Full rollback: batch unchanged (NOT committed).
     const batchAfter = await getBatchState(scope, batchId);
@@ -839,12 +860,17 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     // rollback would NOT undo the state change — idempotency.state
     // would stay 'succeeded' despite the operational effects being
     // rolled back.
+    //
+    // CommitFaultInjectedError's `code` is COMMIT_FAULT_INJECTED, but its
+    // `message` is the human-readable "Fault injected at '<point>' for
+    // rollback testing..." text. Match the message text — that is what
+    // `.rejects.toThrow(regex)` checks against.
     await expect(
       commitService.commitBatch(
         makeOwnerUser(scope) as any, makeOwnerEffective() as any,
         { importBatchId: batchId, idempotencyKey: idemKey, faultInjection: "after_mark_succeeded" },
       ),
-    ).rejects.toThrow(/COMMIT_FAULT_INJECTED/);
+    ).rejects.toThrow(/Fault injected at 'after_mark_succeeded'/i);
 
     // Full rollback: batch unchanged (NOT committed).
     const batchAfter = await getBatchState(scope, batchId);
@@ -872,6 +898,281 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     expect(idemState!.state).not.toBe("succeeded");
     // Specifically, the outer catch marked retryable_failed (technical fault).
     expect(idemState!.state).toBe("retryable_failed");
+
+    // Locks released by the catch block.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // WP-08-01F DEFECT 8 — Concurrency proofs (COM-CONC-1, COM-CONC-2A, COM-CONC-2B).
+  //
+  // These tests exercise the new alias revalidation under lock when
+  // concurrent operations mutate the alias state or the target master
+  // between dual approval and commit:
+  //
+  // COM-CONC-1:  Concurrent commits on the same batch — exactly one
+  //             wins, the other fails (cutover lock conflict). Uses
+  //             Promise.allSettled for concurrent commit attempts.
+  // COM-CONC-2A: Concurrent commit vs alias remap (target master
+  //             deletion) — the commit revalidation catches the deleted
+  //             master under the batch row lock and fails closed. The
+  //             alias remap wins; the commit fails.
+  // COM-CONC-2B: Concurrent commit vs alias supersession (the approved
+  //             alias is superseded by a new approval while the commit
+  //             is in flight) — the commit revalidation catches the
+  //             supersession under the lock and fails closed.
+  // ===========================================================================
+
+  // Helper: seed an approved alias mapping for COM-CONC tests.
+  async function seedApprovedAliasMapping(scope: TestScope, batchId: string, targetMasterId: string, mappingVersion: string = "1.0"): Promise<string> {
+    const aliasId = randomUUID();
+    await sql`
+      INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
+        target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
+        is_current, superseded_at, superseded_by, superseded_reason,
+        group_id, occurrence_count, exception_source_row_ids,
+        created_by, created_at, updated_at, updated_by)
+      VALUES (${aliasId}, ${scope.tenantId}, ${batchId}, ${"customer"}, ${"Acme Corp"}, ${"acme corp"},
+        ${targetMasterId}, ${mappingVersion}, ${"1.000000"}, ${"approved"}, ${scope.ownerId}, NOW(), null,
+        true, null, null, null,
+        null, 1, null,
+        ${scope.ownerId}, NOW(), null, null)`;
+    return aliasId;
+  }
+
+  // Helper: seed a customer master for COM-CONC tests.
+  async function seedCustomer(scope: TestScope, customerCode: string = "CUST-001", nameAr: string = "Acme Customer"): Promise<string> {
+    const customerId = randomUUID();
+    await sql`
+      INSERT INTO customers (id, tenant_id, customer_code, name_ar, name_en, normalized_name, contact_info_json, credit_limit, credit_terms, status, notes, created_by, created_at, updated_at, updated_by)
+      VALUES (${customerId}, ${scope.tenantId}, ${customerCode}, ${nameAr}, null, ${nameAr.trim().toLowerCase()}, null, null, null, ${"active"}, null, ${scope.ownerId}, NOW(), null, null)`;
+    return customerId;
+  }
+
+  // ===========================================================================
+  // COM-CONC-1 — Concurrent commits on the same batch: exactly one wins.
+  // ===========================================================================
+  it("COM-CONC-1. concurrent commits on the same batch: exactly one wins, the other fails (lock conflict)", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+    const customerId = await seedCustomer(scope);
+    await seedApprovedAliasMapping(scope, batchId, customerId);
+
+    const { commitService } = makeServices(scope);
+
+    // Issue two concurrent commits with DIFFERENT idempotency keys. The
+    // cutover lock conflict should serialize them: one wins, the other
+    // fails with CutoverLockConflictError.
+    const keyA = "com-conc-1a-" + randomUUID();
+    const keyB = "com-conc-1b-" + randomUUID();
+    const results = await Promise.allSettled([
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: keyA },
+      ),
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: keyB },
+      ),
+    ]);
+
+    const settledA = results[0]!;
+    const settledB = results[1]!;
+
+    // Exactly one succeeded (fulfilled).
+    expect(settledA.status === "fulfilled").not.toBe(settledB.status === "fulfilled");
+
+    // Batch ended up committed.
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("committed");
+    expect(batch!.committed_at).not.toBeNull();
+
+    // Both idempotency records exist; exactly one is succeeded.
+    const idemA = await getIdemState(scope, keyA);
+    const idemB = await getIdemState(scope, keyB);
+    expect(idemA).not.toBeNull();
+    expect(idemB).not.toBeNull();
+    if (settledA.status === "fulfilled") {
+      expect(idemA?.state).toBe("succeeded");
+      expect(idemB?.state).not.toBe("succeeded");
+    } else {
+      expect(idemA?.state).not.toBe("succeeded");
+      expect(idemB?.state).toBe("succeeded");
+    }
+
+    // Exactly one commit audit total (winner only).
+    const commitAudits = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(commitAudits).toBe(1);
+
+    // Locks released (catch block ran for the loser).
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-CONC-2A — Concurrent commit vs alias remap (target master deletion):
+  // commit revalidation catches the deleted master under the lock.
+  // ===========================================================================
+  it("COM-CONC-2A. concurrent commit vs target master deletion: commit revalidation catches the deleted master under the lock and fails closed", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+    const customerId = await seedCustomer(scope);
+    await seedApprovedAliasMapping(scope, batchId, customerId);
+
+    // Build a commit service whose transactionRunner deletes the customer
+    // AFTER the batch is locked but BEFORE the alias revalidation. The
+    // commit revalidation should catch the deleted master inside the
+    // locked transaction and fail closed.
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const commitService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          // Lock the batch row.
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          // Delete the customer BEFORE running the work body —
+          // simulates a concurrent master deletion between pre-claim
+          // and the locked revalidation. The DELETE is in the SAME
+          // transaction as the commit, so it's visible to the
+          // alias revalidation query inside executeAtomicCommit.
+          await (tx as any).execute(drizzleSql`DELETE FROM customers WHERE tenant_id = ${scope.tenantId} AND id = ${customerId}`);
+          await work(tx);
+        }),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    const idemKey = "com-conc-2a-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    await expect(
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/ALIAS_REVALIDATION_FAILED|INVALID_ALIAS_TARGET|alias mapping/i);
+
+    // Batch is unchanged (still approved_for_commit — NOT committed).
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe(batchBefore!.status);
+    expect(batch!.committed_at).toBeNull();
+
+    // No commit audit row persisted (the audit was rolled back).
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+
+    // Idempotency not succeeded (technical fault → retryable_failed,
+    // but the alias revalidation error is a business error so it's
+    // business_failed). Either way, NOT succeeded.
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).not.toBe("succeeded");
+
+    // Locks released by the catch block.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-CONC-2B — Concurrent commit vs alias supersession: commit revalidation
+  // catches the supersession under the lock.
+  // ===========================================================================
+  it("COM-CONC-2B. concurrent commit vs alias supersession: commit revalidation catches the supersession under the lock and fails closed", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+    const customerId = await seedCustomer(scope);
+    const aliasId = await seedApprovedAliasMapping(scope, batchId, customerId);
+
+    // Build a commit service whose transactionRunner supersedes the
+    // approved alias AFTER the batch is locked but BEFORE the alias
+    // revalidation. The commit revalidation should catch the supersession
+    // (is_current=false) under the lock and fail closed.
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const commitService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          // Lock the batch row.
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          // Supersede the approved alias BEFORE running the work body —
+          // simulates a concurrent alias supersession between pre-claim
+          // and the locked revalidation.
+          await (tx as any).execute(drizzleSql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.ownerId}, superseded_reason = ${"concurrent supersession"} WHERE tenant_id = ${scope.tenantId} AND id = ${aliasId} AND is_current = true`);
+          await work(tx);
+        }),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    const idemKey = "com-conc-2b-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    await expect(
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/ALIAS_REVALIDATION_FAILED|ALIAS_NOT_CURRENT|alias mapping/i);
+
+    // Batch is unchanged (still approved_for_commit — NOT committed).
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe(batchBefore!.status);
+    expect(batch!.committed_at).toBeNull();
+
+    // No commit audit row persisted.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+
+    // Idempotency not succeeded.
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).not.toBe("succeeded");
 
     // Locks released by the catch block.
     const lockCount = await getActiveLockCount(scope, batchId);

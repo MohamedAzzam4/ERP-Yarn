@@ -189,6 +189,33 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
     return updated;
   }
 
+  // WP-08-01F DEFECT 2 — Update occurrenceCount on the CURRENT alias
+  // mapping for a (tenant, batch, entityType, sourceLabel) key.
+  async updateAliasMappingOccurrenceCount(
+    tenantId: string,
+    importBatchId: string,
+    entityType: string,
+    sourceLabel: string,
+    occurrenceCount: number,
+  ): Promise<ImportAliasMapping | null> {
+    for (const [key, a] of this.aliases.entries()) {
+      if (
+        a.tenantId === tenantId && a.importBatchId === importBatchId &&
+        a.entityType === entityType && a.sourceLabel === sourceLabel &&
+        a.isCurrent
+      ) {
+        const updated: ImportAliasMapping = {
+          ...a,
+          occurrenceCount,
+          updatedAt: NOW(),
+        } as ImportAliasMapping;
+        this.aliases.set(key, updated);
+        return updated;
+      }
+    }
+    return null;
+  }
+
   async insertHumanReviewItem(row: NewHumanReviewItemInput): Promise<ImportHumanReviewItem> {
     this.reviewCounter++;
     const id = nid("review", this.reviewCounter);

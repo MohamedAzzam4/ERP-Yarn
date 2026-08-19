@@ -70,6 +70,7 @@ export class InMemoryMasterDataRepository implements MasterDataRepository {
     this.fiberTypes.set(`${row.tenantId}:${id}`, f); return f;
   }
   async findFiberTypeByCode(t: string, c: string): Promise<FiberType | null> { for (const f of this.fiberTypes.values()) if (f.tenantId === t && f.code === c) return f; return null; }
+  async findFiberTypeById(t: string, id: string): Promise<FiberType | null> { return this.fiberTypes.get(`${t}:${id}`) ?? null; }
   async listActiveFiberTypes(t: string): Promise<FiberType[]> { return [...this.fiberTypes.values()].filter(f => f.tenantId === t && f.status === "active"); }
   async updateFiberTypeStatus(t: string, id: string, st: MasterDataStatus): Promise<FiberType | null> { const k = `${t}:${id}`; const f = this.fiberTypes.get(k); if (!f) return null; const u = { ...f, status: st, updatedAt: NOW(), updatedBy: f.createdBy }; this.fiberTypes.set(k, u); return u; }
 
@@ -79,6 +80,7 @@ export class InMemoryMasterDataRepository implements MasterDataRepository {
     this.productTypes.set(`${row.tenantId}:${id}`, p); return p;
   }
   async findProductTypeByCode(t: string, c: string): Promise<ProductType | null> { for (const p of this.productTypes.values()) if (p.tenantId === t && p.code === c) return p; return null; }
+  async findProductTypeById(t: string, id: string): Promise<ProductType | null> { return this.productTypes.get(`${t}:${id}`) ?? null; }
   async listActiveProductTypes(t: string): Promise<ProductType[]> { return [...this.productTypes.values()].filter(p => p.tenantId === t && p.status === "active"); }
   async updateProductTypeStatus(t: string, id: string, st: MasterDataStatus): Promise<ProductType | null> { const k = `${t}:${id}`; const p = this.productTypes.get(k); if (!p) return null; const u = { ...p, status: st, updatedAt: NOW(), updatedBy: p.createdBy }; this.productTypes.set(k, u); return u; }
 
@@ -88,6 +90,21 @@ export class InMemoryMasterDataRepository implements MasterDataRepository {
     this.qualityParameters.set(`${row.tenantId}:${id}`, q); return q;
   }
   async findQualityParameterByCode(t: string, c: string): Promise<QualityParameter | null> { for (const q of this.qualityParameters.values()) if (q.tenantId === t && q.code === c) return q; return null; }
+  async findQualityParameterById(t: string, id: string): Promise<QualityParameter | null> { return this.qualityParameters.get(`${t}:${id}`) ?? null; }
   async listActiveQualityParameters(t: string): Promise<QualityParameter[]> { return [...this.qualityParameters.values()].filter(q => q.tenantId === t && q.status === "active"); }
   async updateQualityParameterStatus(t: string, id: string, st: MasterDataStatus): Promise<QualityParameter | null> { const k = `${t}:${id}`; const q = this.qualityParameters.get(k); if (!q) return null; const u = { ...q, status: st, updatedAt: NOW(), updatedBy: q.createdBy }; this.qualityParameters.set(k, u); return u; }
+
+  // WP-08-01F DEFECT 5 — inventory-items findById for the alias-approval
+  // path. The inventory_items table is the canonical stock identity. For
+  // 'batch' and 'lot' entity types, the caller resolves through the same
+  // inventory_items identity (item_kind distinguishes them).
+  private inventoryItems = new Map<string, { id: string; tenantId: string; itemKind: string; itemCode: string; status: string }>();
+  async findInventoryItemById(t: string, id: string): Promise<{ id: string; tenantId: string; itemKind: string; itemCode: string; status: string } | null> {
+    const item = this.inventoryItems.get(`${t}:${id}`);
+    return item ?? null;
+  }
+  // Helper to seed inventory items for tests.
+  seedInventoryItem(t: string, item: { id: string; tenantId: string; itemKind: string; itemCode: string; status: string }): void {
+    this.inventoryItems.set(`${t}:${item.id}`, item);
+  }
 }

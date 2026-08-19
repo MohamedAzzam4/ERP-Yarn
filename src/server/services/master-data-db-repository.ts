@@ -26,6 +26,7 @@ import {
   fiberTypes,
   productTypes,
   qualityParameters,
+  inventoryItems,
 } from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
@@ -311,6 +312,16 @@ export class MasterDataDbRepository implements MasterDataRepository {
     return result ?? null;
   }
 
+  // WP-08-01F DEFECT 5 — findById for fiber-type master.
+  async findFiberTypeById(tenantId: string, id: string): Promise<FiberType | null> {
+    const [result] = await this.db
+      .select()
+      .from(fiberTypes)
+      .where(and(eq(fiberTypes.tenantId, tenantId), eq(fiberTypes.id, id)))
+      .limit(1);
+    return result ?? null;
+  }
+
   async listActiveFiberTypes(tenantId: string): Promise<FiberType[]> {
     return this.db
       .select()
@@ -348,6 +359,16 @@ export class MasterDataDbRepository implements MasterDataRepository {
       .select()
       .from(productTypes)
       .where(and(eq(productTypes.tenantId, tenantId), eq(productTypes.code, code)))
+      .limit(1);
+    return result ?? null;
+  }
+
+  // WP-08-01F DEFECT 5 — findById for product-type master.
+  async findProductTypeById(tenantId: string, id: string): Promise<ProductType | null> {
+    const [result] = await this.db
+      .select()
+      .from(productTypes)
+      .where(and(eq(productTypes.tenantId, tenantId), eq(productTypes.id, id)))
       .limit(1);
     return result ?? null;
   }
@@ -394,6 +415,16 @@ export class MasterDataDbRepository implements MasterDataRepository {
     return result ?? null;
   }
 
+  // WP-08-01F DEFECT 5 — findById for quality-parameter master.
+  async findQualityParameterById(tenantId: string, id: string): Promise<QualityParameter | null> {
+    const [result] = await this.db
+      .select()
+      .from(qualityParameters)
+      .where(and(eq(qualityParameters.tenantId, tenantId), eq(qualityParameters.id, id)))
+      .limit(1);
+    return result ?? null;
+  }
+
   async listActiveQualityParameters(tenantId: string): Promise<QualityParameter[]> {
     return this.db
       .select()
@@ -407,6 +438,30 @@ export class MasterDataDbRepository implements MasterDataRepository {
       .set({ status, updatedAt: new Date() })
       .where(and(eq(qualityParameters.tenantId, tenantId), eq(qualityParameters.id, id)))
       .returning();
+    return result ?? null;
+  }
+
+  // --- Inventory items (DEFECT 5) ---
+  //
+  // The inventory_items table is the canonical stock-tracking identity
+  // (Contract 03 §9.1). For 'batch' and 'lot' entity types, the alias
+  // approval path uses the same inventory_items table — the item_kind
+  // column distinguishes raw_material_batch vs. yarn_lot. For 'item'
+  // entity types, the inventory_items row IS the master.
+
+  // WP-08-01F DEFECT 5 — findById for inventory-item master.
+  async findInventoryItemById(tenantId: string, id: string): Promise<{ id: string; tenantId: string; itemKind: string; itemCode: string; status: string } | null> {
+    const [result] = await this.db
+      .select({
+        id: inventoryItems.id,
+        tenantId: inventoryItems.tenantId,
+        itemKind: inventoryItems.itemKind,
+        itemCode: inventoryItems.itemCode,
+        status: inventoryItems.status,
+      })
+      .from(inventoryItems)
+      .where(and(eq(inventoryItems.tenantId, tenantId), eq(inventoryItems.id, id)))
+      .limit(1);
     return result ?? null;
   }
 }

@@ -145,6 +145,18 @@ export interface MigrationAliasMappingDto {
   status: string;
   approvedBy: string | null;
   approvedAt: string | null;
+  // WP-08-01F DEFECT 1 — alias grouping + exception/subgroup display.
+  /** Stable group identity for repeated occurrences of the same source
+   * label across multiple staging rows. Null when the alias predates the
+   * groupId column or was inserted by an older validation run. */
+  groupId: string | null;
+  /** How many staging rows share this group. */
+  occurrenceCount: number;
+  /** Array of source row numbers explicitly split from the default group
+   * (set on exception/subgroup alias rows; null on default group rows). */
+  exceptionSourceRowIds: number[] | null;
+  /** True when this is the current mapping (not superseded). */
+  isCurrent: boolean;
 }
 
 /** Human review item DTO. */
@@ -668,6 +680,13 @@ export class MigrationScreenQueryService {
       status: a.status,
       approvedBy: a.approvedBy,
       approvedAt: a.approvedAt?.toISOString() ?? null,
+      // WP-08-01F DEFECT 1 — group identity + occurrence metadata + exceptions.
+      groupId: a.groupId,
+      occurrenceCount: a.occurrenceCount,
+      exceptionSourceRowIds: Array.isArray(a.exceptionSourceRowIds)
+        ? (a.exceptionSourceRowIds as number[])
+        : null,
+      isCurrent: a.isCurrent,
     };
   }
 

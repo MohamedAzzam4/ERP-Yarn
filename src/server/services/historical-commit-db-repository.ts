@@ -20,6 +20,16 @@ import {
   importCutoverManifests,
   importAliasMappings,
 } from "@/server/db/schema";
+import {
+  suppliers,
+  customers,
+  locations,
+  externalFactories,
+  fiberTypes,
+  productTypes,
+  qualityParameters,
+  inventoryItems,
+} from "@/server/db/schema";
 import type { db as DbType } from "@/server/db/client";
 import type {
   HistoricalCommitRepository,
@@ -74,6 +84,29 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
       ? ({ id: batchId, status } as unknown as ImportBatch)
       : null;
   }
+
+  /**
+   * WP-08-01F Milestone B (COM-CONC-1) — Conditional status restore.
+   *
+   * Single-statement atomic UPDATE: only restores `approved_for_commit`
+   * when the current status is `committing`. This prevents the commit
+   * catch block from undoing a concurrent winner's `committed` status.
+   *
+   * See the interface docstring for the full rationale.
+   */
+  async restoreApprovedForCommitIfCommitting(
+    tenantId: string,
+    batchId: string,
+  ): Promise<void> {
+    await this.db.execute(drizzleSql`
+      UPDATE import_batches
+      SET status = 'approved_for_commit'::import_batch_status, updated_at = NOW()
+      WHERE tenant_id = ${tenantId}
+        AND id = ${batchId}
+        AND status = 'committing'::import_batch_status
+    `);
+  }
+
 
   async updateBatchCommitMetadata(
     tenantId: string,
@@ -379,5 +412,116 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
         eq(importAliasMappings.importBatchId, importBatchId),
         eq(importAliasMappings.isCurrent, true),
       ));
+  }
+
+  /**
+   * WP-08-01F Milestone B (COM-CONC-2B) — Detect approved alias mappings
+   * that have been superseded (is_current=false AND status='approved')
+   * for the batch. Called by commitBatch's revalidation under the batch
+   * row lock to catch a concurrent alias supersession that happened
+   * between dual approval and commit.
+   *
+   * Note: `findCurrentAliasMappingsForBatch` filters `is_current=true`,
+   * so a superseded approved mapping is silently dropped — this method
+   * is the inverse lookup that catches exactly those rows.
+   */
+  async findSupersededApprovedAliasMappingsForBatch(
+    tenantId: string,
+    importBatchId: string,
+  ): Promise<ImportAliasMapping[]> {
+    return this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.isCurrent, false),
+        eq(importAliasMappings.status, "approved" as any),
+      ));
+  }
+
+  /**
+   * WP-08-01F DEFECT 5/6/7/8 — Validate that the target master referenced
+   * by an alias mapping still exists, belongs to the caller's tenant,
+   * and matches the alias's entityType. Direct query against the master
+   * tables (no MasterDataRepository injection needed). Used by
+   * submitForApproval and commitBatch to re-validate under the batch
+   * row lock.
+   *
+   * Returns true if the master is found and tenant-scoped; false
+   * otherwise (including for unsupported entity types — fail-closed).
+   */
+  async findMasterForAlias(
+    tenantId: string,
+    entityType: string,
+    targetMasterId: string,
+  ): Promise<boolean> {
+    if (!targetMasterId) return false;
+    switch (entityType) {
+      case "supplier": {
+        const rows = await this.db.select({ id: suppliers.id })
+          .from(suppliers)
+          .where(and(eq(suppliers.tenantId, tenantId), eq(suppliers.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      case "customer": {
+        const rows = await this.db.select({ id: customers.id })
+          .from(customers)
+          .where(and(eq(customers.tenantId, tenantId), eq(customers.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      case "location": {
+        const rows = await this.db.select({ id: locations.id })
+          .from(locations)
+          .where(and(eq(locations.tenantId, tenantId), eq(locations.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      case "factory": {
+        const rows = await this.db.select({ id: externalFactories.id })
+          .from(externalFactories)
+          .where(and(eq(externalFactories.tenantId, tenantId), eq(externalFactories.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      case "fiber_type":
+      case "fiber": {
+        const rows = await this.db.select({ id: fiberTypes.id })
+          .from(fiberTypes)
+          .where(and(eq(fiberTypes.tenantId, tenantId), eq(fiberTypes.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      case "product_type":
+      case "product": {
+        const rows = await this.db.select({ id: productTypes.id })
+          .from(productTypes)
+          .where(and(eq(productTypes.tenantId, tenantId), eq(productTypes.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      case "quality_parameter": {
+        const rows = await this.db.select({ id: qualityParameters.id })
+          .from(qualityParameters)
+          .where(and(eq(qualityParameters.tenantId, tenantId), eq(qualityParameters.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      case "item":
+      case "batch":
+      case "lot": {
+        // inventory_items is the canonical stock identity (Contract 03
+        // §9.1). For 'batch'/'lot' entity types, the caller resolves
+        // through the same inventory_items table.
+        const rows = await this.db.select({ id: inventoryItems.id })
+          .from(inventoryItems)
+          .where(and(eq(inventoryItems.tenantId, tenantId), eq(inventoryItems.id, targetMasterId)))
+          .limit(1);
+        return rows.length > 0;
+      }
+      default:
+        // Unsupported entity type — fail-closed. NEVER guess.
+        return false;
+    }
   }
 }

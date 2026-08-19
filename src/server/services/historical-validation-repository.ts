@@ -143,6 +143,26 @@ export interface HistoricalValidationRepository {
     supersededBy: string,
     supersededReason: string,
   ): Promise<ImportAliasMapping | null>;
+  /**
+   * WP-08-01F DEFECT 2 — Update occurrenceCount on the CURRENT alias mapping
+   * for a given (tenant, batch, entityType, sourceLabel). Called by
+   * runValidation AFTER processing all staging rows to persist the final
+   * occurrence count per group. The update ONLY touches occurrenceCount
+   * — never status, targetMasterId, approvedBy, or approvedAt.
+   *
+   * Returns the updated alias mapping, or null if no current mapping
+   * exists for the (entityType, sourceLabel) key. Idempotent: re-running
+   * validation against the same source data produces the same final
+   * count (it overwrites the column with the recomputed value rather
+   * than incrementing).
+   */
+  updateAliasMappingOccurrenceCount(
+    tenantId: string,
+    importBatchId: string,
+    entityType: string,
+    sourceLabel: string,
+    occurrenceCount: number,
+  ): Promise<ImportAliasMapping | null>;
 
   // Human review item methods
   insertHumanReviewItem(row: NewHumanReviewItemInput): Promise<ImportHumanReviewItem>;

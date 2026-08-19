@@ -125,6 +125,62 @@ export interface ApproveAliasMappingResult {
 }
 
 // ---------------------------------------------------------------------------
+// WP-08-01F DEFECT 3 — createAliasException input/result types.
+//
+// Contract 08 §8.4.6: a separate alias mapping row with the same groupId
+// as the default group but a different targetMasterId and explicit
+// exceptionSourceRowIds. The exception is approved by the same
+// Owner/Accountant permission as a regular alias approval.
+//
+// The default group alias and the exception alias are independent rows
+// in import_alias_mappings. They share groupId (so the UI can group them)
+// but differ in sourceLabel (the partial unique index on
+// (tenant, batch, entity, sourceLabel) WHERE is_current=true requires
+// distinct source labels). The exception row carries the
+// exceptionSourceRowIds list (JSONB array of integers) telling the
+// system which staging row numbers are split off from the default group.
+//
+// Group approval does NOT override an exception — the exception row is
+// separately approved (or rejected). submitForApproval checks that all
+// current alias mappings (including exceptions) are approved with
+// non-null targetMasterId before the batch can transition to
+// pending_dual_approval.
+// ---------------------------------------------------------------------------
+
+export interface CreateAliasExceptionInput {
+  /** The default group alias mapping id to derive the groupId and
+   * entityType from. Must be the current mapping for its key. */
+  defaultAliasMappingId: string;
+  /** A distinct source label for the exception. Must differ from the
+   * default alias's sourceLabel (the partial unique index requires it). */
+  exceptionSourceLabel: string;
+  /** Optional normalized name for the exception (defaults to the lowercased
+   * exceptionSourceLabel). */
+  exceptionNormalizedName?: string | null;
+  /** The target master id for the exception. Must exist, belong to the
+   * caller's tenant, and match the default alias's entityType. */
+  targetMasterId: string;
+  /** The staging row numbers (source_row_number values) split off from
+   * the default group to use the exception's target master. */
+  exceptionSourceRowIds: number[];
+  /** Optional notes the operator attaches. */
+  notes: string | null;
+  /** Optional mapping version label. */
+  mappingVersion: string | null;
+  idempotencyKey: string;
+}
+
+export interface CreateAliasExceptionResult {
+  action: "executed" | "replayed";
+  exceptionAliasMappingId: string;
+  defaultAliasMappingId: string;
+  groupId: string | null;
+  entityType: string;
+  targetMasterId: string;
+  exceptionSourceRowIds: number[];
+}
+
+// ---------------------------------------------------------------------------
 // Errors.
 // ---------------------------------------------------------------------------
 
@@ -176,7 +232,7 @@ export class InvalidAliasTargetError extends HistoricalValidationError {
   constructor(aliasMappingId: string, targetMasterId: string, entityType: string) {
     super(
       "INVALID_ALIAS_TARGET",
-      `Target master '${targetMasterId}' for alias '${aliasMappingId}' not found or does not match entity type '${entityType}' in the caller's tenant.`,
+      `INVALID_ALIAS_TARGET: Target master '${targetMasterId}' for alias '${aliasMappingId}' not found or does not match entity type '${entityType}' in the caller's tenant.`,
     );
     this.name = "InvalidAliasTargetError";
   }
@@ -206,6 +262,27 @@ export class MasterDataRepositoryNotConfiguredError extends HistoricalValidation
       "approveAliasMapping requires masterDataRepository to be configured for target master validation.",
     );
     this.name = "MasterDataRepositoryNotConfiguredError";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WP-08-01F DEFECT 3 — exception/subgroup errors.
+// ---------------------------------------------------------------------------
+
+export class AliasExceptionInputError extends HistoricalValidationError {
+  constructor(message: string) {
+    super("VALIDATION_FAILED", message);
+    this.name = "AliasExceptionInputError";
+  }
+}
+
+export class AliasExceptionSourceLabelConflictError extends HistoricalValidationError {
+  constructor(defaultAliasMappingId: string, sourceLabel: string) {
+    super(
+      "ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT",
+      `Cannot create alias exception — the exception source label '${sourceLabel}' must differ from the default group alias '${defaultAliasMappingId}' source label (the partial unique index on (tenant, batch, entity, sourceLabel) WHERE is_current=true requires distinct source labels).`,
+    );
+    this.name = "AliasExceptionSourceLabelConflictError";
   }
 }
 
@@ -291,7 +368,7 @@ interface ValidationFinding {
 }
 
 // ---------------------------------------------------------------------------
-// WP-08-01G (A2): Flexible entity-type detection.
+// WP-08-01G (A2) / WP-08-01F DEFECT 4: Flexible entity-type detection.
 //
 // The validation service must detect the entity type per row, not assume
 // "customer". Different migration templates use different field names:
@@ -302,15 +379,21 @@ interface ValidationFinding {
 // The detection order is:
 //   1. Explicit entity_type/type/entityType/record_type field
 //   2. Explicit master-id field (customer_id → "customer", etc.)
-//   3. Fallback: "customer" (the historical default for legacy templates)
+//   3. party_type field
+//   4. If nothing can be established safely, return "unknown" — the alias
+//      is then created with status="needs_review". We NEVER guess
+//      "customer" because that would silently misroute supplier/factory/
+//      location rows to the customer master table at commit time.
 //
-// The fallback is retained so existing test fixtures (which only set
-// data.name) still produce "customer" alias mappings — this preserves
-// backward compatibility with the previous behaviour.
+// DEFECT 4 fix: previously the fallback returned "customer" which made
+// the alias look resolved enough to proceed. The fallback now returns
+// "unknown" and the caller (runValidation) creates the alias with
+// status="needs_review" so a human must explicitly classify it before
+// submission.
 // ---------------------------------------------------------------------------
 
 function detectEntityType(data: Record<string, unknown> | null): string {
-  if (!data) return "customer";
+  if (!data) return "unknown";
   // Explicit type fields
   const typeValue =
     data.entity_type ?? data.type ?? data.entityType ?? data.record_type;
@@ -329,8 +412,12 @@ function detectEntityType(data: Record<string, unknown> | null): string {
   if (typeof data.party_type === "string" && data.party_type.trim()) {
     return data.party_type.trim().toLowerCase();
   }
-  // Fallback: legacy default. Existing test fixtures set only data.name.
-  return "customer";
+  // DEFECT 4 fix: cannot establish the entity type safely from the staging
+  // row data. Return "unknown" — the caller will mark the alias as
+  // needs_review so a human must classify it before submission. We never
+  // guess "customer" because that would silently route non-customer rows
+  // to the customer master table at commit time.
+  return "unknown";
 }
 
 const VALIDATION_RULES: ValidationRule[] = [
@@ -739,11 +826,13 @@ export class HistoricalValidationService {
         if (data?.name) {
           const sourceLabel = String(data.name);
           const normalizedName = sourceLabel.trim().toLowerCase();
-          // WP-08-01G (A2): flexible entity-type detection — check
-          // data.entity_type, data.type, master-id fields, party_type.
-          // Falls back to "customer" for legacy fixtures that set only
-          // data.name.
+          // WP-08-01G (A2) / DEFECT 4: flexible entity-type detection —
+          // check data.entity_type, data.type, master-id fields, party_type.
+          // Returns "unknown" when none of those signals are present so a
+          // human must classify the alias before submission. We NEVER
+          // silently guess "customer".
           const entityType = detectEntityType(data);
+          const isUnknownEntityType = entityType === "unknown";
 
           // Check if alias already exists for this source label (deduplication).
           // WP-08-01G (A1): findAliasMappingBySourceLabel now filters by
@@ -771,11 +860,14 @@ export class HistoricalValidationService {
             // Determine confidence score deterministically.
             // High confidence: exact match on normalized name (no variations).
             // Low confidence: name has potential variations (Arabic chars, extra spaces, etc.)
+            // DEFECT 4: an "unknown" entity type is ALWAYS needs_review
+            // regardless of the name formatting score — the entity-type
+            // signal is the dominant confidence indicator.
             const hasArabic = /[\u0600-\u06FF]/.test(sourceLabel);
             const hasExtraSpaces = sourceLabel !== sourceLabel.trim();
             const hasMixedCase = sourceLabel !== sourceLabel.toLowerCase() && sourceLabel !== sourceLabel.toUpperCase();
-            const confidenceScore = hasArabic || hasExtraSpaces || hasMixedCase ? "0.500000" : "1.000000";
-            const isLowConfidence = confidenceScore !== "1.000000";
+            const isLowConfidence = isUnknownEntityType || hasArabic || hasExtraSpaces || hasMixedCase;
+            const confidenceScore = isLowConfidence ? "0.500000" : "1.000000";
 
             // Create as candidate — NOT a live master record
             const aliasMapping = await repo.insertAliasMapping({
@@ -788,7 +880,9 @@ export class HistoricalValidationService {
               mappingVersion: null,
               confidenceScore, // Deterministic confidence score
               status: isLowConfidence ? "needs_review" : "candidate",
-              notes: isLowConfidence ? "Low confidence — needs human review" : null,
+              notes: isUnknownEntityType
+                ? "Entity type could not be determined from the staging row — needs human classification."
+                : isLowConfidence ? "Low confidence — needs human review" : null,
               createdBy: user.userId,
               // WP-08-01G (A1/A2) — group identity / occurrence metadata.
               groupId: groupEntry.groupId,
@@ -819,13 +913,16 @@ export class HistoricalValidationService {
 
             // Create human review item for ALL candidates (Contract 08 §8.4:
             // all candidates require human review before approval)
+            const reviewReason = isUnknownEntityType
+              ? `Master candidate '${sourceLabel}' has unknown entity type — needs human classification before approval.`
+              : isLowConfidence
+                ? `Low-confidence master candidate '${sourceLabel}' (confidence=${confidenceScore}) needs review.`
+                : `Master candidate '${sourceLabel}' needs review.`;
             const reviewItem = await repo.insertHumanReviewItem({
               tenantId: user.tenantId,
               importBatchId: input.importBatchId,
               stagingRowId: row.id,
-              reviewReason: isLowConfidence
-                ? `Low-confidence master candidate '${sourceLabel}' (confidence=${confidenceScore}) needs review.`
-                : `Master candidate '${sourceLabel}' needs review.`,
+              reviewReason,
               createdBy: user.userId,
             });
             reviewItems++;
@@ -861,6 +958,38 @@ export class HistoricalValidationService {
             }
             groupEntry.occurrences++;
           }
+        }
+      }
+
+      // WP-08-01F DEFECT 2 — Persist the final occurrenceCount per group.
+      //
+      // During the row loop above, the group tracker accumulates the
+      // occurrence count in memory but the DB row was only set to the
+      // current count at insert time. For groups with >1 occurrence,
+      // that means the DB row's occurrenceCount lags behind the actual
+      // count. We now persist the final count per group back to the
+      // current alias mapping row.
+      //
+      // Idempotency: the update OVERWRITES occurrence_count with the
+      // recomputed value (it does NOT increment). Re-running validation
+      // against the same source data produces the same final count,
+      // not a doubled count. This is also true for approved mappings:
+      // the existing approved current mapping has its occurrenceCount
+      // updated to reflect the current staged data, but its status,
+      // targetMasterId, approvedBy, approvedAt are NEVER touched.
+      if (groupTracker.size > 0) {
+        const currentAliases = await repo.findCurrentAliasMappingsForBatch(
+          user.tenantId, input.importBatchId,
+        );
+        for (const currentAlias of currentAliases) {
+          const groupKey = `${currentAlias.entityType}|${currentAlias.normalizedName}`;
+          const groupEntry = groupTracker.get(groupKey);
+          if (!groupEntry) continue;
+          await repo.updateAliasMappingOccurrenceCount(
+            user.tenantId, input.importBatchId,
+            currentAlias.entityType, currentAlias.sourceLabel,
+            groupEntry.occurrences,
+          );
         }
       }
 
@@ -1428,17 +1557,26 @@ export class HistoricalValidationService {
   }
 
   /**
-   * WP-08-01G (A4): Validate that the target master exists, belongs to the
-   * caller's tenant, and matches the alias's entityType.
+   * WP-08-01G (A4) / WP-08-01F DEFECT 5: Validate that the target master
+   * exists, belongs to the caller's tenant, and matches the alias's
+   * entityType.
    *
-   * The supported entity types are the master-data entity types:
-   *   supplier, customer, location, factory (external_factories)
+   * Supported entity types (DEFECT 5 — complete master type support):
+   *   - supplier (suppliers table)
+   *   - customer (customers table)
+   *   - location (locations table)
+   *   - factory (external_factories table)
+   *   - fiber_type (fiber_types table)
+   *   - product_type (product_types table)
+   *   - quality_parameter (quality_parameters table)
+   *   - item / batch / lot (inventory_items table — item_kind
+   *     distinguishes them; for 'batch'/'lot' the caller MUST supply an
+   *     inventory_items.id and we only verify existence + tenant scope)
    *
-   * For other entity types (item, batch, lot, fiber_type, product_type,
-   * quality_parameter), the MasterDataRepository does not provide a
-   * findById method. The approval fails with INVALID_ALIAS_TARGET — the
-   * operator must use a supported master-data entity type, or extend the
-   * MasterDataRepository with the missing findById method.
+   * For other entity types (e.g. 'unknown', 'party', custom strings),
+   * approval fails with INVALID_ALIAS_TARGET — the operator must use a
+   * supported master-data entity type, or extend the MasterDataRepository
+   * with the missing findById method.
    *
    * Throws InvalidAliasTargetError if the master is not found.
    */
@@ -1467,6 +1605,36 @@ export class HistoricalValidationService {
       case "factory": {
         const factory = await repo.findExternalFactoryById(tenantId, targetMasterId);
         if (!factory) throw new InvalidAliasTargetError("", targetMasterId, entityType);
+        return;
+      }
+      // WP-08-01F DEFECT 5 — fiber/product/quality/inventory masters.
+      case "fiber_type":
+      case "fiber": {
+        const fiberType = await repo.findFiberTypeById(tenantId, targetMasterId);
+        if (!fiberType) throw new InvalidAliasTargetError("", targetMasterId, entityType);
+        return;
+      }
+      case "product_type":
+      case "product": {
+        const productType = await repo.findProductTypeById(tenantId, targetMasterId);
+        if (!productType) throw new InvalidAliasTargetError("", targetMasterId, entityType);
+        return;
+      }
+      case "quality_parameter": {
+        const qp = await repo.findQualityParameterById(tenantId, targetMasterId);
+        if (!qp) throw new InvalidAliasTargetError("", targetMasterId, entityType);
+        return;
+      }
+      case "item":
+      case "batch":
+      case "lot": {
+        // inventory_items is the canonical stock identity (Contract 03
+        // §9.1). For 'batch'/'lot' entity types, the caller resolves
+        // through the same inventory_items table — the item_kind
+        // column distinguishes raw_material_batch vs. yarn_lot. We
+        // only verify existence + tenant scope here.
+        const item = await repo.findInventoryItemById(tenantId, targetMasterId);
+        if (!item) throw new InvalidAliasTargetError("", targetMasterId, entityType);
         return;
       }
       default:
@@ -1498,5 +1666,293 @@ export class HistoricalValidationService {
   ): Promise<ImportHumanReviewItem[]> {
     requirePermission(effective, "migration.review");
     return this.deps.repository.findHumanReviewItemsForBatch(user.tenantId, batchId);
+  }
+
+  // ===========================================================================
+  // WP-08-01F DEFECT 3 — createAliasException
+  //
+  // Contract 08 §8.4.6: a separate alias mapping row with the same groupId
+  // as the default group but a different targetMasterId and explicit
+  // exceptionSourceRowIds. The exception is approved by the same
+  // Owner/Accountant permission as a regular alias approval.
+  //
+  // The exception row is INSERTED (not updated in place) with:
+  //   - same tenantId + importBatchId + entityType + groupId as the default
+  //   - different sourceLabel (the partial unique index on
+  //     (tenant, batch, entity, sourceLabel) WHERE is_current=true
+  //     requires distinct source labels)
+  //   - different targetMasterId (the exception's target)
+  //   - status='approved' (the operator explicitly approves the exception)
+  //   - exceptionSourceRowIds=[row1, row2, ...] (the staging row numbers
+  //     split off from the default group)
+  //
+  // The default group alias is NOT modified — group approval does NOT
+  // override an exception. The exception row is independently tracked by
+  // submitForApproval's prerequisite check (it appears in
+  // findCurrentAliasMappingsForBatch's result and must be approved).
+  //
+  // Idempotent: same idempotency key + same request → replay (returns the
+  // cached result). Same key + different request → conflict. Technical
+  // failure → retryable_failed. Business precondition failure →
+  // business_failed (durable).
+  // ===========================================================================
+
+  async createAliasException(
+    user: ErpUserContext,
+    effective: EffectivePermissions,
+    input: CreateAliasExceptionInput,
+  ): Promise<CreateAliasExceptionResult> {
+    // 1. Permission: migration.review (Owner/Accountant). Worker rejected.
+    requirePermission(effective, "migration.review");
+    rejectBodyClaimsAuthority(input as unknown as Record<string, unknown>);
+
+    // 2. Input validation — fail closed before any read.
+    if (!input.defaultAliasMappingId?.trim()) {
+      throw new AliasExceptionInputError("defaultAliasMappingId is required.");
+    }
+    if (!input.exceptionSourceLabel?.trim()) {
+      throw new AliasExceptionInputError("exceptionSourceLabel is required.");
+    }
+    if (!input.targetMasterId?.trim()) {
+      throw new AliasExceptionInputError("targetMasterId is required.");
+    }
+    if (!input.idempotencyKey?.trim()) {
+      throw new AliasExceptionInputError("idempotencyKey is required.");
+    }
+    if (!Array.isArray(input.exceptionSourceRowIds) || input.exceptionSourceRowIds.length === 0) {
+      throw new AliasExceptionInputError("exceptionSourceRowIds must be a non-empty array of staging row numbers.");
+    }
+    // All row ids must be positive integers.
+    for (const r of input.exceptionSourceRowIds) {
+      if (typeof r !== "number" || !Number.isFinite(r) || r <= 0 || !Number.isInteger(r)) {
+        throw new AliasExceptionInputError(`exceptionSourceRowIds must contain positive integers; got '${String(r)}'.`);
+      }
+    }
+
+    // 3. Load the default alias mapping. Must be current + tenant-scoped.
+    const defaultAlias = await this.deps.repository.findAliasMappingById(
+      user.tenantId, input.defaultAliasMappingId,
+    );
+    if (!defaultAlias) {
+      throw new AliasMappingNotFoundError(input.defaultAliasMappingId);
+    }
+    requireTenantMatch(user, defaultAlias.tenantId);
+    if (!defaultAlias.isCurrent) {
+      throw new AliasMappingNotCurrentError(input.defaultAliasMappingId);
+    }
+
+    // 4. Validate that the exception source label differs from the
+    //    default's source label — the partial unique index requires it.
+    if (input.exceptionSourceLabel === defaultAlias.sourceLabel) {
+      throw new AliasExceptionSourceLabelConflictError(defaultAlias.id, input.exceptionSourceLabel);
+    }
+
+    // 5. Idempotency claim.
+    const now = new Date();
+    const claim = await claimIdempotency(this.deps.idempotency, {
+      tenantId: user.tenantId,
+      operationScope: "historical_alias_mapping.create_exception",
+      idempotencyKey: input.idempotencyKey,
+      requestBody: {
+        defaultAliasMappingId: input.defaultAliasMappingId,
+        exceptionSourceLabel: input.exceptionSourceLabel,
+        targetMasterId: input.targetMasterId,
+        exceptionSourceRowIds: input.exceptionSourceRowIds,
+        notes: input.notes,
+        mappingVersion: input.mappingVersion,
+      } as Record<string, unknown>,
+      initiatedBy: user.userId,
+      leaseDurationMs: 30000,
+      now,
+    });
+
+    if (claim.action === "replay") {
+      // Durable business failure replay.
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
+        throw new HistoricalValidationError(
+          errorBody?.code ?? "BUSINESS_FAILED",
+          errorBody?.message ?? "Previous business failure (durable).",
+        );
+      }
+      const responseBody = claim.record.responseBody as Partial<CreateAliasExceptionResult> | null;
+      if (responseBody?.exceptionAliasMappingId) {
+        return { ...responseBody, action: "replayed" } as CreateAliasExceptionResult;
+      }
+    }
+    if (claim.action === "conflict") {
+      throw new HistoricalValidationError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict — same key with different request body.");
+    }
+    if (claim.action === "in_progress") {
+      throw new HistoricalValidationError("OPERATION_IN_PROGRESS", "Alias exception creation in progress.");
+    }
+
+    // 6. Transaction runner + factories are mandatory for production.
+    if (!this.deps.transactionRunner || !this.deps.createRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
+      throw new HistoricalValidationError(
+        "VALIDATION_FAILED",
+        "createAliasException requires transactionRunner + tx-scoped factories. Missing transaction configuration.",
+      );
+    }
+
+    const executeAtomically = async (
+      repo: HistoricalValidationRepository,
+      masterDataRepo: MasterDataRepository | undefined,
+      auditHandle: AuditTransactionHandle,
+      idemHandle: IdempotencyTransactionHandle,
+      nonTxIdemHandle: IdempotencyTransactionHandle,
+    ): Promise<CreateAliasExceptionResult> => {
+      try {
+        // 6a. Validate the target master against the alias's entityType.
+        if (!masterDataRepo) {
+          throw new MasterDataRepositoryNotConfiguredError();
+        }
+        await this.validateTargetMaster(masterDataRepo, user.tenantId, defaultAlias.entityType, input.targetMasterId);
+
+        // 6b. Check for an existing current alias mapping for this
+        //     (entityType, exceptionSourceLabel) — if one exists, this
+        //     is a duplicate exception creation. Fail closed.
+        const existing = await repo.findAliasMappingBySourceLabel(
+          user.tenantId, defaultAlias.importBatchId,
+          defaultAlias.entityType, input.exceptionSourceLabel,
+        );
+        if (existing) {
+          throw new AliasAlreadyApprovedError(existing.id, existing.targetMasterId);
+        }
+
+        // 6c. Insert the new exception alias mapping row with the same
+        //     groupId as the default. status='approved' (the operator
+        //     explicitly approves the exception). exceptionSourceRowIds
+        //     is set on the new row.
+        const exceptionNormalizedName = input.exceptionNormalizedName?.trim()
+          ? input.exceptionNormalizedName.trim().toLowerCase()
+          : input.exceptionSourceLabel.trim().toLowerCase();
+        const newAlias = await repo.insertAliasMapping({
+          tenantId: user.tenantId,
+          importBatchId: defaultAlias.importBatchId,
+          entityType: defaultAlias.entityType,
+          sourceLabel: input.exceptionSourceLabel,
+          normalizedName: exceptionNormalizedName,
+          targetMasterId: input.targetMasterId,
+          mappingVersion: input.mappingVersion,
+          confidenceScore: "1.000000", // operator-approved — full confidence
+          status: "approved",
+          notes: input.notes,
+          createdBy: user.userId,
+          groupId: defaultAlias.groupId,
+          occurrenceCount: input.exceptionSourceRowIds.length,
+          exceptionSourceRowIds: input.exceptionSourceRowIds,
+        });
+
+        // 6d. Set the approval metadata on the new row.
+        await repo.updateAliasMappingStatus(
+          user.tenantId, newAlias.id, {
+            status: "approved",
+            targetMasterId: input.targetMasterId,
+            approvedBy: user.userId,
+            approvedAt: now,
+            mappingVersion: input.mappingVersion,
+            notes: input.notes,
+          },
+        );
+
+        // 6e. Audit.
+        await appendAuditLog(auditHandle, user.tenantId, user.userId, {
+          entityType: "import_alias_mapping",
+          entityId: newAlias.id,
+          actionType: "historical_alias.create_exception",
+          oldValuesJson: {
+            defaultAliasMappingId: defaultAlias.id,
+            defaultSourceLabel: defaultAlias.sourceLabel,
+            defaultTargetMasterId: defaultAlias.targetMasterId,
+          },
+          newValuesJson: {
+            exceptionAliasMappingId: newAlias.id,
+            importBatchId: defaultAlias.importBatchId,
+            entityType: defaultAlias.entityType,
+            exceptionSourceLabel: input.exceptionSourceLabel,
+            exceptionNormalizedName,
+            targetMasterId: input.targetMasterId,
+            mappingVersion: input.mappingVersion,
+            groupId: defaultAlias.groupId,
+            exceptionSourceRowIds: input.exceptionSourceRowIds,
+            approvedBy: user.userId,
+            approvedAt: now.toISOString(),
+            notes: input.notes,
+          },
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        const result: CreateAliasExceptionResult = {
+          action: "executed",
+          exceptionAliasMappingId: newAlias.id,
+          defaultAliasMappingId: defaultAlias.id,
+          groupId: defaultAlias.groupId,
+          entityType: defaultAlias.entityType,
+          targetMasterId: input.targetMasterId,
+          exceptionSourceRowIds: input.exceptionSourceRowIds,
+        };
+
+        await markSucceeded(idemHandle, claim.record.id, {
+          responseCode: 200, responseBody: result,
+          entityType: "import_alias_mapping", entityId: newAlias.id,
+        }, claim.record.ownerToken!, now);
+
+        return result;
+      } catch (e) {
+        // Classify failures the same way as approveAliasMapping.
+        const isBusinessError =
+          e instanceof AliasMappingNotFoundError ||
+          e instanceof AliasMappingNotCurrentError ||
+          e instanceof InvalidAliasTargetError ||
+          e instanceof MasterDataRepositoryNotConfiguredError ||
+          e instanceof AliasAlreadyApprovedError ||
+          e instanceof AliasExceptionInputError ||
+          e instanceof AliasExceptionSourceLabelConflictError ||
+          (e instanceof HistoricalValidationError && e.code !== "IDEMPOTENCY_CONFLICT" && e.code !== "OPERATION_IN_PROGRESS");
+
+        if (isBusinessError) {
+          await markBusinessFailed(nonTxIdemHandle, claim.record.id, {
+            responseCode: 400,
+            responseBody: { code: (e as any)?.code ?? "ALIAS_EXCEPTION_FAILED", message: (e as Error).message },
+            lastErrorClass: (e as Error).name ?? "Error",
+          }, claim.record.ownerToken!, now);
+        }
+        throw e;
+      }
+    };
+
+    try {
+      return await this.deps.transactionRunner!(async (tx: unknown) => {
+        const txRepo = this.deps.createRepository(tx);
+        const txMasterData = this.deps.createMasterDataRepository ? this.deps.createMasterDataRepository(tx) : this.deps.masterDataRepository;
+        const txAudit = this.deps.createAudit(tx);
+        const txIdem = this.deps.createIdempotency(tx);
+        return executeAtomically(txRepo, txMasterData, txAudit, txIdem, this.deps.idempotency);
+      });
+    } catch (error) {
+      const isOwnerLoss = error instanceof Error && error.constructor.name === "IdempotencyOwnershipLostError";
+      const isBusiness =
+        error instanceof AliasMappingNotFoundError ||
+        error instanceof AliasMappingNotCurrentError ||
+        error instanceof InvalidAliasTargetError ||
+        error instanceof MasterDataRepositoryNotConfiguredError ||
+        error instanceof AliasAlreadyApprovedError ||
+        error instanceof AliasExceptionInputError ||
+        error instanceof AliasExceptionSourceLabelConflictError ||
+        (error instanceof HistoricalValidationError && error.code !== "IDEMPOTENCY_CONFLICT" && error.code !== "OPERATION_IN_PROGRESS");
+      if (!isOwnerLoss && !isBusiness) {
+        try {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 500,
+            responseBody: { message: error instanceof Error ? error.message : String(error) },
+            lastErrorClass: error instanceof Error ? error.constructor.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // Fallback: record stays in_progress, expires via lease.
+        }
+      }
+      throw error;
+    }
   }
 }

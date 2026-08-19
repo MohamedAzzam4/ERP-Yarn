@@ -688,6 +688,75 @@ export async function runValidationAction(formData: FormData): Promise<void> {
 }
 
 // ===========================================================================
+// WP-08-01F DEFECT 3 — createAliasExceptionAction
+//
+// Creates an exception/subgroup alias mapping row with the same groupId
+// as the default group alias but a different targetMasterId and explicit
+// exceptionSourceRowIds. The exception is approved by the same
+// Owner/Accountant permission as a regular alias approval.
+// ===========================================================================
+
+export async function createAliasExceptionAction(formData: FormData): Promise<void> {
+  const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
+  const defaultAliasMappingId = parseRequiredString(formData, "defaultAliasMappingId");
+  const batchId = parseOptionalString(formData, "batchId");
+  const exceptionSourceLabel = parseRequiredString(formData, "exceptionSourceLabel");
+  const targetMasterId = parseRequiredString(formData, "targetMasterId");
+  const exceptionSourceRowIdsRaw = String(formData.get("exceptionSourceRowIds") ?? "");
+  const exceptionSourceRowIds: number[] = exceptionSourceRowIdsRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => {
+      const n = parseInt(s, 10);
+      if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+        throw new Error("VALIDATION_FAILED: exceptionSourceRowIds must contain positive integers.");
+      }
+      return n;
+    });
+  const notes = parseOptionalString(formData, "notes");
+  const mappingVersion = parseOptionalString(formData, "mappingVersion");
+  const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
+  const { validationService } = getMigrationServices();
+  try {
+    await validationService.createAliasException(authResult as any, effective as any, {
+      defaultAliasMappingId,
+      exceptionSourceLabel,
+      targetMasterId,
+      exceptionSourceRowIds,
+      notes,
+      mappingVersion,
+      idempotencyKey,
+    });
+  } catch (e) {
+    if (e instanceof Error) {
+      const code = (e as any)?.code ?? e.name;
+      if (
+        code === "ALIAS_MAPPING_NOT_FOUND" ||
+        code === "ALIAS_NOT_CURRENT" ||
+        code === "INVALID_ALIAS_TARGET" ||
+        code === "ALIAS_ALREADY_APPROVED" ||
+        code === "CONFIGURATION_ERROR" ||
+        code === "IDEMPOTENCY_CONFLICT" ||
+        code === "OPERATION_IN_PROGRESS" ||
+        code === "ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT" ||
+        code === "VALIDATION_FAILED"
+      ) {
+        if (batchId) {
+          redirect(`/management/admin/migration/${batchId}?error=alias-exception&code=${encodeURIComponent(code)}`);
+        } else {
+          redirect(`/management/admin/migration?error=alias-exception&code=${encodeURIComponent(code)}`);
+        }
+      }
+    }
+    throw e;
+  }
+  if (batchId) {
+    revalidatePath(`/management/admin/migration/${batchId}`);
+  }
+}
+
+// ===========================================================================
 // WP-08-01G (A9) — approveAliasMappingAction
 //
 // Contract 08 §8.4.1-§8.4.8: alias approval workflow. An Owner or

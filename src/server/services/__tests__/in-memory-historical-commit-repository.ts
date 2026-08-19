@@ -170,6 +170,27 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
     return updated;
   }
 
+  /**
+   * WP-08-01F Milestone B (COM-CONC-1) — Conditional status restore.
+   *
+   * Mirrors the Postgres impl: only restore `approved_for_commit` when
+   * the current status is `committing`. The in-memory store is
+   * single-threaded (no concurrency), so the conditional check is
+   * equivalent to the atomic `UPDATE ... WHERE status = 'committing'`.
+   */
+  async restoreApprovedForCommitIfCommitting(
+    tenantId: string,
+    batchId: string,
+  ): Promise<void> {
+    const key = `${tenantId}:${batchId}`;
+    const batch = this.batches.get(key);
+    if (!batch) return;
+    if (batch.status !== "committing") return;
+    const updated = { ...batch, status: "approved_for_commit" as any, updatedAt: NOW() };
+    this.batches.set(key, updated);
+  }
+
+
   async updateBatchCommitMetadata(
     tenantId: string,
     batchId: string,
@@ -473,4 +494,44 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
     return this.aliasMappings.get(`${tenantId}:${importBatchId}`) ?? [];
   }
+
+  /**
+   * WP-08-01F Milestone B (COM-CONC-2B) — In-memory impl of the
+   * supersession detector. The in-memory store only retains current
+   * rows (see `seedAliasMappings`), so this method returns an empty
+   * list. The Postgres path returns approved mappings with
+   * is_current=false. There is no in-memory COM-CONC-2B test, so this
+   * stub is sufficient.
+   */
+  async findSupersededApprovedAliasMappingsForBatch(
+    tenantId: string,
+    importBatchId: string,
+  ): Promise<ImportAliasMapping[]> {
+    void tenantId;
+    void importBatchId;
+    return [];
+  }
+
+
+  /**
+   * WP-08-01F DEFECT 5/6/7/8 — Validate that the target master referenced
+   * by an alias mapping still exists and belongs to the caller's tenant.
+   * In-memory test implementation: consults the seeded valid master ids
+   * set (or returns false for unseeded/unrecognized entity types).
+   */
+  async findMasterForAlias(
+    tenantId: string,
+    entityType: string,
+    targetMasterId: string,
+  ): Promise<boolean> {
+    if (!targetMasterId) return false;
+    const key = `${tenantId}:${entityType}:${targetMasterId}`;
+    return this.validMasterIds.has(key);
+  }
+  /** Seed a valid (tenant, entityType, targetMasterId) tuple for the
+   * findMasterForAlias check. Test-only helper. */
+  seedValidMaster(tenantId: string, entityType: string, targetMasterId: string): void {
+    this.validMasterIds.add(`${tenantId}:${entityType}:${targetMasterId}`);
+  }
+  private validMasterIds = new Set<string>();
 }

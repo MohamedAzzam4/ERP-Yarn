@@ -247,6 +247,59 @@ export class CommitFaultInjectedError extends HistoricalCommitError {
   }
 }
 
+// WP-08-01F DEFECT 8 — alias revalidation under lock errors.
+export class CommitAliasRevalidationError extends HistoricalCommitError {
+  constructor(batchId: string, message: string) {
+    super(
+      "ALIAS_REVALIDATION_FAILED",
+      `Cannot commit batch '${batchId}': alias mapping state changed since dual approval. ${message}`,
+    );
+    this.name = "CommitAliasRevalidationError";
+  }
+}
+
+export class CommitUnresolvedAliasError extends CommitAliasRevalidationError {
+  constructor(batchId: string, unresolvedCount: number, examples: string[]) {
+    super(
+      batchId,
+      `${unresolvedCount} alias mapping(s) are no longer approved with a non-null targetMasterId. ` +
+      `Examples: ${examples.slice(0, 5).join(", ")}${examples.length > 5 ? " …" : ""}.`,
+    );
+    this.name = "CommitUnresolvedAliasError";
+  }
+}
+
+export class CommitInvalidAliasTargetError extends CommitAliasRevalidationError {
+  constructor(batchId: string, aliasMappingId: string, targetMasterId: string | null, entityType: string) {
+    super(
+      batchId,
+      `Alias mapping '${aliasMappingId}' has status='approved' but targetMasterId='${targetMasterId ?? "null"}' ` +
+      `no longer resolves to a valid master of type '${entityType}'. The target master was inactivated or deleted since dual approval.`,
+    );
+    this.name = "CommitInvalidAliasTargetError";
+  }
+}
+
+export class CommitAliasNotCurrentError extends CommitAliasRevalidationError {
+  constructor(batchId: string, aliasMappingId: string) {
+    super(
+      batchId,
+      `Alias mapping '${aliasMappingId}' is no longer the current mapping (is_current=false). It has been superseded since dual approval.`,
+    );
+    this.name = "CommitAliasNotCurrentError";
+  }
+}
+
+export class CommitAliasMappingVersionMismatchError extends CommitAliasRevalidationError {
+  constructor(batchId: string, aliasMappingId: string, aliasMappingVersion: string | null, batchMappingVersion: string | null) {
+    super(
+      batchId,
+      `Alias mapping '${aliasMappingId}' has mappingVersion='${aliasMappingVersion ?? "null"}' but the batch's current mappingVersion='${batchMappingVersion ?? "null"}'. The alias was approved against a stale mapping version.`,
+    );
+    this.name = "CommitAliasMappingVersionMismatchError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Transaction runner types (for atomic commit).
 // ---------------------------------------------------------------------------
@@ -1066,10 +1119,20 @@ export class HistoricalCommitService {
       // Restore batch status to approved_for_commit (retryable).
       // Best-effort: for the Postgres path this is a no-op (rollback already
       // restored the status); for the in-memory path it undoes "committing".
+      //
+      // WP-08-01F Milestone B (COM-CONC-1) — CONDITIONAL restore:
+      // Use the atomic `restoreApprovedForCommitIfCommitting` primitive
+      // (single-statement `UPDATE ... WHERE status = 'committing'`) instead
+      // of an unconditional `updateBatchStatus`. This prevents the catch
+      // block of a LOSING concurrent commit from overwriting the WINNING
+      // commit's `committed` status with `approved_for_commit`. Without
+      // this gate, two concurrent commits on the same batch can both
+      // return settled (one fulfilled, one rejected) yet leave the batch
+      // in `approved_for_commit` — exactly the COM-CONC-1 regression.
       try {
         await Promise.race([
-          this.deps.repository.updateBatchStatus(
-            user.tenantId, input.importBatchId, "approved_for_commit",
+          this.deps.repository.restoreApprovedForCommitIfCommitting(
+            user.tenantId, input.importBatchId,
           ),
           new Promise((_, reject) => setTimeout(() => reject(new Error("status restore timeout")), 10000)),
         ]);
@@ -1292,6 +1355,92 @@ export class HistoricalCommitService {
           throw new UnacknowledgedWarningsError(
             batch.id, lockedBatch.warningCount - lockedBatch.acceptedWarningCount,
           );
+        }
+
+        // WP-08-01F DEFECT 8 — Alias revalidation under lock.
+        //
+        // Re-read all current alias mappings for the batch and verify:
+        //   - All required mappings are approved with non-null target
+        //     (status='approved' AND targetMasterId IS NOT NULL).
+        //   - All required exceptions are approved (an exception alias is
+        //     a separate current alias row with the same groupId but a
+        //     different targetMasterId and explicit
+        //     exceptionSourceRowIds; it must be approved independently
+        //     of the default group alias — group approval does NOT
+        //     override an exception).
+        //   - Each alias mapping is the CURRENT mapping (is_current=true)
+        //     — superseded mappings are immutable audit history.
+        //   - The alias mapping's mappingVersion matches the batch's
+        //     current mappingVersion (when both are non-null).
+        //   - Each approved alias's targetMasterId still resolves to a
+        //     valid master of the correct entityType via
+        //     commitRepo.findMasterForAlias (catches a master that was
+        //     inactivated/deleted since dual approval).
+        //
+        // If any alias state changed since dual approval, fail closed
+        // (business_failed durable — same key + same request returns the
+        // same failure). The operator must re-approve the affected alias
+        // with a new idempotency key after fixing the precondition.
+        const commitAliasMappings = await repo.findCurrentAliasMappingsForBatch(
+          user.tenantId, batch.id,
+        );
+        const commitUnresolvedAliases = commitAliasMappings.filter(
+          a => !a.isCurrent || a.status !== "approved" || a.targetMasterId === null,
+        );
+        if (commitUnresolvedAliases.length > 0) {
+          const notCurrent = commitUnresolvedAliases.find(a => !a.isCurrent);
+          if (notCurrent) {
+            throw new CommitAliasNotCurrentError(batch.id, notCurrent.id);
+          }
+          const examples = commitUnresolvedAliases.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
+          throw new CommitUnresolvedAliasError(batch.id, commitUnresolvedAliases.length, examples);
+        }
+        for (const alias of commitAliasMappings) {
+          const targetId = alias.targetMasterId!;
+          const ok = await repo.findMasterForAlias(
+            user.tenantId, alias.entityType, targetId,
+          );
+          if (!ok) {
+            throw new CommitInvalidAliasTargetError(
+              batch.id, alias.id, targetId, alias.entityType,
+            );
+          }
+        }
+        // DEFECT 7/8: mappingVersion binding check.
+        const commitBatchMappingVersion = lockedBatch.mappingVersion ?? null;
+        for (const alias of commitAliasMappings) {
+          const aliasMappingVersion = alias.mappingVersion ?? null;
+          if (commitBatchMappingVersion !== null && aliasMappingVersion !== null && aliasMappingVersion !== commitBatchMappingVersion) {
+            throw new CommitAliasMappingVersionMismatchError(
+              batch.id, alias.id, aliasMappingVersion, commitBatchMappingVersion,
+            );
+          }
+        }
+
+        // WP-08-01F Milestone B (COM-CONC-2B) — Detect alias supersession
+        // under the batch row lock.
+        //
+        // `findCurrentAliasMappingsForBatch` filters `is_current=true`, so
+        // a superseded approved mapping is silently filtered OUT of the
+        // result (leaving an empty list when all approved mappings have
+        // been superseded). The existing `!a.isCurrent` filter above is
+        // therefore dead code for the supersession case — it can never
+        // observe a superseded mapping because the query has already
+        // excluded it.
+        //
+        // To catch a concurrent supersession (an approved alias was marked
+        // is_current=false by another transaction between dual approval and
+        // this commit), we explicitly query for approved mappings with
+        // is_current=false. If any exist, the commit must fail closed —
+        // the operator must re-approve the affected alias with a new
+        // idempotency key. This runs INSIDE the commit transaction so it
+        // sees uncommitted supersessions from the same transaction
+        // (exactly the COM-CONC-2B scenario).
+        const supersededApproved = await repo.findSupersededApprovedAliasMappingsForBatch(
+          user.tenantId, batch.id,
+        );
+        if (supersededApproved.length > 0) {
+          throw new CommitAliasNotCurrentError(batch.id, supersededApproved[0]!.id);
         }
       } catch (e) {
         const isBusinessError = e instanceof HistoricalCommitError
