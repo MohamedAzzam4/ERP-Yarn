@@ -28,23 +28,24 @@ contains test fixtures (intentionally unguarded / correctly guarded
 sample files) used by the static-guard-coverage test. These fixtures
 are test DATA, not real scripts that need the guard.
 
-## Discovered Count: 39 paths
+## Discovered Count: 40 paths
 
-The canonical search now discovers 39 paths:
+The canonical search now discovers 40 paths:
 - 35 executable destructive test/QA harness files (Category A)
 - 2 comment/fixture-only files (Category D)
 - 1 new Category A file: wp-08-01f-postgres-reconciliation-atomicity.test.ts
 - 1 new Category A file: wp-08-01f-postgres-rework-atomicity.test.ts
 - 1 new Category A file: wp-08-01f-postgres-submission-atomicity.test.ts
+- 1 new Category A file: wp-08-01f-postgres-commit-atomicity.test.ts
 
 ## Category Counts
 
-- Category A (executable destructive test/QA harness): 37
+- Category A (executable destructive test/QA harness): 38
 - Category B (legitimate production domain deletion): 0
 - Category C (migration/setup): 0
 - Category D (comment / fixture string only — no executable DELETE): 2
 
-A + B + C + D = 37 + 0 + 0 + 2 = 39 = discovered count ✓
+A + B + C + D = 38 + 0 + 0 + 2 = 40 = discovered count ✓
 
 ## Category Definitions
 
@@ -98,6 +99,7 @@ A + B + C + D = 37 + 0 + 0 + 2 = 39 = discovered count ✓
 | 37 | src/server/services/__tests__/wp-08-01f-postgres-reconciliation-atomicity.test.ts | 288-301 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Task 4 (commit 9aec204), corrected in Milestone C proof corrections: removed all audit_logs deletion and trigger-disable; uses per-test unique tenants; audit_logs left immutable. |
 | 38 | src/server/services/__tests__/wp-08-01f-postgres-rework-atomicity.test.ts | 288-301 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Task 2 (commit 6b4003d) — RW-1 through RW-6 rework atomicity proofs. Uses per-test unique tenants; audit_logs left immutable. |
 | 39 | src/server/services/__tests__/wp-08-01f-postgres-submission-atomicity.test.ts | 262-275 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Task 5 (commit 59efe37) — SUB-1 through SUB-8 submission atomicity proofs. Uses per-test unique tenants; audit_logs left immutable. |
+| 40 | src/server/services/__tests__/wp-08-01f-postgres-commit-atomicity.test.ts | ~200-220 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Milestone B — COM-1 through COM-8 commit atomicity proofs. Uses per-test unique tenants; audit_logs left immutable. |
 
 ## Root Cause of the Previous 35-vs-34 Contradiction
 

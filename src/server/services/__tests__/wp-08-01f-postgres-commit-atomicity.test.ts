@@ -1,0 +1,882 @@
+/**
+ * WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs.
+ *
+ * Real PostgreSQL service-level tests exercising the actual
+ * HistoricalCommitService.commitBatch() production path with real
+ * transaction-scoped repositories.
+ *
+ *   COM-1. Success: commit approved_for_commit→committed, one scoped
+ *        commit audit, idempotency succeeded, staging rows have
+ *        committed entity links.
+ *   COM-2. Real technical failure after first operational write
+ *        (updateStagingRowCommitLink): complete rollback, retryable_failed,
+ *        immediate same-key retry succeeds.
+ *   COM-3. Real audit write failure: complete rollback, retryable_failed.
+ *   COM-4. Real owner-token loss: production fence rejects stale owner,
+ *        full rollback of batch/audit, idempotency NOT succeeded.
+ *   COM-5. Same-key/same-payload replay: same response, zero additional
+ *        effects.
+ *   COM-6. Same-key/different-payload conflict: rejected, zero additional
+ *        effects on alternate batch.
+ *   COM-7. Technical failure after all business writes (after_commit_metadata
+ *        fault): rollback of EVERYTHING (staging links, audit, batch
+ *        metadata), retryable_failed.
+ *   COM-8. No gap between operational commit and idempotency success
+ *        (after_mark_succeeded fault): if the transaction rolls back after
+ *        markSucceeded, the idempotency record does NOT show succeeded.
+ *        This proves markSucceeded is INSIDE the operational transaction
+ *        (Milestone B fix closes the previous atomicity gap).
+ *
+ * Audit queries are scoped by tenant, entity type, entity ID, and action.
+ * Never deletes audit_logs. Uses unique test-scoped tenants/entities.
+ */
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { randomUUID } from "node:crypto";
+import postgres from "postgres";
+import { drizzle } from "drizzle-orm/postgres-js";
+import * as schema from "@/server/db/schema";
+import { sql as drizzleSql } from "drizzle-orm";
+import { HistoricalCommitService } from "@/server/services/historical-commit-service";
+import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
+import { AuditDbRepository } from "@/server/services/audit-db-repository";
+import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
+import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
+import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
+import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
+import type { ErpUserContext } from "@/server/auth/erp-context";
+import type { HistoricalCommitRepository } from "@/server/services/historical-commit-repository";
+import type { AuditTransactionHandle } from "@/server/services/audit-service";
+import type { IdempotencyTransactionHandle } from "@/server/services/idempotency-service";
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+
+const DATABASE_URL = process.env.DATABASE_URL;
+const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
+const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
+
+const SAFETY_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
+const describeOrSkip = SAFETY_RESULT.kind === "ok" ? describe : describe.skip;
+
+let sql: ReturnType<typeof postgres>;
+let db: any;
+
+interface TestScope {
+  tenantId: string;
+  ownerId: string;
+  accountantId: string;
+  runSuffix: string;
+}
+
+function newScope(): TestScope {
+  const tenantId = randomUUID();
+  const ownerId = randomUUID();
+  const accountantId = randomUUID();
+  const runSuffix = tenantId.slice(0, 8);
+  return { tenantId, ownerId, accountantId, runSuffix };
+}
+
+function makeOwnerUser(scope: TestScope): ErpUserContext {
+  return {
+    authenticated: true, userId: scope.ownerId, tenantId: scope.tenantId,
+    authId: `auth-${scope.ownerId}`, name: "Owner", email: `o-${scope.ownerId}@test.local`,
+  };
+}
+function makeAccountantUser(scope: TestScope): ErpUserContext {
+  return {
+    authenticated: true, userId: scope.accountantId, tenantId: scope.tenantId,
+    authId: `auth-${scope.accountantId}`, name: "Acct", email: `a-${scope.accountantId}@test.local`,
+  };
+}
+function makeOwnerEffective() {
+  return resolveEffectivePermissions(["owner"], TEST_ROLE_PERMISSION_MATRIX);
+}
+function makeAccountantEffective() {
+  return resolveEffectivePermissions(["accountant"], TEST_ROLE_PERMISSION_MATRIX);
+}
+
+function makeServices(scope: TestScope, faultyTransactionRunner?: <T>(work: (tx: unknown) => Promise<T>) => Promise<T>) {
+  const commitRepo = new HistoricalCommitDbRepository(db);
+  const audit = new AuditDbRepository(db);
+  const idem = new IdempotencyDbRepository(db);
+  const docSeq = new DocumentSequenceDbRepository(db);
+  const transactionRunner = faultyTransactionRunner ?? (async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+    (db as any).transaction(async (tx: any) => work(tx)));
+  const commitService = new HistoricalCommitService({
+    repository: commitRepo, audit, idempotency: idem,
+    transactionRunner,
+    txFactories: {
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createInventoryLedger: () => ({} as any),
+      createSubledger: () => ({} as any),
+      createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+    },
+  });
+  return { commitService, commitRepo, audit, idem, docSeq };
+}
+
+// Real owner-token loss wrapper (same pattern as SUB/RW tests).
+// Overwrites owner_token in the tx BEFORE updateState runs, so the
+// owner-fenced UPDATE in markSucceeded returns 0 rows and throws
+// IdempotencyOwnershipLostError — which rolls back the entire transaction.
+function makeRealOwnerLossIdempotencyWrapper(realIdem: IdempotencyDbRepository, tx: any): IdempotencyTransactionHandle {
+  return {
+    findByTenantScopeKey: (t: string, s: string, k: string) => realIdem.findByTenantScopeKey(t, s, k),
+    insert: (r: any) => realIdem.insert(r),
+    claimExpiredLease: (id: string, a: Date, b: Date, c: Date) => realIdem.claimExpiredLease(id, a, b, c),
+    heartbeat: (id: string, n: Date) => realIdem.heartbeat(id, n),
+    updateState: async (id: string, update: any) => {
+      const newToken = 'stale-' + randomUUID();
+      await (tx as any).execute(drizzleSql`UPDATE idempotency_records SET owner_token = ${newToken} WHERE id = ${id}`);
+      return realIdem.updateState(id, update);
+    },
+  };
+}
+
+// First-write failure wrapper for commit: throws AFTER the first
+// updateStagingRowCommitLink (the first operational write inside the
+// commit transaction). The transaction rolls back, the outer catch
+// marks retryable_failed.
+function makeCommitFirstWriteFailureRepoWrapper(realRepo: HistoricalCommitRepository): HistoricalCommitRepository {
+  let callCount = 0;
+  const wrapped: HistoricalCommitRepository = {
+    findImportBatchById: (t: string, id: string) => realRepo.findImportBatchById(t, id),
+    updateBatchStatus: (t: string, id: string, s: string) => realRepo.updateBatchStatus(t, id, s),
+    updateBatchCommitMetadata: (t: string, id: string, p: any) => realRepo.updateBatchCommitMetadata(t, id, p),
+    updateBatchStagedDataHash: (t: string, id: string, h: string, u: string) => realRepo.updateBatchStagedDataHash(t, id, h, u),
+    insertApproval: (r: any) => realRepo.insertApproval(r),
+    findApprovalsForBatch: (t: string, id: string) => realRepo.findApprovalsForBatch(t, id),
+    findApprovalByRole: (t: string, id: string, r: "owner" | "accountant") => realRepo.findApprovalByRole(t, id, r),
+    invalidateCurrentApprovalsForBatch: (t: string, id: string, by: string, reason: string) => realRepo.invalidateCurrentApprovalsForBatch(t, id, by, reason),
+    findCurrentApprovalsForBatch: (t: string, id: string) => realRepo.findCurrentApprovalsForBatch(t, id),
+    insertBackupEvidence: (r: any) => realRepo.insertBackupEvidence(r),
+    findBackupEvidenceForBatch: (t: string, id: string) => realRepo.findBackupEvidenceForBatch(t, id),
+    insertCutoverLock: (r: any) => realRepo.insertCutoverLock(r),
+    findActiveCutoverLocksForBatch: (t: string, id: string) => realRepo.findActiveCutoverLocksForBatch(t, id),
+    findActiveCutoverLockByScope: (t: string, id: string, s: string) => realRepo.findActiveCutoverLockByScope(t, id, s),
+    releaseCutoverLock: (t: string, id: string, p: any) => realRepo.releaseCutoverLock(t, id, p),
+    releaseAllLocksForBatch: (t: string, id: string, p: any) => realRepo.releaseAllLocksForBatch(t, id, p),
+    findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+    updateStagingRowCommitLink: async (t: string, id: string, p: any) => {
+      const result = await realRepo.updateStagingRowCommitLink(t, id, p);
+      callCount++;
+      if (callCount === 1) {
+        throw new Error("INJECTED_FAILURE_AFTER_FIRST_COMMIT_WRITE");
+      }
+      return result;
+    },
+    findBlockingValidationErrors: (t: string, id: string) => realRepo.findBlockingValidationErrors(t, id),
+    findLatestReconciliationResults: (t: string, id: string) => realRepo.findLatestReconciliationResults(t, id),
+    findCutoverManifestsForBatch: (t: string, id: string) => realRepo.findCutoverManifestsForBatch(t, id),
+    findCurrentAliasMappingsForBatch: (t: string, id: string) => realRepo.findCurrentAliasMappingsForBatch(t, id),
+  };
+  return wrapped;
+}
+
+// Audit-failure handle: insertAuditLog throws, simulating a real audit
+// write failure AFTER the staging row links + commit metadata are written.
+// The transaction rolls back, the outer catch marks retryable_failed.
+function makeAuditFailureHandle(): AuditTransactionHandle {
+  return {
+    insertAuditLog: async (_row: any) => {
+      throw new Error("INJECTED_AUDIT_FAILURE");
+    },
+  };
+}
+
+async function seedTenantAndUsers(scope: TestScope) {
+  const runSuffix = scope.runSuffix;
+  await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status)
+            VALUES (${scope.tenantId}, ${"COM-" + runSuffix}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
+            VALUES (${scope.ownerId}, ${scope.tenantId}, ${"com-o-" + runSuffix}, ${"COM Owner"}, ${"com-o-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
+            VALUES (${scope.accountantId}, ${scope.tenantId}, ${"com-a-" + runSuffix}, ${"COM Acct"}, ${"com-a-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+}
+
+// Seed a batch in `approved_for_commit` state with all commit
+// prerequisites satisfied: staged_data_hash, cutover_manifest_hash,
+// validation_status=passed, reconciliation_status=matched, no warnings.
+async function seedApprovedForCommitBatch(scope: TestScope, batchId: string) {
+  await sql`
+    INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version,
+      mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count,
+      blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status,
+      warning_summary, committed_at, commit_effect_counts, created_by, created_at)
+    VALUES (${batchId}, ${scope.tenantId}, ${"COM-" + batchId.slice(-6)}, ${"approved_for_commit"}::import_batch_status, ${"test"},
+      ${"opening_balance_inventory"}, ${"1.0"}, ${"1.0"}, ${"sha256:manifest"}, ${"opening_balance"}, ${"sha256:test"}, 1,
+      0, 0, 0, ${"passed"}, ${"matched"}, null, null, null, ${scope.ownerId}, NOW())`;
+}
+
+async function seedFileAndStagingRow(scope: TestScope, batchId: string): Promise<{ fileId: string; rowId: string }> {
+  const fileId = randomUUID();
+  await sql`
+    INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash,
+      file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at)
+    VALUES (${fileId}, ${scope.tenantId}, ${batchId}, ${"data.csv"}, ${"local://test"}, ${"sha256:test"},
+      100, ${"text/csv"}, ${"source"}, 1, true, ${scope.ownerId}, NOW())`;
+  const rowId = randomUUID();
+  // Use an "unhandled" row shape so no domain service (InventoryLedger /
+  // Subledger) is required. The commit service will mark the row as
+  // committed with committedEntityType="unhandled".
+  const rowData = {
+    entity_type: "single_yarn",
+    name: "TestYarn",
+    code: "TY001",
+    // No item_id/location_id/quantity, no owner_id/balance → unhandled branch
+  };
+  await sql`
+    INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
+      source_sheet_name, source_row_number, raw_row_json, transformed_row_json,
+      transformation_notes, validation_status, review_status, ai_confidence,
+      committed_entity_type, committed_entity_id, staging_version, is_current,
+      created_by, created_at)
+    VALUES (${rowId}, ${scope.tenantId}, ${batchId}, ${fileId}, ${"opening_balance_inventory"}, ${"data.csv"}, 1,
+      ${JSON.stringify(rowData)}::jsonb,
+      ${JSON.stringify(rowData)}::jsonb,
+      null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${scope.ownerId}, NOW())`;
+  return { fileId, rowId };
+}
+
+// Seed a current Owner approval for the batch (bound to current batch
+// versions/hashes). DEC-069: distinct user identities for Owner and
+// Accountant approvals.
+async function seedCurrentApproval(scope: TestScope, batchId: string, role: "owner" | "accountant", userId: string) {
+  const approvalId = randomUUID();
+  await sql`
+    INSERT INTO import_batch_approvals (id, tenant_id, import_batch_id, approver_role, approver_user_id,
+      staged_data_hash, cutover_manifest_hash, template_version, mapping_version,
+      validation_status, reconciliation_status, warning_summary, approved_at, reason,
+      approval_version, is_current, created_by, created_at)
+    VALUES (${approvalId}, ${scope.tenantId}, ${batchId}, ${role}::migration_approver_role, ${userId},
+      ${"sha256:test"}, ${"sha256:manifest"}, ${"1.0"}, ${"1.0"},
+      ${"passed"}, ${"matched"}, null, NOW(), ${"test approval"},
+      1, true, ${userId}, NOW())`;
+  return approvalId;
+}
+
+// Seed backup evidence (Contract 08 §8.10 — required before commit).
+async function seedBackupEvidence(scope: TestScope, batchId: string) {
+  await sql`
+    INSERT INTO import_backup_evidence (id, tenant_id, import_batch_id, backup_type, backup_location, backup_hash, backup_size_bytes, backup_created_at, verification_notes, created_by, created_at, updated_at, updated_by)
+    VALUES (${randomUUID()}, ${scope.tenantId}, ${batchId}, ${"full"}, ${"s3://b/backup"}, ${"backup-hash"}, 1000, NOW(), ${"verified"}, ${scope.ownerId}, NOW(), null, null)`;
+}
+
+// Seed prior reconciliation evidence so the commit's "no blocking
+// reconciliation results" prerequisite is satisfied.
+async function seedPriorReconciliationEvidence(scope: TestScope, batchId: string, reportVersion: number = 1) {
+  const resultId = randomUUID();
+  await sql`
+    INSERT INTO import_reconciliation_results (id, tenant_id, import_batch_id, report_version, metric_key,
+      expected_value, staged_value, committed_value, difference_value, status, notes, created_by, created_at)
+    VALUES (${resultId}, ${scope.tenantId}, ${batchId}, ${reportVersion}, ${"inventory_opening_qty"},
+      null, ${"100"}, null, null, ${"matched"}, ${"Original review reason evidence"}, ${scope.ownerId}, NOW())`;
+  return resultId;
+}
+
+async function getBatchState(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT status, committed_at, commit_effect_counts, validation_status, reconciliation_status, staged_data_hash, cutover_manifest_hash FROM import_batches WHERE id = ${batchId} AND tenant_id = ${scope.tenantId}`;
+  return rows[0] || null;
+}
+
+async function getScopedAuditCount(scope: TestScope, batchId: string, actionType?: string) {
+  if (actionType) {
+    const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${scope.tenantId} AND entity_id = ${batchId} AND action_type = ${actionType}`;
+    return rows[0]?.c || 0;
+  }
+  const rows = await sql`SELECT count(*)::int AS c FROM audit_logs WHERE tenant_id = ${scope.tenantId} AND entity_id = ${batchId}`;
+  return rows[0]?.c || 0;
+}
+
+async function getIdemState(scope: TestScope, idemKey: string) {
+  const rows = await sql`SELECT state, response_body FROM idempotency_records WHERE tenant_id = ${scope.tenantId} AND idempotency_key = ${idemKey}`;
+  return rows[0] || null;
+}
+
+async function getStagingRowCommitLink(scope: TestScope, rowId: string) {
+  const rows = await sql`SELECT committed_entity_type, committed_entity_id FROM import_staging_rows WHERE id = ${rowId} AND tenant_id = ${scope.tenantId}`;
+  return rows[0] || null;
+}
+
+async function getActiveLockCount(scope: TestScope, batchId: string) {
+  const rows = await sql`SELECT count(*)::int AS c FROM import_cutover_locks WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND released_at IS NULL`;
+  return rows[0]?.c || 0;
+}
+
+async function cleanupScope(scope: TestScope) {
+  await sql`DELETE FROM import_cutover_locks WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_backup_evidence WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_batch_approvals WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_human_review_items WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_reconciliation_results WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_validation_errors WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_staging_cells WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_staging_rows WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_files WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM import_batches WHERE tenant_id = ${scope.tenantId}`;
+  await sql`DELETE FROM idempotency_records WHERE tenant_id = ${scope.tenantId}`;
+  // NOTE: audit_logs, users, tenants intentionally NOT deleted (immutable).
+}
+
+describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (COM-1 through COM-8)", () => {
+  beforeAll(async () => {
+    sql = postgres(DATABASE_URL!, { prepare: false, max: 5, idle_timeout: 10, connect_timeout: 15 });
+    db = drizzle(sql, { schema });
+  }, 30000);
+
+  afterAll(async () => {
+    if (sql) { await sql.end(); }
+  }, 30000);
+
+  // ===========================================================================
+  // COM-1 — SUCCESS
+  // ===========================================================================
+  it("COM-1. success: commit approved_for_commit→committed, one scoped commit audit, idempotency succeeded, staging rows have committed entity links", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    const idemKey = "com1-success-" + randomUUID();
+    const { commitService } = makeServices(scope);
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+
+    const result = await commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: idemKey },
+    );
+
+    expect(result.action).toBe("committed");
+    expect(result.batchId).toBe(batchId);
+    expect(result.committedAt).toBeTruthy();
+    expect(result.stagedRowsCommitted).toBe(1);
+
+    // Batch transitioned to committed.
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("committed");
+    expect(batch!.committed_at).toBeTruthy();
+    expect(batch!.commit_effect_counts).not.toBeNull();
+
+    // Exactly one scoped commit audit.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore + 1);
+    expect(auditAfter).toBe(1);
+
+    // Idempotency succeeded.
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("succeeded");
+
+    // Staging row has committed entity link.
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBe("unhandled");
+    expect(stagingRow!.committed_entity_id).toBeTruthy();
+
+    // Locks released after successful commit.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-2 — REAL TECHNICAL FAILURE AFTER FIRST OPERATIONAL WRITE
+  // ===========================================================================
+  it("COM-2. real failure after first operational write (updateStagingRowCommitLink): full rollback, retryable_failed, immediate retry succeeds", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    const idemKey = "com2-failure-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const docSeq = new DocumentSequenceDbRepository(db);
+    const customService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => makeCommitFirstWriteFailureRepoWrapper(new HistoricalCommitDbRepository(tx as any)),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    await expect(
+      customService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INJECTED_FAILURE_AFTER_FIRST_COMMIT_WRITE/);
+
+    // Full rollback: batch unchanged (status NOT committed).
+    const batchAfter = await getBatchState(scope, batchId);
+    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.committed_at).toBeNull();
+    expect(batchAfter!.commit_effect_counts).toBeNull();
+
+    // Full rollback: staging row has no commit link.
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBeNull();
+    expect(stagingRow!.committed_entity_id).toBeNull();
+
+    // Full rollback: audit delta = 0.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
+
+    // Idempotency state = retryable_failed (exact).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).toBe("retryable_failed");
+
+    // Locks released by the catch block (best-effort).
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    // Immediate same-key retry WITHOUT manual lease expiry.
+    // retryable_failed is reclaimable.
+    const { commitService: goodService } = makeServices(scope);
+    const retryResult = await goodService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: idemKey },
+    );
+    expect(retryResult.action).toBe("committed");
+
+    // Exactly one commit audit (not duplicated by the failed attempt).
+    const auditAfterRetry = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfterRetry).toBe(auditBefore + 1);
+    expect(auditAfterRetry).toBe(1);
+
+    // Idempotency succeeded after retry.
+    const idemAfterRetry = await getIdemState(scope, idemKey);
+    expect(idemAfterRetry!.state).toBe("succeeded");
+
+    // Staging row now has committed entity link.
+    const stagingRowAfterRetry = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRowAfterRetry!.committed_entity_type).toBe("unhandled");
+    expect(stagingRowAfterRetry!.committed_entity_id).toBeTruthy();
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-3 — REAL AUDIT WRITE FAILURE
+  // ===========================================================================
+  it("COM-3. real audit failure: full rollback, retryable_failed", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    const idemKey = "com3-audit-fail-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const docSeq = new DocumentSequenceDbRepository(db);
+    const customService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (_tx: unknown) => makeAuditFailureHandle(),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    await expect(
+      customService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INJECTED_AUDIT_FAILURE/i);
+
+    // Full rollback: batch unchanged.
+    const batchAfter = await getBatchState(scope, batchId);
+    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.committed_at).toBeNull();
+    expect(batchAfter!.commit_effect_counts).toBeNull();
+
+    // Full rollback: staging row has no commit link (rolled back).
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBeNull();
+    expect(stagingRow!.committed_entity_id).toBeNull();
+
+    // Full rollback: commit audit delta = 0 (the audit write threw).
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
+
+    // Idempotency state = retryable_failed (exact).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).toBe("retryable_failed");
+
+    // Locks released.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-4 — REAL OWNER-TOKEN LOSS
+  // ===========================================================================
+  it("COM-4. real owner-token loss: production fence rejects stale owner, full rollback of batch/audit, idempotency NOT succeeded", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    const idemKey = "com4-owner-loss-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const docSeq = new DocumentSequenceDbRepository(db);
+    const customService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => makeRealOwnerLossIdempotencyWrapper(new IdempotencyDbRepository(tx as any), tx as any),
+      },
+    });
+
+    await expect(
+      customService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/owner.*token|ownership/i);
+
+    // Full rollback: batch unchanged (NOT committed).
+    const batchAfter = await getBatchState(scope, batchId);
+    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.committed_at).toBeNull();
+    expect(batchAfter!.commit_effect_counts).toBeNull();
+
+    // Full rollback: staging row has no commit link.
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBeNull();
+    expect(stagingRow!.committed_entity_id).toBeNull();
+
+    // Full rollback: commit audit delta = 0.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
+
+    // Idempotency NOT succeeded (owner-token loss is preserved — the
+    // outer catch does NOT overwrite it).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).not.toBe("succeeded");
+
+    // Locks released by the catch block.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-5 — SAME-KEY/SAME-PAYLOAD REPLAY
+  // ===========================================================================
+  it("COM-5. replay: same response, zero additional batch/audit/staging effects", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    const idemKey = "com5-replay-" + randomUUID();
+    const { commitService } = makeServices(scope);
+
+    // Step 1: initial commit.
+    const initialResult = await commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: idemKey },
+    );
+    expect(initialResult.action).toBe("committed");
+
+    const auditAfterInitial = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const idemAfterInitial = await getIdemState(scope, idemKey);
+    const batchAfterInitial = await getBatchState(scope, batchId);
+    const stagingRowAfterInitial = await getStagingRowCommitLink(scope, rowId);
+
+    // Step 2: replay with same key + same payload.
+    const replayResult = await commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: idemKey },
+    );
+    expect(replayResult.action).toBe("replayed");
+
+    // Same persisted response_body.
+    const idemAfterReplay = await getIdemState(scope, idemKey);
+    expect(idemAfterReplay?.state).toBe("succeeded");
+    expect(JSON.stringify(idemAfterReplay?.response_body)).toBe(JSON.stringify(idemAfterInitial?.response_body));
+
+    // Zero additional audits.
+    expect(await getScopedAuditCount(scope, batchId, "historical_commit.commit")).toBe(auditAfterInitial);
+
+    // Batch state unchanged from replay.
+    const batchAfterReplay = await getBatchState(scope, batchId);
+    expect(batchAfterReplay!.status).toBe(batchAfterInitial!.status);
+    expect(batchAfterReplay!.committed_at).toEqual(batchAfterInitial!.committed_at);
+
+    // Staging row link unchanged.
+    const stagingRowAfterReplay = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRowAfterReplay!.committed_entity_id).toBe(stagingRowAfterInitial!.committed_entity_id);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-6 — SAME-KEY/DIFFERENT-PAYLOAD CONFLICT
+  // ===========================================================================
+  it("COM-6. conflict: same key + different payload → rejected, zero effects on alternate batch", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId1 = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId1);
+    const { rowId: rowId1 } = await seedFileAndStagingRow(scope, batchId1);
+    await seedPriorReconciliationEvidence(scope, batchId1, 1);
+    await seedBackupEvidence(scope, batchId1);
+    await seedCurrentApproval(scope, batchId1, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId1, "accountant", scope.accountantId);
+
+    const batchId2 = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId2);
+    const { rowId: rowId2 } = await seedFileAndStagingRow(scope, batchId2);
+    await seedPriorReconciliationEvidence(scope, batchId2, 1);
+    await seedBackupEvidence(scope, batchId2);
+    await seedCurrentApproval(scope, batchId2, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId2, "accountant", scope.accountantId);
+
+    const idemKey = "com6-conflict-" + randomUUID();
+    const { commitService } = makeServices(scope);
+
+    // Step 1: initial commit on batch1.
+    const initialResult = await commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId1, idempotencyKey: idemKey },
+    );
+    expect(initialResult.action).toBe("committed");
+
+    const audit1AfterInitial = await getScopedAuditCount(scope, batchId1, "historical_commit.commit");
+    const audit2AfterInitial = await getScopedAuditCount(scope, batchId2, "historical_commit.commit");
+    const batch2StateBefore = await getBatchState(scope, batchId2);
+    const stagingRow2Before = await getStagingRowCommitLink(scope, rowId2);
+
+    // Step 2: same key, different payload (batch2 instead of batch1).
+    await expect(
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId2, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT|conflict/i);
+
+    // Zero additional effects on batch1.
+    expect(await getScopedAuditCount(scope, batchId1, "historical_commit.commit")).toBe(audit1AfterInitial);
+
+    // Zero additional effects on batch2 (never written).
+    expect(await getScopedAuditCount(scope, batchId2, "historical_commit.commit")).toBe(audit2AfterInitial);
+    expect(await getScopedAuditCount(scope, batchId2, "historical_commit.commit")).toBe(0);
+
+    // Batch2 state unchanged.
+    const batch2StateAfter = await getBatchState(scope, batchId2);
+    expect(batch2StateAfter!.status).toBe(batch2StateBefore!.status);
+    expect(batch2StateAfter!.committed_at).toBeNull();
+
+    // Batch2 staging row link unchanged.
+    const stagingRow2After = await getStagingRowCommitLink(scope, rowId2);
+    expect(stagingRow2After!.committed_entity_id).toBe(stagingRow2Before!.committed_entity_id);
+
+    // Batch2 locks released (catch block ran).
+    expect(await getActiveLockCount(scope, batchId2)).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-7 — TECHNICAL FAILURE AFTER ALL BUSINESS WRITES (after_commit_metadata fault)
+  // ===========================================================================
+  it("COM-7. technical failure after all business writes (after_commit_metadata): rollback of EVERYTHING, retryable_failed", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    const idemKey = "com7-after-metadata-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    const { commitService } = makeServices(scope);
+
+    // Inject fault AFTER updateBatchCommitMetadata is written but BEFORE
+    // markSucceeded. The transaction rolls back EVERYTHING: staging row
+    // links, audit, batch commit metadata.
+    await expect(
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey, faultInjection: "after_commit_metadata" },
+      ),
+    ).rejects.toThrow(/COMMIT_FAULT_INJECTED/);
+
+    // Full rollback: batch unchanged (NOT committed).
+    const batchAfter = await getBatchState(scope, batchId);
+    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.committed_at).toBeNull();
+    expect(batchAfter!.commit_effect_counts).toBeNull();
+
+    // Full rollback: staging row has no commit link.
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBeNull();
+    expect(stagingRow!.committed_entity_id).toBeNull();
+
+    // Full rollback: commit audit delta = 0 (the audit was written but
+    // the transaction rolled back).
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
+
+    // Idempotency state = retryable_failed (technical failure).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).toBe("retryable_failed");
+
+    // Locks released by the catch block.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-8 — NO GAP BETWEEN OPERATIONAL COMMIT AND IDEMPOTENCY SUCCESS
+  // ===========================================================================
+  it("COM-8. boundary proof: rollback after markSucceeded → idempotency record does NOT show succeeded (markSucceeded is inside the transaction)", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    const idemKey = "com8-after-mark-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    const { commitService } = makeServices(scope);
+
+    // Inject fault AFTER markSucceeded is called. markSucceeded wrote
+    // state='succeeded' inside the transaction. The fault throws →
+    // the transaction rolls back.
+    //
+    // PROOF: if markSucceeded is INSIDE the transaction, the rollback
+    // undoes the state change (idempotency.state goes back to in_progress,
+    // then the outer catch marks it retryable_failed). If markSucceeded
+    // were OUTSIDE the transaction (the pre-Milestone-B gap), the
+    // rollback would NOT undo the state change — idempotency.state
+    // would stay 'succeeded' despite the operational effects being
+    // rolled back.
+    await expect(
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey, faultInjection: "after_mark_succeeded" },
+      ),
+    ).rejects.toThrow(/COMMIT_FAULT_INJECTED/);
+
+    // Full rollback: batch unchanged (NOT committed).
+    const batchAfter = await getBatchState(scope, batchId);
+    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.committed_at).toBeNull();
+    expect(batchAfter!.commit_effect_counts).toBeNull();
+
+    // Full rollback: staging row has no commit link.
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBeNull();
+    expect(stagingRow!.committed_entity_id).toBeNull();
+
+    // Full rollback: commit audit delta = 0.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
+
+    // BOUNDARY PROOF: idempotency.state MUST NOT be 'succeeded'.
+    // The markSucceeded was rolled back with the transaction, then the
+    // outer catch marked retryable_failed. If markSucceeded were outside
+    // the transaction, state would stay 'succeeded' — that's the gap
+    // this test prevents.
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).not.toBe("succeeded");
+    // Specifically, the outer catch marked retryable_failed (technical fault).
+    expect(idemState!.state).toBe("retryable_failed");
+
+    // Locks released by the catch block.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+});

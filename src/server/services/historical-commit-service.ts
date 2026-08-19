@@ -38,6 +38,7 @@
  */
 import "server-only";
 
+import { sql as drizzleSql } from "drizzle-orm";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 import {
   requirePermission,
@@ -50,6 +51,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   type IdempotencyTransactionHandle,
 } from "./idempotency-service";
 import {
@@ -116,9 +118,13 @@ export interface CommitBatchInput {
    * - 'after_lock': fail after acquiring cutover lock (lock must be released)
    * - 'after_first_post': fail after first domain post (all posts must roll back)
    * - 'after_audit': fail after audit write (audit must roll back)
+   * - 'after_commit_metadata': fail after batch commit metadata is written
+   *   (proves all business writes roll back together)
+   * - 'after_mark_succeeded': fail AFTER markSucceeded (proves markSucceeded
+   *   is INSIDE the transaction — rollback undoes the idempotency success)
    * - null: normal execution
    */
-  faultInjection?: "after_lock" | "after_first_post" | "after_audit" | null;
+  faultInjection?: "after_lock" | "after_first_post" | "after_audit" | "after_commit_metadata" | "after_mark_succeeded" | null;
 }
 
 export interface CommitBatchResult {
@@ -258,6 +264,18 @@ export interface HistoricalCommitTransactionScopedFactories {
   createSubledger: (tx: unknown) => SubledgerService;
   /** Create a commit-scoped DocumentSequenceTransactionHandle (for doc_no allocation). */
   createDocumentSequence: (tx: unknown) => DocumentSequenceTransactionHandle;
+  /**
+   * Create a commit-scoped IdempotencyTransactionHandle.
+   *
+   * Required for atomic markSucceeded inside the operational transaction
+   * (Milestone B fix): operational effects + audit + batch committed
+   * metadata + idempotency success must all commit atomically in the
+   * same PostgreSQL transaction.
+   *
+   * When absent (legacy in-memory test path), markSucceeded falls back
+   * to the root handle — but then the atomicity guarantee is lost.
+   */
+  createIdempotency?: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -995,23 +1013,22 @@ export class HistoricalCommitService {
         throw new CommitFaultInjectedError("after_lock", false);
       }
 
-      // ---- Update batch status to committing ----
-      await this.deps.repository.updateBatchStatus(
-        user.tenantId, input.importBatchId, "committing",
-      );
-
       // ---- Execute atomic commit ----
+      // Milestone B fix: the "committing" status update, all operational
+      // writes (staging row links, audit, batch commit metadata), AND
+      // markSucceeded are ALL inside the operational transaction. This
+      // closes the gap where the operational effects could commit while
+      // the idempotency record still says "in_progress".
       const result = await this.executeAtomicCommit(
-        user, batch, input, claim.record.id, now,
+        user, batch, input, claim.record.id, claim.record.ownerToken!, now,
       );
 
       // ---- Release cutover locks (success) ----
+      // Locks remain OUTSIDE the transaction (they're a coordination layer).
+      // They are only released AFTER the operational transaction commits
+      // successfully, so concurrent commits remain blocked for the entire
+      // duration of the commit attempt.
       await this.releaseLocksInternal(user, input.importBatchId, input.idempotencyKey, "commit_succeeded", now);
-
-      await markSucceeded(this.deps.idempotency, claim.record.id, {
-        responseCode: 200, responseBody: result,
-        entityType: COMMIT_ENTITY_TYPE, entityId: input.importBatchId,
-      }, claim.record.ownerToken!, now);
 
       return result;
 
@@ -1025,7 +1042,10 @@ export class HistoricalCommitService {
       // transaction fails. We must always release them here.
       // The Drizzle transaction ROLLBACK undoes: batch status ("committing"),
       // staging row links, domain effects (stock_movements, account_entries),
-      // and audit. We restore batch status to "approved_for_commit" for retry.
+      // audit, batch commit metadata, AND markSucceeded (Milestone B fix).
+      // The restore of batch status below is best-effort — for the Postgres
+      // path, the rollback already restored it; for the in-memory path, the
+      // "committing" status stuck and needs explicit restore.
 
       // All catch-block DB operations are wrapped in timeouts to prevent
       // hanging if the connection pool is in a bad state after transaction
@@ -1043,7 +1063,9 @@ export class HistoricalCommitService {
         // Best-effort lock release — the main error is more important
       }
 
-      // Restore batch status to approved_for_commit (retryable)
+      // Restore batch status to approved_for_commit (retryable).
+      // Best-effort: for the Postgres path this is a no-op (rollback already
+      // restored the status); for the in-memory path it undoes "committing".
       try {
         await Promise.race([
           this.deps.repository.updateBatchStatus(
@@ -1055,17 +1077,58 @@ export class HistoricalCommitService {
         // Best-effort status restore
       }
 
-      // Mark idempotency as business failed (in-memory, always safe)
-      try {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 500,
-          responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "COMMIT_FAILED" },
-          lastErrorClass: (e as Error).name ?? "Error",
-          entityType: COMMIT_ENTITY_TYPE,
-          entityId: input.importBatchId,
-        }, claim.record.ownerToken!, now);
-      } catch {
-        // Best-effort idempotency update
+      // ---- Milestone B fix: classify failure mode ----
+      // Three classes:
+      //   A) Owner-token loss → PRESERVE (do NOT overwrite). The fence
+      //      rejected our claim; another claimant may have already
+      //      taken ownership. We must not overwrite their state.
+      //   B) Business precondition failure (deterministic domain error)
+      //      → business_failed (durable). May already be marked inside
+      //      executePosting's precondition-recheck catch block via the
+      //      NON-tx root handle (commits independently of the rolling-back
+      //      transaction). Marking again here is idempotent — the
+      //      DB-level WHERE clause (state = 'in_progress') ensures a
+      //      second mark is a no-op if the inner catch already marked it.
+      //      This branch also handles CutoverLockConflictError, which is
+      //      thrown BEFORE the operational transaction starts (so the
+      //      inner catch can't mark it).
+      //   C) Technical/system failure (DB error, injected fault, etc.)
+      //      → retryable_failed (reclaimable, immediate same-key retry).
+      const isOwnerLoss = e instanceof Error && e.constructor.name === "IdempotencyOwnershipLostError";
+      // CommitFaultInjectedError extends HistoricalCommitError but is a
+      // TEST-ONLY technical fault — it must NOT be marked business_failed.
+      const isBusinessError = e instanceof HistoricalCommitError
+        && !(e instanceof CommitFaultInjectedError);
+
+      if (isOwnerLoss) {
+        // Preserve — do NOT overwrite the idempotency record. Another
+        // claimant may have taken ownership and marked it themselves.
+      } else if (isBusinessError) {
+        try {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 400,
+            responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "COMMIT_FAILED" },
+            lastErrorClass: (e as Error).name ?? "Error",
+            entityType: COMMIT_ENTITY_TYPE,
+            entityId: input.importBatchId,
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // Best-effort business_failed mark. If it fails (e.g. ownership
+          // lost between our claim and this mark), the idempotency record
+          // remains in_progress and will expire via lease.
+        }
+      } else {
+        try {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 500,
+            responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "COMMIT_FAILED" },
+            lastErrorClass: (e as Error).name ?? "Error",
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // Best-effort retryable_failed mark. If it fails (e.g. ownership
+          // lost between our claim and this mark), the idempotency record
+          // remains in_progress and will expire via lease.
+        }
       }
 
       // Re-throw the original error
@@ -1075,6 +1138,24 @@ export class HistoricalCommitService {
 
   // ===========================================================================
   // Internal: execute atomic commit through domain services.
+  //
+  // Milestone B fix (Contract 06 §15, Contract 08 §8.10):
+  //   The "committing" status update, ALL operational writes (staging row
+  //   links, audit, batch commit metadata), AND markSucceeded are inside
+  //   ONE PostgreSQL transaction. This closes the previous gap where the
+  //   operational effects could commit while the idempotency record still
+  //   said "in_progress" (a retry could double-commit).
+  //
+  //   - Cutover locks remain acquired OUTSIDE the transaction (they're a
+  //     coordination layer, not business data). They are released only
+  //     AFTER the operational transaction commits successfully.
+  //   - Precondition checks are re-run INSIDE the transaction under the
+  //     batch row lock (SELECT ... FOR UPDATE), similar to submitForApproval.
+  //   - Business precondition failures are marked business_failed via the
+  //     NON-tx root handle (commits independently of the rolling-back
+  //     transaction), then re-thrown.
+  //   - markSucceeded is called via the tx-scoped idempotency handle
+  //     (owner-token-fenced) as the LAST step inside the transaction.
   // ===========================================================================
 
   private async executeAtomicCommit(
@@ -1082,6 +1163,7 @@ export class HistoricalCommitService {
     batch: ImportBatch,
     input: CommitBatchInput,
     idempotencyRecordId: string,
+    ownerToken: string,
     now: Date,
   ): Promise<CommitBatchResult> {
     interface TxScoped {
@@ -1090,6 +1172,7 @@ export class HistoricalCommitService {
       inventoryLedger: InventoryLedgerService | null;
       subledger: SubledgerService | null;
       documentSequence: DocumentSequenceTransactionHandle | null;
+      idempotency: IdempotencyTransactionHandle;
       tx: unknown;
     }
     const executePosting = async (txScoped: TxScoped | null): Promise<CommitBatchResult> => {
@@ -1099,10 +1182,145 @@ export class HistoricalCommitService {
       const invLedger = txScoped?.inventoryLedger ?? null;
       const subledger = txScoped?.subledger ?? null;
       const docSeq = txScoped?.documentSequence ?? null;
+      // For markSucceeded: use the tx-scoped handle when inside a real
+      // transaction; fall back to the root handle for the in-memory test
+      // path (no transaction boundary, so atomicity is moot).
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
       // inTransaction is true only when running inside a real Drizzle transaction
       // (production path). In unit tests (txScoped === null), faults are thrown
       // outside a transaction, so the catch block must still release locks.
       const inTransaction = txScoped !== null;
+
+      // ---- Re-fetch batch under FOR UPDATE lock (real DB path only) ----
+      // Similar to submitForApproval: re-read the authoritative batch state
+      // under a row lock so concurrent mutations are visible.
+      let lockedBatch: ImportBatch = batch;
+      if (inTransaction && tx) {
+        const batchRows = await (tx as any).execute(
+          drizzleSql`SELECT id, status, staged_data_hash, cutover_manifest_hash, template_version, mapping_version, validation_status, reconciliation_status, warning_count, accepted_warning_count, warning_summary FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${batch.id} FOR UPDATE`,
+        );
+        if (!batchRows || (batchRows as any[]).length === 0) {
+          throw new CommitBatchNotFoundError(batch.id);
+        }
+        const lockedRow = (batchRows as any[])[0]!;
+        lockedBatch = {
+          ...batch,
+          status: lockedRow.status as any,
+          stagedDataHash: lockedRow.staged_data_hash,
+          cutoverManifestHash: lockedRow.cutover_manifest_hash,
+          templateVersion: lockedRow.template_version,
+          mappingVersion: lockedRow.mapping_version,
+          validationStatus: lockedRow.validation_status,
+          reconciliationStatus: lockedRow.reconciliation_status,
+          warningCount: lockedRow.warning_count,
+          acceptedWarningCount: lockedRow.accepted_warning_count,
+          warningSummary: lockedRow.warning_summary,
+        };
+      }
+
+      // ---- Re-run preconditions under lock ----
+      // Business precondition failures → mark business_failed via the
+      // NON-tx root handle (commits independently of the rolling-back
+      // transaction), then re-throw. The transaction will roll back any
+      // business writes done so far (none, since this is the first step).
+      // Technical errors propagate without marking — the outer catch block
+      // will mark them as retryable_failed.
+      try {
+        // Strict status guard — only approved_for_commit may proceed.
+        // (Allow "committing" for retry cases where a prior attempt set
+        // the status but then failed and the catch block restored it;
+        // this is a defensive check, the restore should have already happened.)
+        if (lockedBatch.status !== "approved_for_commit" && lockedBatch.status !== "committing") {
+          try {
+            guardCommitBatch(lockedBatch);
+          } catch (e) {
+            if (e instanceof MigrationLifecycleError) {
+              throw new InvalidBatchStatusError(
+                batch.id, lockedBatch.status, e.allowedStatuses.join(" | "),
+              );
+            }
+            throw e;
+          }
+        }
+
+        // Re-verify approvals (current set)
+        const approvals = await repo.findCurrentApprovalsForBatch(user.tenantId, batch.id);
+        const ownerApproval = approvals.find(a => a.approverRole === "owner");
+        const accountantApproval = approvals.find(a => a.approverRole === "accountant");
+        if (!ownerApproval || !accountantApproval) {
+          throw new IncompleteDualApprovalError(batch.id, approvals.map(a => a.approverRole));
+        }
+        // DEC-069: distinct user identities
+        if (ownerApproval.approverUserId === accountantApproval.approverUserId) {
+          throw new SameUserDualApprovalError(ownerApproval.approverUserId);
+        }
+
+        // Re-verify approvals are not stale (bind to current batch versions)
+        for (const approval of [ownerApproval, accountantApproval]) {
+          const staleField = findStaleField(approval, lockedBatch);
+          if (staleField) {
+            throw new StaleApprovalError(
+              batch.id,
+              staleField,
+              String((approval as unknown as Record<string, unknown>)[staleField] ?? "null"),
+              String((lockedBatch as unknown as Record<string, unknown>)[staleField] ?? "null"),
+            );
+          }
+        }
+
+        // Re-verify backup evidence exists
+        const backupEvidence = await repo.findBackupEvidenceForBatch(user.tenantId, batch.id);
+        if (backupEvidence.length === 0) {
+          throw new MissingBackupEvidenceError(batch.id);
+        }
+
+        // Re-verify no blocking validation errors or reconciliation results
+        const blockingValidationErrors = await repo.findBlockingValidationErrors(user.tenantId, batch.id);
+        const reconResults = await repo.findLatestReconciliationResults(user.tenantId, batch.id);
+        const blockingRecon = reconResults.filter(r => r.status === "blocking");
+        if (blockingValidationErrors.length > 0 || blockingRecon.length > 0) {
+          throw new BlockingFindingsError(
+            batch.id, blockingValidationErrors.length, blockingRecon.length,
+          );
+        }
+
+        // Re-verify warnings acknowledged
+        if (lockedBatch.warningCount > 0 && !lockedBatch.warningSummary) {
+          throw new UnacknowledgedWarningsError(batch.id, lockedBatch.warningCount);
+        }
+        if (lockedBatch.warningCount > 0 && lockedBatch.acceptedWarningCount < lockedBatch.warningCount) {
+          throw new UnacknowledgedWarningsError(
+            batch.id, lockedBatch.warningCount - lockedBatch.acceptedWarningCount,
+          );
+        }
+      } catch (e) {
+        const isBusinessError = e instanceof HistoricalCommitError
+          && !(e instanceof CommitFaultInjectedError);
+        if (isBusinessError) {
+          // Mark business_failed via the NON-tx root handle so the mark
+          // commits independently of the rolling-back transaction. Same
+          // key + same request returns the same failure (durable replay).
+          try {
+            await markBusinessFailed(this.deps.idempotency, idempotencyRecordId, {
+              responseCode: 400,
+              responseBody: { error: (e as Error).message, code: (e as any)?.code ?? "COMMIT_FAILED" },
+              lastErrorClass: (e as Error).name ?? "Error",
+              entityType: COMMIT_ENTITY_TYPE,
+              entityId: batch.id,
+            }, ownerToken, now);
+          } catch {
+            // Best-effort business_failed mark. If it fails (e.g. ownership
+            // lost between our claim and this mark), the outer catch block
+            // will handle it.
+          }
+        }
+        throw e;
+      }
+
+      // ---- Update batch status to committing (INSIDE the transaction) ----
+      // Moved from outside the transaction (Milestone B fix) so the
+      // "committing" status commits atomically with all other writes.
+      await repo.updateBatchStatus(user.tenantId, batch.id, "committing");
 
       // Fetch staging rows inside the transaction
       const rows = await repo.findStagingRowsForBatch(user.tenantId, batch.id);
@@ -1253,13 +1471,50 @@ export class HistoricalCommitService {
         updatedBy: user.userId,
       });
 
-      return {
+      // ---- Fault injection: after_commit_metadata ----
+      // Proves that all business writes (staging links, audit, batch
+      // commit metadata) roll back together when a technical failure
+      // occurs after they're all written but before markSucceeded.
+      if (input.faultInjection === "after_commit_metadata") {
+        throw new CommitFaultInjectedError("after_commit_metadata", inTransaction);
+      }
+
+      const result: CommitBatchResult = {
         action: "committed",
         batchId: batch.id,
         committedAt: now,
         effectCounts,
         stagedRowsCommitted: committedRows,
       };
+
+      // ---- markSucceeded (INSIDE the transaction, tx-scoped) ----
+      // Milestone B fix: this is the LAST step inside the operational
+      // transaction. operational effects + audit + batch committed
+      // metadata + idempotency success all commit atomically in the
+      // same PostgreSQL transaction. If markSucceeded throws (e.g.
+      // owner-token loss), the entire transaction rolls back, leaving
+      // the batch in approved_for_commit and the idempotency record in
+      // its pre-transaction state.
+      await markSucceeded(idemHandle, idempotencyRecordId, {
+        responseCode: 200, responseBody: result,
+        entityType: COMMIT_ENTITY_TYPE, entityId: batch.id,
+      }, ownerToken, now);
+
+      // ---- Fault injection: after_mark_succeeded ----
+      // BOUNDARY PROOF: this fault is thrown AFTER markSucceeded has
+      // written state='succeeded' inside the transaction. If
+      // markSucceeded is INSIDE the transaction, the rollback undoes
+      // the state change (idempotency.state goes back to in_progress,
+      // then the outer catch marks it retryable_failed). If
+      // markSucceeded were OUTSIDE the transaction, the rollback
+      // would NOT undo the state change (idempotency.state would
+      // stay 'succeeded' despite the operational effects being rolled
+      // back — the gap that Milestone B fixes).
+      if (input.faultInjection === "after_mark_succeeded") {
+        throw new CommitFaultInjectedError("after_mark_succeeded", inTransaction);
+      }
+
+      return result;
     };
 
     // Use transaction runner if available (production path)
@@ -1270,10 +1525,17 @@ export class HistoricalCommitService {
         const txInvLedger = this.deps.txFactories!.createInventoryLedger(tx);
         const txSubledger = this.deps.txFactories!.createSubledger(tx);
         const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+        // Milestone B: use the tx-scoped idempotency handle for
+        // markSucceeded inside the transaction. Fall back to the root
+        // handle when createIdempotency is not provided (legacy
+        // in-memory test path — atomicity is moot there).
+        const txIdem = this.deps.txFactories!.createIdempotency
+          ? this.deps.txFactories!.createIdempotency!(tx)
+          : this.deps.idempotency;
         return executePosting({
           commitRepository: txRepo, audit: txAudit,
           inventoryLedger: txInvLedger, subledger: txSubledger,
-          documentSequence: txDocSeq, tx,
+          documentSequence: txDocSeq, idempotency: txIdem, tx,
         });
       });
     } else {

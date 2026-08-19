@@ -47,6 +47,7 @@
  */
 import "server-only";
 
+import { sql as drizzleSql } from "drizzle-orm";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 import {
   requirePermission,
@@ -313,6 +314,59 @@ export class HistoricalReplacementService {
         const txRepo = this.deps.createStagingRepository(tx);
         const txAudit = this.deps.createAudit(tx);
         const txIdempotency = this.deps.createIdempotency(tx);
+
+        // 0. Lock the batch row (SELECT ... FOR UPDATE) BEFORE any
+        //    mutation. This serializes replacement vs commit vs rework —
+        //    only one of these operations may hold the batch row lock at
+        //    a time. Without this lock, two concurrent transactions could
+        //    both pass their pre-tx lifecycle guard, then both mutate
+        //    the batch (one would win the unique-file-version index,
+        //    the other would error out mid-transaction).
+        //
+        //    Pattern is identical to submitForApproval: re-read the
+        //    authoritative batch state under the row lock, then re-run
+        //    the lifecycle guard against the locked state. If the locked
+        //    batch is no longer in a replaceable state (e.g. a concurrent
+        //    commit just transitioned it to "committed"), fail closed.
+        const batchRows = await (tx as any).execute(
+          drizzleSql`SELECT id, status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+        );
+        if (!batchRows || (batchRows as any[]).length === 0) {
+          throw new HistoricalReplacementError(
+            "BATCH_NOT_FOUND",
+            `Batch '${input.importBatchId}' not found.`,
+          );
+        }
+        const lockedBatchRow = (batchRows as any[])[0]!;
+        const lockedBatch: ImportBatch = {
+          ...batch,
+          status: lockedBatchRow.status,
+        };
+        // Re-run the authoritative replacement lifecycle guard against
+        // the locked batch state. If a concurrent operation moved the
+        // batch out of a replaceable state, this throws — the entire
+        // transaction rolls back (zero effects).
+        try {
+          guardReplaceFile(lockedBatch);
+        } catch (e) {
+          if (e instanceof Error && e.name === "MigrationLifecycleError") {
+            throw new HistoricalReplacementError(
+              "BATCH_NOT_REPLACEABLE",
+              `Batch '${input.importBatchId}' is no longer replaceable under the row lock (current status: '${lockedBatch.status}'). A concurrent operation may have transitioned the batch. ${(e as Error).message}`,
+            );
+          }
+          throw e;
+        }
+        // Reject committed batches again under the lock (post-replacement
+        // corrections use HistoricalCorrectionService). The committed
+        // state is terminal — guardReplaceFile already rejects it, but
+        // we re-check here for an explicit, self-documenting failure.
+        if (lockedBatch.status === "committed") {
+          throw new HistoricalReplacementError(
+            "COMMITTED_BATCH_IMMUTABLE",
+            `Batch '${input.importBatchId}' is committed. Committed batches are immutable — use HistoricalCorrectionService for post-commit corrections.`,
+          );
+        }
 
         // 1. Mark the OLD file as superseded (is_current=false) FIRST.
         //    This must happen BEFORE inserting the new file because the
