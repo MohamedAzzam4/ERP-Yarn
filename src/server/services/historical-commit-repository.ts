@@ -212,7 +212,7 @@ export interface HistoricalCommitRepository {
 
   // ---- Alias mappings (read-only cross-service lookup) ----
   /**
-   * WP-08-01G (A7): Find only CURRENT alias mappings (is_current=true) for
+   * WP-08-01F (A7): Find only CURRENT alias mappings (is_current=true) for
    * a batch. Used by the submission prerequisite check in
    * submitForApproval to verify that every required alias has
    * status='approved' and targetMasterId IS NOT NULL before the batch

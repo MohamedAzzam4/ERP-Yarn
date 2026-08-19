@@ -94,11 +94,11 @@ function getMigrationServices() {
     createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
     createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
-    // WP-08-01G (A4): master-data repository + tx-scoped factory for
+    // WP-08-01F (A4): master-data repository + tx-scoped factory for
     // approveAliasMapping target validation.
     masterDataRepository: new MasterDataDbRepository(db),
     createMasterDataRepository: (tx: unknown) => new MasterDataDbRepository(tx as any),
-    // WP-08-01G (A5): material-remap downstream invalidation callbacks.
+    // WP-08-01F (A5): material-remap downstream invalidation callbacks.
     // Wired to the reconciliation + commit repositories so a remap
     // atomically invalidates approvals, review items, and batch
     // statuses (mirrors the reopenBatchForRework pattern).
@@ -757,7 +757,7 @@ export async function createAliasExceptionAction(formData: FormData): Promise<vo
 }
 
 // ===========================================================================
-// WP-08-01G (A9) — approveAliasMappingAction
+// WP-08-01F (A9) — approveAliasMappingAction
 //
 // Contract 08 §8.4.1-§8.4.8: alias approval workflow. An Owner or
 // Accountant selects a target master (or rejects the candidate) for an

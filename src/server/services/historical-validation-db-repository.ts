@@ -98,7 +98,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       status: row.status as any,
       notes: row.notes,
       createdBy: row.createdBy,
-      // WP-08-01G (A1/A2) — group identity / occurrence metadata.
+      // WP-08-01F (A1/A2) — group identity / occurrence metadata.
       groupId: row.groupId ?? null,
       occurrenceCount: row.occurrenceCount ?? 1,
       exceptionSourceRowIds: row.exceptionSourceRowIds ?? null,
@@ -121,7 +121,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
         eq(importAliasMappings.importBatchId, importBatchId),
         eq(importAliasMappings.entityType, entityType),
         eq(importAliasMappings.sourceLabel, sourceLabel),
-        // WP-08-01G (A1): Only consider the CURRENT mapping. Superseded
+        // WP-08-01F (A1): Only consider the CURRENT mapping. Superseded
         // rows are preserved as audit history but are not active.
         eq(importAliasMappings.isCurrent, true),
       ))
@@ -130,7 +130,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
   }
 
   async deleteAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<void> {
-    // WP-08-01G (A2): NEVER hard-delete alias mappings. The validation
+    // WP-08-01F (A2): NEVER hard-delete alias mappings. The validation
     // service is responsible for superseding (mark is_current=false) any
     // existing CURRENT mappings before creating new ones — but it does
     // NOT call this method on already-approved mappings, so approved
@@ -153,7 +153,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       ));
   }
 
-  // WP-08-01G (A3) — Approve (or reject) a single alias mapping in place.
+  // WP-08-01F (A3) — Approve (or reject) a single alias mapping in place.
   async updateAliasMappingStatus(
     tenantId: string,
     aliasMappingId: string,
@@ -185,7 +185,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
     return result ?? null;
   }
 
-  // WP-08-01G (A3) — Find a single alias mapping by primary key.
+  // WP-08-01F (A3) — Find a single alias mapping by primary key.
   async findAliasMappingById(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null> {
     const [result] = await this.db.select().from(importAliasMappings)
       .where(and(
@@ -196,7 +196,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
     return result ?? null;
   }
 
-  // WP-08-01G (A3) — Find only CURRENT alias mappings for a batch.
+  // WP-08-01F (A3) — Find only CURRENT alias mappings for a batch.
   async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
     return this.db.select().from(importAliasMappings)
       .where(and(
@@ -206,7 +206,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       ));
   }
 
-  // WP-08-01G (A3/A5) — Supersede a single alias mapping by id.
+  // WP-08-01F (A3/A5) — Supersede a single alias mapping by id.
   async supersedeAliasMapping(
     tenantId: string,
     aliasMappingId: string,

@@ -222,6 +222,7 @@ async function seedCandidateAlias(
     groupId?: string | null;
     occurrenceCount?: number;
     exceptionSourceRowIds?: number[] | null;
+    mappingVersion?: string | null;
   } = {},
 ): Promise<string> {
   const aliasId = randomUUID();
@@ -235,7 +236,7 @@ async function seedCandidateAlias(
       group_id, occurrence_count, exception_source_row_ids,
       created_by, created_at, updated_at, updated_by)
     VALUES (${aliasId}, ${scope.tenantId}, ${batchId}, ${entityType}, ${sourceLabel}, ${normalizedName},
-      ${overrides.targetMasterId ?? null}, null, ${"1.000000"}, ${overrides.status ?? "candidate"}, null, null, null,
+      ${overrides.targetMasterId ?? null}, ${overrides.mappingVersion ?? "1.0"}, ${"1.000000"}, ${overrides.status ?? "candidate"}, null, null, null,
       true, null, null, null,
       ${overrides.groupId ?? null}, ${overrides.occurrenceCount ?? 1},
       ${overrides.exceptionSourceRowIds ? JSON.stringify(overrides.exceptionSourceRowIds) : null}::jsonb,

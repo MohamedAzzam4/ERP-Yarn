@@ -320,7 +320,7 @@ export const importAliasMappings = pgTable("import_alias_mappings", {
   approvedBy: uuid("approved_by").references(() => users.id),
   approvedAt: timestamp("approved_at", { withTimezone: true, mode: "date" }),
   notes: text("notes"),
-  // WP-08-01G (A1) — Immutable alias-mapping version supersession fields.
+  // WP-08-01F (A1) — Immutable alias-mapping version supersession fields.
   // When an approved alias mapping is re-approved against a different target
   // master (material remap), the old row is preserved (append-only) and
   // marked is_current=false. New approvals create new rows with
@@ -358,12 +358,12 @@ export const importAliasMappings = pgTable("import_alias_mappings", {
   index("import_alias_mappings_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_alias_mappings_tenant_status_idx").on(t.tenantId, t.status),
   index("import_alias_mappings_tenant_entity_source_idx").on(t.tenantId, t.entityType, t.sourceLabel),
-  // WP-08-01G (A1) — current-row lookup indexes (one per tenant+batch+isCurrent,
+  // WP-08-01F (A1) — current-row lookup indexes (one per tenant+batch+isCurrent,
   // one per tenant+groupId+isCurrent). Without these, every list/approval
   // query degrades to a full scan as supersession history grows.
   index("import_alias_mappings_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
   index("import_alias_mappings_tenant_group_current_idx").on(t.tenantId, t.groupId, t.isCurrent),
-  // WP-08-01G (A1) — Partial unique index: only one CURRENT mapping per
+  // WP-08-01F (A1) — Partial unique index: only one CURRENT mapping per
   // (tenant, batch, entityType, sourceLabel). Superseded (is_current=false)
   // rows may coexist with the current row for the same key, providing
   // append-only audit history. Re-approval to a different target supersedes

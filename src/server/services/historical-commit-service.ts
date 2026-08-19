@@ -1406,42 +1406,45 @@ export class HistoricalCommitService {
             );
           }
         }
-        // DEFECT 7/8: mappingVersion binding check.
+        // DEFECT 7/8: mappingVersion binding check — FAIL CLOSED.
+        //
+        // When the batch has a non-null mappingVersion, every approved
+        // current alias mapping MUST carry a matching non-null
+        // mappingVersion. A null alias mappingVersion is treated as
+        // "no version recorded" — which is unsafe when the batch is
+        // version-bound, so we reject it rather than letting a stale
+        // alias slip through. Legacy batches (mappingVersion=null on
+        // the batch row) accept any alias mappingVersion.
         const commitBatchMappingVersion = lockedBatch.mappingVersion ?? null;
         for (const alias of commitAliasMappings) {
           const aliasMappingVersion = alias.mappingVersion ?? null;
-          if (commitBatchMappingVersion !== null && aliasMappingVersion !== null && aliasMappingVersion !== commitBatchMappingVersion) {
-            throw new CommitAliasMappingVersionMismatchError(
-              batch.id, alias.id, aliasMappingVersion, commitBatchMappingVersion,
-            );
+          if (commitBatchMappingVersion !== null) {
+            if (aliasMappingVersion === null || aliasMappingVersion !== commitBatchMappingVersion) {
+              throw new CommitAliasMappingVersionMismatchError(
+                batch.id, alias.id, aliasMappingVersion, commitBatchMappingVersion,
+              );
+            }
           }
         }
 
-        // WP-08-01F Milestone B (COM-CONC-2B) — Detect alias supersession
-        // under the batch row lock.
+        // WP-08-01F Gap 3 — Historical superseded alias mappings are NOT
+        // a commit blocker.
         //
-        // `findCurrentAliasMappingsForBatch` filters `is_current=true`, so
-        // a superseded approved mapping is silently filtered OUT of the
-        // result (leaving an empty list when all approved mappings have
-        // been superseded). The existing `!a.isCurrent` filter above is
-        // therefore dead code for the supersession case — it can never
-        // observe a superseded mapping because the query has already
-        // excluded it.
+        // A legitimate material remap intentionally creates a superseded
+        // old row (is_current=false) AND a new current row
+        // (is_current=true). The superseded old row is audit evidence of
+        // the prior approval chain — it must not permanently block the
+        // commit. The `findCurrentAliasMappingsForBatch` revalidation
+        // above already verifies the CURRENT mappings are approved, have
+        // a non-null target master, the master still exists, and the
+        // mappingVersion matches. If those checks pass, the commit is
+        // safe to proceed regardless of how many historical superseded
+        // rows exist for the same source label.
         //
-        // To catch a concurrent supersession (an approved alias was marked
-        // is_current=false by another transaction between dual approval and
-        // this commit), we explicitly query for approved mappings with
-        // is_current=false. If any exist, the commit must fail closed —
-        // the operator must re-approve the affected alias with a new
-        // idempotency key. This runs INSIDE the commit transaction so it
-        // sees uncommitted supersessions from the same transaction
-        // (exactly the COM-CONC-2B scenario).
-        const supersededApproved = await repo.findSupersededApprovedAliasMappingsForBatch(
-          user.tenantId, batch.id,
-        );
-        if (supersededApproved.length > 0) {
-          throw new CommitAliasNotCurrentError(batch.id, supersededApproved[0]!.id);
-        }
+        // (Previously this block ran
+        // `findSupersededApprovedAliasMappingsForBatch` and rejected on
+        // any non-empty result. That was a false positive for legitimate
+        // remaps and has been removed.)
       } catch (e) {
         const isBusinessError = e instanceof HistoricalCommitError
           && !(e instanceof CommitFaultInjectedError);

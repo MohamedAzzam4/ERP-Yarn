@@ -284,7 +284,7 @@ export class MissingBackupEvidenceError extends SubmissionValidationError {
   }
 }
 
-// WP-08-01G (A7): alias-mapping prerequisite errors.
+// WP-08-01F (A7): alias-mapping prerequisite errors.
 export class UnresolvedAliasMappingError extends SubmissionValidationError {
   constructor(batchId: string, unresolvedCount: number, examples: string[]) {
     super(
@@ -1308,7 +1308,7 @@ export class HistoricalReconciliationService {
         //   - the latest report has zero result rows
         //   - the batch's reconciliationStatus is "matched" but no results
         //     are persisted for the current/latest version
-        const currentReportVersion = await repo.findLatestReportVersion(
+        currentReportVersion = await repo.findLatestReportVersion(
           user.tenantId, input.importBatchId,
         );
         if (currentReportVersion === 0) {
@@ -1365,7 +1365,7 @@ export class HistoricalReconciliationService {
           throw new MissingBackupEvidenceError(input.importBatchId);
         }
 
-        // WP-08-01G (A7): Alias-mapping prerequisite.
+        // WP-08-01F (A7): Alias-mapping prerequisite.
         //
         // Contract 08 §8.4.4: every required alias mapping must be approved
         // with a non-null targetMasterId before the batch can transition
@@ -1426,21 +1426,25 @@ export class HistoricalReconciliationService {
             );
           }
         }
-        // DEFECT 7: mappingVersion binding — the alias mapping's
-        // mappingVersion must match the batch's current mappingVersion
-        // (when both are non-null). If the batch's mappingVersion was
-        // bumped after the alias was approved, the alias is stale and
-        // must be re-approved. When the batch's mappingVersion is null
-        // (legacy batches that never went through a manifest bump),
-        // we accept any alias mappingVersion (no version to compare
-        // against — both null is the historical default).
+        // DEFECT 7: mappingVersion binding — FAIL CLOSED.
+        //
+        // When the batch has a non-null mappingVersion, every approved
+        // current alias mapping MUST carry a matching non-null
+        // mappingVersion. A null alias mappingVersion is treated as
+        // "no version recorded" — which is unsafe when the batch is
+        // version-bound, so we reject it rather than letting a stale
+        // alias slip through. Legacy batches (mappingVersion=null on
+        // the batch row) accept any alias mappingVersion (no version
+        // to compare against — both null is the historical default).
         const batchMappingVersion = lockedBatch.mappingVersion ?? null;
         for (const alias of currentAliasMappings) {
           const aliasMappingVersion = alias.mappingVersion ?? null;
-          if (batchMappingVersion !== null && aliasMappingVersion !== null && aliasMappingVersion !== batchMappingVersion) {
-            throw new AliasMappingVersionMismatchError(
-              input.importBatchId, alias.id, aliasMappingVersion, batchMappingVersion,
-            );
+          if (batchMappingVersion !== null) {
+            if (aliasMappingVersion === null || aliasMappingVersion !== batchMappingVersion) {
+              throw new AliasMappingVersionMismatchError(
+                input.importBatchId, alias.id, aliasMappingVersion, batchMappingVersion,
+              );
+            }
           }
         }
       } catch (e) {

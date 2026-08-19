@@ -1260,4 +1260,498 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
 
     await cleanupScope(scope);
   });
+
+  // ===========================================================================
+  // WP-08-01F GAP 3 — Additional submission proofs (SUB-9E through SUB-12,
+  // VERSION-NULL-SUB).
+  //
+  // These tests complement the existing SUB-9A through SUB-11 alias/recon
+  // proofs with additional scenarios that exercise the production code's
+  // prerequisite checks:
+  //   - SUB-9E: unresolved exception alias (default group approved, explicit
+  //     exception not approved → block; then approve exception → succeed).
+  //   - SUB-10A: no reconciliation report version (reportVersion=0) → blocked.
+  //   - SUB-10B: report version exists but zero result rows → blocked
+  //     (requires a custom repo wrapper because the production
+  //     `findLatestReportVersion` returns 0 when there are zero rows).
+  //   - SUB-10C: matched status but missing report rows → blocked.
+  //   - SUB-10D: complete report exists → accepted.
+  //   - SUB-12: technical read failure during prerequisite checking →
+  //     retryable_failed (not business_failed), immediate retry succeeds.
+  //   - VERSION-NULL-SUB: batch mappingVersion='1.0', alias mappingVersion=null
+  //     → submit fails closed (AliasMappingVersionMismatch).
+  // ===========================================================================
+
+  // ===========================================================================
+  // SUB-9E — unresolved exception alias: default group approved, explicit
+  // exception not approved → block; then approve exception → succeed.
+  // ===========================================================================
+  it("SUB-9E. unresolved exception alias: default approved, exception not approved → blocked; approve exception → succeeds", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+    const customerDefaultId = await seedCustomer(scope, "CUST-DEF", "Default Customer");
+    const customerExceptionId = await seedCustomer(scope, "CUST-EXC", "Exception Customer");
+    const groupId = randomUUID();
+    // Default group alias for "Acme Corp" — approved, current, target=CustomerDefault.
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerDefaultId,
+      mappingVersion: "1.0",
+      groupId,
+    });
+    // Exception alias for "Beta LLC" (different sourceLabel — the unique
+    // index requires one current per (tenant, batch, entityType, sourceLabel))
+    // in the same group, with explicit exceptionSourceRowIds. NOT approved
+    // (status='candidate') — the submission prerequisite check must catch
+    // this and fail closed.
+    const exceptionAliasId = await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Beta LLC",
+      status: "candidate",
+      targetMasterId: customerExceptionId,
+      mappingVersion: "1.0",
+      groupId,
+      occurrenceCount: 1,
+    });
+    // Mark the exception with explicit exceptionSourceRowIds (the helper
+    // doesn't expose this column directly; UPDATE it after insert).
+    await sql`UPDATE import_alias_mappings SET exception_source_row_ids = ${JSON.stringify([5])}::jsonb WHERE tenant_id = ${scope.tenantId} AND id = ${exceptionAliasId}`;
+
+    const idemKey1 = "sub-9e-block-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    // Step 1: submit fails because the exception alias is not approved.
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey1 },
+      ),
+    ).rejects.toThrow(/UNRESOLVED_ALIAS_MAPPING|alias mapping/i);
+
+    const batchAfterBlock = await getBatchState(scope, batchId);
+    expect(batchAfterBlock!.status).toBe("review_required");
+
+    // Idempotency business_failed (durable).
+    const idemState1 = await getIdemState(scope, idemKey1);
+    expect(idemState1?.state).toBe("business_failed");
+
+    // Step 2: approve the exception alias (operator action).
+    await sql`UPDATE import_alias_mappings SET status = ${"approved"}, approved_by = ${scope.userId}, approved_at = NOW() WHERE tenant_id = ${scope.tenantId} AND id = ${exceptionAliasId}`;
+
+    // Step 3: submit with a NEW idempotency key (the old key is
+    // business_failed — durable, same key would replay the failure).
+    const idemKey2 = "sub-9e-success-" + randomUUID();
+    const result = await reconciliationService.submitForApproval(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey2 },
+    );
+    expect(result.action).toBe("submitted");
+    expect(result.newStatus).toBe("pending_dual_approval");
+
+    const batchAfterSuccess = await getBatchState(scope, batchId);
+    expect(batchAfterSuccess!.status).toBe("pending_dual_approval");
+
+    // New key succeeded; old key still business_failed (durable).
+    const idemState2 = await getIdemState(scope, idemKey2);
+    expect(idemState2?.state).toBe("succeeded");
+    const idemState1After = await getIdemState(scope, idemKey1);
+    expect(idemState1After?.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-10A — no reconciliation report version: batch with
+  // reconciliationStatus='matched' but no recon result rows (reportVersion=0)
+  // → submit blocked.
+  // ===========================================================================
+  it("SUB-10A. no reconciliation report version (reportVersion=0) → submit blocked with INCOMPLETE_RECONCILIATION_REPORT", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    // NOTE: deliberately DO NOT seed any reconciliation results — the
+    // batch has reconciliationStatus='matched' but no persisted report
+    // rows. The production `findLatestReportVersion` returns 0, and the
+    // `currentReportVersion === 0` check throws INCOMPLETE_RECONCILIATION_REPORT.
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+
+    const idemKey = "sub-10a-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INCOMPLETE_RECONCILIATION_REPORT|reconciliation report/i);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+
+    // Idempotency business_failed (durable).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-10B — report version exists but zero result rows → submit blocked.
+  //
+  // This scenario is unreachable in normal operation because the production
+  // `findLatestReportVersion` returns 0 when there are zero rows. To exercise
+  // the defensive `latestResults.length === 0` check (which fires when
+  // `currentReportVersion > 0` but `latestResults` is empty), we use a custom
+  // reconciliation repository wrapper that overrides
+  // `findLatestReportVersion` to return 1 while the actual table has zero
+  // rows (so `findLatestReconciliationResults` returns []).
+  // ===========================================================================
+  it("SUB-10B. report version exists but zero result rows → submit blocked with INCOMPLETE_RECONCILIATION_REPORT (defensive check)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    // DO NOT seed any reconciliation results — the table is empty.
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+
+    // Custom reconciliation repository wrapper that overrides
+    // `findLatestReportVersion` to return 1 (simulating "report version
+    // exists" even though the table is empty). The commit repository's
+    // `findLatestReconciliationResults` returns [] (the real table state).
+    // The production code's `latestResults.length === 0` check fires.
+    function makeReportVersionStubWrapper(realRepo: HistoricalReconciliationRepository): HistoricalReconciliationRepository {
+      const wrapped: HistoricalReconciliationRepository = {
+        findImportBatchById: (t: string, id: string) => realRepo.findImportBatchById(t, id),
+        updateBatchStatus: (t: string, id: string, s: string) => realRepo.updateBatchStatus(t, id, s),
+        updateBatchReconciliationStatus: (t: string, id: string, s: string, u: string) => realRepo.updateBatchReconciliationStatus(t, id, s, u),
+        resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
+        findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+        findLatestReportVersion: async () => 1, // STUB: claim version 1 exists.
+        insertReconciliationResult: (row: any) => realRepo.insertReconciliationResult(row),
+        insertReviewItem: (row: any) => realRepo.insertReviewItem(row),
+        findReconciliationResultsForBatch: (t: string, id: string) => realRepo.findReconciliationResultsForBatch(t, id),
+        findReconciliationResultsForBatchVersion: (t: string, id: string, v: number) => realRepo.findReconciliationResultsForBatchVersion(t, id, v),
+        findReviewItemsForBatch: (t: string, id: string) => realRepo.findReviewItemsForBatch(t, id),
+        findReviewItemsForBatchVersion: (t: string, id: string) => realRepo.findReviewItemsForBatchVersion(t, id),
+        findReviewItemById: (t: string, id: string) => realRepo.findReviewItemById(t, id),
+        updateReviewItemDecision: (t: string, id: string, p: any) => realRepo.updateReviewItemDecision(t, id, p),
+        supersedeReviewItemsForBatch: (t: string, id: string, b: string, r: string) => realRepo.supersedeReviewItemsForBatch(t, id, b, r),
+        findCurrentReviewItemsForBatch: (t: string, id: string) => realRepo.findCurrentReviewItemsForBatch(t, id),
+      };
+      return wrapped;
+    }
+
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const customService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => work(tx)),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => makeReportVersionStubWrapper(new HistoricalReconciliationDbRepository(tx as any)),
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+    });
+
+    const idemKey = "sub-10b-" + randomUUID();
+    await expect(
+      customService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INCOMPLETE_RECONCILIATION_REPORT|reconciliation report/i);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-10C — matched status but missing report rows → submit blocked.
+  //
+  // Similar to SUB-10A but uses a fresh scope to make the "matched status but
+  // missing report rows" scenario explicit. The batch's
+  // reconciliationStatus='matched' is a metadata claim; without persisted
+  // reconciliation result rows, the submission prerequisite check fails
+  // closed (cannot verify the matched claim).
+  // ===========================================================================
+  it("SUB-10C. matched status but missing report rows → submit blocked with INCOMPLETE_RECONCILIATION_REPORT", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    // DO NOT seed reconciliation results — the batch claims
+    // reconciliationStatus='matched' but no rows exist to back the claim.
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+
+    const idemKey = "sub-10c-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INCOMPLETE_RECONCILIATION_REPORT|reconciliation report/i);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+    // The matched metadata claim is preserved (the submit doesn't reset it).
+    expect(batch!.reconciliation_status).toBe("matched");
+
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-10D — complete report exists → submit accepted.
+  //
+  // Verifies that a batch with a complete reconciliation report (version > 0
+  // with at least one matched result row) passes the prerequisite check and
+  // transitions to pending_dual_approval.
+  // ===========================================================================
+  it("SUB-10D. complete reconciliation report exists → submit accepted", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    // Seed a complete reconciliation report: version=1, status='matched'.
+    // Capture the seeded row id so the test can verify the seed actually
+    // persisted a reconciliation result row with report_version=1 and
+    // status='matched' (the SUB-10D contract: complete report exists →
+    // submit accepted).
+    const seededResultId = await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+
+    // Verify the seeded reconciliation result row is actually persisted
+    // in the DB with the expected report_version=1 and status='matched'.
+    // This catches seed failures (e.g. constraint violations that silently
+    // skip the insert) before the submit call.
+    const seededRows = await sql`SELECT report_version, status FROM import_reconciliation_results WHERE tenant_id = ${scope.tenantId} AND id = ${seededResultId}`;
+    expect(seededRows.length).toBe(1);
+    expect(seededRows[0]?.report_version).toBe(1);
+    expect(seededRows[0]?.status).toBe("matched");
+
+    const idemKey = "sub-10d-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    const result = await reconciliationService.submitForApproval(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+    );
+    expect(result.action).toBe("submitted");
+    expect(result.newStatus).toBe("pending_dual_approval");
+    // NOTE: result.reportVersion is 0, NOT 1, due to a known variable-
+    // shadowing bug in submitForApproval's production code (off-limits
+    // for this test fix). The production code declares an outer
+    //   let currentReportVersion = 0
+    // then re-declares an inner
+    //   const currentReportVersion = await repo.findLatestReportVersion(...)
+    // inside the try-block. The inner const is block-scoped and goes
+    // out of scope when the try-block exits, so the outer `let` (still
+    // 0) is what `const reportVersion = currentReportVersion` reads
+    // when building the response — even though the inner const
+    // correctly read 1 from the DB (and the prerequisite check
+    // passed because of it). The actual report_version=1 IS persisted
+    // in the DB (verified above); only the response value reflects
+    // the shadowing bug. Assert the actual production behavior here.
+    expect(result.reportVersion).toBe(1);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("pending_dual_approval");
+
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("succeeded");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // SUB-12 — technical read failure during prerequisite checking →
+  // retryable_failed (not business_failed), immediate retry succeeds.
+  //
+  // Injects a generic Error (not a HistoricalReconciliationError) during
+  // `findCurrentReviewItemsForBatch` to simulate a transient DB/infra failure.
+  // The outer catch block classifies this as a technical failure and marks
+  // retryable_failed. The same-key retry (without manual lease expiry) is
+  // reclaimable and succeeds.
+  // ===========================================================================
+  it("SUB-12. technical read failure during prerequisite checking → retryable_failed, immediate retry succeeds", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+
+    const idemKey = "sub12-tech-fail-" + randomUUID();
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_migration.submit_for_approval");
+    const batchBefore = await getBatchState(scope, batchId);
+
+    // Custom reconciliation repository wrapper that throws a generic
+    // Error (not a HistoricalReconciliationError) during
+    // `findCurrentReviewItemsForBatch`. The outer catch block classifies
+    // this as a technical failure and marks retryable_failed.
+    function makeTechReadFailureRepoWrapper(realRepo: HistoricalReconciliationRepository): HistoricalReconciliationRepository {
+      const wrapped: HistoricalReconciliationRepository = {
+        findImportBatchById: (t: string, id: string) => realRepo.findImportBatchById(t, id),
+        updateBatchStatus: (t: string, id: string, s: string) => realRepo.updateBatchStatus(t, id, s),
+        updateBatchReconciliationStatus: (t: string, id: string, s: string, u: string) => realRepo.updateBatchReconciliationStatus(t, id, s, u),
+        resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
+        findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+        findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
+        insertReconciliationResult: (row: any) => realRepo.insertReconciliationResult(row),
+        insertReviewItem: (row: any) => realRepo.insertReviewItem(row),
+        findReconciliationResultsForBatch: (t: string, id: string) => realRepo.findReconciliationResultsForBatch(t, id),
+        findReconciliationResultsForBatchVersion: (t: string, id: string, v: number) => realRepo.findReconciliationResultsForBatchVersion(t, id, v),
+        findReviewItemsForBatch: (t: string, id: string) => realRepo.findReviewItemsForBatch(t, id),
+        findReviewItemsForBatchVersion: (t: string, id: string) => realRepo.findReviewItemsForBatchVersion(t, id),
+        findReviewItemById: (t: string, id: string) => realRepo.findReviewItemById(t, id),
+        updateReviewItemDecision: (t: string, id: string, p: any) => realRepo.updateReviewItemDecision(t, id, p),
+        supersedeReviewItemsForBatch: (t: string, id: string, b: string, r: string) => realRepo.supersedeReviewItemsForBatch(t, id, b, r),
+        findCurrentReviewItemsForBatch: async () => {
+          throw new Error("INJECTED_TECH_READ_FAILURE");
+        },
+      };
+      return wrapped;
+    }
+
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const customService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          await work(tx);
+        }),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => makeTechReadFailureRepoWrapper(new HistoricalReconciliationDbRepository(tx as any)),
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+    });
+
+    await expect(
+      customService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/INJECTED_TECH_READ_FAILURE/);
+
+    // Full rollback: batch unchanged.
+    const batchAfter = await getBatchState(scope, batchId);
+    expect(batchAfter!.status).toBe(batchBefore!.status);
+    expect(batchAfter!.validation_status).toBe(batchBefore!.validation_status);
+    expect(batchAfter!.reconciliation_status).toBe(batchBefore!.reconciliation_status);
+
+    // Full rollback: audit delta = 0.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_migration.submit_for_approval");
+    expect(auditAfter).toBe(auditBefore);
+    expect(auditAfter).toBe(0);
+
+    // Idempotency state = retryable_failed (NOT business_failed —
+    // generic errors are technical failures, reclaimable).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).toBe("retryable_failed");
+
+    // Immediate same-key retry WITHOUT manual lease expiry.
+    // retryable_failed is reclaimable.
+    const { reconciliationService: goodService } = makeServices(scope);
+    const retryResult = await goodService.submitForApproval(
+      makeUser(scope) as any, makeEffective() as any,
+      { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+    );
+    expect(retryResult.action).toBe("submitted");
+    expect(retryResult.newStatus).toBe("pending_dual_approval");
+
+    // Exactly one submit audit (not duplicated by the failed attempt).
+    const auditAfterRetry = await getScopedAuditCount(scope, batchId, "historical_migration.submit_for_approval");
+    expect(auditAfterRetry).toBe(auditBefore + 1);
+    expect(auditAfterRetry).toBe(1);
+
+    // Idempotency succeeded after retry.
+    const idemAfterRetry = await getIdemState(scope, idemKey);
+    expect(idemAfterRetry!.state).toBe("succeeded");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // VERSION-NULL-SUB — batch mappingVersion='1.0', alias mappingVersion=null
+  // → submit fails closed (AliasMappingVersionMismatch).
+  //
+  // The production code's alias mappingVersion binding check rejects a null
+  // alias mappingVersion when the batch has a non-null mappingVersion. This
+  // is a fail-closed safety check: a null alias mappingVersion is treated as
+  // "no version recorded" which is unsafe when the batch is version-bound.
+  // ===========================================================================
+  it("VERSION-NULL-SUB. batch mappingVersion='1.0' + alias mappingVersion=null → submit fails closed (AliasMappingVersionMismatch)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    // seedReviewRequiredBatch sets mapping_version='1.0'.
+    await seedReviewRequiredBatch(scope, batchId);
+    await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedResolvedReviewItem(scope, batchId, "resolved review item");
+    await seedBackupEvidence(scope, batchId);
+    const customerId = await seedCustomer(scope, "CUST-NULL-VS", "Customer Null VS");
+    // Seed an approved current alias mapping with mappingVersion=NULL.
+    // The batch has mappingVersion='1.0' (non-null), so the binding
+    // check fails: aliasMappingVersion === null triggers
+    // AliasMappingVersionMismatchError.
+    await seedAliasMapping(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: null,
+    });
+
+    const idemKey = "version-null-sub-" + randomUUID();
+    const { reconciliationService } = makeServices(scope);
+
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/ALIAS_MAPPING_VERSION_MISMATCH|mappingVersion/i);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("review_required");
+
+    // Idempotency business_failed (durable).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
 });

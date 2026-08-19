@@ -83,7 +83,7 @@ export interface ExtractMastersResult {
 }
 
 // ---------------------------------------------------------------------------
-// WP-08-01G (A4) — approveAliasMapping input/result types.
+// WP-08-01F (A4) — approveAliasMapping input/result types.
 //
 // Contract 08 §8.4.1-§8.4.8: alias approval workflow. An Owner or Accountant
 // selects a target master (or rejects the candidate) for each alias mapping
@@ -208,7 +208,7 @@ export class BatchNotStagedError extends HistoricalValidationError {
 }
 
 // ---------------------------------------------------------------------------
-// WP-08-01G (A4) — alias approval errors.
+// WP-08-01F (A4) — alias approval errors.
 // ---------------------------------------------------------------------------
 
 export class AliasMappingNotFoundError extends HistoricalValidationError {
@@ -301,7 +301,7 @@ export interface HistoricalValidationServiceDeps {
   createAudit: (tx: unknown) => AuditTransactionHandle;
   createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
   /**
-   * WP-08-01G (A4): Optional master-data repository used by
+   * WP-08-01F (A4): Optional master-data repository used by
    * approveAliasMapping to validate that the target master exists, belongs
    * to the same tenant, and has the correct entity type. Production wiring
    * supplies a MasterDataDbRepository. Unit tests supply an in-memory
@@ -310,7 +310,7 @@ export interface HistoricalValidationServiceDeps {
    */
   masterDataRepository?: MasterDataRepository;
   /**
-   * WP-08-01G (A4): Optional tx-scoped factory for the master-data
+   * WP-08-01F (A4): Optional tx-scoped factory for the master-data
    * repository. Used inside the approval transaction to validate the
    * target master against the transaction's snapshot of the master-data
    * tables (prevents a race where a master is inactivated between the
@@ -318,7 +318,7 @@ export interface HistoricalValidationServiceDeps {
    */
   createMasterDataRepository?: (tx: unknown) => MasterDataRepository;
   /**
-   * WP-08-01G (A5): Optional tx-scoped callback to invalidate current
+   * WP-08-01F (A5): Optional tx-scoped callback to invalidate current
    * approvals for a batch. Used by the material remap path
    * (re-approval to a different target). The callback is the same shape
    * as `HistoricalCommitRepository.invalidateCurrentApprovalsForBatch`
@@ -328,14 +328,14 @@ export interface HistoricalValidationServiceDeps {
    */
   invalidateCurrentApprovals?: (tx: unknown, tenantId: string, batchId: string, invalidatedBy: string, reason: string, now: Date) => Promise<number>;
   /**
-   * WP-08-01G (A5): Optional tx-scoped callback to supersede current
+   * WP-08-01F (A5): Optional tx-scoped callback to supersede current
    * review items for a batch. Used by the material remap path.
    * Mirrors `HistoricalReconciliationRepository.supersedeReviewItemsForBatch`.
    * If absent, review-item supersession is skipped.
    */
   supersedeReviewItemsForBatch?: (tx: unknown, tenantId: string, batchId: string, supersededBy: string, reason: string) => Promise<number>;
   /**
-   * WP-08-01G (A5): Optional tx-scoped callback to reset the batch's
+   * WP-08-01F (A5): Optional tx-scoped callback to reset the batch's
    * validationStatus and reconciliationStatus to null (forces re-validation
    * and re-reconciliation after a material remap). Mirrors
    * `HistoricalReconciliationRepository.resetBatchValidationAndReconciliationStatuses`.
@@ -343,7 +343,7 @@ export interface HistoricalValidationServiceDeps {
    */
   resetBatchValidationAndReconciliationStatuses?: (tx: unknown, tenantId: string, batchId: string) => Promise<ImportBatch | null>;
   /**
-   * WP-08-01G (A5): Optional tx-scoped callback to fetch the latest
+   * WP-08-01F (A5): Optional tx-scoped callback to fetch the latest
    * reconciliation report version for the batch. Used for audit metadata
    * on the material remap (records which report version was invalidated).
    */
@@ -368,7 +368,7 @@ interface ValidationFinding {
 }
 
 // ---------------------------------------------------------------------------
-// WP-08-01G (A2) / WP-08-01F DEFECT 4: Flexible entity-type detection.
+// WP-08-01F (A2) / WP-08-01F DEFECT 4: Flexible entity-type detection.
 //
 // The validation service must detect the entity type per row, not assume
 // "customer". Different migration templates use different field names:
@@ -717,7 +717,7 @@ export class HistoricalValidationService {
     }
 
     const executeValidation = async (repo: HistoricalValidationRepository, auditHandle: AuditTransactionHandle, idemHandle: IdempotencyTransactionHandle): Promise<RunValidationResult> => {
-      // WP-08-01G (A2): NEVER hard-delete alias mappings on re-validation.
+      // WP-08-01F (A2): NEVER hard-delete alias mappings on re-validation.
       //
       // Validation errors and review items are delete-and-recreate — they
       // are derived findings that should match the current staged data
@@ -772,7 +772,7 @@ export class HistoricalValidationService {
       let masterCandidates = 0;
       let reviewItems = 0;
 
-      // WP-08-01G (A2): Group tracker for repeated occurrences of the same
+      // WP-08-01F (A2): Group tracker for repeated occurrences of the same
       // source label. Maps `${entityType}|${normalizedName}` to a stable
       // groupId (random UUID generated on first occurrence) and the count
       // of staging rows sharing this group. The groupId is per-batch and
@@ -826,7 +826,7 @@ export class HistoricalValidationService {
         if (data?.name) {
           const sourceLabel = String(data.name);
           const normalizedName = sourceLabel.trim().toLowerCase();
-          // WP-08-01G (A2) / DEFECT 4: flexible entity-type detection —
+          // WP-08-01F (A2) / DEFECT 4: flexible entity-type detection —
           // check data.entity_type, data.type, master-id fields, party_type.
           // Returns "unknown" when none of those signals are present so a
           // human must classify the alias before submission. We NEVER
@@ -835,7 +835,7 @@ export class HistoricalValidationService {
           const isUnknownEntityType = entityType === "unknown";
 
           // Check if alias already exists for this source label (deduplication).
-          // WP-08-01G (A1): findAliasMappingBySourceLabel now filters by
+          // WP-08-01F (A1): findAliasMappingBySourceLabel now filters by
           // is_current=true. After the supersede loop above, only the
           // approved current mappings (if any) remain. If this source label
           // has an approved mapping, we skip the insert — its approval is
@@ -844,7 +844,7 @@ export class HistoricalValidationService {
             user.tenantId, input.importBatchId, entityType, sourceLabel,
           );
           if (!existing) {
-            // WP-08-01G (A2): Group tracker. Generate a stable groupId for
+            // WP-08-01F (A2): Group tracker. Generate a stable groupId for
             // this (entityType, normalizedName) on the first occurrence;
             // reuse it for subsequent occurrences. This lets the UI group
             // repeated source labels together (e.g. 50 rows with the same
@@ -884,7 +884,7 @@ export class HistoricalValidationService {
                 ? "Entity type could not be determined from the staging row — needs human classification."
                 : isLowConfidence ? "Low confidence — needs human review" : null,
               createdBy: user.userId,
-              // WP-08-01G (A1/A2) — group identity / occurrence metadata.
+              // WP-08-01F (A1/A2) — group identity / occurrence metadata.
               groupId: groupEntry.groupId,
               occurrenceCount: groupEntry.occurrences,
               exceptionSourceRowIds: null,
@@ -942,7 +942,7 @@ export class HistoricalValidationService {
               idempotencyKey: input.idempotencyKey,
             });
           } else {
-            // WP-08-01G (A2): existing approved mapping for this source
+            // WP-08-01F (A2): existing approved mapping for this source
             // label. We do NOT re-create it. We DO update the
             // occurrenceCount on the existing current mapping if it has
             // the same groupId (so the count reflects the current staged
@@ -1070,7 +1070,7 @@ export class HistoricalValidationService {
   }
 
   // ===========================================================================
-  // WP-08-01G (A4) — approveAliasMapping
+  // WP-08-01F (A4) — approveAliasMapping
   //
   // Contract 08 §8.4.1-§8.4.8: alias approval workflow.
   //
@@ -1140,7 +1140,7 @@ export class HistoricalValidationService {
     const alias = await this.deps.repository.findAliasMappingById(user.tenantId, input.aliasMappingId);
     if (!alias) throw new AliasMappingNotFoundError(input.aliasMappingId);
     requireTenantMatch(user, alias.tenantId);
-    // WP-08-01G (A1): The alias must be the CURRENT mapping for its key.
+    // WP-08-01F (A1): The alias must be the CURRENT mapping for its key.
     // Superseded mappings are immutable audit history — they cannot be
     // re-approved. The operator must load the current mapping for the
     // same source label instead (it's a different row id).
@@ -1177,7 +1177,7 @@ export class HistoricalValidationService {
     });
 
     if (claim.action === "replay") {
-      // WP-08-01G (A4): Durable business failure replay. If the cached
+      // WP-08-01F (A4): Durable business failure replay. If the cached
       // record is business_failed, re-throw the original business error
       // so the operator sees the same failure message.
       if (claim.record.state === "business_failed") {
@@ -1202,7 +1202,7 @@ export class HistoricalValidationService {
     // 6. Execute the approval in a transaction. All writes (alias-mapping
     //    mutation/insert + downstream invalidation + audit + markSucceeded)
     //    commit or roll back together.
-    //    WP-08-01G (A4): transactionRunner + tx-scoped factories are
+    //    WP-08-01F (A4): transactionRunner + tx-scoped factories are
     //    mandatory for production approvals. The in-memory test wiring
     //    supplies them via a no-op transactionRunner.
     if (!this.deps.transactionRunner || !this.deps.createRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
@@ -1487,7 +1487,7 @@ export class HistoricalValidationService {
 
         return result;
       } catch (e) {
-        // WP-08-01G (A4): Classify approval failures.
+        // WP-08-01F (A4): Classify approval failures.
         //
         // A) BUSINESS PRECONDITION failures (alias not current, invalid
         //    target, missing master data repo, etc.) → business_failed
@@ -1557,7 +1557,7 @@ export class HistoricalValidationService {
   }
 
   /**
-   * WP-08-01G (A4) / WP-08-01F DEFECT 5: Validate that the target master
+   * WP-08-01F (A4) / WP-08-01F DEFECT 5: Validate that the target master
    * exists, belongs to the caller's tenant, and matches the alias's
    * entityType.
    *

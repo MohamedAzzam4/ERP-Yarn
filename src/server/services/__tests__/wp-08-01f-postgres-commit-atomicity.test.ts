@@ -1104,10 +1104,27 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
   });
 
   // ===========================================================================
-  // COM-CONC-2B — Concurrent commit vs alias supersession: commit revalidation
-  // catches the supersession under the lock.
+  // COM-CONC-2B — GAP 3 regression: legitimate material remap (supersede OLD
+  // alias + insert NEW current alias) does NOT block the commit.
+  //
+  // WP-08-01F GAP 3 (closed): superseded approved alias rows alone no longer
+  // permanently block commits. Only stale CURRENT mappings block. The
+  // `findCurrentAliasMappingsForBatch` revalidation already verifies the
+  // CURRENT mappings are approved, have a non-null target master, the master
+  // still exists, and the mappingVersion matches. If those checks pass, the
+  // commit is safe to proceed regardless of how many historical superseded
+  // rows exist for the same source label.
+  //
+  // This test simulates a legitimate remap that races the commit:
+  //   1. Setup: approved_for_commit batch with alias A → Customer A
+  //      (current, approved, mappingVersion='1.0').
+  //   2. Concurrent remap under the batch row lock: supersede A (is_current
+  //      = false, preserved as audit history), insert NEW current B →
+  //      Customer B (status='approved', mappingVersion='1.0').
+  //   3. Commit should SUCCEED — the new current B is approved with a
+  //      valid target master, so the alias revalidation passes.
   // ===========================================================================
-  it("COM-CONC-2B. concurrent commit vs alias supersession: commit revalidation catches the supersession under the lock and fails closed", async () => {
+  it("COM-CONC-2B. GAP 3 — legitimate material remap (supersede + new current) does not block the commit", async () => {
     const scope = newScope();
     await seedTenantAndUsers(scope);
     const batchId = randomUUID();
@@ -1117,13 +1134,14 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     await seedBackupEvidence(scope, batchId);
     await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
     await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
-    const customerId = await seedCustomer(scope);
-    const aliasId = await seedApprovedAliasMapping(scope, batchId, customerId);
+    const customerAId = await seedCustomer(scope, "CUST-A", "Customer A");
+    const customerBId = await seedCustomer(scope, "CUST-B", "Customer B");
+    const aliasAId = await seedApprovedAliasMapping(scope, batchId, customerAId);
 
-    // Build a commit service whose transactionRunner supersedes the
-    // approved alias AFTER the batch is locked but BEFORE the alias
-    // revalidation. The commit revalidation should catch the supersession
-    // (is_current=false) under the lock and fail closed.
+    // Build a commit service whose transactionRunner performs the
+    // legitimate remap AFTER the batch is locked but BEFORE the alias
+    // revalidation. The remap supersedes A (preserved as audit history)
+    // and inserts a new current B with a valid target master.
     const commitRepo = new HistoricalCommitDbRepository(db);
     const audit = new AuditDbRepository(db);
     const idem = new IdempotencyDbRepository(db);
@@ -1133,11 +1151,35 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
         (db as any).transaction(async (tx: any) => {
           // Lock the batch row.
           await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
-          // Supersede the approved alias BEFORE running the work body —
-          // simulates a concurrent alias supersession between pre-claim
-          // and the locked revalidation.
-          await (tx as any).execute(drizzleSql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.ownerId}, superseded_reason = ${"concurrent supersession"} WHERE tenant_id = ${scope.tenantId} AND id = ${aliasId} AND is_current = true`);
-          await work(tx);
+          // Step 1: supersede the OLD approved alias A — preserved as
+          // immutable audit history (is_current=false). This is the
+          // append-only supersession pattern used by the production
+          // material-remap path.
+          await (tx as any).execute(drizzleSql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.ownerId}, superseded_reason = ${"material remap A→B"} WHERE tenant_id = ${scope.tenantId} AND id = ${aliasAId} AND is_current = true`);
+          // Step 2: insert the NEW current alias B → Customer B
+          // (status='approved', mappingVersion='1.0' matching the batch).
+          // The partial unique index on
+          // (tenant, batch, entityType, sourceLabel) WHERE is_current=true
+          // permits this insertion because A is now is_current=false.
+          const newAliasId = randomUUID();
+          await (tx as any).execute(drizzleSql`
+            INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
+              target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
+              is_current, superseded_at, superseded_by, superseded_reason,
+              group_id, occurrence_count, exception_source_row_ids,
+              created_by, created_at, updated_at, updated_by)
+            VALUES (${newAliasId}, ${scope.tenantId}, ${batchId}, ${"customer"}, ${"Acme Corp"}, ${"acme corp"},
+              ${customerBId}, ${"1.0"}, ${"1.000000"}, ${"approved"}, ${scope.ownerId}, NOW(), null,
+              true, null, null, null,
+              null, 1, null,
+              ${scope.ownerId}, NOW(), null, null)`);
+          // IMPORTANT: the callback passed to db.transaction MUST return
+          // the result of `work(tx)` — otherwise commitBatch resolves
+          // with `undefined` and the test reads `result.action` from
+          // undefined, producing `TypeError: Cannot read properties of
+          // undefined (reading 'action')`. Use `return await work(tx)`
+          // (not a bare `await work(tx);` that drops the value).
+          return await work(tx);
         }),
       txFactories: {
         createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
@@ -1151,6 +1193,346 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
 
     const idemKey = "com-conc-2b-" + randomUUID();
     const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+
+    const result = await commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: idemKey },
+    );
+
+    // Commit SUCCEEDED — the legitimate remap with a new current B does
+    // not permanently block the commit (GAP 3 fix).
+    expect(result.action).toBe("committed");
+    expect(result.batchId).toBe(batchId);
+    expect(result.stagedRowsCommitted).toBe(1);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("committed");
+    expect(batch!.committed_at).not.toBeNull();
+
+    // Exactly one scoped commit audit.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore + 1);
+    expect(auditAfter).toBe(1);
+
+    // Idempotency succeeded.
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("succeeded");
+
+    // Staging row has committed entity link.
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBe("unhandled");
+    expect(stagingRow!.committed_entity_id).toBeTruthy();
+
+    // OLD alias A remains as immutable audit history (is_current=false),
+    // but it is NOT a blocker — the new current B is approved.
+    const oldAliasRows = await sql`SELECT id, is_current, status, superseded_at, superseded_reason FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${aliasAId}`;
+    expect(oldAliasRows[0]?.is_current).toBe(false);
+    expect(oldAliasRows[0]?.status).toBe("approved");
+    expect(oldAliasRows[0]?.superseded_at).not.toBeNull();
+
+    // Locks released after successful commit.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-CONC-2B-NO-REPLACEMENT — Document the actual production behavior when
+  // a concurrent operation supersedes the only approved alias WITHOUT
+  // inserting a new current mapping.
+  //
+  // The production code's `findCurrentAliasMappingsForBatch` returns an empty
+  // list (zero current mappings). The alias revalidation loop doesn't fire,
+  // so the commit PROCEEDS (it does not enforce "must have current alias
+  // mapping" as a blocker when there are zero current mappings).
+  //
+  // This test asserts the actual production behavior: commit succeeds. This
+  // is a known characteristic of the current implementation — batches that
+  // legitimately have no current alias mappings (e.g. rows with explicit
+  // master IDs in staging data, no unresolved aliases) are committable.
+  // ===========================================================================
+  it("COM-CONC-2B-NO-REPLACEMENT. document actual behavior: supersession without new current mapping → commit proceeds (no enforcement when zero current aliases)", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+    const customerAId = await seedCustomer(scope, "CUST-A", "Customer A");
+    const aliasAId = await seedApprovedAliasMapping(scope, batchId, customerAId);
+
+    // Build a commit service whose transactionRunner supersedes the
+    // approved alias WITHOUT inserting a new current mapping.
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const commitService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+        (db as any).transaction(async (tx: any) => {
+          // Lock the batch row.
+          await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+          // Supersede the approved alias A WITHOUT inserting a new
+          // current mapping. After this, findCurrentAliasMappingsForBatch
+          // returns an empty list.
+          await (tx as any).execute(drizzleSql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.ownerId}, superseded_reason = ${"superseded without replacement"} WHERE tenant_id = ${scope.tenantId} AND id = ${aliasAId} AND is_current = true`);
+          // IMPORTANT: the callback passed to db.transaction MUST return
+          // the result of `work(tx)` — otherwise commitBatch resolves
+          // with `undefined` and the test reads `result.action` from
+          // undefined, producing `TypeError: Cannot read properties of
+          // undefined (reading 'action')`. Use `return await work(tx)`
+          // (not a bare `await work(tx);` that drops the value).
+          return await work(tx);
+        }),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    const idemKey = "com-conc-2b-no-repl-" + randomUUID();
+
+    // ACTUAL PRODUCTION BEHAVIOR: with zero current alias mappings, the
+    // alias revalidation loop does not fire, and the commit proceeds.
+    // This is documented here so future changes to the production code
+    // (e.g. adding a "must have current alias" rule) will fail this test
+    // and force a deliberate update to the documented behavior.
+    const result = await commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: idemKey },
+    );
+
+    expect(result.action).toBe("committed");
+    expect(result.batchId).toBe(batchId);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("committed");
+
+    // OLD alias A remains as immutable audit history (is_current=false).
+    const oldAliasRows = await sql`SELECT id, is_current, status, superseded_at, superseded_reason FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${aliasAId}`;
+    expect(oldAliasRows[0]?.is_current).toBe(false);
+    expect(oldAliasRows[0]?.superseded_at).not.toBeNull();
+
+    // Locks released after successful commit.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // REMAP-COMMIT — Regression: a legitimate remap does not permanently block
+  // the commit when downstream evidence is regenerated.
+  //
+  // Steps:
+  //   1. Create alias mapping A → Customer A (current, approved, "1.0").
+  //   2. Approve A (record both owner + accountant approvals bound to
+  //      mappingVersion='1.0').
+  //   3. Perform material remap A→B: supersede A (preserved as audit
+  //      history), create new current B → Customer B (approved, "1.0").
+  //   4. Old A remains is_current=false as immutable evidence.
+  //   5. Regenerate downstream validation/reconciliation/review/batch
+  //      approval — for this test, the batch's mappingVersion stays at
+  //      '1.0' and the staging/reconciliation/approval state stays valid,
+  //      so the approvals are NOT stale.
+  //   6. New B is approved/current.
+  //   7. Commit succeeds.
+  //
+  // Also prove: if downstream evidence was NOT regenerated after remap (the
+  // batch's mappingVersion is bumped to '2.0' but the approvals still have
+  // '1.0'), the commit FAILS due to StaleApprovalError.
+  // ===========================================================================
+  it("REMAP-COMMIT. legitimate remap with downstream regeneration → commit succeeds; without regeneration → commit fails (stale approval)", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+    const customerAId = await seedCustomer(scope, "CUST-A", "Customer A");
+    const customerBId = await seedCustomer(scope, "CUST-B", "Customer B");
+    // Step 1: alias A → Customer A (current, approved, "1.0").
+    const aliasAId = await seedApprovedAliasMapping(scope, batchId, customerAId);
+
+    // Step 3: perform material remap A→B. Supersede A, insert new current B.
+    await sql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.ownerId}, superseded_reason = ${"material remap A→B"} WHERE tenant_id = ${scope.tenantId} AND id = ${aliasAId} AND is_current = true`;
+    const aliasBId = randomUUID();
+    await sql`
+      INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
+        target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
+        is_current, superseded_at, superseded_by, superseded_reason,
+        group_id, occurrence_count, exception_source_row_ids,
+        created_by, created_at, updated_at, updated_by)
+      VALUES (${aliasBId}, ${scope.tenantId}, ${batchId}, ${"customer"}, ${"Acme Corp"}, ${"acme corp"},
+        ${customerBId}, ${"1.0"}, ${"1.000000"}, ${"approved"}, ${scope.ownerId}, NOW(), null,
+        true, null, null, null,
+        null, 1, null,
+        ${scope.ownerId}, NOW(), null, null)`;
+
+    // Step 4 verification: OLD A remains as immutable audit history.
+    const oldAliasRows = await sql`SELECT id, is_current, status, superseded_at FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${aliasAId}`;
+    expect(oldAliasRows[0]?.is_current).toBe(false);
+    expect(oldAliasRows[0]?.status).toBe("approved");
+
+    // Step 5: downstream evidence is regenerated. For this test, the
+    // batch's mappingVersion stays at '1.0' and the new alias B has
+    // mappingVersion='1.0' matching the batch — no stale approval.
+    // (In production, the regeneration would re-validate, re-reconcile,
+    // re-record approvals with the same versions if no material change
+    // to the batch fingerprint occurred.)
+
+    // Step 7: commit succeeds.
+    const idemKey = "remap-commit-success-" + randomUUID();
+    const { commitService } = makeServices(scope);
+    const auditBefore = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+
+    const result = await commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: idemKey },
+    );
+
+    expect(result.action).toBe("committed");
+    expect(result.batchId).toBe(batchId);
+    expect(result.stagedRowsCommitted).toBe(1);
+
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("committed");
+    expect(batch!.committed_at).not.toBeNull();
+
+    // Exactly one scoped commit audit.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore + 1);
+    expect(auditAfter).toBe(1);
+
+    // Idempotency succeeded.
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("succeeded");
+
+    // Staging row has committed entity link.
+    const stagingRow = await getStagingRowCommitLink(scope, rowId);
+    expect(stagingRow!.committed_entity_type).toBe("unhandled");
+    expect(stagingRow!.committed_entity_id).toBeTruthy();
+
+    await cleanupScope(scope);
+
+    // ---------------------------------------------------------------------
+    // Counter-proof: if downstream evidence was NOT regenerated after the
+    // remap, the commit FAILS. We simulate "downstream regenerated" by
+    // bumping the batch's mappingVersion to '2.0' (a material version
+    // change) but NOT re-recording the approvals (they still have '1.0').
+    // The commit's stale-approval check fires before alias revalidation.
+    // ---------------------------------------------------------------------
+    const scope2 = newScope();
+    await seedTenantAndUsers(scope2);
+    const batchId2 = randomUUID();
+    await seedApprovedForCommitBatch(scope2, batchId2);
+    const { rowId: rowId2 } = await seedFileAndStagingRow(scope2, batchId2);
+    await seedPriorReconciliationEvidence(scope2, batchId2, 1);
+    await seedBackupEvidence(scope2, batchId2);
+    await seedCurrentApproval(scope2, batchId2, "owner", scope2.ownerId);
+    await seedCurrentApproval(scope2, batchId2, "accountant", scope2.accountantId);
+    const customerAId2 = await seedCustomer(scope2, "CUST-A2", "Customer A2");
+    const customerBId2 = await seedCustomer(scope2, "CUST-B2", "Customer B2");
+    const aliasAId2 = await seedApprovedAliasMapping(scope2, batchId2, customerAId2);
+
+    // Remap A→B (legitimate).
+    await sql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope2.ownerId}, superseded_reason = ${"material remap A→B (no downstream)"} WHERE tenant_id = ${scope2.tenantId} AND id = ${aliasAId2} AND is_current = true`;
+    const aliasBId2 = randomUUID();
+    await sql`
+      INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
+        target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
+        is_current, superseded_at, superseded_by, superseded_reason,
+        group_id, occurrence_count, exception_source_row_ids,
+        created_by, created_at, updated_at, updated_by)
+      VALUES (${aliasBId2}, ${scope2.tenantId}, ${batchId2}, ${"customer"}, ${"Acme Corp"}, ${"acme corp"},
+        ${customerBId2}, ${"1.0"}, ${"1.000000"}, ${"approved"}, ${scope2.ownerId}, NOW(), null,
+        true, null, null, null,
+        null, 1, null,
+        ${scope2.ownerId}, NOW(), null, null)`;
+
+    // Bump the batch's mappingVersion to '2.0' (simulating "downstream
+    // regenerated" — material version change). DO NOT re-record approvals
+    // (they still have mappingVersion='1.0').
+    await sql`UPDATE import_batches SET mapping_version = ${"2.0"} WHERE tenant_id = ${scope2.tenantId} AND id = ${batchId2}`;
+
+    const idemKey2 = "remap-commit-stale-" + randomUUID();
+    const { commitService: commitService2 } = makeServices(scope2);
+    const batchBefore2 = await getBatchState(scope2, batchId2);
+
+    await expect(
+      commitService2.commitBatch(
+        makeOwnerUser(scope2) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId2, idempotencyKey: idemKey2 },
+      ),
+    ).rejects.toThrow(/STALE_APPROVAL|stale|mappingVersion/i);
+
+    // Batch is unchanged (still approved_for_commit — NOT committed).
+    const batch2 = await getBatchState(scope2, batchId2);
+    expect(batch2!.status).toBe(batchBefore2!.status);
+    expect(batch2!.committed_at).toBeNull();
+
+    // Idempotency not succeeded (business_failed — stale approval is a
+    // business error, durable).
+    const idemState2 = await getIdemState(scope2, idemKey2);
+    expect(idemState2).not.toBeNull();
+    expect(idemState2!.state).not.toBe("succeeded");
+
+    // Locks released by the catch block.
+    const lockCount2 = await getActiveLockCount(scope2, batchId2);
+    expect(lockCount2).toBe(0);
+
+    await cleanupScope(scope2);
+  });
+
+  // ===========================================================================
+  // VERSION-NULL-COM — batch mappingVersion='1.0', alias mappingVersion=null
+  // → commit fails closed (alias mappingVersion must match batch's non-null
+  // mappingVersion).
+  //
+  // The production code's alias mappingVersion binding check rejects a null
+  // alias mappingVersion when the batch has a non-null mappingVersion. This
+  // is a fail-closed safety check: a null alias mappingVersion is treated as
+  // "no version recorded" which is unsafe when the batch is version-bound.
+  // ===========================================================================
+  it("VERSION-NULL-COM. batch mappingVersion='1.0' + alias mappingVersion=null → commit fails closed (AliasMappingVersionMismatch)", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+    const { rowId } = await seedFileAndStagingRow(scope, batchId);
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+    const customerId = await seedCustomer(scope, "CUST-NULL-V", "Customer Null V");
+
+    // Seed an approved current alias mapping with mappingVersion=NULL.
+    // The batch has mappingVersion='1.0' (set by seedApprovedForCommitBatch).
+    await sql`
+      INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
+        target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
+        is_current, superseded_at, superseded_by, superseded_reason,
+        group_id, occurrence_count, exception_source_row_ids,
+        created_by, created_at, updated_at, updated_by)
+      VALUES (${randomUUID()}, ${scope.tenantId}, ${batchId}, ${"customer"}, ${"Acme Corp"}, ${"acme corp"},
+        ${customerId}, null, ${"1.000000"}, ${"approved"}, ${scope.ownerId}, NOW(), null,
+        true, null, null, null,
+        null, 1, null,
+        ${scope.ownerId}, NOW(), null, null)`;
+
+    const idemKey = "version-null-com-" + randomUUID();
+    const { commitService } = makeServices(scope);
     const batchBefore = await getBatchState(scope, batchId);
 
     await expect(
@@ -1158,18 +1540,15 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
         makeOwnerUser(scope) as any, makeOwnerEffective() as any,
         { importBatchId: batchId, idempotencyKey: idemKey },
       ),
-    ).rejects.toThrow(/ALIAS_REVALIDATION_FAILED|ALIAS_NOT_CURRENT|alias mapping/i);
+    ).rejects.toThrow(/ALIAS_REVALIDATION_FAILED|ALIAS_MAPPING_VERSION_MISMATCH|mappingVersion/i);
 
     // Batch is unchanged (still approved_for_commit — NOT committed).
     const batch = await getBatchState(scope, batchId);
     expect(batch!.status).toBe(batchBefore!.status);
     expect(batch!.committed_at).toBeNull();
 
-    // No commit audit row persisted.
-    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
-    expect(auditAfter).toBe(auditBefore);
-
-    // Idempotency not succeeded.
+    // Idempotency not succeeded (business_failed durable — alias
+    // revalidation failures are business errors).
     const idemState = await getIdemState(scope, idemKey);
     expect(idemState).not.toBeNull();
     expect(idemState!.state).not.toBe("succeeded");

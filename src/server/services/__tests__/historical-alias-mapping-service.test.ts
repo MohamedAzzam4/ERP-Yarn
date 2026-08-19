@@ -1,5 +1,5 @@
 /**
- * WP-08-01G (A10) — approveAliasMapping unit tests.
+ * WP-08-01F (A10) — approveAliasMapping unit tests.
  *
  * Contract: docs/contracts/08_historical_migration_contract.md
  *   §8.4.1-§8.4.8 alias approval workflow.
@@ -130,7 +130,7 @@ function makeDeps() {
   const createAudit = (_tx: unknown) => audit;
   const createIdempotency = (_tx: unknown) => idempotency;
   const createMasterDataRepository = (_tx: unknown) => masterDataRepo;
-  // WP-08-01G (A5) callbacks — track invocations for assertions.
+  // WP-08-01F (A5) callbacks — track invocations for assertions.
   const invalidatedApprovalsSpy = { count: 0, lastReason: null as string | null };
   const supersededReviewItemsSpy = { count: 0, lastReason: null as string | null };
   const resetBatchStatusesSpy = { count: 0 };

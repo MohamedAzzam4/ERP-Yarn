@@ -37,7 +37,7 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   private validationErrors = new Map<string, ImportValidationError[]>();
   private reconResults = new Map<string, ImportReconciliationResult[]>();
   private cutoverManifests = new Map<string, ImportCutoverManifest[]>();
-  // WP-08-01G (A7) — alias mappings (read-only cross-service lookup).
+  // WP-08-01F (A7) — alias mappings (read-only cross-service lookup).
   private aliasMappings = new Map<string, ImportAliasMapping[]>();
   private approvalCounter = 0;
   private backupCounter = 0;
@@ -60,7 +60,7 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
     this.cutoverManifests.set(`${tenantId}:${batchId}`, manifests);
   }
   /**
-   * WP-08-01G (A7): Seed current alias mappings directly for the
+   * WP-08-01F (A7): Seed current alias mappings directly for the
    * submitForApproval prerequisite check. These rows are read-only —
    * no mutation methods are exposed on the commit repository.
    */
@@ -488,7 +488,7 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   // ---- Alias mappings (read-only cross-service lookup) ----
 
   /**
-   * WP-08-01G (A7): Find only CURRENT alias mappings for a batch. Used
+   * WP-08-01F (A7): Find only CURRENT alias mappings for a batch. Used
    * by submitForApproval's prerequisite check.
    */
   async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
