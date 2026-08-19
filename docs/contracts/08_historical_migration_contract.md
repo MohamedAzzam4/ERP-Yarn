@@ -248,6 +248,77 @@ Embedded supplier, customer, factory, location, item, batch, and lot names are e
 
 No fuzzy match, AI confidence score, or identical-looking name may silently create or merge a master. Referenced master data remains inactive rather than hard-deleted when later superseded.
 
+#### 8.4.1 Approval Unit
+
+- The approval unit is an alias mapping group, not an individual staging row.
+- Repeated occurrences belonging to the same reviewed mapping group are approved once.
+- Do not require repeated human approval for every occurrence of the same alias.
+
+#### 8.4.2 Authority
+
+- One authorized Owner OR one authorized Accountant is sufficient to approve an alias mapping group.
+- The same authorized reviewer may both select the target master and approve the mapping.
+- No second actor is required merely because the first actor selected the mapping.
+
+#### 8.4.3 DEC-080 Scope
+
+Alias/master mapping review is not a high-risk approval request for purposes of DEC-080. DEC-080 requester-versus-approver self-approval restrictions do not apply to alias/master mapping confirmation.
+
+This exception is limited to migration alias/master mapping review and does not change DEC-080 for high-risk approval workflows.
+
+#### 8.4.4 Batch Approval Remains Separate
+
+Alias mapping approval:
+
+```text
+Owner OR Accountant
+one reviewer
+mapping/review decision
+```
+
+Historical batch approval:
+
+```text
+Owner AND Accountant
+separate approval stage
+existing dual-approval/distinct-user rules remain unchanged
+```
+
+Alias approval is separate from migration batch approval and does not replace the required Owner AND Accountant dual approval for historical commit.
+
+#### 8.4.5 Exceptions
+
+- A reviewer may explicitly split rows into an exception/subgroup when context shows that the same source alias represents different canonical entities.
+- Such exceptions/subgroups require their own reviewed mapping decisions.
+- Group approval must not silently override an explicit exception.
+- Source-row provenance remains preserved.
+
+#### 8.4.6 Target Master
+
+- The approved target must be an existing valid canonical master belonging to the correct tenant.
+- AI/fuzzy matching/similarity may suggest candidates but may not approve, create, merge, or silently select the authoritative master.
+
+#### 8.4.7 Missing Master
+
+- If no correct canonical master exists, the alias remains unresolved.
+- An unresolved required alias/master mapping blocks submission for approval.
+- The official master must first be created through the normal Master Data workflow (DEC-083).
+- Historical migration must not implement a separate hidden master-creation mechanism.
+
+#### 8.4.8 Evidence / Versioning
+
+An approved mapping preserves at least:
+
+```text
+source/normalized alias identity
+target master
+approving actor
+approval time
+mapping/version identity
+```
+
+A material mapping change invalidates dependent validation, reconciliation, relevant human review evidence, and approvals as applicable under the existing lifecycle contract.
+
 ### 8.5 Validation Severity
 
 Every finding is one of:
@@ -370,10 +441,17 @@ Before submission for approval:
 
 - no blocking errors remain;
 - every review-required warning is resolved or explicitly accepted with reason;
-- aliases/master mappings are approved;
+- every required alias/master mapping group is approved by an authorized Owner or Accountant, every explicit exception/subgroup is separately resolved, and every approved mapping points to an existing valid canonical master;
 - reconciliation report version is complete;
 - source and normalized files are immutable/versioned;
 - required backup evidence exists for real migration data.
+
+Alias mapping confirmation is distinct from historical batch approval:
+
+- Alias mapping: Owner OR Accountant; one mapping-review decision; the alias reviewer may have selected the target mapping themselves.
+- Historical batch: Owner AND Accountant; separate dual-approval stage; existing dual-approval and distinct-user requirements under DEC-020 and DEC-069 remain unchanged.
+
+DEC-080 self-approval segregation does not apply to alias/master mapping review. DEC-080 remains unchanged for high-risk approval workflows.
 
 Commit requires two separate approval records: one by an authorized Owner and one by an authorized Accountant. Each approval binds to the same staged-data hash, cutover-manifest hash, mapping/template versions, validation result, reconciliation result, and warning summary. A later material change invalidates both approvals. DEC-069 requires the two approvals to come from two distinct user identities; one multi-role identity cannot satisfy both.
 
@@ -465,6 +543,13 @@ Rules:
 - Workers cannot create approval decisions, commit imports, approve warnings, manage aliases, or edit committed history.
 - Warehouse, Production, and Quality workers cannot access migration financial values, source files, reconciliation balances, or audit. Quality may access only explicitly assigned quality mapping under the permission matrix.
 - Owner and Accountant may prepare/review according to `migration.prepare` and `migration.review`.
+- Owner may review and approve alias mapping groups when otherwise authorized for migration review.
+- Accountant may review and approve alias mapping groups when otherwise authorized for migration review.
+- Only one of those roles is required for an individual alias mapping approval.
+- The same reviewer may select and approve the target mapping.
+- DEC-080 self-approval restrictions do not apply to this alias mapping confirmation.
+- Workers cannot approve/manage alias mappings.
+- This does not alter Owner + Accountant dual approval for the historical batch.
 - Owner approval requires Owner authority; Accountant approval requires Accountant authority; both records are required.
 - `migration.commit` executes only after both approvals and backend revalidation.
 - Owner/Accountant may request correction before commit; material changes invalidate validation/reconciliation/approvals as applicable.

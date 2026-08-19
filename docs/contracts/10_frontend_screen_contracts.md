@@ -346,6 +346,27 @@ Arabic terminology follows DEC-077: the owner-provided client workbook `متاب
 - **Common failures:** Returned stock instantly sellable, replacement manual stock adjustment, financial leak.
 - **AI coding note:** Workers record facts only; do not merge the two replacement events.
 
+### 8.8 Master Data Management Screens
+
+- **Purpose:** Create and maintain official canonical master records used by operational and migration workflows.
+- **Target roles:** Authorized management users according to the EXISTING permission matrix and domain rules. Do not invent new role permissions.
+- **UX mode:** Management Console.
+- **Entities:** At minimum the currently supported master-data families such as customers, suppliers, factories, locations, fiber/product/item-related masters, and other existing canonical master entities.
+- **Allowed behavior:**
+  - View existing masters.
+  - Create official masters through the normal Master Data workflow when permitted.
+  - Update permitted editable master attributes.
+  - Inactivate referenced masters according to the existing lifecycle contract rather than hard-delete them.
+- **Forbidden behavior:**
+  - Worker operational forms silently creating official masters.
+  - Historical migration silently creating official masters.
+  - AI/fuzzy matching creating or approving official masters.
+  - Creating a duplicate migration-only master-data path.
+- **Sequencing:**
+  - User-facing Master Data creation workflow is required before MVP functional completion.
+  - Its polished UI implementation may occur in a later frontend package.
+  - It does not block current migration backend/domain completion.
+
 ## 9. Historical Migration Screens
 
 - **Purpose:** Prepare, stage, validate, reconcile, review, dual-approve, commit, inspect locked history, and request correction.
@@ -363,6 +384,17 @@ Arabic terminology follows DEC-077: the owner-provided client workbook `متاب
 - **States:** Upload/processing/staged/validation/reconciliation/review/one approval/approved/committing/committed/rejected/cancelled/technical retry.
 - **Acceptance:** Staging has no operational effects; required metadata visible; locked records cannot be edited; warnings persist.
 - **Common failures:** Green summary hides mismatch, transformed rows sent in commit body, approval survives changed file.
+- **Binding grouped-review UX semantics (documentation only; no UI implementation implied):**
+  - Repeated aliases should ultimately be reviewable as grouped decisions rather than forcing one approval per source row.
+  - An authorized Owner or Accountant may select and confirm the target master in that grouped review.
+  - The migration UI does not require a second reviewer for the alias merely because that reviewer selected the target.
+  - This UI behavior is distinct from the later Owner + Accountant historical batch approval.
+  - The UI must permit explicit exceptions/subgroups where identical source aliases represent different entities.
+  - A future migration-review action may offer a shortcut such as "Create new customer", "Create new supplier", "Create new product/item", or equivalent.
+  - That shortcut MUST invoke/reuse the normal Master Data creation workflow and return the user to the unresolved migration mapping; it must not create a separate migration-only master-creation implementation.
+  - Advanced grouped/bulk migration UX is deferred to a later frontend package under DEC-084.
+  - The current functional migration UI remains acceptable for current backend/domain implementation and testing.
+  - Worker "other / not listed" values route to review and do not automatically create official master data.
 - **AI coding note:** The current workbook is not the permanent schema.
 
 ## 10. Traceability and Reports
