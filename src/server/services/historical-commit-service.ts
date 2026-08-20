@@ -40,6 +40,7 @@ import "server-only";
 
 import { sql as drizzleSql } from "drizzle-orm";
 import type { ErpUserContext } from "@/server/auth/erp-context";
+import { detectEntityType } from "./historical-validation-service";
 import {
   requirePermission,
   requireTenantMatch,
@@ -1384,6 +1385,32 @@ export class HistoricalCommitService {
         const commitAliasMappings = await repo.findCurrentAliasMappingsForBatch(
           user.tenantId, batch.id,
         );
+
+        // ISSUE #1 FIX: Compare required alias groups from the CURRENT source
+        // snapshot against current alias mappings at commit time. If a required
+        // group has no current mapping row, fail closed — the batch's current
+        // staging data requires that alias, but the mapping table has a gap.
+        const commitStagingRows = await repo.findStagingRowsForBatch(
+          user.tenantId, batch.id,
+        );
+        const commitRequiredGroups = new Set<string>();
+        for (const row of commitStagingRows) {
+          const data = (row.transformedRowJson ?? row.rawRowJson) as Record<string, unknown> | null;
+          if (!data || !data.name) continue;
+          const sourceLabel = String(data.name);
+          const entityType = detectEntityType(data);
+          commitRequiredGroups.add(`${entityType}|${sourceLabel}`);
+        }
+        const commitCurrentMappingKeys = new Set(
+          commitAliasMappings.map(a => `${a.entityType}|${a.sourceLabel}`),
+        );
+        const commitMissingGroups = [...commitRequiredGroups].filter(
+          k => !commitCurrentMappingKeys.has(k),
+        );
+        if (commitMissingGroups.length > 0) {
+          throw new CommitUnresolvedAliasError(batch.id, commitMissingGroups.length, commitMissingGroups);
+        }
+
         const commitUnresolvedAliases = commitAliasMappings.filter(
           a => !a.isCurrent || a.status !== "approved" || a.targetMasterId === null,
         );

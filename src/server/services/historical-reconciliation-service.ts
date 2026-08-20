@@ -43,7 +43,9 @@ import type {
   ImportHumanReviewItem,
   ImportStagingRow,
   ImportBatch,
+  ImportAliasMapping,
 } from "@/server/db/schema/migration";
+import { detectEntityType } from "./historical-validation-service";
 import {
   guardRunReconciliation,
   guardRecordReviewDecision,
@@ -51,6 +53,43 @@ import {
 } from "./migration-lifecycle-guard";
 import { APPROVAL_ELIGIBLE_STATES } from "./migration-lifecycle-predicates";
 import { sql as drizzleSql } from "drizzle-orm";
+
+// ---------------------------------------------------------------------------
+// Helper: Extract required alias groups from staging rows.
+//
+// Scans the current staging rows for rows with a `name` field (the field
+// that triggers alias extraction during validation). Returns a set of
+// `${entityType}|${sourceLabel}` keys that represent the required alias
+// groups for the current source snapshot.
+//
+// This is the authoritative source of "which alias groups are required"
+// — NOT the alias_mappings table (which can have historical/superseded
+// rows that are no longer required after a file replacement).
+// ---------------------------------------------------------------------------
+
+interface RequiredAliasGroup {
+  entityType: string;
+  sourceLabel: string;
+  normalizedName: string;
+}
+
+function extractRequiredAliasGroups(rows: ImportStagingRow[]): RequiredAliasGroup[] {
+  const seen = new Set<string>();
+  const groups: RequiredAliasGroup[] = [];
+  for (const row of rows) {
+    const data = (row.transformedRowJson ?? row.rawRowJson) as Record<string, unknown> | null;
+    if (!data || !data.name) continue;
+    const sourceLabel = String(data.name);
+    const normalizedName = sourceLabel.trim().toLowerCase();
+    const entityType = detectEntityType(data);
+    const key = `${entityType}|${sourceLabel}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      groups.push({ entityType, sourceLabel, normalizedName });
+    }
+  }
+  return groups;
+}
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -1395,6 +1434,28 @@ export class HistoricalReconciliationService {
         const currentAliasMappings = await commitRepo.findCurrentAliasMappingsForBatch(
           user.tenantId, input.importBatchId,
         );
+
+        // ISSUE #1 FIX: Compare required alias groups from the CURRENT source
+        // snapshot against current alias mappings. If a required group has no
+        // current mapping row, fail closed (business precondition failure).
+        // This catches the case where a mapping was superseded but no new
+        // current replacement was created — the group is still required by
+        // the current staging data, but the current mapping table has a gap.
+        const stagingRows = await repo.findStagingRowsForBatch(
+          user.tenantId, input.importBatchId,
+        );
+        const requiredGroups = extractRequiredAliasGroups(stagingRows);
+        const currentMappingKeys = new Set(
+          currentAliasMappings.map(a => `${a.entityType}|${a.sourceLabel}`),
+        );
+        const missingGroups = requiredGroups.filter(
+          g => !currentMappingKeys.has(`${g.entityType}|${g.sourceLabel}`),
+        );
+        if (missingGroups.length > 0) {
+          const examples = missingGroups.map(g => `${g.entityType}:'${g.sourceLabel}'`);
+          throw new UnresolvedAliasMappingError(input.importBatchId, missingGroups.length, examples);
+        }
+
         // Note: findCurrentAliasMappingsForBatch already filters is_current=true,
         // so the is_current check below is defensive (it always passes for the
         // commit-repo path; the in-memory test repo may not enforce the filter).

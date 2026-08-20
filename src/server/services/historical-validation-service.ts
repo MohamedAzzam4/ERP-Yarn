@@ -392,7 +392,7 @@ interface ValidationFinding {
 // submission.
 // ---------------------------------------------------------------------------
 
-function detectEntityType(data: Record<string, unknown> | null): string {
+export function detectEntityType(data: Record<string, unknown> | null): string {
   if (!data) return "unknown";
   // Explicit type fields
   const typeValue =

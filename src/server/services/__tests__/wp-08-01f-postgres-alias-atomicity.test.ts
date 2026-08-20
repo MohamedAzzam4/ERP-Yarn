@@ -961,7 +961,7 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
         makeUser(scope) as any, makeOwnerEffective() as any,
         { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
       ),
-    ).rejects.toThrow(/UNRESOLVED_ALIAS_MAPPING|alias mapping/i);
+    ).rejects.toThrow(/alias mapping|alias mapping/i);
 
     // Batch is unchanged (still review_required).
     const batchRows = await sql`SELECT status FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId}`;
@@ -1038,6 +1038,376 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
 
     // Empty/null target id — returns false.
     expect(await commitRepo.findMasterForAlias(scope.tenantId, "fiber_type", "")).toBe(false);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // REQ-ALIAS-SUB-1 — Required alias group has no current mapping → submitForApproval rejects
+  //
+  // ISSUE #1 proof (submitForApproval side):
+  //   1. Seed a review_required batch with staging rows whose current source
+  //      snapshot has a `name` field (so the alias group `customer|Acme Corp`
+  //      is REQUIRED by the current source data).
+  //   2. Seed an approved alias mapping for that name (is_current=true).
+  //   3. Supersede the alias mapping (is_current=false) WITHOUT creating a
+  //      new current mapping.
+  //   4. Call submitForApproval — must reject with alias mapping
+  //      because the current source snapshot requires the alias group, but
+  //      there is no current mapping row.
+  //   5. Batch stays review_required (no transition).
+  // ===========================================================================
+  it("REQ-ALIAS-SUB-1. required alias group has no current mapping → submitForApproval rejects with alias mapping (batch stays review_required)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    // Seed a review_required batch (all submitForApproval prerequisites:
+    // mapping_version='1.0', staged_data_hash, cutover_manifest_hash,
+    // validation_status=passed, reconciliation_status=matched, no warnings).
+    await sql`
+      INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version,
+        mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count,
+        blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status,
+        warning_summary, committed_at, commit_effect_counts, created_by, created_at)
+      VALUES (${batchId}, ${scope.tenantId}, ${"ALIAS-" + batchId.slice(-6)}, ${"review_required"}::import_batch_status, ${"test"},
+        ${"opening_balance_inventory"}, ${"1.0"}, ${"1.0"}, ${"sha256:manifest"}, ${"opening_balance"}, ${"sha256:test"}, 1,
+        0, 0, 0, ${"passed"}, ${"matched"}, null, null, null, ${scope.userId}, NOW())`;
+    // Seed a customer master — the alias's target.
+    const customerId = await seedCustomer(scope, "CUST-SUB-1", "Acme Customer SUB-1");
+    // Seed a staging row with `name: "Acme Corp"` + `entity_type: "customer"`
+    // — this makes the alias group `customer|Acme Corp` REQUIRED by the
+    // current source snapshot (the staging row data has a `name` field, so
+    // extractRequiredAliasGroups will include this group).
+    await seedFileAndStagingRow(scope, batchId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    });
+    // Seed an approved alias mapping for that name (is_current=true,
+    // status='approved', target=customerId, mappingVersion='1.0' matching
+    // the batch).
+    const aliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+      occurrenceCount: 1,
+    });
+    // ISSUE #1 scenario: supersede the alias mapping (is_current=false)
+    // WITHOUT creating a new current mapping. After this,
+    // findCurrentAliasMappingsForBatch returns an empty list, but
+    // extractRequiredAliasGroups still finds `customer|Acme Corp` from
+    // the staging row's `name` field — the missing-groups check fires.
+    await sql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.userId}, superseded_reason = ${"superseded without replacement (REQ-ALIAS-SUB-1)"} WHERE tenant_id = ${scope.tenantId} AND id = ${aliasId} AND is_current = true`;
+
+    // Seed the rest of submitForApproval's prerequisites.
+    await seedReconciliationResult(scope, batchId);
+    await seedResolvedReviewItem(scope, batchId);
+    await seedBackupEvidence(scope, batchId);
+
+    // Build a reconciliation service to call submitForApproval.
+    const { HistoricalReconciliationService } = await import("@/server/services/historical-reconciliation-service");
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const reconciliationService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+    });
+
+    const idemKey = "req-alias-sub-1-" + randomUUID();
+
+    // submitForApproval must reject — the required alias group
+    // `customer|Acme Corp` has no current mapping row.
+    await expect(
+      reconciliationService.submitForApproval(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/alias mapping/i);
+
+    // Batch stays review_required (no transition).
+    const batchRows = await sql`SELECT status FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId}`;
+    expect(batchRows[0]?.status).toBe("review_required");
+
+    // Idempotency state: business_failed (durable — same key + same request
+    // returns the same failure on replay).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // REQ-ALIAS-COM-1 — Required alias group has no current mapping at commit time
+  //
+  // ISSUE #1 proof (commitBatch side):
+  //   1. Seed an approved_for_commit batch with staging rows whose current
+  //      source snapshot has a `name` field (so the alias group
+  //      `customer|Acme Corp` is REQUIRED).
+  //   2. Seed an approved alias mapping for that name (is_current=true,
+  //      status='approved', target=customerId).
+  //   3. Supersede the alias mapping (is_current=false) WITHOUT creating a
+  //      new current mapping.
+  //   4. Call commitBatch — must reject (CommitUnresolvedAliasError →
+  //      ALIAS_REVALIDATION_FAILED) because the current source snapshot
+  //      requires the alias group, but there is no current mapping row.
+  //   5. Batch stays approved_for_commit (no transition, no operational
+  //      effects).
+  // ===========================================================================
+  it("REQ-ALIAS-COM-1. required alias group has no current mapping at commit time → commitBatch rejects (batch stays approved_for_commit)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    // Seed an approved_for_commit batch (all commit prerequisites:
+    // staged_data_hash, cutover_manifest_hash, validation_status=passed,
+    // reconciliation_status=matched, no warnings, no blocking errors).
+    await sql`
+      INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version,
+        mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count,
+        blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status,
+        warning_summary, committed_at, commit_effect_counts, created_by, created_at)
+      VALUES (${batchId}, ${scope.tenantId}, ${"ALIAS-" + batchId.slice(-6)}, ${"approved_for_commit"}::import_batch_status, ${"test"},
+        ${"opening_balance_inventory"}, ${"1.0"}, ${"1.0"}, ${"sha256:manifest"}, ${"opening_balance"}, ${"sha256:test"}, 1,
+        0, 0, 0, ${"passed"}, ${"matched"}, null, null, null, ${scope.userId}, NOW())`;
+    // Seed a customer master — the alias's target.
+    const customerId = await seedCustomer(scope, "CUST-COM-1", "Acme Customer COM-1");
+    // Seed a staging row with `name: "Acme Corp"` + `entity_type: "customer"`.
+    await seedFileAndStagingRow(scope, batchId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    });
+    // Seed an approved alias mapping (is_current=true).
+    const aliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+      occurrenceCount: 1,
+    });
+    // ISSUE #1 scenario: supersede the alias mapping WITHOUT creating a
+    // new current mapping.
+    await sql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.userId}, superseded_reason = ${"superseded without replacement (REQ-ALIAS-COM-1)"} WHERE tenant_id = ${scope.tenantId} AND id = ${aliasId} AND is_current = true`;
+
+    // Seed the rest of commitBatch's prerequisites.
+    // NOTE: the commit service requires both Owner and Accountant approvals
+    // from distinct users, but this test scope's seedTenantAndUser helper
+    // only creates ONE user. We construct two distinct user IDs inline for
+    // the two approvals (they share the same tenant — distinct user IDs is
+    // what the dual-approval check requires).
+    const ownerId = scope.userId;
+    const accountantId = randomUUID();
+    await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
+              VALUES (${accountantId}, ${scope.tenantId}, ${"alias-com-acct-" + scope.runSuffix}, ${"COM Acct"}, ${"alias-com-acct-" + scope.runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+    // Owner approval (current, bound to batch versions).
+    await sql`
+      INSERT INTO import_batch_approvals (id, tenant_id, import_batch_id, approver_role, approver_user_id,
+        staged_data_hash, cutover_manifest_hash, template_version, mapping_version,
+        validation_status, reconciliation_status, warning_summary, approved_at, reason,
+        approval_version, is_current, created_by, created_at)
+      VALUES (${randomUUID()}, ${scope.tenantId}, ${batchId}, ${"owner"}::migration_approver_role, ${ownerId},
+        ${"sha256:test"}, ${"sha256:manifest"}, ${"1.0"}, ${"1.0"},
+        ${"passed"}, ${"matched"}, null, NOW(), ${"owner approval"},
+        1, true, ${ownerId}, NOW())`;
+    // Accountant approval (current, distinct user, bound to batch versions).
+    await sql`
+      INSERT INTO import_batch_approvals (id, tenant_id, import_batch_id, approver_role, approver_user_id,
+        staged_data_hash, cutover_manifest_hash, template_version, mapping_version,
+        validation_status, reconciliation_status, warning_summary, approved_at, reason,
+        approval_version, is_current, created_by, created_at)
+      VALUES (${randomUUID()}, ${scope.tenantId}, ${batchId}, ${"accountant"}::migration_approver_role, ${accountantId},
+        ${"sha256:test"}, ${"sha256:manifest"}, ${"1.0"}, ${"1.0"},
+        ${"passed"}, ${"matched"}, null, NOW(), ${"accountant approval"},
+        1, true, ${accountantId}, NOW())`;
+    await seedBackupEvidence(scope, batchId);
+    await seedReconciliationResult(scope, batchId);
+
+    // Build a commit service to call commitBatch.
+    const { HistoricalCommitService } = await import("@/server/services/historical-commit-service");
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const { DocumentSequenceDbRepository } = await import("@/server/services/document-sequence-db-repository");
+    const docSeq = new DocumentSequenceDbRepository(db);
+    const commitService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)),
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    const idemKey = "req-alias-com-1-" + randomUUID();
+    const batchBefore = await sql`SELECT status, committed_at, commit_effect_counts FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId}`;
+
+    // commitBatch must reject — the required alias group
+    // `customer|Acme Corp` has no current mapping row.
+    await expect(
+      commitService.commitBatch(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: idemKey },
+      ),
+    ).rejects.toThrow(/ALIAS_REVALIDATION_FAILED|UNRESOLVED_ALIAS|alias mapping/i);
+
+    // Batch stays approved_for_commit (no transition, no committed_at).
+    const batchAfter = await sql`SELECT status, committed_at, commit_effect_counts FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId}`;
+    expect(batchAfter[0]?.status).toBe(batchBefore[0]?.status);
+    expect(batchAfter[0]?.status).toBe("approved_for_commit");
+    expect(batchAfter[0]?.committed_at).toBeNull();
+    expect(batchAfter[0]?.commit_effect_counts).toBeNull();
+
+    // Idempotency not succeeded (business_failed durable — alias
+    // revalidation failures are business errors).
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState).not.toBeNull();
+    expect(idemState!.state).not.toBe("succeeded");
+    expect(idemState!.state).toBe("business_failed");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // REQ-ALIAS-CLEAN-1 — Historical superseded evidence doesn't block when current
+  // source doesn't require that alias
+  //
+  // ISSUE #1 negative proof (clean case):
+  //   1. Seed a review_required batch whose CURRENT staging rows do NOT have
+  //      a `name` field (e.g., `{ code, quantity, date }`) — so
+  //      extractRequiredAliasGroups returns an empty list (no required
+  //      alias groups).
+  //   2. Seed a historical superseded alias mapping (is_current=false,
+  //      status='approved', target=customerId). This is "audit evidence"
+  //      of a prior approval chain — the alias was approved and later
+  //      superseded.
+  //   3. Do NOT create any current alias mapping.
+  //   4. Call submitForApproval (all other prerequisites satisfied) — must
+  //      SUCCEED because the current source snapshot has no `name` field,
+  //      so no alias group is required. The historical superseded alias
+  //      mapping is NOT a blocker (it is audit history, not a required
+  //      mapping).
+  //   5. Batch transitions to pending_dual_approval.
+  // ===========================================================================
+  it("REQ-ALIAS-CLEAN-1. historical superseded alias evidence does not block submission when current source has no name field (no required alias groups)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    // Seed a review_required batch (all submitForApproval prerequisites).
+    await sql`
+      INSERT INTO import_batches (id, tenant_id, batch_no, status, source_description, template_name, template_version,
+        mapping_version, cutover_manifest_hash, cutover_import_mode, staged_data_hash, staged_row_count,
+        blocking_error_count, warning_count, accepted_warning_count, validation_status, reconciliation_status,
+        warning_summary, committed_at, commit_effect_counts, created_by, created_at)
+      VALUES (${batchId}, ${scope.tenantId}, ${"ALIAS-" + batchId.slice(-6)}, ${"review_required"}::import_batch_status, ${"test"},
+        ${"opening_balance_inventory"}, ${"1.0"}, ${"1.0"}, ${"sha256:manifest"}, ${"opening_balance"}, ${"sha256:test"}, 1,
+        0, 0, 0, ${"passed"}, ${"matched"}, null, null, null, ${scope.userId}, NOW())`;
+    // Seed a customer master — the historical alias's target. The customer
+    // must exist so the historical alias's target_master_id is valid (the
+    // historical alias is is_current=false so it is NOT revalidated by
+    // submitForApproval's current-mapping loop, but we seed the customer
+    // anyway so the historical alias was legitimately approved in the past).
+    const customerId = await seedCustomer(scope, "CUST-CLEAN-1", "Acme Customer CLEAN-1");
+    // Seed a staging row WITHOUT a `name` field (e.g., { code, quantity,
+    // date }). The validation rule would normally flag this as a
+    // REQUIRED_FIELD_MISSING blocking error, but the batch's
+    // validation_status is already 'passed' (validation was completed in
+    // a prior step with a different source shape — what matters for
+    // submitForApproval is the CURRENT staging snapshot). With no `name`
+    // field, extractRequiredAliasGroups returns an empty list — no
+    // required alias groups. The historical superseded alias mapping is
+    // NOT a required group, so it doesn't block submission.
+    await seedFileAndStagingRow(scope, batchId, {
+      code: "AC001",
+      quantity: "100",
+      date: "2024-01-01",
+      // Note: NO `name` field — extractRequiredAliasGroups skips this row.
+    });
+    // Seed a historical superseded alias mapping (is_current=false,
+    // status='approved', target=customerId, mappingVersion='1.0'). This
+    // is "audit evidence" of a prior approval chain.
+    const historicalAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp Historical",
+      status: "approved",
+      targetMasterId: customerId,
+      mappingVersion: "1.0",
+      occurrenceCount: 1,
+    });
+    // Manually supersede the historical alias (is_current=false) — this
+    // simulates the prior approval being superseded by a later material
+    // remap (which we do NOT replay here; the historical row is preserved
+    // as immutable audit history).
+    await sql`UPDATE import_alias_mappings SET is_current = false, superseded_at = NOW(), superseded_by = ${scope.userId}, superseded_reason = ${"historical supersession (REQ-ALIAS-CLEAN-1)"} WHERE tenant_id = ${scope.tenantId} AND id = ${historicalAliasId} AND is_current = true`;
+
+    // Verify: there are NO current alias mappings for this batch.
+    const currentMappings = await getCurrentAliasMappings(scope, batchId);
+    expect(currentMappings.length).toBe(0);
+
+    // Verify: there IS one historical (superseded) alias mapping.
+    const historicalRows = await sql`SELECT id, is_current, status FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    expect(historicalRows.length).toBe(1);
+    expect(historicalRows[0]?.is_current).toBe(false);
+    expect(historicalRows[0]?.status).toBe("approved");
+
+    // Seed the rest of submitForApproval's prerequisites.
+    await seedReconciliationResult(scope, batchId);
+    await seedResolvedReviewItem(scope, batchId);
+    await seedBackupEvidence(scope, batchId);
+
+    // Build a reconciliation service to call submitForApproval.
+    const { HistoricalReconciliationService } = await import("@/server/services/historical-reconciliation-service");
+    const reconRepo = new HistoricalReconciliationDbRepository(db);
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const reconciliationService = new HistoricalReconciliationService({
+      repository: reconRepo, audit, idempotency: idem, commitRepository: commitRepo,
+      transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      createReconciliationRepository: (tx: unknown) => new HistoricalReconciliationDbRepository(tx as any),
+      createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+    });
+
+    const idemKey = "req-alias-clean-1-" + randomUUID();
+
+    // submitForApproval must SUCCEED — the current source snapshot has
+    // no `name` field, so no alias group is required. The historical
+    // superseded alias mapping is audit history, not a required mapping.
+    const result = await reconciliationService.submitForApproval(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey },
+    );
+    expect(result.action).toBe("submitted");
+    expect(result.newStatus).toBe("pending_dual_approval");
+
+    // Batch transitioned to pending_dual_approval.
+    const batchRows = await sql`SELECT status FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId}`;
+    expect(batchRows[0]?.status).toBe("pending_dual_approval");
+
+    // Idempotency succeeded.
+    const idemState = await getIdemState(scope, idemKey);
+    expect(idemState?.state).toBe("succeeded");
+
+    // The historical alias mapping is STILL is_current=false (immutable
+    // audit history — submitForApproval does NOT mutate it).
+    const historicalAfter = await sql`SELECT is_current, status FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${historicalAliasId}`;
+    expect(historicalAfter[0]?.is_current).toBe(false);
+    expect(historicalAfter[0]?.status).toBe("approved");
 
     await cleanupScope(scope);
   });

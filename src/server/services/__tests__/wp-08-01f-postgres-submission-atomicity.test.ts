@@ -189,7 +189,7 @@ async function seedFileAndStagingRow(scope: TestScope, batchId: string): Promise
     VALUES (${fileId}, ${scope.tenantId}, ${batchId}, ${"data.csv"}, ${"local://test"}, ${"sha256:test"},
       100, ${"text/csv"}, ${"source"}, 1, true, ${scope.userId}, NOW())`;
   const rowId = randomUUID();
-  const rowData = { name: "TestYarn", code: "TY001", quantity: "100", entity_type: "single_yarn", customer_id: "cust-001" };
+  const rowData = { code: "TY001", quantity: "100", entity_type: "single_yarn" };
   await sql`
     INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
       source_sheet_name, source_row_number, raw_row_json, transformed_row_json,

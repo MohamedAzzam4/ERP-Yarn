@@ -123,7 +123,7 @@ function makeStagingRow(id: string, overrides: Partial<ImportStagingRow> = {}): 
     templateName: null,
     sourceSheetName: "Sheet1",
     sourceRowNumber: 1,
-    rawRowJson: { name: "Item A", quantity: "100" },
+    rawRowJson: { quantity: "100" },
     transformedRowJson: null,
     validationStatus: "pending",
     reviewStatus: "not_required",

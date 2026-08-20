@@ -41,6 +41,8 @@ import { HistoricalCommitDbRepository } from "@/server/services/historical-commi
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
+import { HistoricalReplacementService } from "@/server/services/historical-replacement-service";
+import { HistoricalStagingDbRepository } from "@/server/services/historical-staging-db-repository";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { ErpUserContext } from "@/server/auth/erp-context";
@@ -48,6 +50,7 @@ import type { HistoricalCommitRepository } from "@/server/services/historical-co
 import type { AuditTransactionHandle } from "@/server/services/audit-service";
 import type { IdempotencyTransactionHandle } from "@/server/services/idempotency-service";
 import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
+import { InMemoryPrivateFileStorage } from "./in-memory-private-file-storage";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
@@ -228,8 +231,8 @@ async function seedFileAndStagingRow(scope: TestScope, batchId: string): Promise
   // committed with committedEntityType="unhandled".
   const rowData = {
     entity_type: "single_yarn",
-    name: "TestYarn",
     code: "TY001",
+    // No name field → no alias group required → no alias prerequisite.
     // No item_id/location_id/quantity, no owner_id/balance → unhandled branch
   };
   await sql`
@@ -1556,6 +1559,554 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     // Locks released by the catch block.
     const lockCount = await getActiveLockCount(scope, batchId);
     expect(lockCount).toBe(0);
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-REAL-RACE-1 — Commit wins before replacement (real production race)
+  //
+  // Both operations call real production methods:
+  //   - HistoricalCommitService.commitBatch()
+  //   - HistoricalReplacementService.replaceMigrationFile()
+  //
+  // Deterministic synchronization with deferred-promise barriers (no setTimeout):
+  //   1. Commit's custom transactionRunner acquires the batch row lock
+  //      (SELECT ... FOR UPDATE) and signals "commit has lock".
+  //   2. Test waits for "commit has lock", then starts replacement in
+  //      concurrent async. Replacement's pre-tx read sees approved_for_commit
+  //      (commit hasn't mutated yet), passes pre-tx checks, claims
+  //      idempotency, enters Drizzle tx, signals "replacement entered tx",
+  //      then runs its work body which does FOR UPDATE — BLOCKS (commit
+  //      holds the lock).
+  //   3. Test waits for "replacement entered tx" — at this point the
+  //      replacement is in its Drizzle tx and about to block on FOR UPDATE.
+  //   4. Test signals "release commit" — commit's work body runs,
+  //      transitions batch to committed, markSucceeded, commits Drizzle
+  //      tx, releases lock.
+  //   5. Replacement's FOR UPDATE acquires lock (now released), re-reads
+  //      state under lock = committed, throws COMMITTED_BATCH_IMMUTABLE.
+  //
+  // Expected:
+  //   - commit succeeds (batch → committed)
+  //   - replacement rejects with COMMITTED_BATCH_IMMUTABLE
+  //   - no stale mutations from replacement (old file still current,
+  //     no new file row, no new staging rows)
+  // ===========================================================================
+  it("COM-REAL-RACE-1. commit wins before replacement (real production race): commit succeeds, replacement rejects COMMITTED_BATCH_IMMUTABLE", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+
+    // Seed a current source file with a unique hash. The replacement will
+    // try to replace this file with a new one (different hash).
+    const oldFileId = randomUUID();
+    await sql`
+      INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash,
+        file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at)
+      VALUES (${oldFileId}, ${scope.tenantId}, ${batchId}, ${"original.csv"}, ${"local://test/original-race-1"}, ${"sha256:original-race-1-" + batchId},
+        100, ${"text/csv"}, ${"source"}, 1, true, ${scope.ownerId}, NOW())`;
+    // Seed staging row with `name: "Acme Corp"` + `entity_type: "customer"`
+    // so the alias group `customer|Acme Corp` is REQUIRED and matches the
+    // seeded alias mapping (seedApprovedAliasMapping uses
+    // sourceLabel='Acme Corp', entityType='customer').
+    const oldRowId = randomUUID();
+    const rowData = {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    };
+    await sql`
+      INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
+        source_sheet_name, source_row_number, raw_row_json, transformed_row_json,
+        transformation_notes, validation_status, review_status, ai_confidence,
+        committed_entity_type, committed_entity_id, staging_version, is_current,
+        created_by, created_at)
+      VALUES (${oldRowId}, ${scope.tenantId}, ${batchId}, ${oldFileId}, ${"opening_balance_inventory"}, ${"original.csv"}, 1,
+        ${JSON.stringify(rowData)}::jsonb,
+        ${JSON.stringify(rowData)}::jsonb,
+        null, ${"pending"}, ${"not_required"}, null, null, null, 1, true,
+        ${scope.ownerId}, NOW())`;
+
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    // Seed a customer master + approved alias mapping (sourceLabel='Acme Corp',
+    // entityType='customer', mappingVersion='1.0') so commit's alias
+    // revalidation passes.
+    const customerId = await seedCustomer(scope, "CUST-RACE-1", "Acme Customer RACE-1");
+    await seedApprovedAliasMapping(scope, batchId, customerId);
+
+    // ----- Deferred-promise barriers (deterministic synchronization) -----
+    let signalCommitHasLock!: () => void;
+    const commitHasLockPromise = new Promise<void>(resolve => { signalCommitHasLock = resolve; });
+    let signalReplacementEnteredTx!: () => void;
+    const replacementEnteredTxPromise = new Promise<void>(resolve => { signalReplacementEnteredTx = resolve; });
+    let signalReleaseCommit!: () => void;
+    const releaseCommitPromise = new Promise<void>(resolve => { signalReleaseCommit = resolve; });
+
+    // ----- Custom commitRunner: acquire lock, signal, pause, run work -----
+    const commitRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+      (db as any).transaction(async (tx: any) => {
+        // Lock the batch row BEFORE running the commit work body. This
+        // ensures the commit holds the lock first (deterministic ordering
+        // for the race). The commit work body does its own FOR UPDATE
+        // inside executePosting — that is a no-op since this tx already
+        // holds the lock.
+        await (tx as any).execute(drizzleSql`SELECT id FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+        signalCommitHasLock();
+        // Pause until the test signals "release commit" — this gives the
+        // replacement time to start, pass its pre-tx checks, and block
+        // on FOR UPDATE.
+        await releaseCommitPromise;
+        // Run the commit work body — it transitions batch → committed,
+        // markSucceeded, returns. Drizzle tx commits, lock released.
+        return await work(tx);
+      });
+
+    // ----- Custom replacementRunner: signal "replacement entered tx", run work -----
+    // The signal fires BEFORE the work body's FOR UPDATE — so the test
+    // knows the replacement is in its Drizzle tx and about to block.
+    const replacementRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+      (db as any).transaction(async (tx: any) => {
+        signalReplacementEnteredTx();
+        // Run the replacement work body — its first statement is FOR UPDATE
+        // which BLOCKS because the commit holds the lock. The work body
+        // will resume after the commit commits and releases the lock.
+        return await work(tx);
+      });
+
+    // ----- Construct commitService with custom commitRunner -----
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const commitService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner: commitRunner,
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    // ----- Construct replacementService with custom replacementRunner -----
+    const stagingRepo = new HistoricalStagingDbRepository(db);
+    const replacementService = new HistoricalReplacementService({
+      repository: stagingRepo,
+      audit,
+      idempotency: idem,
+      transactionRunner: replacementRunner,
+      createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      invalidateCurrentApprovals: async (tx: unknown, tenantId: string, batchId: string, invalidatedBy: string, reason: string) => {
+        const txCommitRepo = new HistoricalCommitDbRepository(tx as any);
+        return txCommitRepo.invalidateCurrentApprovalsForBatch(tenantId, batchId, invalidatedBy, reason);
+      },
+    });
+
+    const storage = new InMemoryPrivateFileStorage();
+
+    const commitIdemKey = "com-real-race-1-commit-" + randomUUID();
+    const replaceIdemKey = "com-real-race-1-replace-" + randomUUID();
+
+    // Snapshot before
+    const auditBefore = await getScopedAuditCount(scope, batchId);
+    const filesBefore = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    const stagingRowsBefore = await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+
+    // ----- Start commit in async -----
+    // Commit runs pre-tx checks, acquires lock (in commitRunner), signals
+    // "commit has lock", pauses (waits for "release commit").
+    const commitPromise = commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: commitIdemKey },
+    );
+
+    // Wait for commit to acquire the lock (deterministic ordering — commit
+    // wins the lock race).
+    await commitHasLockPromise;
+
+    // ----- Start replacement in concurrent async -----
+    // Replacement's pre-tx read sees approved_for_commit (commit hasn't
+    // mutated yet — it's paused). Pre-tx checks pass. Idempotency claim.
+    // Replacement enters Drizzle tx (replacementRunner), signals
+    // "replacement entered tx", runs work body. Work body's FOR UPDATE
+    // BLOCKS (commit holds the lock).
+    const storedFile = await storage.store(
+      scope.tenantId, batchId, "replace-key-race-1", "replacement.csv",
+      Buffer.from("name,code,entity_type,quantity,date\nAcme Corp,AC001,customer,100,2024-01-01\n"),
+      "text/csv",
+    );
+    const replacementPromise = replacementService.replaceMigrationFile(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      {
+        importBatchId: batchId,
+        replaceFileId: oldFileId,
+        originalFileName: "replacement.csv",
+        storagePath: storedFile.storagePath,
+        fileHash: storedFile.fileHash,
+        fileSizeBytes: storedFile.fileSizeBytes,
+        contentType: storedFile.contentType,
+        fileType: "source",
+        parsedRows: [{
+          rowNumber: 1,
+          columns: { name: "Acme Corp", code: "AC001", entity_type: "customer", quantity: "100", date: "2024-01-01" },
+        }],
+        templateType: "opening_balance_inventory",
+        reworkReason: "COM-REAL-RACE-1: replace after commit race",
+        idempotencyKey: replaceIdemKey,
+      },
+    );
+
+    // Wait for replacement to enter its Drizzle tx — at this point the
+    // replacement is about to block on FOR UPDATE.
+    await replacementEnteredTxPromise;
+
+    // ----- Signal commit to proceed -----
+    // Commit's work body runs, transitions batch → committed,
+    // markSucceeded, commits Drizzle tx, releases lock.
+    signalReleaseCommit();
+
+    // ----- Commit should succeed -----
+    const commitResult = await commitPromise;
+    expect(commitResult.action).toBe("committed");
+    expect(commitResult.batchId).toBe(batchId);
+
+    // ----- Replacement should reject with COMMITTED_BATCH_IMMUTABLE -----
+    // Replacement's FOR UPDATE acquired the lock (released by commit),
+    // re-read state under lock = committed, threw
+    // COMMITTED_BATCH_IMMUTABLE. Drizzle tx rolled back — no mutations.
+    await expect(replacementPromise).rejects.toThrow(/COMMITTED_BATCH_IMMUTABLE|committed.*immutable|no longer replaceable|LIFECYCLE_VIOLATION/i);
+
+    // ----- Verify final state -----
+    const batch = await getBatchState(scope, batchId);
+    expect(batch!.status).toBe("committed");
+    expect(batch!.committed_at).not.toBeNull();
+
+    // No stale mutations from replacement:
+    // - Old file is STILL current (replacement's markFileSuperseded was
+    //   rolled back when its Drizzle tx rolled back).
+    const oldFileRows = await sql`SELECT is_current FROM import_files WHERE tenant_id = ${scope.tenantId} AND id = ${oldFileId}`;
+    expect(oldFileRows[0]?.is_current).toBe(true);
+
+    // - No new file row from replacement (count unchanged).
+    const filesAfter = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    expect(filesAfter[0]?.c).toBe(filesBefore[0]?.c);
+
+    // - No new staging rows from replacement (count unchanged).
+    const stagingRowsAfter = await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    expect(stagingRowsAfter[0]?.c).toBe(stagingRowsBefore[0]?.c);
+
+    // - Exactly one scoped commit audit.
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore + 1);
+    expect(auditAfter).toBe(1);
+
+    // - Staging row has committed entity link.
+    const stagingRow = await getStagingRowCommitLink(scope, oldRowId);
+    expect(stagingRow!.committed_entity_type).toBe("unhandled");
+    expect(stagingRow!.committed_entity_id).toBeTruthy();
+
+    // - Locks released.
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    // - Replacement's idempotency record exists but NOT succeeded (the
+    //   COMMITTED_BATCH_IMMUTABLE error path marks it via
+    //   markRetryableFailed, so it's retryable_failed; NOT succeeded).
+    const replaceIdemState = await getIdemState(scope, replaceIdemKey);
+    expect(replaceIdemState).not.toBeNull();
+    expect(replaceIdemState!.state).not.toBe("succeeded");
+
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // COM-REAL-RACE-2 — Replacement wins before commit (real production race)
+  //
+  // Both operations call real production methods:
+  //   - HistoricalReplacementService.replaceMigrationFile()
+  //   - HistoricalCommitService.commitBatch()
+  //
+  // Both services use the STANDARD transactionRunner (no custom barrier-based
+  // runners). The two operations are launched concurrently with
+  // Promise.allSettled and the natural production race plays out without any
+  // test-side synchronization.
+  //
+  // Production race (replacement wins the batch row lock):
+  //   1. Replacement starts. Pre-tx reads (non-locking SELECTs at READ
+  //      COMMITTED) see approved_for_commit. Pre-tx checks pass,
+  //      idempotency claim succeeds. Replacement enters its Drizzle tx
+  //      and its work body's first statement is FOR UPDATE on the batch
+  //      row — acquires the lock. Mutations: mark old file superseded,
+  //      insert new file, mark old staging rows superseded, reset batch
+  //      (status → source_uploaded, hashes cleared, etc.), invalidate
+  //      current approvals, audit, markSucceeded. Drizzle tx commits,
+  //      lock released.
+  //   2. Commit starts in parallel. Pre-tx reads see approved_for_commit
+  //      (replacement hasn't committed yet). Pre-tx checks pass,
+  //      idempotency claim succeeds. Commit then acquires cutover locks:
+  //      each `insertCutoverLock` is an INSERT into import_cutover_locks
+  //      with an FK to import_batches. PostgreSQL's FK verification takes
+  //      a FOR KEY SHARE lock on the parent row, which CONFLICTS with
+  //      the replacement's FOR UPDATE — the INSERT BLOCKS until the
+  //      replacement commits and releases the lock.
+  //   3. Replacement commits → FOR UPDATE released. Commit's cutover
+  //      lock INSERTs unblock (FK check now passes), commit enters its
+  //      Drizzle tx, work body's FOR UPDATE acquires the now-released
+  //      lock, re-reads state under lock = source_uploaded (replacement
+  //      reset it), throws InvalidBatchStatusError. Drizzle tx rolls
+  //      back. Commit's catch block releases cutover locks + marks
+  //      business_failed durable.
+  //
+  // Why the replacement deterministically wins the lock race (no test-side
+  // barriers needed): the replacement's pre-tx work is much shorter
+  // (fewer SELECTs, no cutover lock INSERTs, no audit logs) than the
+  // commit's, so the replacement reaches its Drizzle tx and FOR UPDATE
+  // BEFORE the commit reaches its first cutover lock INSERT. From that
+  // point on, the commit's cutover lock INSERTs block on the
+  // replacement's lock and cannot race ahead.
+  //
+  // NOTE: the previous version of this test used custom transactionRunners
+  // with deferred-promise barriers to deterministically force the
+  // replacement's lock win. That design deadlocked: the commit's pre-tx
+  // cutover lock INSERTs blocked on the replacement's FOR UPDATE before
+  // the commit ever reached `signalCommitEnteredTx()`, so the replacement
+  // (which was waiting for `commitEnteredTxPromise`) never made progress.
+  // Removing the barriers entirely lets the production race play out
+  // naturally and removes the deadlock.
+  //
+  // Expected:
+  //   - replacement succeeds (status === "fulfilled", batch → source_uploaded,
+  //     approvals invalidated, old file superseded, new file current)
+  //   - commit rejects (status === "rejected", InvalidBatchStatusError —
+  //     batch is no longer approved_for_commit)
+  //   - no stale operational effects (no stock_movements, account_entries,
+  //     no commit audit, no staging row commit links)
+  //   - replacement idempotency = succeeded; commit idempotency != succeeded
+  // ===========================================================================
+  it("COM-REAL-RACE-2. replacement wins before commit (real production race): replacement succeeds, commit rejects INVALID_BATCH_STATUS", async () => {
+    const scope = newScope();
+    await seedTenantAndUsers(scope);
+    const batchId = randomUUID();
+    await seedApprovedForCommitBatch(scope, batchId);
+
+    // Seed a current source file with a unique hash.
+    const oldFileId = randomUUID();
+    await sql`
+      INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash,
+        file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at)
+      VALUES (${oldFileId}, ${scope.tenantId}, ${batchId}, ${"original.csv"}, ${"local://test/original-race-2"}, ${"sha256:original-race-2-" + batchId},
+        100, ${"text/csv"}, ${"source"}, 1, true, ${scope.ownerId}, NOW())`;
+    // Seed staging row with NO `name` field — avoids the
+    // required-alias-groups prerequisite (the commit's alias revalidation
+    // would otherwise require an approved alias mapping for the
+    // `${entity_type}|${name}` group). The unhandled entity_type
+    // (single_yarn) skips the inventory/subledger posting branches.
+    const oldRowId = randomUUID();
+    const rowData = {
+      code: "TY001",
+      entity_type: "single_yarn",
+      quantity: "100",
+    };
+    await sql`
+      INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
+        source_sheet_name, source_row_number, raw_row_json, transformed_row_json,
+        transformation_notes, validation_status, review_status, ai_confidence,
+        committed_entity_type, committed_entity_id, staging_version, is_current,
+        created_by, created_at)
+      VALUES (${oldRowId}, ${scope.tenantId}, ${batchId}, ${oldFileId}, ${"opening_balance_inventory"}, ${"original.csv"}, 1,
+        ${JSON.stringify(rowData)}::jsonb,
+        ${JSON.stringify(rowData)}::jsonb,
+        null, ${"pending"}, ${"not_required"}, null, null, null, 1, true,
+        ${scope.ownerId}, NOW())`;
+
+    await seedPriorReconciliationEvidence(scope, batchId, 1);
+    await seedBackupEvidence(scope, batchId);
+    await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
+    await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
+
+    // ----- Standard transactionRunner (no barriers) -----
+    const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+      (db as any).transaction(async (tx: any) => work(tx));
+
+    // ----- Construct replacementService with standard transactionRunner -----
+    const stagingRepo = new HistoricalStagingDbRepository(db);
+    const audit = new AuditDbRepository(db);
+    const idem = new IdempotencyDbRepository(db);
+    const replacementService = new HistoricalReplacementService({
+      repository: stagingRepo,
+      audit,
+      idempotency: idem,
+      transactionRunner,
+      createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
+      createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+      createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      invalidateCurrentApprovals: async (tx: unknown, tenantId: string, batchId: string, invalidatedBy: string, reason: string) => {
+        const txCommitRepo = new HistoricalCommitDbRepository(tx as any);
+        return txCommitRepo.invalidateCurrentApprovalsForBatch(tenantId, batchId, invalidatedBy, reason);
+      },
+    });
+
+    // ----- Construct commitService with standard transactionRunner -----
+    const commitRepo = new HistoricalCommitDbRepository(db);
+    const commitService = new HistoricalCommitService({
+      repository: commitRepo, audit, idempotency: idem,
+      transactionRunner,
+      txFactories: {
+        createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
+        createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+        createInventoryLedger: () => ({} as any),
+        createSubledger: () => ({} as any),
+        createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
+        createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
+      },
+    });
+
+    const storage = new InMemoryPrivateFileStorage();
+
+    const commitIdemKey = "com-real-race-2-commit-" + randomUUID();
+    const replaceIdemKey = "com-real-race-2-replace-" + randomUUID();
+
+    // Snapshot before
+    const auditBefore = await getScopedAuditCount(scope, batchId);
+    const filesBefore = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    const stagingRowsBefore = await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+
+    // ----- Store the replacement file BEFORE launching concurrent ops -----
+    // (storage.store is synchronous w.r.t. the race — it must complete
+    // before either service runs so the replacement has a real storage
+    // path to commit).
+    const storedFile = await storage.store(
+      scope.tenantId, batchId, "replace-key-race-2", "replacement.csv",
+      Buffer.from("code,entity_type,quantity\nTY001,single_yarn,100\n"),
+      "text/csv",
+    );
+
+    // ----- Launch both operations concurrently via Promise.allSettled -----
+    // Both services use the standard transactionRunner. The replacement's
+    // shorter pre-tx path lets it reach its Drizzle tx FOR UPDATE first.
+    // The commit's cutover lock INSERTs then block on the replacement's
+    // FOR UPDATE (via FK KEY SHARE conflict) until the replacement
+    // commits. Then the commit enters its tx, re-reads state =
+    // source_uploaded under the lock, and throws InvalidBatchStatusError.
+    const outcomes = await Promise.allSettled([
+      replacementService.replaceMigrationFile(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        {
+          importBatchId: batchId,
+          replaceFileId: oldFileId,
+          originalFileName: "replacement.csv",
+          storagePath: storedFile.storagePath,
+          fileHash: storedFile.fileHash,
+          fileSizeBytes: storedFile.fileSizeBytes,
+          contentType: storedFile.contentType,
+          fileType: "source",
+          parsedRows: [{
+            rowNumber: 1,
+            columns: { code: "TY001", entity_type: "single_yarn", quantity: "100" },
+          }],
+          templateType: "opening_balance_inventory",
+          reworkReason: "COM-REAL-RACE-2: replace before commit race",
+          idempotencyKey: replaceIdemKey,
+        },
+      ),
+      commitService.commitBatch(
+        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+        { importBatchId: batchId, idempotencyKey: commitIdemKey },
+      ),
+    ]);
+
+    const replacementOutcome = outcomes[0]!;
+    const commitOutcome = outcomes[1]!;
+
+    // ----- Replacement wins: status === "fulfilled" -----
+    expect(replacementOutcome.status).toBe("fulfilled");
+    const replacementResult = (replacementOutcome as PromiseFulfilledResult<{ action: string; oldFileId: string; newFileId: string; newStagingRowCount: number }>).value;
+    expect(replacementResult.action).toBe("created");
+    expect(replacementResult.oldFileId).toBe(oldFileId);
+    expect(replacementResult.newStagingRowCount).toBe(1);
+
+    // ----- Commit rejects: status === "rejected" -----
+    expect(commitOutcome.status).toBe("rejected");
+    const commitReason = (commitOutcome as PromiseRejectedResult).reason;
+    expect(String(commitReason?.message ?? commitReason)).toMatch(/INVALID_BATCH_STATUS|status/i);
+
+    // ----- Verify final state -----
+    const batch = await getBatchState(scope, batchId);
+    // Batch is source_uploaded (replacement reset it).
+    expect(batch!.status).toBe("source_uploaded");
+    // committed_at is null (commit never succeeded).
+    expect(batch!.committed_at).toBeNull();
+    // commit_effect_counts is null (commit never wrote commit metadata).
+    expect(batch!.commit_effect_counts).toBeNull();
+    // staged_data_hash is empty (replacement cleared it).
+    expect(batch!.staged_data_hash).toBe("");
+    // cutover_manifest_hash is empty (replacement cleared it).
+    expect(batch!.cutover_manifest_hash).toBe("");
+
+    // Old file is superseded (is_current=false).
+    const oldFileRows = await sql`SELECT is_current, superseded_at FROM import_files WHERE tenant_id = ${scope.tenantId} AND id = ${oldFileId}`;
+    expect(oldFileRows[0]?.is_current).toBe(false);
+    expect(oldFileRows[0]?.superseded_at).not.toBeNull();
+
+    // New file is current.
+    const newFileRows = await sql`SELECT is_current, file_hash FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND id = ${replacementResult.newFileId}`;
+    expect(newFileRows[0]?.is_current).toBe(true);
+    expect(newFileRows[0]?.file_hash).toBe(storedFile.fileHash);
+
+    // File count: old + new = before + 1.
+    const filesAfter = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    expect(filesAfter[0]?.c).toBe((filesBefore[0]?.c ?? 0) + 1);
+
+    // Staging row count: old (superseded) + new = before + 1.
+    const stagingRowsAfter = await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    expect(stagingRowsAfter[0]?.c).toBe((stagingRowsBefore[0]?.c ?? 0) + 1);
+
+    // Old staging row has NO commit link (commit never wrote commit links
+    // — its work body threw before reaching the staging row commit link
+    // step).
+    const oldStagingRow = await getStagingRowCommitLink(scope, oldRowId);
+    expect(oldStagingRow!.committed_entity_type).toBeNull();
+    expect(oldStagingRow!.committed_entity_id).toBeNull();
+
+    // No commit audit (commit's audit was either never written or rolled
+    // back).
+    const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
+    expect(auditAfter).toBe(auditBefore);
+
+    // No operational effects (no stock_movements, account_entries). The
+    // commit work body threw before reaching the inventory/subledger
+    // posting step.
+    const stockMovements = await sql`SELECT count(*)::int AS c FROM stock_movements WHERE tenant_id = ${scope.tenantId} AND source_document_id = ${oldRowId}`;
+    expect(stockMovements[0]?.c).toBe(0);
+    const accountEntries = await sql`SELECT count(*)::int AS c FROM account_entries WHERE tenant_id = ${scope.tenantId} AND source_document_id = ${oldRowId}`;
+    expect(accountEntries[0]?.c).toBe(0);
+
+    // Locks released (commit's catch block released cutover locks).
+    const lockCount = await getActiveLockCount(scope, batchId);
+    expect(lockCount).toBe(0);
+
+    // Commit's idempotency record exists but NOT succeeded (business
+    // failure — InvalidBatchStatusError is a HistoricalCommitError, marked
+    // business_failed durable).
+    const commitIdemState = await getIdemState(scope, commitIdemKey);
+    expect(commitIdemState).not.toBeNull();
+    expect(commitIdemState!.state).not.toBe("succeeded");
+
+    // Replacement's idempotency record succeeded.
+    const replaceIdemState = await getIdemState(scope, replaceIdemKey);
+    expect(replaceIdemState?.state).toBe("succeeded");
 
     await cleanupScope(scope);
   });
