@@ -13,7 +13,7 @@ import { tenantIdColumn, makeTenantOwnedRow } from "./_helpers";
 import { users } from "./users";
 import {
   importBatchStatus, validationSeverity, cutoverImportMode,
-  aliasMappingStatus, migrationApproverRole, correctionRequestStatus,
+  aliasMappingStatus, aliasMappingKind, migrationApproverRole, correctionRequestStatus,
   reviewItemDecision, reconciliationResultStatus,
 } from "./migration-enums";
 
@@ -348,30 +348,22 @@ export const importAliasMappings = pgTable("import_alias_mappings", {
   // lets the submission prerequisite check quickly verify that every required
   // alias has a resolved target.
   occurrenceCount: integer("occurrence_count").notNull().default(1),
-  // Array of source row numbers that are explicitly split from the default
-  // group (e.g. one row in a group of "Same Name" rows was remapped to a
-  // different master). The remaining rows stay with the group's default
-  // mapping. JSONB array of integers.
+  // WP-08-01F DEC-081 — Array of staging row UUIDs (import_staging_rows.id)
   exceptionSourceRowIds: jsonb("exception_source_row_ids"),
+  mappingKind: aliasMappingKind("mapping_kind").notNull().default("default"),
   ...makeTenantOwnedRow(usersId),
 }, (t) => [
   index("import_alias_mappings_tenant_batch_idx").on(t.tenantId, t.importBatchId),
   index("import_alias_mappings_tenant_status_idx").on(t.tenantId, t.status),
   index("import_alias_mappings_tenant_entity_source_idx").on(t.tenantId, t.entityType, t.sourceLabel),
-  // WP-08-01F (A1) — current-row lookup indexes (one per tenant+batch+isCurrent,
-  // one per tenant+groupId+isCurrent). Without these, every list/approval
-  // query degrades to a full scan as supersession history grows.
   index("import_alias_mappings_tenant_batch_current_idx").on(t.tenantId, t.importBatchId, t.isCurrent),
   index("import_alias_mappings_tenant_group_current_idx").on(t.tenantId, t.groupId, t.isCurrent),
-  // WP-08-01F (A1) — Partial unique index: only one CURRENT mapping per
-  // (tenant, batch, entityType, sourceLabel). Superseded (is_current=false)
-  // rows may coexist with the current row for the same key, providing
-  // append-only audit history. Re-approval to a different target supersedes
-  // the old current row before inserting the new one, preserving this
-  // invariant at the DB level.
-  uniqueIndex("import_alias_mappings_tenant_batch_entity_source_current_unique_idx")
-    .on(t.tenantId, t.importBatchId, t.entityType, t.sourceLabel)
+  index("import_alias_mappings_def_lookup_idx")
+    .on(t.tenantId, t.importBatchId, t.entityType, t.sourceLabel, t.mappingKind)
     .where(sql`${t.isCurrent} = true`),
+  uniqueIndex("import_alias_mappings_def_unique_idx")
+    .on(t.tenantId, t.importBatchId, t.entityType, t.sourceLabel)
+    .where(sql`${t.isCurrent} = true AND ${t.mappingKind} = 'default'`),
 ]);
 
 export type ImportAliasMapping = typeof importAliasMappings.$inferSelect;

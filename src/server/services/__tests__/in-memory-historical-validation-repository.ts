@@ -90,6 +90,7 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
       groupId: row.groupId ?? null,
       occurrenceCount: row.occurrenceCount ?? 1,
       exceptionSourceRowIds: row.exceptionSourceRowIds ?? null,
+      mappingKind: (row.mappingKind ?? "default") as any,
     } as ImportAliasMapping;
     this.aliases.set(`${row.tenantId}:${id}`, alias);
     return alias;
@@ -159,10 +160,29 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
     return this.aliases.get(`${tenantId}:${aliasMappingId}`) ?? null;
   }
 
+  async findAliasMappingByIdForUpdate(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null> {
+    return this.findAliasMappingById(tenantId, aliasMappingId);
+  }
+
   // WP-08-01F (A3) — Find only CURRENT alias mappings for a batch.
   async findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
     return [...this.aliases.values()].filter(
       a => a.tenantId === tenantId && a.importBatchId === importBatchId && a.isCurrent,
+    );
+  }
+
+  async findCurrentDefaultAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    return [...this.aliases.values()].filter(
+      a => a.tenantId === tenantId && a.importBatchId === importBatchId &&
+        a.isCurrent && (a as any).mappingKind === "default",
+    );
+  }
+
+  async findCurrentExceptionAliasMappingsForGroup(tenantId: string, importBatchId: string, entityType: string, sourceLabel: string): Promise<ImportAliasMapping[]> {
+    return [...this.aliases.values()].filter(
+      a => a.tenantId === tenantId && a.importBatchId === importBatchId &&
+        a.entityType === entityType && a.sourceLabel === sourceLabel &&
+        a.isCurrent && (a as any).mappingKind === "exception",
     );
   }
 
@@ -243,6 +263,20 @@ export class InMemoryHistoricalValidationRepository implements HistoricalValidat
 
   async findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
     return this.stagingRows.get(`${tenantId}:${importBatchId}`) ?? [];
+  }
+
+  async findStagingRowsByIds(tenantId: string, stagingRowIds: string[]): Promise<ImportStagingRow[]> {
+    if (stagingRowIds.length === 0) return [];
+    const idSet = new Set(stagingRowIds);
+    const out: ImportStagingRow[] = [];
+    for (const rows of this.stagingRows.values()) {
+      for (const r of rows) {
+        if ((r as any).tenantId === tenantId && idSet.has(r.id) && (r as any).isCurrent !== false) {
+          out.push(r);
+        }
+      }
+    }
+    return out;
   }
 
   async findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null> {

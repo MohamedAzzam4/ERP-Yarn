@@ -1026,6 +1026,11 @@ export default async function MigrationBatchDetailPage({
                 groupId: a.groupId,
                 occurrenceCount: a.occurrenceCount,
                 exceptionSourceRowIds: a.exceptionSourceRowIds,
+                // WP-08-01F DEC-081 — surface the mappingKind discriminator
+                // so the AliasMappingPanel can split DEFAULT vs EXCEPTION
+                // rows by their canonical column value (not by the
+                // exceptionSourceRowIds presence heuristic).
+                mappingKind: a.mappingKind,
                 isCurrent: a.isCurrent,
               }))}
               batchMappingVersion={b.mappingVersion}

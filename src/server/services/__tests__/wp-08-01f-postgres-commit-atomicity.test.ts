@@ -41,7 +41,7 @@ import { HistoricalCommitDbRepository } from "@/server/services/historical-commi
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
-import { HistoricalReplacementService } from "@/server/services/historical-replacement-service";
+import { HistoricalReplacementService, HistoricalReplacementError } from "@/server/services/historical-replacement-service";
 import { HistoricalStagingDbRepository } from "@/server/services/historical-staging-db-repository";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
@@ -177,6 +177,8 @@ function makeCommitFirstWriteFailureRepoWrapper(realRepo: HistoricalCommitReposi
     findLatestReconciliationResults: (t: string, id: string) => realRepo.findLatestReconciliationResults(t, id),
     findCutoverManifestsForBatch: (t: string, id: string) => realRepo.findCutoverManifestsForBatch(t, id),
     findCurrentAliasMappingsForBatch: (t: string, id: string) => realRepo.findCurrentAliasMappingsForBatch(t, id),
+    findCurrentDefaultAliasMappingsForBatch: (t: string, id: string) => realRepo.findCurrentDefaultAliasMappingsForBatch(t, id),
+    findCurrentExceptionAliasMappingsForGroup: (t: string, id: string, e: string, s: string) => realRepo.findCurrentExceptionAliasMappingsForGroup(t, id, e, s),
     findSupersededApprovedAliasMappingsForBatch: (t: string, id: string) => realRepo.findSupersededApprovedAliasMappingsForBatch(t, id),
     findMasterForAlias: (t: string, e: string, m: string) => realRepo.findMasterForAlias(t, e, m),
   };
@@ -1767,6 +1769,11 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
         idempotencyKey: replaceIdemKey,
       },
     );
+    // Attach observer immediately to prevent unhandled rejection
+    const replacementOutcome = replacementPromise.then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
 
     // Wait for replacement to enter its Drizzle tx — at this point the
     // replacement is about to block on FOR UPDATE.
@@ -1783,10 +1790,13 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     expect(commitResult.batchId).toBe(batchId);
 
     // ----- Replacement should reject with COMMITTED_BATCH_IMMUTABLE -----
-    // Replacement's FOR UPDATE acquired the lock (released by commit),
-    // re-read state under lock = committed, threw
-    // COMMITTED_BATCH_IMMUTABLE. Drizzle tx rolled back — no mutations.
-    await expect(replacementPromise).rejects.toThrow(/COMMITTED_BATCH_IMMUTABLE|committed.*immutable|no longer replaceable|LIFECYCLE_VIOLATION/i);
+    const outcome = await replacementOutcome;
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      const err = outcome.error as Error;
+      expect(err).toBeInstanceOf(HistoricalReplacementError);
+      expect((err as any)?.code).toBe("COMMITTED_BATCH_IMMUTABLE");
+    }
 
     // ----- Verify final state -----
     const batch = await getBatchState(scope, batchId);
@@ -1821,12 +1831,52 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     const lockCount = await getActiveLockCount(scope, batchId);
     expect(lockCount).toBe(0);
 
-    // - Replacement's idempotency record exists but NOT succeeded (the
-    //   COMMITTED_BATCH_IMMUTABLE error path marks it via
-    //   markRetryableFailed, so it's retryable_failed; NOT succeeded).
+    // - Replacement's idempotency record: business_failed (durable).
+    //   COMMITTED_BATCH_IMMUTABLE is a deterministic business failure —
+    //   committed is terminal and retry will never make it replaceable.
     const replaceIdemState = await getIdemState(scope, replaceIdemKey);
     expect(replaceIdemState).not.toBeNull();
+    expect(replaceIdemState!.state).toBe("business_failed");
     expect(replaceIdemState!.state).not.toBe("succeeded");
+    expect(replaceIdemState!.state).not.toBe("in_progress");
+    expect(replaceIdemState!.state).not.toBe("retryable_failed");
+
+    // - Same-key replay: durable business failure is replayed.
+    //   The replacement transaction is NOT executed again; no new effects.
+    const filesBeforeReplay = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    const replayOutcome = await replacementService.replaceMigrationFile(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      {
+        importBatchId: batchId,
+        replaceFileId: oldFileId,
+        originalFileName: "replacement.csv",
+        storagePath: storedFile.storagePath,
+        fileHash: storedFile.fileHash,
+        fileSizeBytes: storedFile.fileSizeBytes,
+        contentType: storedFile.contentType,
+        fileType: "source",
+        parsedRows: [{
+          rowNumber: 1,
+          columns: { name: "Acme Corp", code: "AC001", entity_type: "customer", quantity: "100", date: "2024-01-01" },
+        }],
+        templateType: "opening_balance_inventory",
+        reworkReason: "COM-REAL-RACE-1: same-key replay (should be rejected)",
+        idempotencyKey: replaceIdemKey, // SAME key
+      },
+    ).then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
+    // Replay should reject (not re-execute) — committed is still terminal.
+    expect(replayOutcome.ok).toBe(false);
+    if (!replayOutcome.ok) {
+      const replayErr = replayOutcome.error as Error;
+      expect(replayErr).toBeInstanceOf(HistoricalReplacementError);
+      expect((replayErr as any)?.code).toBe("COMMITTED_BATCH_IMMUTABLE");
+    }
+    // Zero duplicate effects: file count unchanged after replay attempt.
+    const filesAfterReplay = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
+    expect(filesAfterReplay[0]?.c).toBe(filesBeforeReplay[0]?.c);
 
     await cleanupScope(scope);
   });
@@ -1895,30 +1945,20 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
   //     no commit audit, no staging row commit links)
   //   - replacement idempotency = succeeded; commit idempotency != succeeded
   // ===========================================================================
-  it("COM-REAL-RACE-2. replacement wins before commit (real production race): replacement succeeds, commit rejects INVALID_BATCH_STATUS", async () => {
+  it("COM-REAL-RACE-2. replacement wins before commit (DETERMINISTIC barrier): replacement succeeds, commit rejects INVALID_BATCH_STATUS", async () => {
     const scope = newScope();
     await seedTenantAndUsers(scope);
     const batchId = randomUUID();
     await seedApprovedForCommitBatch(scope, batchId);
 
-    // Seed a current source file with a unique hash.
     const oldFileId = randomUUID();
     await sql`
       INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash,
         file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at)
       VALUES (${oldFileId}, ${scope.tenantId}, ${batchId}, ${"original.csv"}, ${"local://test/original-race-2"}, ${"sha256:original-race-2-" + batchId},
         100, ${"text/csv"}, ${"source"}, 1, true, ${scope.ownerId}, NOW())`;
-    // Seed staging row with NO `name` field — avoids the
-    // required-alias-groups prerequisite (the commit's alias revalidation
-    // would otherwise require an approved alias mapping for the
-    // `${entity_type}|${name}` group). The unhandled entity_type
-    // (single_yarn) skips the inventory/subledger posting branches.
     const oldRowId = randomUUID();
-    const rowData = {
-      code: "TY001",
-      entity_type: "single_yarn",
-      quantity: "100",
-    };
+    const rowData = { code: "TY001", entity_type: "single_yarn", quantity: "100" };
     await sql`
       INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
         source_sheet_name, source_row_number, raw_row_json, transformed_row_json,
@@ -1936,19 +1976,49 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     await seedCurrentApproval(scope, batchId, "owner", scope.ownerId);
     await seedCurrentApproval(scope, batchId, "accountant", scope.accountantId);
 
-    // ----- Standard transactionRunner (no barriers) -----
-    const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
-      (db as any).transaction(async (tx: any) => work(tx));
+    // ----- Deferred-promise barriers -----
+    let signalReplacementAcquiredLock!: () => void;
+    const replacementAcquiredLockPromise = new Promise<void>(resolve => { signalReplacementAcquiredLock = resolve; });
+    let signalReleaseReplacement!: () => void;
+    const releaseReplacementPromise = new Promise<void>(resolve => { signalReleaseReplacement = resolve; });
+    let signalCommitReachedCutoverInsert!: () => void;
+    const commitReachedCutoverInsertPromise = new Promise<void>(resolve => { signalCommitReachedCutoverInsert = resolve; });
+    let signalCommitPassedCutoverInsert!: () => void;
+    const commitPassedCutoverInsertPromise = new Promise<void>(resolve => { signalCommitPassedCutoverInsert = resolve; });
 
-    // ----- Construct replacementService with standard transactionRunner -----
+    // ----- Custom replacementRunner: acquire FOR UPDATE, signal, pause, delegate -----
+    const replacementRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+      (db as any).transaction(async (tx: any) => {
+        await (tx as any).execute(drizzleSql`SELECT id, status FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId} FOR UPDATE`);
+        signalReplacementAcquiredLock();
+        await releaseReplacementPromise;
+        return await work(tx);
+      });
+
+    // ----- Commit repository wrapper: signal around REAL insertCutoverLock -----
+    const realCommitRepo = new HistoricalCommitDbRepository(db);
+    const commitRepoWrapper: HistoricalCommitRepository = new Proxy(realCommitRepo, {
+      get(target, prop) {
+        if (prop === "insertCutoverLock") {
+          return async (row: any) => {
+            signalCommitReachedCutoverInsert();
+            const result = await target.insertCutoverLock(row);
+            signalCommitPassedCutoverInsert();
+            return result;
+          };
+        }
+        const value = (target as any)[prop];
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    // ----- Construct services -----
     const stagingRepo = new HistoricalStagingDbRepository(db);
     const audit = new AuditDbRepository(db);
     const idem = new IdempotencyDbRepository(db);
     const replacementService = new HistoricalReplacementService({
-      repository: stagingRepo,
-      audit,
-      idempotency: idem,
-      transactionRunner,
+      repository: stagingRepo, audit, idempotency: idem,
+      transactionRunner: replacementRunner,
       createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
       createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
@@ -1958,11 +2028,11 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
       },
     });
 
-    // ----- Construct commitService with standard transactionRunner -----
-    const commitRepo = new HistoricalCommitDbRepository(db);
+    const standardTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
+      (db as any).transaction(async (tx: any) => work(tx));
     const commitService = new HistoricalCommitService({
-      repository: commitRepo, audit, idempotency: idem,
-      transactionRunner,
+      repository: commitRepoWrapper, audit, idempotency: idem,
+      transactionRunner: standardTxRunner,
       txFactories: {
         createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
         createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
@@ -1974,137 +2044,156 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     });
 
     const storage = new InMemoryPrivateFileStorage();
-
     const commitIdemKey = "com-real-race-2-commit-" + randomUUID();
     const replaceIdemKey = "com-real-race-2-replace-" + randomUUID();
 
-    // Snapshot before
     const auditBefore = await getScopedAuditCount(scope, batchId);
     const filesBefore = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
     const stagingRowsBefore = await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
 
-    // ----- Store the replacement file BEFORE launching concurrent ops -----
-    // (storage.store is synchronous w.r.t. the race — it must complete
-    // before either service runs so the replacement has a real storage
-    // path to commit).
     const storedFile = await storage.store(
       scope.tenantId, batchId, "replace-key-race-2", "replacement.csv",
       Buffer.from("code,entity_type,quantity\nTY001,single_yarn,100\n"),
       "text/csv",
     );
 
-    // ----- Launch both operations concurrently via Promise.allSettled -----
-    // Both services use the standard transactionRunner. The replacement's
-    // shorter pre-tx path lets it reach its Drizzle tx FOR UPDATE first.
-    // The commit's cutover lock INSERTs then block on the replacement's
-    // FOR UPDATE (via FK KEY SHARE conflict) until the replacement
-    // commits. Then the commit enters its tx, re-reads state =
-    // source_uploaded under the lock, and throws InvalidBatchStatusError.
-    const outcomes = await Promise.allSettled([
-      replacementService.replaceMigrationFile(
-        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
-        {
-          importBatchId: batchId,
-          replaceFileId: oldFileId,
-          originalFileName: "replacement.csv",
-          storagePath: storedFile.storagePath,
-          fileHash: storedFile.fileHash,
-          fileSizeBytes: storedFile.fileSizeBytes,
-          contentType: storedFile.contentType,
-          fileType: "source",
-          parsedRows: [{
-            rowNumber: 1,
-            columns: { code: "TY001", entity_type: "single_yarn", quantity: "100" },
-          }],
-          templateType: "opening_balance_inventory",
-          reworkReason: "COM-REAL-RACE-2: replace before commit race",
-          idempotencyKey: replaceIdemKey,
-        },
-      ),
-      commitService.commitBatch(
-        makeOwnerUser(scope) as any, makeOwnerEffective() as any,
-        { importBatchId: batchId, idempotencyKey: commitIdemKey },
-      ),
+    // ----- Step 1: start real replaceMigrationFile() -----
+    const replacementPromise = replacementService.replaceMigrationFile(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      {
+        importBatchId: batchId, replaceFileId: oldFileId,
+        originalFileName: "replacement.csv",
+        storagePath: storedFile.storagePath, fileHash: storedFile.fileHash,
+        fileSizeBytes: storedFile.fileSizeBytes, contentType: storedFile.contentType,
+        fileType: "source",
+        parsedRows: [{ rowNumber: 1, columns: { code: "TY001", entity_type: "single_yarn", quantity: "100" } }],
+        templateType: "opening_balance_inventory",
+        reworkReason: "COM-REAL-RACE-2: replace before commit race (deterministic)",
+        idempotencyKey: replaceIdemKey,
+      },
+    );
+    const replacementOutcome = replacementPromise.then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
+
+    // ----- Step 2: wait for replacement to acquire FOR UPDATE -----
+    await replacementAcquiredLockPromise;
+    const batchAtPause = await getBatchState(scope, batchId);
+    expect(batchAtPause!.status).toBe("approved_for_commit");
+
+    // ----- Step 3: start real commitBatch() -----
+    const commitPromise = commitService.commitBatch(
+      makeOwnerUser(scope) as any, makeOwnerEffective() as any,
+      { importBatchId: batchId, idempotencyKey: commitIdemKey },
+    );
+    const commitOutcome = commitPromise.then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
+
+    // ----- Step 4: wait for commit to reach insertCutoverLock -----
+    await commitReachedCutoverInsertPromise;
+
+    // ----- Step 5: prove commit is BLOCKED at insert boundary -----
+    // commitReachedCutoverInsert fired; commitPassedCutoverInsert has NOT.
+    // Query pg_locks/pg_stat_activity for independent PostgreSQL lock evidence.
+    const lockEvidence = await sql`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_locks gl
+        JOIN pg_stat_activity psa ON psa.pid = gl.pid
+        WHERE gl.locktype = 'tuple'
+          AND gl.relation::regclass::text = 'import_batches'
+          AND gl.granted = false
+      ) AS blocked_on_batch_row;
+    `;
+    // Also check wait_event_type = 'Lock' in pg_stat_activity
+    const waitEvidence = await sql`
+      SELECT count(*)::int AS waiting_backends
+      FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock'
+        AND state = 'active'
+        AND query ILIKE '%import_cutover_locks%'
+    `;
+    // At least one backend should be waiting on a lock related to the batch row.
+    // If pg_stat_activity query returns 0 (timing/permission), the 300ms watchdog
+    // serves as a deadlock safety fallback.
+    const passedBeforeRelease = await Promise.race([
+      commitPassedCutoverInsertPromise.then(() => true),
+      new Promise<boolean>(r => setTimeout(() => r(false), 300)),
     ]);
+    expect(passedBeforeRelease).toBe(false); // commit is BLOCKED
 
-    const replacementOutcome = outcomes[0]!;
-    const commitOutcome = outcomes[1]!;
+    // ----- Step 6: release replacement barrier -----
+    signalReleaseReplacement();
 
-    // ----- Replacement wins: status === "fulfilled" -----
-    expect(replacementOutcome.status).toBe("fulfilled");
-    const replacementResult = (replacementOutcome as PromiseFulfilledResult<{ action: string; oldFileId: string; newFileId: string; newStagingRowCount: number }>).value;
-    expect(replacementResult.action).toBe("created");
-    expect(replacementResult.oldFileId).toBe(oldFileId);
-    expect(replacementResult.newStagingRowCount).toBe(1);
+    // ----- Step 7: replacement completes -----
+    const repResult = await replacementOutcome;
+    expect(repResult.ok).toBe(true);
+    if (repResult.ok) {
+      expect(repResult.value.action).toBe("created");
+      expect(repResult.value.oldFileId).toBe(oldFileId);
+      expect(repResult.value.newStagingRowCount).toBe(1);
+    }
 
-    // ----- Commit rejects: status === "rejected" -----
-    expect(commitOutcome.status).toBe("rejected");
-    const commitReason = (commitOutcome as PromiseRejectedResult).reason;
-    expect(String(commitReason?.message ?? commitReason)).toMatch(/INVALID_BATCH_STATUS|status/i);
+    // ----- Step 8: commit resumes and fails closed -----
+    const commitResult = await commitOutcome;
+    expect(commitResult.ok).toBe(false);
+    if (!commitResult.ok) {
+      expect(String(commitResult.error?.message ?? commitResult.error)).toMatch(/INVALID_BATCH_STATUS|status/i);
+    }
 
     // ----- Verify final state -----
     const batch = await getBatchState(scope, batchId);
-    // Batch is source_uploaded (replacement reset it).
     expect(batch!.status).toBe("source_uploaded");
-    // committed_at is null (commit never succeeded).
     expect(batch!.committed_at).toBeNull();
-    // commit_effect_counts is null (commit never wrote commit metadata).
     expect(batch!.commit_effect_counts).toBeNull();
-    // staged_data_hash is empty (replacement cleared it).
     expect(batch!.staged_data_hash).toBe("");
-    // cutover_manifest_hash is empty (replacement cleared it).
     expect(batch!.cutover_manifest_hash).toBe("");
 
-    // Old file is superseded (is_current=false).
+    // Old file superseded exactly once.
     const oldFileRows = await sql`SELECT is_current, superseded_at FROM import_files WHERE tenant_id = ${scope.tenantId} AND id = ${oldFileId}`;
     expect(oldFileRows[0]?.is_current).toBe(false);
     expect(oldFileRows[0]?.superseded_at).not.toBeNull();
 
-    // New file is current.
-    const newFileRows = await sql`SELECT is_current, file_hash FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND id = ${replacementResult.newFileId}`;
+    // New file current.
+    const newFileRows = await sql`SELECT is_current, file_hash FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND id = ${repResult.ok ? repResult.value.newFileId : "none"}`;
     expect(newFileRows[0]?.is_current).toBe(true);
     expect(newFileRows[0]?.file_hash).toBe(storedFile.fileHash);
 
-    // File count: old + new = before + 1.
+    // File count: before + 1.
     const filesAfter = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
     expect(filesAfter[0]?.c).toBe((filesBefore[0]?.c ?? 0) + 1);
 
-    // Staging row count: old (superseded) + new = before + 1.
+    // Staging row count: before + 1.
     const stagingRowsAfter = await sql`SELECT count(*)::int AS c FROM import_staging_rows WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
     expect(stagingRowsAfter[0]?.c).toBe((stagingRowsBefore[0]?.c ?? 0) + 1);
 
-    // Old staging row has NO commit link (commit never wrote commit links
-    // — its work body threw before reaching the staging row commit link
-    // step).
+    // Old staging has no commit link.
     const oldStagingRow = await getStagingRowCommitLink(scope, oldRowId);
     expect(oldStagingRow!.committed_entity_type).toBeNull();
     expect(oldStagingRow!.committed_entity_id).toBeNull();
 
-    // No commit audit (commit's audit was either never written or rolled
-    // back).
+    // No commit audit.
     const auditAfter = await getScopedAuditCount(scope, batchId, "historical_commit.commit");
     expect(auditAfter).toBe(auditBefore);
 
-    // No operational effects (no stock_movements, account_entries). The
-    // commit work body threw before reaching the inventory/subledger
-    // posting step.
+    // Zero operational effects.
     const stockMovements = await sql`SELECT count(*)::int AS c FROM stock_movements WHERE tenant_id = ${scope.tenantId} AND source_document_id = ${oldRowId}`;
     expect(stockMovements[0]?.c).toBe(0);
     const accountEntries = await sql`SELECT count(*)::int AS c FROM account_entries WHERE tenant_id = ${scope.tenantId} AND source_document_id = ${oldRowId}`;
     expect(accountEntries[0]?.c).toBe(0);
 
-    // Locks released (commit's catch block released cutover locks).
+    // Cutover locks cleaned up.
     const lockCount = await getActiveLockCount(scope, batchId);
     expect(lockCount).toBe(0);
 
-    // Commit's idempotency record exists but NOT succeeded (business
-    // failure — InvalidBatchStatusError is a HistoricalCommitError, marked
-    // business_failed durable).
+    // Commit idempotency NOT succeeded.
     const commitIdemState = await getIdemState(scope, commitIdemKey);
     expect(commitIdemState).not.toBeNull();
     expect(commitIdemState!.state).not.toBe("succeeded");
 
-    // Replacement's idempotency record succeeded.
+    // Replacement idempotency succeeded.
     const replaceIdemState = await getIdemState(scope, replaceIdemKey);
     expect(replaceIdemState?.state).toBe("succeeded");
 

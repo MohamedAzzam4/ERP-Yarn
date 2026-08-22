@@ -26,7 +26,9 @@ const require = createRequire(import.meta.url);
 const { createClient } = require(resolve(process.cwd(), "node_modules/@supabase/supabase-js"));
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+// WP-08-01F DEC-057 — standardized on SUPABASE_SECRET_KEY (retired the
+// SUPABASE_SERVICE_ROLE_KEY fallback).
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY;
 const BUCKET = "migration-private-files";
 
 const QA_TENANT = "00000000-0000-0000-0000-000000081e50";

@@ -16,7 +16,10 @@ const require = createRequire(import.meta.url);
 const { createClient } = require(resolve(process.cwd(), "node_modules/@supabase/supabase-js"));
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+// WP-08-01F DEC-057 — standardized on SUPABASE_SECRET_KEY. The fallback
+// to SUPABASE_SERVICE_ROLE_KEY has been retired (DEC-057 documentation
+// explains the exclusion).
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY;
 
 const [id, mode] = process.argv.slice(2);
 

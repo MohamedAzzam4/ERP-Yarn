@@ -496,6 +496,35 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
   }
 
   /**
+   * WP-08-01F DEC-081 — Find only CURRENT DEFAULT alias mappings for a
+   * batch. Filters out EXCEPTION rows so the required-alias-groups check
+   * only matches the staging-derived set against DEFAULT rows.
+   */
+  async findCurrentDefaultAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    const all = this.aliasMappings.get(`${tenantId}:${importBatchId}`) ?? [];
+    return all.filter(a => ((a as any).mappingKind ?? "default") === "default");
+  }
+
+  /**
+   * WP-08-01F DEC-081 — Find CURRENT EXCEPTION alias mappings for a
+   * given (entityType, sourceLabel) key within a batch. Used by
+   * submitForApproval and commitBatch to verify each exception row is
+   * independently approved with a non-null target master.
+   */
+  async findCurrentExceptionAliasMappingsForGroup(
+    tenantId: string,
+    importBatchId: string,
+    entityType: string,
+    sourceLabel: string,
+  ): Promise<ImportAliasMapping[]> {
+    const all = this.aliasMappings.get(`${tenantId}:${importBatchId}`) ?? [];
+    return all.filter(
+      a => a.entityType === entityType && a.sourceLabel === sourceLabel &&
+        ((a as any).mappingKind ?? "default") === "exception",
+    );
+  }
+
+  /**
    * WP-08-01F Milestone B (COM-CONC-2B) — In-memory impl of the
    * supersession detector. The in-memory store only retains current
    * rows (see `seedAliasMappings`), so this method returns an empty

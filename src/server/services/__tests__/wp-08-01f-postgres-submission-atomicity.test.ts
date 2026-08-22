@@ -32,6 +32,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "@/server/db/schema";
 import { sql as drizzleSql } from "drizzle-orm";
 import { HistoricalReconciliationService } from "@/server/services/historical-reconciliation-service";
+import { UnresolvedAliasMappingError } from "@/server/services/historical-reconciliation-service";
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
@@ -201,6 +202,30 @@ async function seedFileAndStagingRow(scope: TestScope, batchId: string): Promise
       ${JSON.stringify(rowData)}::jsonb,
       null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${scope.userId}, NOW())`;
   return fileId;
+}
+
+// WP-08-01F DEC-081 — Seed an additional staging row under an EXISTING
+// file id (for SUB-9E which requires TWO current staging rows under ONE
+// current source file). Returns the new staging row's UUID.
+async function seedStagingRowUnderFile(
+  scope: TestScope,
+  batchId: string,
+  fileId: string,
+  rowData: Record<string, unknown>,
+  rowNum: number = 2,
+): Promise<string> {
+  const rowId = randomUUID();
+  await sql`
+    INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
+      source_sheet_name, source_row_number, raw_row_json, transformed_row_json,
+      transformation_notes, validation_status, review_status, ai_confidence,
+      committed_entity_type, committed_entity_id, staging_version, is_current,
+      created_by, created_at)
+    VALUES (${rowId}, ${scope.tenantId}, ${batchId}, ${fileId}, ${"opening_balance_inventory"}, ${"data.csv"}, ${rowNum},
+      ${JSON.stringify(rowData)}::jsonb,
+      ${JSON.stringify(rowData)}::jsonb,
+      null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${scope.userId}, NOW())`;
+  return rowId;
 }
 
 // Seed prior reconciliation evidence (version 1, status='matched') so the
@@ -857,6 +882,10 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
   }
 
   // Seed a candidate/approved alias mapping directly.
+  // WP-08-01F DEC-081 — exceptionSourceRowIds is now an array of staging
+  // row UUIDs (not source row numbers), and the new mapping_kind column
+  // is populated so DEFAULT vs EXCEPTION rows can be discriminated by
+  // the service code path under test.
   async function seedAliasMapping(scope: TestScope, batchId: string, overrides: {
     sourceLabel?: string;
     entityType?: string;
@@ -867,22 +896,26 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
     groupId?: string | null;
     occurrenceCount?: number;
     isCurrent?: boolean;
+    exceptionSourceRowIds?: string[] | null;
+    mappingKind?: string | null;
   } = {}): Promise<string> {
     const aliasId = randomUUID();
     const sourceLabel = overrides.sourceLabel ?? "Acme Corp";
     const normalizedName = overrides.normalizedName ?? sourceLabel.trim().toLowerCase();
     const entityType = overrides.entityType ?? "customer";
+    const mappingKind = overrides.mappingKind ?? "default";
     await sql`
       INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
         target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
         is_current, superseded_at, superseded_by, superseded_reason,
-        group_id, occurrence_count, exception_source_row_ids,
+        group_id, occurrence_count, exception_source_row_ids, mapping_kind,
         created_by, created_at, updated_at, updated_by)
       VALUES (${aliasId}, ${scope.tenantId}, ${batchId}, ${entityType}, ${sourceLabel}, ${normalizedName},
         ${overrides.targetMasterId ?? null}, ${overrides.mappingVersion ?? null}, ${"1.000000"}, ${overrides.status ?? "candidate"}, null, null, null,
         ${overrides.isCurrent ?? true}, null, null, null,
         ${overrides.groupId ?? null}, ${overrides.occurrenceCount ?? 1},
-        null,
+        ${overrides.exceptionSourceRowIds ? JSON.stringify(overrides.exceptionSourceRowIds) : null}::jsonb,
+        ${mappingKind}::alias_mapping_kind,
         ${scope.userId}, NOW(), null, null)`;
     return aliasId;
   }
@@ -1291,7 +1324,17 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
     await seedTenantAndUser(scope);
     const batchId = randomUUID();
     await seedReviewRequiredBatch(scope, batchId);
-    await seedFileAndStagingRow(scope, batchId);
+    // WP-08-01F DEC-081 — ONE current source file + TWO current staging
+    // rows under the same file. The exception alias will claim a real
+    // staging row UUID (not a synthetic integer).
+    const fileId = await seedFileAndStagingRow(scope, batchId);
+    const stagingRow2Uuid = await seedStagingRowUnderFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC002",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 2);
     await seedPriorReconciliationEvidence(scope, batchId, 1);
     await seedResolvedReviewItem(scope, batchId, "resolved review item");
     await seedBackupEvidence(scope, batchId);
@@ -1306,33 +1349,38 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
       mappingVersion: "1.0",
       groupId,
     });
-    // Exception alias for "Beta LLC" (different sourceLabel — the unique
-    // index requires one current per (tenant, batch, entityType, sourceLabel))
-    // in the same group, with explicit exceptionSourceRowIds. NOT approved
-    // (status='candidate') — the submission prerequisite check must catch
-    // this and fail closed.
+    // WP-08-01F DEC-081 — Exception alias SHARES the parent DEFAULT's
+    // sourceLabel (the createAliasException path derives it from the
+    // locked DEFAULT under the row lock). mapping_kind='exception' so
+    // the submission prerequisite check classifies it as an
+    // independently-tracked exception row.
     const exceptionAliasId = await seedAliasMapping(scope, batchId, {
-      sourceLabel: "Beta LLC",
+      sourceLabel: "Acme Corp",
       status: "candidate",
       targetMasterId: customerExceptionId,
       mappingVersion: "1.0",
       groupId,
       occurrenceCount: 1,
+      exceptionSourceRowIds: [stagingRow2Uuid],
+      mappingKind: "exception",
     });
-    // Mark the exception with explicit exceptionSourceRowIds (the helper
-    // doesn't expose this column directly; UPDATE it after insert).
-    await sql`UPDATE import_alias_mappings SET exception_source_row_ids = ${JSON.stringify([5])}::jsonb WHERE tenant_id = ${scope.tenantId} AND id = ${exceptionAliasId}`;
 
     const idemKey1 = "sub-9e-block-" + randomUUID();
     const { reconciliationService } = makeServices(scope);
 
     // Step 1: submit fails because the exception alias is not approved.
-    await expect(
-      reconciliationService.submitForApproval(
+    // WP-08-01F DEC-081 — assert the specific error class + code.
+    let thrown: unknown = null;
+    try {
+      await reconciliationService.submitForApproval(
         makeUser(scope) as any, makeEffective() as any,
         { importBatchId: batchId, warningSummary: null, idempotencyKey: idemKey1 },
-      ),
-    ).rejects.toThrow(/UNRESOLVED_ALIAS_MAPPING|alias mapping/i);
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(UnresolvedAliasMappingError);
+    expect((thrown as any)?.code).toBe("UNRESOLVED_ALIAS_MAPPING");
 
     const batchAfterBlock = await getBatchState(scope, batchId);
     expect(batchAfterBlock!.status).toBe("review_required");

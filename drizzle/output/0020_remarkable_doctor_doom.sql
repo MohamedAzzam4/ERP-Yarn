@@ -1,0 +1,5 @@
+DROP INDEX "import_alias_mappings_tenant_batch_entity_source_current_unique_idx";--> statement-breakpoint
+CREATE TYPE "alias_mapping_kind" AS ENUM ('default', 'exception');--> statement-breakpoint
+ALTER TABLE "import_alias_mappings" ADD COLUMN "mapping_kind" "alias_mapping_kind" DEFAULT 'default' NOT NULL;--> statement-breakpoint
+CREATE INDEX "import_alias_mappings_def_lookup_idx" ON "import_alias_mappings" USING btree ("tenant_id","import_batch_id","entity_type","source_label","mapping_kind") WHERE "import_alias_mappings"."is_current" = true;--> statement-breakpoint
+CREATE UNIQUE INDEX "import_alias_mappings_def_unique_idx" ON "import_alias_mappings" USING btree ("tenant_id","import_batch_id","entity_type","source_label") WHERE "import_alias_mappings"."is_current" = true AND "import_alias_mappings"."mapping_kind" = 'default';

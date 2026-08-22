@@ -700,20 +700,31 @@ export async function createAliasExceptionAction(formData: FormData): Promise<vo
   const { authResult, effective } = await authenticateAndRequirePermission("migration.review");
   const defaultAliasMappingId = parseRequiredString(formData, "defaultAliasMappingId");
   const batchId = parseOptionalString(formData, "batchId");
-  const exceptionSourceLabel = parseRequiredString(formData, "exceptionSourceLabel");
+  // WP-08-01F DEC-081 — exceptionSourceLabel is OPTIONAL. The UI submits
+  // a hidden input with the parent DEFAULT alias's sourceLabel so the
+  // backend can derive it under the alias-mapping row lock. The legacy
+  // required-string behavior is dropped.
+  const exceptionSourceLabel = parseOptionalString(formData, "exceptionSourceLabel");
   const targetMasterId = parseRequiredString(formData, "targetMasterId");
+  // WP-08-01F DEC-081 — exceptionSourceRowIds is now a comma-separated
+  // list of staging row UUIDs (not source row numbers). The backend
+  // validates each entry against the canonical PostgreSQL UUID regex
+  // before invoking the service.
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const exceptionSourceRowIdsRaw = String(formData.get("exceptionSourceRowIds") ?? "");
-  const exceptionSourceRowIds: number[] = exceptionSourceRowIdsRaw
+  const exceptionSourceRowIds: string[] = exceptionSourceRowIdsRaw
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
     .map((s) => {
-      const n = parseInt(s, 10);
-      if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
-        throw new Error("VALIDATION_FAILED: exceptionSourceRowIds must contain positive integers.");
+      if (!UUID_REGEX.test(s)) {
+        throw new Error("VALIDATION_FAILED: exceptionSourceRowIds must contain valid UUIDs.");
       }
-      return n;
+      return s.toLowerCase();
     });
+  if (exceptionSourceRowIds.length === 0) {
+    throw new Error("VALIDATION_FAILED: exceptionSourceRowIds must contain at least one staging row UUID.");
+  }
   const notes = parseOptionalString(formData, "notes");
   const mappingVersion = parseOptionalString(formData, "mappingVersion");
   const idempotencyKey = parseRequiredString(formData, "idempotencyKey");
@@ -740,6 +751,9 @@ export async function createAliasExceptionAction(formData: FormData): Promise<vo
         code === "IDEMPOTENCY_CONFLICT" ||
         code === "OPERATION_IN_PROGRESS" ||
         code === "ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT" ||
+        code === "ALIAS_EXCEPTION_PROVENANCE_OVERLAP" ||
+        code === "ALIAS_EXCEPTION_ROW_NOT_IN_BATCH" ||
+        code === "ALIAS_EXCEPTION_ROW_NOT_IN_GROUP" ||
         code === "VALIDATION_FAILED"
       ) {
         if (batchId) {

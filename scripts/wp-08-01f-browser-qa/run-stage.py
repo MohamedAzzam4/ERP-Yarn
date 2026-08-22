@@ -35,7 +35,9 @@ RUN_STATE_DIR.mkdir(exist_ok=True)
 QA_TENANT = "00000000-0000-0000-0000-000000081e50"
 DB_URL = os.environ.get("DATABASE_URL", "")
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_SECRET_KEY", "")
+# WP-08-01F DEC-057 — standardized on SUPABASE_SECRET_KEY (retired the
+# SUPABASE_SERVICE_ROLE_KEY fallback).
+SUPABASE_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
 
 OWNER = ("qa-browser-owner@erp-yarn.test", "QABrowserOwner2026!")
 ACCT = ("qa-browser-accountant@erp-yarn.test", "QABrowserAccountant2026!")

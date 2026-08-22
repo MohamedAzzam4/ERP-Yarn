@@ -152,9 +152,25 @@ export interface MigrationAliasMappingDto {
   groupId: string | null;
   /** How many staging rows share this group. */
   occurrenceCount: number;
-  /** Array of source row numbers explicitly split from the default group
-   * (set on exception/subgroup alias rows; null on default group rows). */
-  exceptionSourceRowIds: number[] | null;
+  /** Array of staging row UUIDs (import_staging_rows.id) explicitly
+   * claimed by this EXCEPTION alias row. Null on DEFAULT rows.
+   *
+   * WP-08-01F DEC-081 — previously this was an array of integers
+   * (source_row_number values). It is now an array of staging row UUIDs
+   * so the createAliasException path can validate each UUID against the
+   * current staging snapshot. The JSONB column type was preserved by
+   * migration 0020_remarkable_doctor_doom.sql, so legacy rows containing
+   * integer arrays remain readable until they are superseded. */
+  exceptionSourceRowIds: string[] | null;
+  /**
+   * WP-08-01F DEC-081 — "default" for the canonical alias mapping for
+   * the (entityType, sourceLabel) key; "exception" for a separately-
+   * approved row sharing the default's groupId but pointing at a
+   * different target master for a subset of staging rows. Null is
+   * treated as "default" by the consumer (legacy rows created before
+   * DEC-081).
+   */
+  mappingKind: string | null;
   /** True when this is the current mapping (not superseded). */
   isCurrent: boolean;
 }
@@ -684,8 +700,12 @@ export class MigrationScreenQueryService {
       groupId: a.groupId,
       occurrenceCount: a.occurrenceCount,
       exceptionSourceRowIds: Array.isArray(a.exceptionSourceRowIds)
-        ? (a.exceptionSourceRowIds as number[])
+        ? (a.exceptionSourceRowIds as string[])
         : null,
+      // WP-08-01F DEC-081 — surface the mapping_kind column so the
+      // AliasMappingPanel can split DEFAULT vs EXCEPTION by the
+      // canonical column value.
+      mappingKind: (a as any).mappingKind ?? "default",
       isCurrent: a.isCurrent,
     };
   }

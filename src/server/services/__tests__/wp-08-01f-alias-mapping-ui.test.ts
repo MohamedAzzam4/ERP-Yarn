@@ -89,7 +89,8 @@ describe("WP-08-01F DEFECT 1 — Alias mapping UI tests", () => {
       const actionMatch = actionsSource.match(/export\s+async\s+function\s+createAliasExceptionAction[\s\S]*?\n\}/);
       expect(actionMatch).not.toBeNull();
       expect(actionMatch![0]).toContain('parseRequiredString(formData, "defaultAliasMappingId")');
-      expect(actionMatch![0]).toContain('parseRequiredString(formData, "exceptionSourceLabel")');
+      // WP-08-01F DEC-081 — exceptionSourceLabel is now OPTIONAL.
+      expect(actionMatch![0]).toContain('parseOptionalString(formData, "exceptionSourceLabel")');
       expect(actionMatch![0]).toContain('parseRequiredString(formData, "targetMasterId")');
       expect(actionMatch![0]).toContain('parseRequiredString(formData, "idempotencyKey")');
       expect(actionMatch![0]).toMatch(/exceptionSourceRowIds/);
@@ -119,6 +120,11 @@ describe("WP-08-01F DEFECT 1 — Alias mapping UI tests", () => {
       const actionMatch = actionsSource.match(/export\s+async\s+function\s+createAliasExceptionAction[\s\S]*?\n\}/);
       expect(actionMatch).not.toBeNull();
       expect(actionMatch![0]).toContain("ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT");
+      // WP-08-01F DEC-081 — new exception-provenance error codes must
+      // also be in the redirect catch list.
+      expect(actionMatch![0]).toContain("ALIAS_EXCEPTION_PROVENANCE_OVERLAP");
+      expect(actionMatch![0]).toContain("ALIAS_EXCEPTION_ROW_NOT_IN_BATCH");
+      expect(actionMatch![0]).toContain("ALIAS_EXCEPTION_ROW_NOT_IN_GROUP");
       expect(actionMatch![0]).toMatch(/redirect\(`\/management\/admin\/migration\/\$\{batchId\}\?error=alias-exception&code=/);
     });
 
@@ -235,6 +241,11 @@ describe("WP-08-01F DEFECT 1 — Alias mapping UI tests", () => {
       expect(panelSource).toMatch(/ALIAS_NOT_CURRENT/);
       expect(panelSource).toMatch(/ALIAS_ALREADY_APPROVED/);
       expect(panelSource).toMatch(/ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT/);
+      // WP-08-01F DEC-081 — new exception-provenance error codes must
+      // have Arabic labels.
+      expect(panelSource).toMatch(/ALIAS_EXCEPTION_PROVENANCE_OVERLAP/);
+      expect(panelSource).toMatch(/ALIAS_EXCEPTION_ROW_NOT_IN_BATCH/);
+      expect(panelSource).toMatch(/ALIAS_EXCEPTION_ROW_NOT_IN_GROUP/);
       expect(panelSource).toMatch(/VALIDATION_FAILED/);
     });
 

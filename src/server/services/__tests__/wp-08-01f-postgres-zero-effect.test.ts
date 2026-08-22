@@ -239,6 +239,71 @@ async function assertZeroEffects(
 }
 
 /**
+ * WP-08-01F DEC-081 recovery — Assert zero business effects while ALLOWING
+ * the operation to persist exactly ONE new business_failed idempotency
+ * record (the durable business-failed mark for lifecycle violations).
+ *
+ * Used by the runReconciliation-against-locked/terminal-batches tests:
+ *   - The lifecycle violation rejects BEFORE the transactionRunner
+ *     closure starts (the pre-check guardRunReconciliation throws).
+ *   - The pre-check catch block marks the idempotency record as
+ *     business_failed (durable) via the NON-tx idempotency handle.
+ *   - No business/evidence table is mutated, no audit row is created,
+ *     no document sequence advances.
+ *
+ * Assertions:
+ *   - All table counts unchanged EXCEPT idempotency_records (skip).
+ *   - All document_sequence values unchanged.
+ *   - Exactly ONE new idempotency record, with:
+ *       state === "business_failed"
+ *       state !== succeeded/in_progress/retryable_failed
+ *       operation_scope === expectedScope
+ *   - No new audit log IDs.
+ */
+async function assertZeroBusinessEffectsAllowingBusinessFailedIdempotency(
+  before: Awaited<ReturnType<typeof captureFullSnapshot>>,
+  after: Awaited<ReturnType<typeof captureFullSnapshot>>,
+  expectedScope: string,
+): Promise<void> {
+  // Table counts unchanged EXCEPT idempotency_records (which gets +1
+  // for the durable business_failed mark).
+  for (const [table, count] of Object.entries(before.counts)) {
+    if (table === "idempotency_records") continue;
+    expect(after.counts[table], `${table} count must be unchanged`).toBe(count);
+  }
+  // Sequence values unchanged (no advancement)
+  for (const [key, value] of Object.entries(before.sequenceValues)) {
+    expect(after.sequenceValues[key], `document_sequences.${key} value must not advance`).toBe(value);
+  }
+  // No new sequence rows created
+  for (const [key, value] of Object.entries(after.sequenceValues)) {
+    expect(before.sequenceValues[key], `document_sequences.${key} must not be a new row`).toBe(value);
+  }
+  // Exactly ONE new idempotency record.
+  expect(
+    after.idempotencyRecords.length,
+    "idempotency_records count must be exactly +1 (business_failed mark)",
+  ).toBe(before.idempotencyRecords.length + 1);
+  const beforeIdemIds = new Set(before.idempotencyRecords.map(r => r.id));
+  const newRecords = after.idempotencyRecords.filter(r => !beforeIdemIds.has(r.id));
+  expect(newRecords.length, "exactly one new idempotency record").toBe(1);
+  const newRec = newRecords[0]!;
+  // WP-08-01F DEC-081 — assert the new record is business_failed
+  // (NOT succeeded/in_progress/retryable_failed).
+  expect(newRec.state, "new idempotency record state must be business_failed").toBe("business_failed");
+  expect(newRec.state, "new idempotency record state must NOT be succeeded").not.toBe("succeeded");
+  expect(newRec.state, "new idempotency record state must NOT be in_progress").not.toBe("in_progress");
+  expect(newRec.state, "new idempotency record state must NOT be retryable_failed").not.toBe("retryable_failed");
+  expect(newRec.operation_scope, "new idempotency record operation_scope must match").toBe(expectedScope);
+  // No new audit log IDs
+  expect(after.auditIds.length, "audit_logs count must be unchanged").toBe(before.auditIds.length);
+  const beforeAuditIds = new Set(before.auditIds);
+  for (const id of after.auditIds) {
+    expect(beforeAuditIds.has(id), `audit_logs.${id} must not be a new row`).toBe(true);
+  }
+}
+
+/**
  * Snapshot the full batch row (status, hashes, versions) — used to prove
  * the batch row itself is unchanged after a rejected operation.
  */
@@ -569,7 +634,14 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
       const after = await captureFullSnapshot();
-      await assertZeroEffects(before, after);
+      // WP-08-01F DEC-081 recovery — the pre-check guardRunReconciliation
+      // now classifies the rejection as business_failed (durable) via
+      // the wrapped try-catch. Assert exactly ONE new business_failed
+      // idempotency record with the expected operation_scope, and zero
+      // new business effects on every other table.
+      await assertZeroBusinessEffectsAllowingBusinessFailedIdempotency(
+        before, after, "historical_reconciliation.run",
+      );
     });
 
     it("rejects against approved_for_commit batch", async () => {
@@ -585,7 +657,9 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
       const after = await captureFullSnapshot();
-      await assertZeroEffects(before, after);
+      await assertZeroBusinessEffectsAllowingBusinessFailedIdempotency(
+        before, after, "historical_reconciliation.run",
+      );
     });
 
     it("rejects against committed batch", async () => {
@@ -601,7 +675,9 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
       ).rejects.toThrow(/LIFECYCLE_VIOLATION|InvalidBatchStatusError|status.*must be/);
 
       const after = await captureFullSnapshot();
-      await assertZeroEffects(before, after);
+      await assertZeroBusinessEffectsAllowingBusinessFailedIdempotency(
+        before, after, "historical_reconciliation.run",
+      );
     });
   });
 

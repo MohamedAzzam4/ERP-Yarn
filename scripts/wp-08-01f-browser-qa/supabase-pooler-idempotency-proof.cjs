@@ -22,7 +22,9 @@ const crypto = require('crypto');
 const { execSync } = require("node:child_process");
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+// WP-08-01F DEC-057 — standardized on SUPABASE_SECRET_KEY (retired the
+// SUPABASE_SERVICE_ROLE_KEY fallback).
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY;
 const DB_URL = process.env.DATABASE_URL;
 
 if (!SUPABASE_URL || !SUPABASE_KEY || !DB_URL || !DB_URL.includes('supabase')) {

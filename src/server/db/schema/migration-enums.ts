@@ -28,6 +28,9 @@ export const aliasMappingStatus = pgEnum("alias_mapping_status", [
   "candidate", "needs_review", "approved", "rejected",
 ]);
 
+// WP-08-01F DEC-081 — alias mapping kind
+export const aliasMappingKind = pgEnum("alias_mapping_kind", ["default", "exception"]);
+
 // Contract 08 §8.9 — dual approval role type
 export const migrationApproverRole = pgEnum("migration_approver_role", [
   "owner", "accountant",

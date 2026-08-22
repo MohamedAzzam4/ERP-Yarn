@@ -778,7 +778,51 @@ export class HistoricalReconciliationService {
     // WP-08-01F DEFECT 1: Pre-check lifecycle state (fail-fast).
     // The AUTHORITATIVE lifecycle check runs AFTER the batch row lock
     // (see guardRunReconciliation call inside the transactionRunner closure).
-    guardRunReconciliation(batch);
+    //
+    // WP-08-01F DEC-081 recovery — wrap the pre-check guardRunReconciliation
+    // in a try-catch so a LIFECYCLE_VIOLATION thrown BEFORE the
+    // transactionRunner is classified as business_failed (durable). The
+    // authoritative guard inside the transaction already had this
+    // handling; the pre-check guard did NOT, which left the idempotency
+    // record in_progress after a lifecycle rejection. Both error shapes
+    // are accepted:
+    //   - HistoricalReconciliationError (thrown by the double-reconcile
+    //     guard inside the transaction)
+    //   - MigrationLifecycleError (thrown by guardRunReconciliation on
+    //     the pre-check path) — carries .code === "LIFECYCLE_VIOLATION"
+    //     but is NOT a HistoricalReconciliationError subclass.
+    try {
+      guardRunReconciliation(batch);
+    } catch (error) {
+      const isOwnerLoss = error instanceof Error && error.constructor.name === "IdempotencyOwnershipLostError";
+      const isLifecycle =
+        (error instanceof HistoricalReconciliationError && error.code === "LIFECYCLE_VIOLATION") ||
+        (error instanceof Error && (error as any)?.code === "LIFECYCLE_VIOLATION");
+      if (!isOwnerLoss && isLifecycle) {
+        try {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409,
+            responseBody: { code: "LIFECYCLE_VIOLATION", message: (error as Error).message },
+            lastErrorClass: (error as Error).constructor.name,
+            entityType: "import_batch",
+            entityId: input.importBatchId,
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // Fallback: record stays in_progress, expires via lease.
+        }
+      } else if (!isOwnerLoss && !isLifecycle) {
+        try {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 500,
+            responseBody: { message: error instanceof Error ? error.message : String(error) },
+            lastErrorClass: error instanceof Error ? error.constructor.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // Fallback: record stays in_progress, expires via lease.
+        }
+      }
+      throw error;
+    }
 
     // -----------------------------------------------------------------------
     // WP-08-01F Milestone C Task 1 (Snapshot correction): The staging read
@@ -1409,17 +1453,26 @@ export class HistoricalReconciliationService {
         // Contract 08 §8.4.4: every required alias mapping must be approved
         // with a non-null targetMasterId before the batch can transition
         // to pending_dual_approval. Required alias mappings are the
-        // CURRENT mappings whose source labels appear in the current
-        // staging rows — i.e. all CURRENT alias mappings for this batch.
-        // (If a source label has disappeared from the staging rows after
-        // a file replacement, its superseded alias mapping is no longer
-        // required for submission; the partial unique index on
-        // (tenant, batch, entityType, sourceLabel) WHERE is_current=true
-        // means we only see the active ones here.)
+        // CURRENT DEFAULT mappings whose source labels appear in the
+        // current staging rows — i.e. all CURRENT DEFAULT alias mappings
+        // for this batch. (If a source label has disappeared from the
+        // staging rows after a file replacement, its superseded alias
+        // mapping is no longer required for submission; the partial
+        // unique index on (tenant, batch, entityType, sourceLabel) WHERE
+        // is_current=true AND mapping_kind='default' means we only see
+        // the active DEFAULT rows here.)
+        //
+        // WP-08-01F DEC-081 — Split the alias check into DEFAULT vs
+        // EXCEPTION. The required-alias-groups set is matched ONLY
+        // against DEFAULT rows. EXCEPTION rows are independently approved
+        // and tracked separately — every current EXCEPTION row must also
+        // be approved with a non-null targetMasterId (an unresolved
+        // exception blocks submission).
         //
         // Failure modes (DEFECT 6/7):
-        //   - UNRESOLVED_ALIAS_MAPPING: any current alias mapping with
-        //     status != 'approved' OR targetMasterId IS NULL.
+        //   - UNRESOLVED_ALIAS_MAPPING: any current DEFAULT alias mapping
+        //     with status != 'approved' OR targetMasterId IS NULL, OR any
+        //     current EXCEPTION alias mapping that is unresolved.
         //   - INVALID_ALIAS_TARGET (DEFECT 6): a current alias mapping with
         //     status='approved' and targetMasterId IS NOT NULL, but the
         //     target master has since been inactivated/deleted (the
@@ -1431,22 +1484,24 @@ export class HistoricalReconciliationService {
         //     mapping's mappingVersion does not match the batch's current
         //     mappingVersion. The alias was approved against a stale
         //     mapping version (or no version) and must be re-approved.
-        const currentAliasMappings = await commitRepo.findCurrentAliasMappingsForBatch(
+        const currentDefaultAliasMappings = await commitRepo.findCurrentDefaultAliasMappingsForBatch(
           user.tenantId, input.importBatchId,
         );
 
         // ISSUE #1 FIX: Compare required alias groups from the CURRENT source
-        // snapshot against current alias mappings. If a required group has no
-        // current mapping row, fail closed (business precondition failure).
-        // This catches the case where a mapping was superseded but no new
-        // current replacement was created — the group is still required by
-        // the current staging data, but the current mapping table has a gap.
+        // snapshot against current DEFAULT alias mappings. If a required
+        // group has no current DEFAULT mapping row, fail closed (business
+        // precondition failure). This catches the case where a DEFAULT
+        // mapping was superseded but no new current replacement was created
+        // — the group is still required by the current staging data, but
+        // the current mapping table has a gap. EXCEPTION rows do NOT
+        // satisfy the required-alias-groups check.
         const stagingRows = await repo.findStagingRowsForBatch(
           user.tenantId, input.importBatchId,
         );
         const requiredGroups = extractRequiredAliasGroups(stagingRows);
         const currentMappingKeys = new Set(
-          currentAliasMappings.map(a => `${a.entityType}|${a.sourceLabel}`),
+          currentDefaultAliasMappings.map(a => `${a.entityType}|${a.sourceLabel}`),
         );
         const missingGroups = requiredGroups.filter(
           g => !currentMappingKeys.has(`${g.entityType}|${g.sourceLabel}`),
@@ -1456,27 +1511,69 @@ export class HistoricalReconciliationService {
           throw new UnresolvedAliasMappingError(input.importBatchId, missingGroups.length, examples);
         }
 
-        // Note: findCurrentAliasMappingsForBatch already filters is_current=true,
-        // so the is_current check below is defensive (it always passes for the
-        // commit-repo path; the in-memory test repo may not enforce the filter).
-        const unresolvedAliases = currentAliasMappings.filter(
+        // Note: findCurrentDefaultAliasMappingsForBatch already filters
+        // is_current=true AND mapping_kind='default', so the is_current
+        // check below is defensive (it always passes for the commit-repo
+        // path; the in-memory test repo may not enforce the filter).
+        const unresolvedDefaultAliases = currentDefaultAliasMappings.filter(
           a => !a.isCurrent || a.status !== "approved" || a.targetMasterId === null,
         );
-        if (unresolvedAliases.length > 0) {
+        if (unresolvedDefaultAliases.length > 0) {
           // Split into not-current vs not-approved for clearer error messages.
-          const notCurrent = unresolvedAliases.find(a => !a.isCurrent);
+          const notCurrent = unresolvedDefaultAliases.find(a => !a.isCurrent);
           if (notCurrent) {
             throw new AliasMappingNotCurrentError(input.importBatchId, notCurrent.id);
           }
-          const examples = unresolvedAliases.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
-          throw new UnresolvedAliasMappingError(input.importBatchId, unresolvedAliases.length, examples);
+          const examples = unresolvedDefaultAliases.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
+          throw new UnresolvedAliasMappingError(input.importBatchId, unresolvedDefaultAliases.length, examples);
         }
+
+        // WP-08-01F DEC-081 — Unresolved-exception check. Every current
+        // EXCEPTION alias mapping must ALSO be approved with a non-null
+        // targetMasterId, regardless of which DEFAULT row it splits off
+        // from. EXCEPTION rows are independently tracked — group approval
+        // does NOT cover exceptions.
+        const exceptionGroups = new Set<string>();
+        for (const a of currentDefaultAliasMappings) {
+          exceptionGroups.add(`${a.entityType}|${a.sourceLabel}`);
+        }
+        const unresolvedExceptions: ImportAliasMapping[] = [];
+        for (const key of exceptionGroups) {
+          const [entityType, sourceLabel] = key.split("|", 2);
+          if (!entityType || !sourceLabel) continue;
+          const excs = await commitRepo.findCurrentExceptionAliasMappingsForGroup(
+            user.tenantId, input.importBatchId, entityType, sourceLabel,
+          );
+          for (const ex of excs) {
+            if (!ex.isCurrent || ex.status !== "approved" || ex.targetMasterId === null) {
+              unresolvedExceptions.push(ex);
+            }
+          }
+        }
+        if (unresolvedExceptions.length > 0) {
+          const examples = unresolvedExceptions.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
+          throw new UnresolvedAliasMappingError(input.importBatchId, unresolvedExceptions.length, examples);
+        }
+
         // DEFECT 6: Re-validate that each target master still exists, belongs
         // to the same tenant, and matches the alias's entityType. We use
         // the commit repository's findMasterForAlias method so the check
         // runs under the batch row lock (a master inactivated between the
         // pre-claim read and the lock is caught here).
-        for (const alias of currentAliasMappings) {
+        const allAliasMappingsForTargetCheck: ImportAliasMapping[] = [
+          ...currentDefaultAliasMappings,
+        ];
+        // Include current EXCEPTION rows so their target masters are also
+        // revalidated under the lock.
+        for (const key of exceptionGroups) {
+          const [entityType, sourceLabel] = key.split("|", 2);
+          if (!entityType || !sourceLabel) continue;
+          const excs = await commitRepo.findCurrentExceptionAliasMappingsForGroup(
+            user.tenantId, input.importBatchId, entityType, sourceLabel,
+          );
+          for (const ex of excs) allAliasMappingsForTargetCheck.push(ex);
+        }
+        for (const alias of allAliasMappingsForTargetCheck) {
           const targetId = alias.targetMasterId!;
           const ok = await commitRepo.findMasterForAlias(
             user.tenantId, alias.entityType, targetId,
@@ -1498,7 +1595,7 @@ export class HistoricalReconciliationService {
         // the batch row) accept any alias mappingVersion (no version
         // to compare against — both null is the historical default).
         const batchMappingVersion = lockedBatch.mappingVersion ?? null;
-        for (const alias of currentAliasMappings) {
+        for (const alias of allAliasMappingsForTargetCheck) {
           const aliasMappingVersion = alias.mappingVersion ?? null;
           if (batchMappingVersion !== null) {
             if (aliasMappingVersion === null || aliasMappingVersion !== batchMappingVersion) {

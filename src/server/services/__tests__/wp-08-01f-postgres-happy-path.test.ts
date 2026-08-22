@@ -35,6 +35,7 @@ import { HistoricalStagingDbRepository } from "@/server/services/historical-stag
 import { HistoricalValidationDbRepository } from "@/server/services/historical-validation-db-repository";
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
+import { MasterDataDbRepository } from "@/server/services/master-data-db-repository";
 import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
@@ -70,6 +71,8 @@ const U2 = randomUUID();
 
 let sql: ReturnType<typeof postgres>;
 let db: any;
+let happyCustomerId: string;
+let happyItemId: string;
 
 describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path proof", () => {
   beforeAll(async () => {
@@ -93,6 +96,33 @@ describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path 
               VALUES (${U}, ${T}, ${"hp-o-" + runSuffix}, ${"HP Owner"}, ${"hp-o-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
     await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference)
               VALUES (${U2}, ${T}, ${"hp-a-" + runSuffix}, ${"HP Acct"}, ${"hp-a-" + runSuffix + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+
+    // WP-08-01F DEC-081 — Seed real customer + inventory item BEFORE the
+    // staging row so the extracted alias can be approved against a real
+    // master. Customer column names mirror the production schema:
+    //   - normalized_name (lower-cased name)
+    //   - contact_info_json (nullable JSONB)
+    //   - credit_limit / credit_terms (nullable numeric)
+    //   - status cast to master_data_status
+    happyCustomerId = randomUUID();
+    await sql`
+      INSERT INTO customers (id, tenant_id, customer_code, name_ar, name_en, normalized_name,
+        contact_info_json, credit_limit, credit_terms, status, notes,
+        created_by, created_at, updated_at, updated_by)
+      VALUES (${happyCustomerId}, ${T}, ${"HP-CUST-001"}, ${"Test Customer"}, null, ${"test customer"},
+        null, null, null, ${"active"}::master_data_status, null,
+        ${U}, NOW(), null, null)
+      ON CONFLICT (id) DO NOTHING`;
+    // Seed an inventory_item referenced by item_id (used elsewhere in
+    // the happy-path staging row).
+    happyItemId = randomUUID();
+    await sql`
+      INSERT INTO inventory_items (id, tenant_id, item_kind, item_code, display_name_ar, display_name_en,
+        quality_status, is_blocked, status, created_by, created_at, updated_at, updated_by)
+      VALUES (${happyItemId}, ${T}, ${"raw_material"}::item_kind, ${"HP-ITEM-001"}, ${"Test Item"}, null,
+        ${"accepted"}::quality_status, false, ${"active"}::master_data_status,
+        ${U}, NOW(), null, null)
+      ON CONFLICT (id) DO NOTHING`;
   }, 30000);
 
   afterAll(async () => {
@@ -111,6 +141,11 @@ describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path 
       await sql`DELETE FROM historical_correction_requests WHERE tenant_id = ${T}`;
       await sql`DELETE FROM import_cutover_manifests WHERE tenant_id = ${T}`;
       await sql`DELETE FROM import_batches WHERE tenant_id = ${T}`;
+      // WP-08-01F DEC-081 — clean up the seeded customer + inventory_item
+      // rows so the suite can be re-run without unique-constraint
+      // violations on (tenant_id, customer_code) / (tenant_id, item_code).
+      await sql`DELETE FROM inventory_items WHERE tenant_id = ${T}`;
+      await sql`DELETE FROM customers WHERE tenant_id = ${T}`;
       await sql.end();
     }
   }, 30000);
@@ -120,11 +155,15 @@ describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path 
     const valRepo = new HistoricalValidationDbRepository(db);
     const reconRepo = new HistoricalReconciliationDbRepository(db);
     const commitRepo = new HistoricalCommitDbRepository(db);
+    const masterDataRepo = new MasterDataDbRepository(db);
     const audit = new AuditDbRepository(db);
     const idem = new IdempotencyDbRepository(db);
     const docSeq = new DocumentSequenceDbRepository(db);
     const stagingService = new HistoricalStagingService({ repository: stagingRepo, audit, idempotency: idem, documentSequence: docSeq, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)), createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any), createAudit: (tx: unknown) => new AuditDbRepository(tx as any), createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any) });
-    const validationService = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)), createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any), createAudit: (tx: unknown) => new AuditDbRepository(tx as any), createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any) });
+    // WP-08-01F DEC-081 — wire masterDataRepository + createMasterDataRepository
+    // so approveAliasMapping can validate the target master against the
+    // transaction's snapshot of the master-data tables.
+    const validationService = new HistoricalValidationService({ repository: valRepo, audit, idempotency: idem, transactionRunner: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => (db as any).transaction(async (tx: any) => work(tx)), createRepository: (tx: unknown) => new HistoricalValidationDbRepository(tx as any), createAudit: (tx: unknown) => new AuditDbRepository(tx as any), createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any), masterDataRepository: masterDataRepo, createMasterDataRepository: (tx: unknown) => new MasterDataDbRepository(tx as any) });
     const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
       (db as any).transaction(async (tx: any) => work(tx));
     const reconciliationService = new HistoricalReconciliationService({
@@ -143,7 +182,7 @@ describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path 
       createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
     };
     const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency: idem, transactionRunner, txFactories });
-    return { stagingService, validationService, reconciliationService, commitService, commitRepo, reconRepo, stagingRepo };
+    return { stagingService, validationService, reconciliationService, commitService, commitRepo, reconRepo, stagingRepo, valRepo };
   }
 
   function makeUser(userId: string = U): ErpUserContext {
@@ -209,9 +248,12 @@ describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path 
     expect(batch?.status).toBe("source_uploaded");
 
     // 3. Insert staging rows — include all required fields + master reference
+    // WP-08-01F DEC-081 — entity_type is now "customer" + name="Test Customer"
+    // (matching the seeded customer) so the extracted alias can be
+    // approved against the real customer master at step 6b.
     const stagingData = {
-      entity_type: "raw_yarn",
-      name: "Test Raw Yarn",
+      entity_type: "customer",
+      name: "Test Customer",
       code: "RY-001",
       quantity: "100",
       unit: "kg",
@@ -264,6 +306,27 @@ describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path 
     batch = await svc.commitRepo.findImportBatchById(T, batchId);
     expect(batch?.status).toBe("validation_complete");
     expect(batch?.validationStatus).toBe("passed");
+
+    // 6b. Approve the alias mapping that runValidation just extracted for
+    //     "Test Customer". The alias-completeness check in submitForApproval
+    //     correctly rejects unresolved aliases.
+    const aliasRows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${T} AND import_batch_id = ${batchId} AND entity_type = 'customer' AND source_label = 'Test Customer' AND is_current = true LIMIT 1`;
+    expect(aliasRows.length, "runValidation must have extracted an alias for 'Test Customer'").toBe(1);
+    const happyAliasId = aliasRows[0]!.id;
+    const batchForVersion = await svc.commitRepo.findImportBatchById(T, batchId);
+    const happyMappingVersion = batchForVersion?.mappingVersion ?? "1.0";
+    const approveAliasResult = await svc.validationService.approveAliasMapping(
+      makeUser(U) as any, makeEffective("owner") as any,
+      {
+        aliasMappingId: happyAliasId,
+        targetMasterId: happyCustomerId,
+        status: "approved",
+        notes: "Happy-path alias approval",
+        mappingVersion: happyMappingVersion,
+        idempotencyKey: "hp-approve-alias",
+      },
+    );
+    expect(approveAliasResult.action).toBe("approved");
 
     // 7. runReconciliation → review_required (sets reconciliationStatus="matched")
     const reconResult = await svc.reconciliationService.runReconciliation(

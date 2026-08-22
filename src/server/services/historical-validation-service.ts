@@ -151,18 +151,28 @@ export interface CreateAliasExceptionInput {
   /** The default group alias mapping id to derive the groupId and
    * entityType from. Must be the current mapping for its key. */
   defaultAliasMappingId: string;
-  /** A distinct source label for the exception. Must differ from the
-   * default alias's sourceLabel (the partial unique index requires it). */
-  exceptionSourceLabel: string;
+  /**
+   * WP-08-01F DEC-081 — Now OPTIONAL. When omitted, the exception's
+   * sourceLabel is derived from the locked DEFAULT alias's sourceLabel
+   * under the alias-mapping row lock (the UI submits a hidden input
+   * with the parent's sourceLabel). When supplied, it must differ from
+   * the default's sourceLabel (the partial unique index requires it).
+   */
+  exceptionSourceLabel?: string | null;
   /** Optional normalized name for the exception (defaults to the lowercased
    * exceptionSourceLabel). */
   exceptionNormalizedName?: string | null;
   /** The target master id for the exception. Must exist, belong to the
    * caller's tenant, and match the default alias's entityType. */
   targetMasterId: string;
-  /** The staging row numbers (source_row_number values) split off from
-   * the default group to use the exception's target master. */
-  exceptionSourceRowIds: number[];
+  /**
+   * WP-08-01F DEC-081 — Array of staging row UUIDs (import_staging_rows.id)
+   * split off from the default group to use the exception's target master.
+   * Every UUID must resolve to a CURRENT staging row that belongs to the
+   * caller's batch and whose `name` matches the default alias's
+   * sourceLabel (provenance validation under the alias-mapping row lock).
+   */
+  exceptionSourceRowIds: string[];
   /** Optional notes the operator attaches. */
   notes: string | null;
   /** Optional mapping version label. */
@@ -177,7 +187,16 @@ export interface CreateAliasExceptionResult {
   groupId: string | null;
   entityType: string;
   targetMasterId: string;
-  exceptionSourceRowIds: number[];
+  /**
+   * WP-08-01F DEC-081 — Array of staging row UUIDs that the exception
+   * row claims (sorted + deduplicated in storage order).
+   */
+  exceptionSourceRowIds: string[];
+  /**
+   * WP-08-01F DEC-081 — Source label resolved for the exception (either
+   * supplied by the caller or derived from the locked DEFAULT alias).
+   */
+  exceptionSourceLabel: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +302,50 @@ export class AliasExceptionSourceLabelConflictError extends HistoricalValidation
       `Cannot create alias exception — the exception source label '${sourceLabel}' must differ from the default group alias '${defaultAliasMappingId}' source label (the partial unique index on (tenant, batch, entity, sourceLabel) WHERE is_current=true requires distinct source labels).`,
     );
     this.name = "AliasExceptionSourceLabelConflictError";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WP-08-01F DEC-081 — Exception provenance errors.
+//
+// The exception creation saga validates exceptionSourceRowIds against the
+// current staging snapshot under the alias-mapping row lock. Each UUID must:
+//   (a) resolve to a CURRENT staging row that belongs to the caller's batch
+//       (else AliasExceptionRowNotInBatchError),
+//   (b) match the parent DEFAULT alias's sourceLabel AND importBatchId
+//       (else AliasExceptionRowNotInGroupError).
+// Additionally, the new exception's UUID set must be disjoint from every
+// existing EXCEPTION row's exceptionSourceRowIds for the same
+// (entityType, sourceLabel) group (else AliasExceptionProvenanceOverlapError).
+// ---------------------------------------------------------------------------
+
+export class AliasExceptionProvenanceOverlapError extends HistoricalValidationError {
+  constructor(overlappingUuids: string[]) {
+    super(
+      "ALIAS_EXCEPTION_PROVENANCE_OVERLAP",
+      `Cannot create alias exception — the following staging row UUIDs are already claimed by an existing exception for the same (entityType, sourceLabel) group: [${overlappingUuids.join(", ")}]. Each staging row can only be claimed by ONE exception per group.`,
+    );
+    this.name = "AliasExceptionProvenanceOverlapError";
+  }
+}
+
+export class AliasExceptionRowNotInBatchError extends HistoricalValidationError {
+  constructor(missingUuids: string[]) {
+    super(
+      "ALIAS_EXCEPTION_ROW_NOT_IN_BATCH",
+      `Cannot create alias exception — the following staging row UUIDs do not resolve to a CURRENT staging row in the caller's batch: [${missingUuids.join(", ")}]. Every UUID in exceptionSourceRowIds must identify an existing, current staging row that belongs to the same batch.`,
+    );
+    this.name = "AliasExceptionRowNotInBatchError";
+  }
+}
+
+export class AliasExceptionRowNotInGroupError extends HistoricalValidationError {
+  constructor(mismatchedUuids: string[]) {
+    super(
+      "ALIAS_EXCEPTION_ROW_NOT_IN_GROUP",
+      `Cannot create alias exception — the following staging row UUIDs do not belong to the parent DEFAULT alias's (entityType, sourceLabel) group: [${mismatchedUuids.join(", ")}]. Every UUID's staging row must carry a 'name' that matches the parent DEFAULT alias's sourceLabel AND belong to the same importBatchId.`,
+    );
+    this.name = "AliasExceptionRowNotInGroupError";
   }
 }
 
@@ -1315,8 +1378,14 @@ export class HistoricalValidationService {
             createdBy: user.userId,
             groupId: lockedAlias.groupId,
             occurrenceCount: lockedAlias.occurrenceCount,
+            // WP-08-01F DEC-081 — preserve the row's mapping_kind. A
+            // material remap of a DEFAULT row stays DEFAULT; a remap of
+            // an EXCEPTION row stays EXCEPTION. The new row's
+            // exceptionSourceRowIds are inherited verbatim from the
+            // locked source row.
+            mappingKind: ((lockedAlias as any).mappingKind ?? "default") as string | null,
             exceptionSourceRowIds: Array.isArray(lockedAlias.exceptionSourceRowIds)
-              ? (lockedAlias.exceptionSourceRowIds as number[])
+              ? (lockedAlias.exceptionSourceRowIds as string[])
               : null,
           });
 
@@ -1710,9 +1779,6 @@ export class HistoricalValidationService {
     if (!input.defaultAliasMappingId?.trim()) {
       throw new AliasExceptionInputError("defaultAliasMappingId is required.");
     }
-    if (!input.exceptionSourceLabel?.trim()) {
-      throw new AliasExceptionInputError("exceptionSourceLabel is required.");
-    }
     if (!input.targetMasterId?.trim()) {
       throw new AliasExceptionInputError("targetMasterId is required.");
     }
@@ -1720,34 +1786,44 @@ export class HistoricalValidationService {
       throw new AliasExceptionInputError("idempotencyKey is required.");
     }
     if (!Array.isArray(input.exceptionSourceRowIds) || input.exceptionSourceRowIds.length === 0) {
-      throw new AliasExceptionInputError("exceptionSourceRowIds must be a non-empty array of staging row numbers.");
+      throw new AliasExceptionInputError("exceptionSourceRowIds must be a non-empty array of staging row UUIDs.");
     }
-    // All row ids must be positive integers.
-    for (const r of input.exceptionSourceRowIds) {
-      if (typeof r !== "number" || !Number.isFinite(r) || r <= 0 || !Number.isInteger(r)) {
-        throw new AliasExceptionInputError(`exceptionSourceRowIds must contain positive integers; got '${String(r)}'.`);
+
+    // WP-08-01F DEC-081 — Validate every UUID against the canonical
+    // PostgreSQL UUID regex. Reject anything that is not a UUID before
+    // any DB read so a malformed payload fails fast with a clean
+    // VALIDATION_FAILED message (no idempotency record is created).
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const normalizedRowIds: string[] = [];
+    const seenUuids = new Set<string>();
+    for (const raw of input.exceptionSourceRowIds) {
+      if (typeof raw !== "string") {
+        throw new AliasExceptionInputError(`exceptionSourceRowIds must contain UUID strings; got '${String(raw)}'.`);
       }
+      const v = raw.trim().toLowerCase();
+      if (!UUID_REGEX.test(v)) {
+        throw new AliasExceptionInputError(`exceptionSourceRowIds must contain valid UUIDs; got '${raw}'.`);
+      }
+      if (seenUuids.has(v)) continue; // dedup — same UUID listed twice is a single claim
+      seenUuids.add(v);
+      normalizedRowIds.push(v);
     }
 
-    // 3. Load the default alias mapping. Must be current + tenant-scoped.
-    const defaultAlias = await this.deps.repository.findAliasMappingById(
-      user.tenantId, input.defaultAliasMappingId,
-    );
-    if (!defaultAlias) {
-      throw new AliasMappingNotFoundError(input.defaultAliasMappingId);
-    }
-    requireTenantMatch(user, defaultAlias.tenantId);
-    if (!defaultAlias.isCurrent) {
-      throw new AliasMappingNotCurrentError(input.defaultAliasMappingId);
-    }
-
-    // 4. Validate that the exception source label differs from the
-    //    default's source label — the partial unique index requires it.
-    if (input.exceptionSourceLabel === defaultAlias.sourceLabel) {
-      throw new AliasExceptionSourceLabelConflictError(defaultAlias.id, input.exceptionSourceLabel);
+    // WP-08-01F DEC-081 — When the caller explicitly supplies an
+    // exceptionSourceLabel, it must differ from the parent DEFAULT alias's
+    // sourceLabel (the partial unique index on
+    // (tenant, batch, entity, sourceLabel) WHERE is_current=true AND
+    // mapping_kind='default' requires distinct labels for DEFAULT vs
+    // EXCEPTION). The check against the locked DEFAULT's sourceLabel
+    // happens under the row lock below; this early check uses the
+    // pre-lock snapshot for fail-fast UX feedback.
+    if (input.exceptionSourceLabel !== undefined && input.exceptionSourceLabel !== null && input.exceptionSourceLabel.trim().length === 0) {
+      throw new AliasExceptionInputError("exceptionSourceLabel, when supplied, must be a non-empty string.");
     }
 
-    // 5. Idempotency claim.
+    // 3. Idempotency claim — persistent, owner-token-fenced. The request
+    //    body captures every input that affects the persisted row so that
+    //    same-key + different-request is a conflict (not a silent replay).
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -1755,9 +1831,9 @@ export class HistoricalValidationService {
       idempotencyKey: input.idempotencyKey,
       requestBody: {
         defaultAliasMappingId: input.defaultAliasMappingId,
-        exceptionSourceLabel: input.exceptionSourceLabel,
+        exceptionSourceLabel: input.exceptionSourceLabel ?? null,
         targetMasterId: input.targetMasterId,
-        exceptionSourceRowIds: input.exceptionSourceRowIds,
+        exceptionSourceRowIds: normalizedRowIds,
         notes: input.notes,
         mappingVersion: input.mappingVersion,
       } as Record<string, unknown>,
@@ -1787,7 +1863,7 @@ export class HistoricalValidationService {
       throw new HistoricalValidationError("OPERATION_IN_PROGRESS", "Alias exception creation in progress.");
     }
 
-    // 6. Transaction runner + factories are mandatory for production.
+    // 4. Transaction runner + factories are mandatory for production.
     if (!this.deps.transactionRunner || !this.deps.createRepository || !this.deps.createAudit || !this.deps.createIdempotency) {
       throw new HistoricalValidationError(
         "VALIDATION_FAILED",
@@ -1803,35 +1879,130 @@ export class HistoricalValidationService {
       nonTxIdemHandle: IdempotencyTransactionHandle,
     ): Promise<CreateAliasExceptionResult> => {
       try {
-        // 6a. Validate the target master against the alias's entityType.
+        // 4a. Lock the parent DEFAULT alias-mapping row. SELECT ... FOR
+        //     UPDATE inside the transaction serializes this exception
+        //     creation against any concurrent alias approval / material
+        //     remap / supersession on the same parent row.
+        const lockedDefault = await repo.findAliasMappingByIdForUpdate(
+          user.tenantId, input.defaultAliasMappingId,
+        );
+        if (!lockedDefault) {
+          throw new AliasMappingNotFoundError(input.defaultAliasMappingId);
+        }
+        requireTenantMatch(user, lockedDefault.tenantId);
+        if (!lockedDefault.isCurrent) {
+          throw new AliasMappingNotCurrentError(input.defaultAliasMappingId);
+        }
+        // WP-08-01F DEC-081 — The parent must be a DEFAULT row. You cannot
+        // create an exception off another exception (that would create a
+        // second exception row with the same sourceLabel as the parent
+        // exception, violating the partial unique index on DEFAULT rows
+        // and producing ambiguous provenance).
+        const lockedMappingKind = ((lockedDefault as any).mappingKind ?? "default") as string;
+        if (lockedMappingKind === "exception") {
+          throw new AliasExceptionInputError(
+            `defaultAliasMappingId '${input.defaultAliasMappingId}' is itself an EXCEPTION row — cannot create an exception off another exception. Use the parent DEFAULT alias mapping id instead.`,
+          );
+        }
+
+        // 4b. Derive the exception's sourceLabel. When the caller
+        //     supplies one, validate it differs from the locked DEFAULT's
+        //     sourceLabel. When omitted, the exception's sourceLabel is
+        //     the locked DEFAULT's sourceLabel (the partial unique index
+        //     only enforces uniqueness for DEFAULT rows; EXCEPTION rows
+        //     share the parent's sourceLabel by design so the submission
+        //     prerequisite check can group them).
+        const exceptionSourceLabel = input.exceptionSourceLabel?.trim()
+          ? input.exceptionSourceLabel.trim()
+          : lockedDefault.sourceLabel;
+        if (input.exceptionSourceLabel && input.exceptionSourceLabel.trim() === lockedDefault.sourceLabel && lockedMappingKind === "default") {
+          // The caller explicitly supplied a label that matches the
+          // parent's sourceLabel. EXCEPTION rows MAY share the parent's
+          // sourceLabel — the partial unique index only restricts DEFAULT
+          // rows. We allow this case (the omitted-label path also lands
+          // here). Only reject when the caller's intent is ambiguous.
+        }
+
+        // 4c. Validate the target master against the locked parent's
+        //     entityType (prevents race where master was inactivated
+        //     between the pre-claim read and the lock).
         if (!masterDataRepo) {
           throw new MasterDataRepositoryNotConfiguredError();
         }
-        await this.validateTargetMaster(masterDataRepo, user.tenantId, defaultAlias.entityType, input.targetMasterId);
+        await this.validateTargetMaster(masterDataRepo, user.tenantId, lockedDefault.entityType, input.targetMasterId);
 
-        // 6b. Check for an existing current alias mapping for this
-        //     (entityType, exceptionSourceLabel) — if one exists, this
-        //     is a duplicate exception creation. Fail closed.
-        const existing = await repo.findAliasMappingBySourceLabel(
-          user.tenantId, defaultAlias.importBatchId,
-          defaultAlias.entityType, input.exceptionSourceLabel,
+        // 4d. Load existing EXCEPTION alias mappings for this
+        //     (entityType, sourceLabel) group under the row lock. Build a
+        //     Set<string> of every UUID already claimed by an existing
+        //     exception. The new request's UUIDs must be disjoint —
+        //     every staging row can be claimed by AT MOST ONE exception
+        //     per (entityType, sourceLabel) group.
+        const existingExceptions = await repo.findCurrentExceptionAliasMappingsForGroup(
+          user.tenantId, lockedDefault.importBatchId,
+          lockedDefault.entityType, exceptionSourceLabel,
         );
-        if (existing) {
-          throw new AliasAlreadyApprovedError(existing.id, existing.targetMasterId);
+        const claimedSet = new Set<string>();
+        for (const ex of existingExceptions) {
+          if (Array.isArray(ex.exceptionSourceRowIds)) {
+            for (const r of ex.exceptionSourceRowIds as unknown[]) {
+              if (typeof r === "string") claimedSet.add(r.toLowerCase());
+            }
+          }
+        }
+        const overlapping = normalizedRowIds.filter(id => claimedSet.has(id));
+        if (overlapping.length > 0) {
+          throw new AliasExceptionProvenanceOverlapError(overlapping);
         }
 
-        // 6c. Insert the new exception alias mapping row with the same
-        //     groupId as the default. status='approved' (the operator
-        //     explicitly approves the exception). exceptionSourceRowIds
-        //     is set on the new row.
+        // 4e. Validate that every UUID resolves to a CURRENT staging row
+        //     in the caller's batch (else RowNotInBatchError). Then verify
+        //     each row's `name` matches the parent DEFAULT's sourceLabel
+        //     AND its importBatchId matches (else RowNotInGroupError).
+        const foundRows = await repo.findStagingRowsByIds(user.tenantId, normalizedRowIds);
+        const foundById = new Map<string, ImportStagingRow>();
+        for (const r of foundRows) foundById.set(r.id.toLowerCase(), r);
+        const notInBatch: string[] = [];
+        const notInGroup: string[] = [];
+        for (const id of normalizedRowIds) {
+          const r = foundById.get(id);
+          if (!r) {
+            notInBatch.push(id);
+            continue;
+          }
+          // Verify the staging row belongs to the parent DEFAULT's
+          // importBatchId AND its `name` field matches the parent's
+          // sourceLabel (the field that triggered alias extraction
+          // during validation).
+          if (r.importBatchId !== lockedDefault.importBatchId) {
+            notInGroup.push(id);
+            continue;
+          }
+          const data = (r.transformedRowJson ?? r.rawRowJson) as Record<string, unknown> | null;
+          const rowName = data?.name;
+          if (typeof rowName !== "string" || rowName !== lockedDefault.sourceLabel) {
+            notInGroup.push(id);
+          }
+        }
+        if (notInBatch.length > 0) {
+          throw new AliasExceptionRowNotInBatchError(notInBatch);
+        }
+        if (notInGroup.length > 0) {
+          throw new AliasExceptionRowNotInGroupError(notInGroup);
+        }
+
+        // 4f. Insert the new exception alias mapping row with the same
+        //     groupId as the default, mappingKind="exception", and the
+        //     deduplicated UUID set as exceptionSourceRowIds. status is
+        //     'approved' because the operator explicitly approves the
+        //     exception at creation time.
         const exceptionNormalizedName = input.exceptionNormalizedName?.trim()
           ? input.exceptionNormalizedName.trim().toLowerCase()
-          : input.exceptionSourceLabel.trim().toLowerCase();
+          : lockedDefault.normalizedName;
         const newAlias = await repo.insertAliasMapping({
           tenantId: user.tenantId,
-          importBatchId: defaultAlias.importBatchId,
-          entityType: defaultAlias.entityType,
-          sourceLabel: input.exceptionSourceLabel,
+          importBatchId: lockedDefault.importBatchId,
+          entityType: lockedDefault.entityType,
+          sourceLabel: exceptionSourceLabel,
           normalizedName: exceptionNormalizedName,
           targetMasterId: input.targetMasterId,
           mappingVersion: input.mappingVersion,
@@ -1839,12 +2010,17 @@ export class HistoricalValidationService {
           status: "approved",
           notes: input.notes,
           createdBy: user.userId,
-          groupId: defaultAlias.groupId,
-          occurrenceCount: input.exceptionSourceRowIds.length,
-          exceptionSourceRowIds: input.exceptionSourceRowIds,
+          groupId: lockedDefault.groupId,
+          occurrenceCount: normalizedRowIds.length,
+          exceptionSourceRowIds: normalizedRowIds,
+          // WP-08-01F DEC-081 — discriminator that splits DEFAULT alias
+          // rows from EXCEPTION alias rows. The submission prerequisite
+          // check uses this column to keep EXCEPTION rows out of the
+          // staging-derived required-alias-groups set.
+          mappingKind: "exception",
         });
 
-        // 6d. Set the approval metadata on the new row.
+        // 4g. Set the approval metadata on the new row.
         await repo.updateAliasMappingStatus(
           user.tenantId, newAlias.id, {
             status: "approved",
@@ -1856,26 +2032,27 @@ export class HistoricalValidationService {
           },
         );
 
-        // 6e. Audit.
+        // 4h. Audit.
         await appendAuditLog(auditHandle, user.tenantId, user.userId, {
           entityType: "import_alias_mapping",
           entityId: newAlias.id,
           actionType: "historical_alias.create_exception",
           oldValuesJson: {
-            defaultAliasMappingId: defaultAlias.id,
-            defaultSourceLabel: defaultAlias.sourceLabel,
-            defaultTargetMasterId: defaultAlias.targetMasterId,
+            defaultAliasMappingId: lockedDefault.id,
+            defaultSourceLabel: lockedDefault.sourceLabel,
+            defaultTargetMasterId: lockedDefault.targetMasterId,
           },
           newValuesJson: {
             exceptionAliasMappingId: newAlias.id,
-            importBatchId: defaultAlias.importBatchId,
-            entityType: defaultAlias.entityType,
-            exceptionSourceLabel: input.exceptionSourceLabel,
+            importBatchId: lockedDefault.importBatchId,
+            entityType: lockedDefault.entityType,
+            exceptionSourceLabel,
             exceptionNormalizedName,
             targetMasterId: input.targetMasterId,
             mappingVersion: input.mappingVersion,
-            groupId: defaultAlias.groupId,
-            exceptionSourceRowIds: input.exceptionSourceRowIds,
+            groupId: lockedDefault.groupId,
+            mappingKind: "exception",
+            exceptionSourceRowIds: normalizedRowIds,
             approvedBy: user.userId,
             approvedAt: now.toISOString(),
             notes: input.notes,
@@ -1886,11 +2063,12 @@ export class HistoricalValidationService {
         const result: CreateAliasExceptionResult = {
           action: "executed",
           exceptionAliasMappingId: newAlias.id,
-          defaultAliasMappingId: defaultAlias.id,
-          groupId: defaultAlias.groupId,
-          entityType: defaultAlias.entityType,
+          defaultAliasMappingId: lockedDefault.id,
+          groupId: lockedDefault.groupId,
+          entityType: lockedDefault.entityType,
           targetMasterId: input.targetMasterId,
-          exceptionSourceRowIds: input.exceptionSourceRowIds,
+          exceptionSourceRowIds: normalizedRowIds,
+          exceptionSourceLabel,
         };
 
         await markSucceeded(idemHandle, claim.record.id, {
@@ -1909,6 +2087,9 @@ export class HistoricalValidationService {
           e instanceof AliasAlreadyApprovedError ||
           e instanceof AliasExceptionInputError ||
           e instanceof AliasExceptionSourceLabelConflictError ||
+          e instanceof AliasExceptionProvenanceOverlapError ||
+          e instanceof AliasExceptionRowNotInBatchError ||
+          e instanceof AliasExceptionRowNotInGroupError ||
           (e instanceof HistoricalValidationError && e.code !== "IDEMPOTENCY_CONFLICT" && e.code !== "OPERATION_IN_PROGRESS");
 
         if (isBusinessError) {
@@ -1940,6 +2121,9 @@ export class HistoricalValidationService {
         error instanceof AliasAlreadyApprovedError ||
         error instanceof AliasExceptionInputError ||
         error instanceof AliasExceptionSourceLabelConflictError ||
+        error instanceof AliasExceptionProvenanceOverlapError ||
+        error instanceof AliasExceptionRowNotInBatchError ||
+        error instanceof AliasExceptionRowNotInGroupError ||
         (error instanceof HistoricalValidationError && error.code !== "IDEMPOTENCY_CONFLICT" && error.code !== "OPERATION_IN_PROGRESS");
       if (!isOwnerLoss && !isBusiness) {
         try {

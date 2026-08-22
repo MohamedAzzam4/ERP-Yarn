@@ -7,7 +7,7 @@
  * Contract 08 §8.1: Non-operational — no stock/account/sales effects.
  */
 import "server-only";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, inArray } from "drizzle-orm";
 import {
   importValidationErrors,
   importAliasMappings,
@@ -102,6 +102,7 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       groupId: row.groupId ?? null,
       occurrenceCount: row.occurrenceCount ?? 1,
       exceptionSourceRowIds: row.exceptionSourceRowIds ?? null,
+      mappingKind: (row.mappingKind ?? "default") as any,
     }).returning();
     return result!;
   }
@@ -194,6 +195,54 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       ))
       .limit(1);
     return result ?? null;
+  }
+
+  async findAliasMappingByIdForUpdate(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null> {
+    const rows = await (this.db as any).execute(sql`
+      SELECT id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
+             target_master_id, mapping_version, confidence_score, status, approved_by, approved_at,
+             notes, is_current, superseded_at, superseded_by, superseded_reason,
+             group_id, occurrence_count, exception_source_row_ids, mapping_kind,
+             created_by, created_at, updated_by, updated_at
+      FROM import_alias_mappings
+      WHERE tenant_id = ${tenantId} AND id = ${aliasMappingId}
+      FOR UPDATE
+    `);
+    if (!rows || (rows as any[]).length === 0) return null;
+    const row = (rows as any[])[0]!;
+    return {
+      id: row.id, tenantId: row.tenant_id, importBatchId: row.import_batch_id,
+      entityType: row.entity_type, sourceLabel: row.source_label, normalizedName: row.normalized_name,
+      targetMasterId: row.target_master_id, mappingVersion: row.mapping_version,
+      confidenceScore: row.confidence_score, status: row.status, approvedBy: row.approved_by,
+      approvedAt: row.approved_at, notes: row.notes, isCurrent: row.is_current,
+      supersededAt: row.superseded_at, supersededBy: row.superseded_by, supersededReason: row.superseded_reason,
+      groupId: row.group_id, occurrenceCount: row.occurrence_count,
+      exceptionSourceRowIds: row.exception_source_row_ids, mappingKind: row.mapping_kind ?? "default",
+      createdBy: row.created_by, createdAt: row.created_at, updatedBy: row.updated_by, updatedAt: row.updated_at,
+    } as unknown as ImportAliasMapping;
+  }
+
+  async findCurrentDefaultAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    return this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.isCurrent, true),
+        eq(importAliasMappings.mappingKind, "default" as any),
+      ));
+  }
+
+  async findCurrentExceptionAliasMappingsForGroup(tenantId: string, importBatchId: string, entityType: string, sourceLabel: string): Promise<ImportAliasMapping[]> {
+    return this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.entityType, entityType),
+        eq(importAliasMappings.sourceLabel, sourceLabel),
+        eq(importAliasMappings.isCurrent, true),
+        eq(importAliasMappings.mappingKind, "exception" as any),
+      ));
   }
 
   // WP-08-01F (A3) — Find only CURRENT alias mappings for a batch.
@@ -302,6 +351,16 @@ export class HistoricalValidationDbRepository implements HistoricalValidationRep
       .where(and(
         eq(importStagingRows.tenantId, tenantId),
         eq(importStagingRows.importBatchId, importBatchId),
+        eq(importStagingRows.isCurrent, true),
+      ));
+  }
+
+  async findStagingRowsByIds(tenantId: string, stagingRowIds: string[]): Promise<ImportStagingRow[]> {
+    if (stagingRowIds.length === 0) return [];
+    return this.db.select().from(importStagingRows)
+      .where(and(
+        eq(importStagingRows.tenantId, tenantId),
+        inArray(importStagingRows.id, stagingRowIds),
         eq(importStagingRows.isCurrent, true),
       ));
   }

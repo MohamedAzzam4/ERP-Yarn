@@ -65,7 +65,8 @@ export interface NewAliasMappingInput {
    * the default group (e.g. one row in a group of "Same Name" rows was
    * remapped to a different master). Defaults to null.
    */
-  exceptionSourceRowIds?: number[] | null;
+  exceptionSourceRowIds?: string[] | null;
+  mappingKind?: string | null;
 }
 
 export interface NewHumanReviewItemInput {
@@ -122,6 +123,9 @@ export interface HistoricalValidationRepository {
    * claim is acquired).
    */
   findAliasMappingById(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null>;
+  findAliasMappingByIdForUpdate(tenantId: string, aliasMappingId: string): Promise<ImportAliasMapping | null>;
+  findCurrentDefaultAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]>;
+  findCurrentExceptionAliasMappingsForGroup(tenantId: string, importBatchId: string, entityType: string, sourceLabel: string): Promise<ImportAliasMapping[]>;
   /**
    * WP-08-01F (A3) — Find only CURRENT alias mappings (is_current=true)
    * for a batch. Used by the submission prerequisite check to verify that
@@ -171,6 +175,7 @@ export interface HistoricalValidationRepository {
 
   // Staging row access (read-only — for validation to iterate rows)
   findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
+  findStagingRowsByIds(tenantId: string, stagingRowIds: string[]): Promise<ImportStagingRow[]>;
 
   // Batch access (read-only — for status update after validation)
   findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null>;

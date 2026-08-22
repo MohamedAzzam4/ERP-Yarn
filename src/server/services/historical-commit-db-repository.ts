@@ -415,6 +415,46 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
   }
 
   /**
+   * WP-08-01F DEC-081 — Find only CURRENT DEFAULT alias mappings
+   * (is_current=true AND mapping_kind='default') for a batch. Used by
+   * submitForApproval and commitBatch to match the staging-derived
+   * required-alias-groups set — EXCEPTION rows no longer satisfy the
+   * required-groups check.
+   */
+  async findCurrentDefaultAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]> {
+    return this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.isCurrent, true),
+        eq(importAliasMappings.mappingKind, "default" as any),
+      ));
+  }
+
+  /**
+   * WP-08-01F DEC-081 — Find only CURRENT EXCEPTION alias mappings for
+   * a given (entityType, sourceLabel) key within a batch. Used by
+   * submitForApproval and commitBatch to verify each exception row is
+   * independently approved with a non-null target master.
+   */
+  async findCurrentExceptionAliasMappingsForGroup(
+    tenantId: string,
+    importBatchId: string,
+    entityType: string,
+    sourceLabel: string,
+  ): Promise<ImportAliasMapping[]> {
+    return this.db.select().from(importAliasMappings)
+      .where(and(
+        eq(importAliasMappings.tenantId, tenantId),
+        eq(importAliasMappings.importBatchId, importBatchId),
+        eq(importAliasMappings.entityType, entityType),
+        eq(importAliasMappings.sourceLabel, sourceLabel),
+        eq(importAliasMappings.isCurrent, true),
+        eq(importAliasMappings.mappingKind, "exception" as any),
+      ));
+  }
+
+  /**
    * WP-08-01F Milestone B (COM-CONC-2B) — Detect approved alias mappings
    * that have been superseded (is_current=false AND status='approved')
    * for the batch. Called by commitBatch's revalidation under the batch

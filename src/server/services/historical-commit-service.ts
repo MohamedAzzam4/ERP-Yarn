@@ -66,6 +66,7 @@ import type {
   ImportBatch,
   ImportBatchApproval,
   ImportStagingRow,
+  ImportAliasMapping,
 } from "@/server/db/schema/migration";
 import {
   guardRecordApproval,
@@ -1360,8 +1361,8 @@ export class HistoricalCommitService {
 
         // WP-08-01F DEFECT 8 — Alias revalidation under lock.
         //
-        // Re-read all current alias mappings for the batch and verify:
-        //   - All required mappings are approved with non-null target
+        // Re-read all current DEFAULT alias mappings for the batch and verify:
+        //   - All required DEFAULT mappings are approved with non-null target
         //     (status='approved' AND targetMasterId IS NOT NULL).
         //   - All required exceptions are approved (an exception alias is
         //     a separate current alias row with the same groupId but a
@@ -1382,14 +1383,22 @@ export class HistoricalCommitService {
         // (business_failed durable — same key + same request returns the
         // same failure). The operator must re-approve the affected alias
         // with a new idempotency key after fixing the precondition.
-        const commitAliasMappings = await repo.findCurrentAliasMappingsForBatch(
+        //
+        // WP-08-01F DEC-081 — Split into DEFAULT vs EXCEPTION. The
+        // required-alias-groups set is matched ONLY against DEFAULT rows.
+        // EXCEPTION rows are independently approved and tracked separately
+        // — every current EXCEPTION row must also be approved with a
+        // non-null targetMasterId (an unresolved exception blocks commit).
+        const commitDefaultAliasMappings = await repo.findCurrentDefaultAliasMappingsForBatch(
           user.tenantId, batch.id,
         );
 
         // ISSUE #1 FIX: Compare required alias groups from the CURRENT source
-        // snapshot against current alias mappings at commit time. If a required
-        // group has no current mapping row, fail closed — the batch's current
-        // staging data requires that alias, but the mapping table has a gap.
+        // snapshot against current DEFAULT alias mappings at commit time. If
+        // a required group has no current DEFAULT mapping row, fail closed —
+        // the batch's current staging data requires that alias, but the
+        // mapping table has a gap. EXCEPTION rows do NOT satisfy the
+        // required-alias-groups check.
         const commitStagingRows = await repo.findStagingRowsForBatch(
           user.tenantId, batch.id,
         );
@@ -1401,27 +1410,68 @@ export class HistoricalCommitService {
           const entityType = detectEntityType(data);
           commitRequiredGroups.add(`${entityType}|${sourceLabel}`);
         }
-        const commitCurrentMappingKeys = new Set(
-          commitAliasMappings.map(a => `${a.entityType}|${a.sourceLabel}`),
+        const commitDefaultMappingKeys = new Set(
+          commitDefaultAliasMappings.map(a => `${a.entityType}|${a.sourceLabel}`),
         );
         const commitMissingGroups = [...commitRequiredGroups].filter(
-          k => !commitCurrentMappingKeys.has(k),
+          k => !commitDefaultMappingKeys.has(k),
         );
         if (commitMissingGroups.length > 0) {
           throw new CommitUnresolvedAliasError(batch.id, commitMissingGroups.length, commitMissingGroups);
         }
 
-        const commitUnresolvedAliases = commitAliasMappings.filter(
+        const commitUnresolvedDefaultAliases = commitDefaultAliasMappings.filter(
           a => !a.isCurrent || a.status !== "approved" || a.targetMasterId === null,
         );
-        if (commitUnresolvedAliases.length > 0) {
-          const notCurrent = commitUnresolvedAliases.find(a => !a.isCurrent);
+        if (commitUnresolvedDefaultAliases.length > 0) {
+          const notCurrent = commitUnresolvedDefaultAliases.find(a => !a.isCurrent);
           if (notCurrent) {
             throw new CommitAliasNotCurrentError(batch.id, notCurrent.id);
           }
-          const examples = commitUnresolvedAliases.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
-          throw new CommitUnresolvedAliasError(batch.id, commitUnresolvedAliases.length, examples);
+          const examples = commitUnresolvedDefaultAliases.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
+          throw new CommitUnresolvedAliasError(batch.id, commitUnresolvedDefaultAliases.length, examples);
         }
+
+        // WP-08-01F DEC-081 — Unresolved-exception check at commit time.
+        // Every current EXCEPTION alias mapping must ALSO be approved with
+        // a non-null targetMasterId, regardless of which DEFAULT row it
+        // splits off from. EXCEPTION rows are independently tracked —
+        // group approval does NOT cover exceptions. Load exception rows
+        // for every DEFAULT group's (entityType, sourceLabel) and verify
+        // each is approved/target-resolved.
+        const commitExceptionGroups = new Set<string>();
+        for (const a of commitDefaultAliasMappings) {
+          commitExceptionGroups.add(`${a.entityType}|${a.sourceLabel}`);
+        }
+        const commitUnresolvedExceptions: ImportAliasMapping[] = [];
+        const commitExceptionMappings: ImportAliasMapping[] = [];
+        for (const key of commitExceptionGroups) {
+          const [entityType, sourceLabel] = key.split("|", 2);
+          if (!entityType || !sourceLabel) continue;
+          const excs = await repo.findCurrentExceptionAliasMappingsForGroup(
+            user.tenantId, batch.id, entityType, sourceLabel,
+          );
+          for (const ex of excs) {
+            commitExceptionMappings.push(ex);
+            if (!ex.isCurrent || ex.status !== "approved" || ex.targetMasterId === null) {
+              commitUnresolvedExceptions.push(ex);
+            }
+          }
+        }
+        if (commitUnresolvedExceptions.length > 0) {
+          const examples = commitUnresolvedExceptions.map(a => `${a.entityType}:'${a.sourceLabel}' (status=${a.status})`);
+          throw new CommitUnresolvedAliasError(batch.id, commitUnresolvedExceptions.length, examples);
+        }
+
+        // Combine DEFAULT + EXCEPTION rows for the target-master and
+        // mappingVersion revalidation checks. Both checks must cover
+        // EXCEPTION rows so a master inactivated between dual approval and
+        // commit is caught for every alias row, not just the DEFAULT ones.
+        const commitAliasMappings: ImportAliasMapping[] = [
+          ...commitDefaultAliasMappings,
+          ...commitExceptionMappings,
+        ];
+
         for (const alias of commitAliasMappings) {
           const targetId = alias.targetMasterId!;
           const ok = await repo.findMasterForAlias(

@@ -28,8 +28,15 @@ All credentials via environment variables only. Never printed, never persisted.
 Required:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-- `SUPABASE_SECRET_KEY` (or `SUPABASE_SERVICE_ROLE_KEY`)
+- `SUPABASE_SECRET_KEY`
 - `DATABASE_URL`
+
+> **DEC-057 — `SUPABASE_SERVICE_ROLE_KEY` is RETIRED.** Earlier versions of
+> this harness accepted either `SUPABASE_SECRET_KEY` OR
+> `SUPABASE_SERVICE_ROLE_KEY` as a fallback. The fallback has been removed
+> across the harness — every script reads ONLY `SUPABASE_SECRET_KEY`. The
+> preflight (`scripts/wp-08-01f-browser-qa/preflight.mjs`) enforces the
+> standardized four-variable set.
 
 ## Usage
 

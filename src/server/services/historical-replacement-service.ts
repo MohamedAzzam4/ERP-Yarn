@@ -284,6 +284,18 @@ export class HistoricalReplacementService {
     });
 
     if (claim.action === "replay") {
+      // WP-08-01F DEC-081 recovery — durable business failure replay.
+      // If the cached record is business_failed, re-throw the original
+      // HistoricalReplacementError so the caller sees the same failure
+      // message on retry. This mirrors the business_failed replay path
+      // used by approveAliasMapping and submitForApproval.
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
+        throw new HistoricalReplacementError(
+          errorBody?.code ?? "BUSINESS_FAILED",
+          errorBody?.message ?? "Previous business failure (durable).",
+        );
+      }
       const responseBody = claim.record.responseBody as Partial<ReplaceMigrationFileResult> | null;
       if (responseBody?.newFileId) return { ...responseBody, action: "replayed" } as ReplaceMigrationFileResult;
     }
@@ -342,6 +354,19 @@ export class HistoricalReplacementService {
           ...batch,
           status: lockedBatchRow.status,
         };
+        // WP-08-01F DEC-081 recovery — Committed batch check runs BEFORE
+        // guardReplaceFile under the row lock. The committed state is
+        // terminal — guardReplaceFile already rejects it, but it would
+        // wrap the rejection as BATCH_NOT_REPLACEABLE. We want the
+        // explicit COMMITTED_BATCH_IMMUTABLE error code so the operator
+        // sees the actionable "use HistoricalCorrectionService" message
+        // rather than the generic lifecycle-violation message.
+        if (lockedBatch.status === "committed") {
+          throw new HistoricalReplacementError(
+            "COMMITTED_BATCH_IMMUTABLE",
+            `Batch '${input.importBatchId}' is committed. Committed batches are immutable — use HistoricalCorrectionService for post-commit corrections.`,
+          );
+        }
         // Re-run the authoritative replacement lifecycle guard against
         // the locked batch state. If a concurrent operation moved the
         // batch out of a replaceable state, this throws — the entire
@@ -356,16 +381,6 @@ export class HistoricalReplacementService {
             );
           }
           throw e;
-        }
-        // Reject committed batches again under the lock (post-replacement
-        // corrections use HistoricalCorrectionService). The committed
-        // state is terminal — guardReplaceFile already rejects it, but
-        // we re-check here for an explicit, self-documenting failure.
-        if (lockedBatch.status === "committed") {
-          throw new HistoricalReplacementError(
-            "COMMITTED_BATCH_IMMUTABLE",
-            `Batch '${input.importBatchId}' is committed. Committed batches are immutable — use HistoricalCorrectionService for post-commit corrections.`,
-          );
         }
 
         // 1. Mark the OLD file as superseded (is_current=false) FIRST.
@@ -530,24 +545,47 @@ export class HistoricalReplacementService {
       // it receives the error, deletes the orphan, and creates a durable
       // alert if deletion fails.
       //
-      // WP-08-01F Phase 0 closing proof: Mark the idempotency record as
-      // retryable-failed (NOT business-failed) so the client can retry with
-      // the SAME key immediately. A transient transaction failure (DB error,
-      // connection drop, etc.) is NOT a business-rule rejection — the
-      // operation may succeed on retry. Contract 06 idempotency semantics:
-      // retryable_failed → claimExpiredLease reclaims immediately on next
-      // call with the same key.
-      try {
-        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 500,
-          responseBody: { error: "TRANSACTION_FAILED" },
-          lastErrorClass: (e as Error).name || "TRANSACTION_FAILED",
-        }, claim.record.ownerToken!, now);
-      } catch {
-        // If markRetryableFailed itself fails (e.g. ownership lost), the
-        // idempotency record remains in_progress and will expire via lease.
-        // The client may retry — the claim will return "in_progress" until
-        // the lease expires, then "execute" on retry.
+      // WP-08-01F DEC-081 recovery — Classify failures as either business
+      // or technical:
+      //   - HistoricalReplacementError → business_failed (durable). Same key
+      //     + same request returns the same failure on retry. Includes
+      //     COMMITTED_BATCH_IMMUTABLE, BATCH_NOT_REPLACEABLE, FILE_NOT_FOUND,
+      //     SAME_HASH_CONFLICT, etc. The caller must use a NEW key after
+      //     fixing the precondition.
+      //   - Other technical/system errors (DB connection drop, unexpected
+      //     repository failure, etc.) → retryable_failed (immediate retry
+      //     with the same key allowed). Contract 06 idempotency semantics:
+      //     retryable_failed → claimExpiredLease reclaims immediately on
+      //     next call with the same key.
+      //   - IdempotencyOwnershipLostError → do NOT use the stale token to
+      //     force retryable_failed; preserve existing ownership/lease
+      //     fencing semantics; do not overwrite the new owner's state.
+      const isReplacementBusinessError = e instanceof HistoricalReplacementError;
+      const isOwnerLoss = e instanceof Error && e.constructor.name === "IdempotencyOwnershipLostError";
+      if (isReplacementBusinessError) {
+        try {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409,
+            responseBody: { code: (e as HistoricalReplacementError).code, message: (e as Error).message },
+            lastErrorClass: (e as Error).name ?? "HistoricalReplacementError",
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // If markBusinessFailed fails (e.g. ownership lost), the
+          // idempotency record remains in_progress and will expire via lease.
+        }
+      } else if (!isOwnerLoss) {
+        try {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 500,
+            responseBody: { error: "TRANSACTION_FAILED", message: e instanceof Error ? e.message : String(e) },
+            lastErrorClass: (e as Error).name || "TRANSACTION_FAILED",
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // If markRetryableFailed itself fails (e.g. ownership lost), the
+          // idempotency record remains in_progress and will expire via lease.
+          // The client may retry — the claim will return "in_progress" until
+          // the lease expires, then "execute" on retry.
+        }
       }
       throw e;
     }

@@ -57,6 +57,11 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "@/server/db/schema";
 import { sql as drizzleSql } from "drizzle-orm";
 import { HistoricalValidationService } from "@/server/services/historical-validation-service";
+import {
+  AliasExceptionProvenanceOverlapError,
+  AliasExceptionRowNotInBatchError,
+  AliasExceptionRowNotInGroupError,
+} from "@/server/services/historical-validation-service";
 import { HistoricalValidationDbRepository } from "@/server/services/historical-validation-db-repository";
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
 import { HistoricalReconciliationDbRepository } from "@/server/services/historical-reconciliation-db-repository";
@@ -210,6 +215,11 @@ async function seedInventoryItem(scope: TestScope, itemCode: string = "ITEM-001"
 
 // Seed a candidate alias mapping directly (NOT via runValidation) for
 // deterministic test setup.
+//
+// WP-08-01F DEC-081 — exceptionSourceRowIds is now an array of staging
+// row UUIDs (not source row numbers), and the new mapping_kind column
+// is populated so DEFAULT vs EXCEPTION rows can be discriminated by the
+// service code path under test.
 async function seedCandidateAlias(
   scope: TestScope,
   batchId: string,
@@ -221,27 +231,75 @@ async function seedCandidateAlias(
     status?: string;
     groupId?: string | null;
     occurrenceCount?: number;
-    exceptionSourceRowIds?: number[] | null;
+    exceptionSourceRowIds?: string[] | null;
     mappingVersion?: string | null;
+    mappingKind?: string | null;
   } = {},
 ): Promise<string> {
   const aliasId = randomUUID();
   const sourceLabel = overrides.sourceLabel ?? "Acme Corp";
   const normalizedName = overrides.normalizedName ?? sourceLabel.trim().toLowerCase();
   const entityType = overrides.entityType ?? "customer";
+  const mappingKind = overrides.mappingKind ?? "default";
   await sql`
     INSERT INTO import_alias_mappings (id, tenant_id, import_batch_id, entity_type, source_label, normalized_name,
       target_master_id, mapping_version, confidence_score, status, approved_by, approved_at, notes,
       is_current, superseded_at, superseded_by, superseded_reason,
-      group_id, occurrence_count, exception_source_row_ids,
+      group_id, occurrence_count, exception_source_row_ids, mapping_kind,
       created_by, created_at, updated_at, updated_by)
     VALUES (${aliasId}, ${scope.tenantId}, ${batchId}, ${entityType}, ${sourceLabel}, ${normalizedName},
       ${overrides.targetMasterId ?? null}, ${overrides.mappingVersion ?? "1.0"}, ${"1.000000"}, ${overrides.status ?? "candidate"}, null, null, null,
       true, null, null, null,
       ${overrides.groupId ?? null}, ${overrides.occurrenceCount ?? 1},
       ${overrides.exceptionSourceRowIds ? JSON.stringify(overrides.exceptionSourceRowIds) : null}::jsonb,
+      ${mappingKind}::alias_mapping_kind,
       ${scope.userId}, NOW(), null, null)`;
   return aliasId;
+}
+
+// WP-08-01F DEC-081 — Seed a staging row under an EXPLICIT file id
+// (instead of always creating a new file). Used by the
+// createAliasException tests to plant staging rows whose `name` field
+// matches the parent DEFAULT alias's sourceLabel (the provenance check
+// in createAliasException validates each UUID resolves to a current
+// staging row whose `name` matches the parent's sourceLabel).
+async function seedStagingRowInFile(
+  scope: TestScope,
+  batchId: string,
+  fileId: string,
+  rowData: Record<string, unknown>,
+  rowNum: number = 1,
+): Promise<string> {
+  const rowId = randomUUID();
+  await sql`
+    INSERT INTO import_staging_rows (id, tenant_id, import_batch_id, import_file_id, template_name,
+      source_sheet_name, source_row_number, raw_row_json, transformed_row_json,
+      transformation_notes, validation_status, review_status, ai_confidence,
+      committed_entity_type, committed_entity_id, staging_version, is_current,
+      created_by, created_at)
+    VALUES (${rowId}, ${scope.tenantId}, ${batchId}, ${fileId}, ${"opening_balance_inventory"}, ${"data.csv"}, ${rowNum},
+      ${JSON.stringify(rowData)}::jsonb,
+      ${JSON.stringify(rowData)}::jsonb,
+      null, ${"pending"}, ${"not_required"}, null, null, null, 1, true, ${scope.userId}, NOW())`;
+  return rowId;
+}
+
+// WP-08-01F DEC-081 — Seed an explicit import_file row and return its
+// id. Used when the test needs to attach staging rows to a specific
+// file (instead of the always-new-file seedFileAndStagingRow helper).
+async function seedExplicitFile(
+  scope: TestScope,
+  batchId: string,
+  fileHash: string = "sha256:explicit",
+  isCurrent: boolean = true,
+): Promise<string> {
+  const fileId = randomUUID();
+  await sql`
+    INSERT INTO import_files (id, tenant_id, import_batch_id, original_file_name, storage_path, file_hash,
+      file_size_bytes, content_type, file_type, file_version, is_current, created_by, created_at)
+    VALUES (${fileId}, ${scope.tenantId}, ${batchId}, ${"data.csv"}, ${"local://test"}, ${fileHash + ":" + fileId},
+      100, ${"text/csv"}, ${"source"}, 1, ${isCurrent}, ${scope.userId}, NOW())`;
+  return fileId;
 }
 
 async function seedFileAndStagingRow(scope: TestScope, batchId: string, rowData: Record<string, unknown>, rowNum: number = 1): Promise<string> {
@@ -852,6 +910,18 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
       groupId,
       occurrenceCount: 5,
     });
+    // WP-08-01F DEC-081 — seed a real staging row whose `name` matches
+    // the parent DEFAULT alias's sourceLabel. The new
+    // createAliasException path validates every UUID against the
+    // current staging snapshot under the alias-mapping row lock.
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7Uuid = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
 
     const idemKey = "pg-alias-10-" + randomUUID();
     const { validationService } = makeServices(scope);
@@ -860,9 +930,11 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
       makeUser(scope) as any, makeOwnerEffective() as any,
       {
         defaultAliasMappingId: defaultAliasId,
-        exceptionSourceLabel: "Acme Corp (Row 7)",
+        // WP-08-01F DEC-081 — exceptionSourceLabel is now OPTIONAL. The
+        // service derives it from the locked DEFAULT alias's
+        // sourceLabel under the row lock.
         targetMasterId: customerId2,
-        exceptionSourceRowIds: [7],
+        exceptionSourceRowIds: [row7Uuid],
         notes: "Exception for row 7",
         mappingVersion: "v1",
         idempotencyKey: idemKey,
@@ -872,23 +944,26 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
     expect(result.exceptionAliasMappingId).not.toBe(defaultAliasId);
     expect(result.groupId).toBe(groupId);
     expect(result.targetMasterId).toBe(customerId2);
-    expect(result.exceptionSourceRowIds).toEqual([7]);
+    expect(result.exceptionSourceRowIds).toEqual([row7Uuid]);
 
     // The exception alias exists as a separate current row.
-    const exceptionAliasRows = await sql`SELECT id, status, target_master_id, is_current, group_id, occurrence_count, exception_source_row_ids FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${result.exceptionAliasMappingId}`;
+    const exceptionAliasRows = await sql`SELECT id, status, target_master_id, is_current, group_id, occurrence_count, exception_source_row_ids, mapping_kind FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${result.exceptionAliasMappingId}`;
     expect(exceptionAliasRows.length).toBe(1);
     expect(exceptionAliasRows[0]!.status).toBe("approved");
     expect(exceptionAliasRows[0]!.target_master_id).toBe(customerId2);
     expect(exceptionAliasRows[0]!.is_current).toBe(true);
     expect(exceptionAliasRows[0]!.group_id).toBe(groupId);
     expect(exceptionAliasRows[0]!.occurrence_count).toBe(1);
-    expect(exceptionAliasRows[0]!.exception_source_row_ids).toEqual([7]);
+    expect(exceptionAliasRows[0]!.exception_source_row_ids).toEqual([row7Uuid]);
+    // WP-08-01F DEC-081 — assert mapping_kind='exception'.
+    expect(exceptionAliasRows[0]!.mapping_kind).toBe("exception");
 
-    // The default group alias is NOT modified (still current, still approved, still target=customerId1).
-    const defaultAliasRows = await sql`SELECT status, target_master_id, is_current FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${defaultAliasId}`;
+    // The default group alias is NOT modified (still current, still approved, still target=customerId1, still mapping_kind='default').
+    const defaultAliasRows = await sql`SELECT status, target_master_id, is_current, mapping_kind FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${defaultAliasId}`;
     expect(defaultAliasRows[0]!.status).toBe("approved");
     expect(defaultAliasRows[0]!.target_master_id).toBe(customerId1);
     expect(defaultAliasRows[0]!.is_current).toBe(true);
+    expect(defaultAliasRows[0]!.mapping_kind).toBe("default");
 
     await cleanupScope(scope);
   });
@@ -913,6 +988,17 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
     // Exception alias target customer — also exists as a valid master.
     const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
     const groupId = randomUUID();
+    // WP-08-01F DEC-081 — seed a real staging row whose `name` matches
+    // the parent DEFAULT alias's sourceLabel so the EXCEPTION alias can
+    // claim it.
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7Uuid = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
     // Default group alias: approved with customerId1.
     await seedCandidateAlias(scope, batchId, {
       sourceLabel: "Acme Corp",
@@ -921,14 +1007,18 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
       groupId,
       occurrenceCount: 5,
     });
-    // Exception alias: NOT approved (status='candidate'), with exceptionSourceRowIds=[7].
+    // Exception alias: NOT approved (status='candidate'), with
+    // exceptionSourceRowIds=[row7Uuid]. WP-08-01F DEC-081 — the row
+    // shares the same sourceLabel as the parent DEFAULT alias and
+    // mapping_kind='exception'.
     await seedCandidateAlias(scope, batchId, {
-      sourceLabel: "Acme Corp (Row 7)",
+      sourceLabel: "Acme Corp",
       status: "candidate",
       targetMasterId: null,
       groupId,
       occurrenceCount: 1,
-      exceptionSourceRowIds: [7],
+      exceptionSourceRowIds: [row7Uuid],
+      mappingKind: "exception",
     });
 
     // Seed the rest of submitForApproval's prerequisites.
@@ -967,8 +1057,12 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
     const batchRows = await sql`SELECT status FROM import_batches WHERE tenant_id = ${scope.tenantId} AND id = ${batchId}`;
     expect(batchRows[0]?.status).toBe("review_required");
 
-    // Now approve the exception alias and resubmit.
-    const exceptionAliasRows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND source_label = 'Acme Corp (Row 7)' AND is_current = true`;
+    // Now approve the exception alias and resubmit. WP-08-01F DEC-081 —
+    // the exception alias shares the parent DEFAULT alias's
+    // sourceLabel (the createAliasException path derives it from the
+    // locked DEFAULT). The lookup below finds the EXCEPTION row by
+    // filtering on mapping_kind='exception'.
+    const exceptionAliasRows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND source_label = 'Acme Corp' AND mapping_kind = 'exception' AND is_current = true`;
     const exceptionAliasId = exceptionAliasRows[0]!.id;
     await validationService.approveAliasMapping(
       makeUser(scope) as any, makeOwnerEffective() as any,
@@ -1409,6 +1503,728 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
     expect(historicalAfter[0]?.is_current).toBe(false);
     expect(historicalAfter[0]?.status).toBe("approved");
 
+    await cleanupScope(scope);
+  });
+
+  // ===========================================================================
+  // WP-08-01F DEC-081 — Alias exception provenance proofs
+  // (ALIAS-EXCEPTION + PROV + CONC).
+  //
+  // PG-ALIAS-EXC-1.  createAliasException with a single UUID succeeds and
+  //                  inserts an EXCEPTION alias row (mapping_kind='exception').
+  // PG-ALIAS-EXC-2.  createAliasException with multiple UUIDs succeeds and
+  //                  persists the deduplicated UUID set as
+  //                  exceptionSourceRowIds on the EXCEPTION row.
+  // PG-ALIAS-EXC-3.  createAliasException with an invalid UUID format fails
+  //                  closed with VALIDATION_FAILED (no DB row, no
+  //                  idempotency record).
+  // PG-ALIAS-EXC-4.  createAliasException with the parent being an EXCEPTION
+  //                  row fails closed (you cannot create an exception off
+  //                  another exception).
+  // PG-ALIAS-EXC-5.  createAliasException idempotent replay: same key +
+  //                  same request returns the cached result without
+  //                  creating a duplicate EXCEPTION row.
+  // PG-ALIAS-PROV-1. createAliasException with a UUID already claimed by an
+  //                  existing exception for the same (entityType,
+  //                  sourceLabel) group fails closed with
+  //                  ALIAS_EXCEPTION_PROVENANCE_OVERLAP (assert instanceof
+  //                  AliasExceptionProvenanceOverlapError + code).
+  // PG-ALIAS-PROV-2. createAliasException with a non-existent staging UUID
+  //                  fails closed with ALIAS_EXCEPTION_ROW_NOT_IN_BATCH.
+  // PG-ALIAS-PROV-3. createAliasException with a staging UUID that belongs
+  //                  to a different alias group (different sourceLabel)
+  //                  fails closed with ALIAS_EXCEPTION_ROW_NOT_IN_GROUP.
+  // PG-ALIAS-PROV-4. createAliasException with a staging UUID that belongs
+  //                  to a different batch fails closed with
+  //                  ALIAS_EXCEPTION_ROW_NOT_IN_GROUP (importBatchId
+  //                  mismatch).
+  // PG-ALIAS-PROV-5. createAliasException with a disjoint UUID set when an
+  //                  existing exception claims different UUIDs succeeds.
+  // PG-ALIAS-CONC-1. concurrent disjoint exceptions both succeed.
+  // PG-ALIAS-CONC-2. concurrent overlap — the second createAliasException
+  //                  rejects with AliasExceptionProvenanceOverlapError.
+  // ===========================================================================
+
+  it("PG-ALIAS-EXC-1. createAliasException with a single UUID succeeds and inserts an EXCEPTION alias row (mapping_kind='exception')", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7Uuid = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+
+    const idemKey = "pg-alias-exc-1-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    const result = await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId2,
+        exceptionSourceRowIds: [row7Uuid],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey,
+      },
+    );
+    expect(result.action).toBe("executed");
+    expect(result.exceptionSourceRowIds).toEqual([row7Uuid]);
+    expect(result.exceptionSourceLabel).toBe("Acme Corp");
+    const rows = await sql`SELECT mapping_kind, status, target_master_id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${result.exceptionAliasMappingId}`;
+    expect(rows[0]!.mapping_kind).toBe("exception");
+    expect(rows[0]!.status).toBe("approved");
+    expect(rows[0]!.target_master_id).toBe(customerId2);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-EXC-2. createAliasException with multiple UUIDs succeeds and persists the deduplicated UUID set", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+    const row8 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC002",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 8);
+    const row9 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC003",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 9);
+
+    const idemKey = "pg-alias-exc-2-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    const result = await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId2,
+        // Pass duplicate UUIDs to verify dedup.
+        exceptionSourceRowIds: [row7, row8, row9, row7, row8],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey,
+      },
+    );
+    expect(result.exceptionSourceRowIds).toEqual([row7, row8, row9]);
+    const rows = await sql`SELECT exception_source_row_ids FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND id = ${result.exceptionAliasMappingId}`;
+    expect(rows[0]!.exception_source_row_ids).toEqual([row7, row8, row9]);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-EXC-3. createAliasException with an invalid UUID format fails closed (VALIDATION_FAILED, no DB row, no idempotency record)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+
+    const idemKey = "pg-alias-exc-3-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    await expect(
+      validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId2,
+          exceptionSourceRowIds: ["not-a-uuid"],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: idemKey,
+        },
+      ),
+    ).rejects.toThrow(/UUID/);
+
+    // No EXCEPTION row created.
+    const rows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND mapping_kind = 'exception'`;
+    expect(rows.length).toBe(0);
+    // No idempotency record (input validation fails before the claim).
+    const idemRows = await sql`SELECT id FROM idempotency_records WHERE tenant_id = ${scope.tenantId} AND idempotency_key = ${idemKey}`;
+    expect(idemRows.length).toBe(0);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-EXC-4. createAliasException with parent being an EXCEPTION row fails closed (cannot create exception off another exception)", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const customerId3 = await seedCustomer(scope, "CUST-003", "Customer 3");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+    // First create a legitimate EXCEPTION alias.
+    const idemKey1 = "pg-alias-exc-4-first-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    const first = await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId2,
+        exceptionSourceRowIds: [row7],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey1,
+      },
+    );
+
+    // Now try to create an exception off the first EXCEPTION row — must fail.
+    const idemKey2 = "pg-alias-exc-4-second-" + randomUUID();
+    await expect(
+      validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: first.exceptionAliasMappingId,
+          targetMasterId: customerId3,
+          exceptionSourceRowIds: [row7],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: idemKey2,
+        },
+      ),
+    ).rejects.toThrow(/EXCEPTION row/);
+
+    // Only one EXCEPTION row exists (the first one).
+    const rows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND mapping_kind = 'exception'`;
+    expect(rows.length).toBe(1);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-EXC-5. createAliasException idempotent replay returns cached result without duplicate EXCEPTION row", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+
+    const idemKey = "pg-alias-exc-5-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    const first = await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId2,
+        exceptionSourceRowIds: [row7],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey,
+      },
+    );
+    expect(first.action).toBe("executed");
+
+    // Replay with the same key.
+    const replay = await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId2,
+        exceptionSourceRowIds: [row7],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey,
+      },
+    );
+    expect(replay.action).toBe("replayed");
+    expect(replay.exceptionAliasMappingId).toBe(first.exceptionAliasMappingId);
+
+    // Only one EXCEPTION row exists.
+    const rows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND mapping_kind = 'exception'`;
+    expect(rows.length).toBe(1);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-PROV-1. createAliasException with a UUID already claimed by an existing exception fails closed with AliasExceptionProvenanceOverlapError", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const customerId3 = await seedCustomer(scope, "CUST-003", "Customer 3");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+    const row8 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC002",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 8);
+
+    // First exception claims row7.
+    const { validationService } = makeServices(scope);
+    const idemKey1 = "pg-alias-prov-1-first-" + randomUUID();
+    await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId2,
+        exceptionSourceRowIds: [row7],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey1,
+      },
+    );
+
+    // Second exception attempts to claim row7 + row8 — row7 overlaps.
+    const idemKey2 = "pg-alias-prov-1-second-" + randomUUID();
+    let thrown: unknown = null;
+    try {
+      await validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId3,
+          exceptionSourceRowIds: [row7, row8],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: idemKey2,
+        },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(AliasExceptionProvenanceOverlapError);
+    expect((thrown as any)?.code).toBe("ALIAS_EXCEPTION_PROVENANCE_OVERLAP");
+
+    // Only one EXCEPTION row exists (the second one was rejected).
+    const rows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND mapping_kind = 'exception'`;
+    expect(rows.length).toBe(1);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-PROV-2. createAliasException with a non-existent staging UUID fails closed with AliasExceptionRowNotInBatchError", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    // Pass a random UUID that does NOT exist as a staging row.
+    const nonExistentUuid = randomUUID();
+    const idemKey = "pg-alias-prov-2-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    let thrown: unknown = null;
+    try {
+      await validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId2,
+          exceptionSourceRowIds: [nonExistentUuid],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: idemKey,
+        },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(AliasExceptionRowNotInBatchError);
+    expect((thrown as any)?.code).toBe("ALIAS_EXCEPTION_ROW_NOT_IN_BATCH");
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-PROV-3. createAliasException with a UUID that belongs to a different alias group (different sourceLabel) fails closed with AliasExceptionRowNotInGroupError", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    // Staging row whose `name` does NOT match the parent DEFAULT's
+    // sourceLabel ("Acme Corp"). Provenance check must reject.
+    const wrongGroupRow = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Other Corp",
+      code: "OC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+
+    const idemKey = "pg-alias-prov-3-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    let thrown: unknown = null;
+    try {
+      await validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId2,
+          exceptionSourceRowIds: [wrongGroupRow],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: idemKey,
+        },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(AliasExceptionRowNotInGroupError);
+    expect((thrown as any)?.code).toBe("ALIAS_EXCEPTION_ROW_NOT_IN_GROUP");
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-PROV-4. createAliasException with a UUID that belongs to a different batch fails closed with AliasExceptionRowNotInGroupError", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    const otherBatchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    await seedValidationCompleteBatch(scope, otherBatchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    // Seed a staging row in a DIFFERENT batch with the same `name`. The
+    // UUID is in the tenant but does NOT belong to the parent DEFAULT's
+    // importBatchId — provenance check must reject.
+    const otherFileId = await seedExplicitFile(scope, otherBatchId);
+    const crossBatchRow = await seedStagingRowInFile(scope, otherBatchId, otherFileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+
+    const idemKey = "pg-alias-prov-4-" + randomUUID();
+    const { validationService } = makeServices(scope);
+    let thrown: unknown = null;
+    try {
+      await validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId2,
+          exceptionSourceRowIds: [crossBatchRow],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: idemKey,
+        },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(AliasExceptionRowNotInGroupError);
+    expect((thrown as any)?.code).toBe("ALIAS_EXCEPTION_ROW_NOT_IN_GROUP");
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-PROV-5. createAliasException with a disjoint UUID set when an existing exception claims different UUIDs succeeds", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const customerId3 = await seedCustomer(scope, "CUST-003", "Customer 3");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+    const row8 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC002",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 8);
+
+    // First exception claims row7.
+    const { validationService } = makeServices(scope);
+    const idemKey1 = "pg-alias-prov-5-first-" + randomUUID();
+    await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId2,
+        exceptionSourceRowIds: [row7],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey1,
+      },
+    );
+
+    // Second exception claims row8 — disjoint, must succeed.
+    const idemKey2 = "pg-alias-prov-5-second-" + randomUUID();
+    const second = await validationService.createAliasException(
+      makeUser(scope) as any, makeOwnerEffective() as any,
+      {
+        defaultAliasMappingId: defaultAliasId,
+        targetMasterId: customerId3,
+        exceptionSourceRowIds: [row8],
+        notes: null,
+        mappingVersion: "v1",
+        idempotencyKey: idemKey2,
+      },
+    );
+    expect(second.action).toBe("executed");
+
+    // Two EXCEPTION rows exist (disjoint UUIDs).
+    const rows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND mapping_kind = 'exception'`;
+    expect(rows.length).toBe(2);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-CONC-1. concurrent disjoint exceptions both succeed", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const customerId3 = await seedCustomer(scope, "CUST-003", "Customer 3");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+    const row8 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC002",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 8);
+
+    const { validationService } = makeServices(scope);
+    const [r1, r2] = await Promise.all([
+      validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId2,
+          exceptionSourceRowIds: [row7],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: "pg-alias-conc-1-a-" + randomUUID(),
+        },
+      ),
+      validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId3,
+          exceptionSourceRowIds: [row8],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: "pg-alias-conc-1-b-" + randomUUID(),
+        },
+      ),
+    ]);
+    expect(r1.action).toBe("executed");
+    expect(r2.action).toBe("executed");
+
+    // Two EXCEPTION rows exist (disjoint UUIDs).
+    const rows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND mapping_kind = 'exception'`;
+    expect(rows.length).toBe(2);
+    await cleanupScope(scope);
+  });
+
+  it("PG-ALIAS-CONC-2. concurrent overlap — second createAliasException rejects with AliasExceptionProvenanceOverlapError", async () => {
+    const scope = newScope();
+    await seedTenantAndUser(scope);
+    const batchId = randomUUID();
+    await seedValidationCompleteBatch(scope, batchId);
+    const customerId1 = await seedCustomer(scope, "CUST-001", "Customer 1");
+    const customerId2 = await seedCustomer(scope, "CUST-002", "Customer 2");
+    const customerId3 = await seedCustomer(scope, "CUST-003", "Customer 3");
+    const groupId = randomUUID();
+    const defaultAliasId = await seedCandidateAlias(scope, batchId, {
+      sourceLabel: "Acme Corp",
+      status: "approved",
+      targetMasterId: customerId1,
+      groupId,
+      occurrenceCount: 5,
+    });
+    const fileId = await seedExplicitFile(scope, batchId);
+    const row7 = await seedStagingRowInFile(scope, batchId, fileId, {
+      name: "Acme Corp",
+      code: "AC001",
+      entity_type: "customer",
+      quantity: "100",
+      date: "2024-01-01",
+    }, 7);
+
+    const { validationService } = makeServices(scope);
+    // Both requests claim the same UUID (row7) — only one can win.
+    const [r1, r2] = await Promise.allSettled([
+      validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId2,
+          exceptionSourceRowIds: [row7],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: "pg-alias-conc-2-a-" + randomUUID(),
+        },
+      ),
+      validationService.createAliasException(
+        makeUser(scope) as any, makeOwnerEffective() as any,
+        {
+          defaultAliasMappingId: defaultAliasId,
+          targetMasterId: customerId3,
+          exceptionSourceRowIds: [row7],
+          notes: null,
+          mappingVersion: "v1",
+          idempotencyKey: "pg-alias-conc-2-b-" + randomUUID(),
+        },
+      ),
+    ]);
+    // One of them must have succeeded, the other must have been
+    // rejected with AliasExceptionProvenanceOverlapError.
+    const fulfilled = [r1, r2].filter((r) => r.status === "fulfilled");
+    const rejected = [r1, r2].filter((r) => r.status === "rejected");
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    const rejectedError = (rejected[0] as PromiseRejectedResult).reason;
+    expect(rejectedError).toBeInstanceOf(AliasExceptionProvenanceOverlapError);
+    expect((rejectedError as any)?.code).toBe("ALIAS_EXCEPTION_PROVENANCE_OVERLAP");
+
+    // Only one EXCEPTION row exists.
+    const rows = await sql`SELECT id FROM import_alias_mappings WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId} AND mapping_kind = 'exception'`;
+    expect(rows.length).toBe(1);
     await cleanupScope(scope);
   });
 });

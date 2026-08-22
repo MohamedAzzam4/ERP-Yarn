@@ -226,6 +226,27 @@ export interface HistoricalCommitRepository {
    */
   findCurrentAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]>;
   /**
+   * WP-08-01F DEC-081 — Find only CURRENT DEFAULT alias mappings
+   * (is_current=true AND mapping_kind='default') for a batch. Used by
+   * the commit-time required-alias-groups revalidation — EXCEPTION rows
+   * are independently approved and do not satisfy the staging-derived
+   * required-groups set.
+   */
+  findCurrentDefaultAliasMappingsForBatch(tenantId: string, importBatchId: string): Promise<ImportAliasMapping[]>;
+  /**
+   * WP-08-01F DEC-081 — Find only CURRENT EXCEPTION alias mappings
+   * (is_current=true AND mapping_kind='exception') for a given
+   * (entityType, sourceLabel) key within a batch. Used by the commit
+   * revalidation to ensure exceptions remain approved/target-resolved
+   * independently of the parent DEFAULT row.
+   */
+  findCurrentExceptionAliasMappingsForGroup(
+    tenantId: string,
+    importBatchId: string,
+    entityType: string,
+    sourceLabel: string,
+  ): Promise<ImportAliasMapping[]>;
+  /**
    * WP-08-01F Milestone B (COM-CONC-2B) — Detect alias supersession
    * under the commit row lock.
    *

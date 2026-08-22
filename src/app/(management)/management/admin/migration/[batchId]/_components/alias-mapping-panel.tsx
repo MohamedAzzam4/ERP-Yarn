@@ -54,7 +54,19 @@ export interface AliasMappingDto {
   approvedAt: string | null;
   groupId: string | null;
   occurrenceCount: number;
-  exceptionSourceRowIds: number[] | null;
+  /**
+   * WP-08-01F DEC-081 — Array of staging row UUIDs (import_staging_rows.id)
+   * explicitly claimed by this EXCEPTION alias row. Null on DEFAULT rows.
+   */
+  exceptionSourceRowIds: string[] | null;
+  /**
+   * WP-08-01F DEC-081 — "default" for the canonical alias mapping for the
+   * (entityType, sourceLabel) key; "exception" for a separately-approved
+   * row sharing the default's groupId but pointing at a different target
+   * master for a subset of staging rows. Null is treated as "default" by
+   * the consumer (legacy rows created before DEC-081).
+   */
+  mappingKind: string | null;
   isCurrent: boolean;
 }
 
@@ -133,6 +145,10 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   IDEMPOTENCY_CONFLICT: "تعارض في مفتاح التكرار",
   OPERATION_IN_PROGRESS: "العملية قيد التنفيذ",
   ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT: "اسم المصدر للاستثناء يجب أن يختلف عن الافتراضي",
+  // WP-08-01F DEC-081 — Exception provenance error codes.
+  ALIAS_EXCEPTION_PROVENANCE_OVERLAP: "تداخل في الصفوف المُستثناة — كل صف يُطالب مرة واحدة فقط لكل مجموعة",
+  ALIAS_EXCEPTION_ROW_NOT_IN_BATCH: "بعض معرفات الصفوف لا تنتمي للدفعة الحالية",
+  ALIAS_EXCEPTION_ROW_NOT_IN_GROUP: "بعض الصفوف لا تنتمي لمجموعة الاسم الافتراضية",
   VALIDATION_FAILED: "فشل التحقق",
 };
 
@@ -238,7 +254,6 @@ function ExceptionForm({
   batchMappingVersion: string | null;
   createAliasExceptionAction: (formData: FormData) => Promise<void>;
 }) {
-  const [exceptionSourceLabel, setExceptionSourceLabel] = React.useState("");
   const [targetMasterId, setTargetMasterId] = React.useState("");
   const [exceptionSourceRowIds, setExceptionSourceRowIds] = React.useState("");
   const [state, formAction] = useActionState(async (_prev: ApproveFormState, formData: FormData) => {
@@ -252,7 +267,10 @@ function ExceptionForm({
       const codeMatch = message.match(/code=([A-Z_]+)/);
       if (codeMatch) {
         errorCode = codeMatch[1]!;
-      } else if (/ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT/.test(message)) errorCode = "ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT";
+      } else if (/ALIAS_EXCEPTION_PROVENANCE_OVERLAP/.test(message)) errorCode = "ALIAS_EXCEPTION_PROVENANCE_OVERLAP";
+      else if (/ALIAS_EXCEPTION_ROW_NOT_IN_BATCH/.test(message)) errorCode = "ALIAS_EXCEPTION_ROW_NOT_IN_BATCH";
+      else if (/ALIAS_EXCEPTION_ROW_NOT_IN_GROUP/.test(message)) errorCode = "ALIAS_EXCEPTION_ROW_NOT_IN_GROUP";
+      else if (/ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT/.test(message)) errorCode = "ALIAS_EXCEPTION_SOURCE_LABEL_CONFLICT";
       else if (/ALIAS_MAPPING_NOT_FOUND/.test(message)) errorCode = "ALIAS_MAPPING_NOT_FOUND";
       else if (/ALIAS_NOT_CURRENT/.test(message)) errorCode = "ALIAS_NOT_CURRENT";
       else if (/INVALID_ALIAS_TARGET/.test(message)) errorCode = "INVALID_ALIAS_TARGET";
@@ -270,6 +288,11 @@ function ExceptionForm({
       <input type="hidden" name="defaultAliasMappingId" value={defaultAlias.id} />
       <input type="hidden" name="batchId" value={batchId} />
       <input type="hidden" name="mappingVersion" value={batchMappingVersion ?? ""} />
+      {/* WP-08-01F DEC-081 — exceptionSourceLabel is now derived from the
+          parent DEFAULT alias's sourceLabel under the alias-mapping row
+          lock. The UI submits the parent's sourceLabel as a hidden input
+          so the backend can resolve it consistently. */}
+      <input type="hidden" name="exceptionSourceLabel" value={defaultAlias.sourceLabel} />
       <input
         type="hidden"
         name="idempotencyKey"
@@ -277,22 +300,6 @@ function ExceptionForm({
       />
       <div className="text-xs font-semibold text-amber-800">
         إنشاء استثناء/مجموعة فرعية (هدف مختلف لصفوف محددة)
-      </div>
-      <div className="flex flex-col gap-1 text-sm">
-        <label className="text-muted-foreground" htmlFor={`exc-label-${defaultAlias.id}`}>
-          اسم المصدر للاستثناء (يجب أن يختلف عن الافتراضي):
-        </label>
-        <input
-          id={`exc-label-${defaultAlias.id}`}
-          type="text"
-          name="exceptionSourceLabel"
-          required
-          value={exceptionSourceLabel}
-          onChange={(e) => setExceptionSourceLabel(e.target.value)}
-          placeholder={`${defaultAlias.sourceLabel} (Row 7)`}
-          className="px-2 py-1 border rounded text-sm"
-          style={{ minHeight: "44px" }}
-        />
       </div>
       <div className="flex flex-col gap-1 text-sm">
         <label className="text-muted-foreground" htmlFor={`exc-target-${defaultAlias.id}`}>
@@ -313,7 +320,7 @@ function ExceptionForm({
       </div>
       <div className="flex flex-col gap-1 text-sm">
         <label className="text-muted-foreground" htmlFor={`exc-rows-${defaultAlias.id}`}>
-          أرقام الصفوف المصدر المنفصلة (مفصولة بفواصل):
+          معرفات الصفوف (UUID) المُستثناة (مفصولة بفواصل):
         </label>
         <input
           id={`exc-rows-${defaultAlias.id}`}
@@ -322,8 +329,8 @@ function ExceptionForm({
           required
           value={exceptionSourceRowIds}
           onChange={(e) => setExceptionSourceRowIds(e.target.value)}
-          placeholder="7,12,18"
-          className="px-2 py-1 border rounded text-sm"
+          placeholder="uuid,uuid,uuid"
+          className="px-2 py-1 border rounded text-sm font-mono"
           style={{ minHeight: "44px" }}
           dir="ltr"
         />
@@ -384,14 +391,22 @@ export function AliasMappingPanel({
         </div>
       )}
       {[...groups.entries()].map(([groupKey, aliases]) => {
-        // Sort: default group first (no exceptionSourceRowIds), then exceptions.
+        // WP-08-01F DEC-081 — Sort by mappingKind: DEFAULT first, then
+        // EXCEPTION. The legacy check on exceptionSourceRowIds is a
+        // fallback for rows created before DEC-081 (mapping_kind column
+        // may be null on legacy rows, in which case the row's
+        // exceptionSourceRowIds presence is the discriminator).
+        const isException = (a: AliasMappingDto): boolean => {
+          const kind = a.mappingKind ?? (Array.isArray(a.exceptionSourceRowIds) && a.exceptionSourceRowIds.length > 0 ? "exception" : "default");
+          return kind === "exception";
+        };
         const sorted = [...aliases].sort((a, b) => {
-          const aHas = Array.isArray(a.exceptionSourceRowIds) && a.exceptionSourceRowIds.length > 0 ? 1 : 0;
-          const bHas = Array.isArray(b.exceptionSourceRowIds) && b.exceptionSourceRowIds.length > 0 ? 1 : 0;
+          const aHas = isException(a) ? 1 : 0;
+          const bHas = isException(b) ? 1 : 0;
           return aHas - bHas;
         });
-        const defaultAlias = sorted.find(a => !(Array.isArray(a.exceptionSourceRowIds) && a.exceptionSourceRowIds.length > 0));
-        const exceptions = sorted.filter(a => Array.isArray(a.exceptionSourceRowIds) && a.exceptionSourceRowIds.length > 0);
+        const defaultAlias = sorted.find(a => !isException(a));
+        const exceptions = sorted.filter(a => isException(a));
         return (
           <div key={groupKey} className="border rounded p-3 space-y-3 bg-background">
             <div className="text-xs text-muted-foreground">
@@ -401,14 +416,14 @@ export function AliasMappingPanel({
               )}
             </div>
             {sorted.map((alias) => {
-              const isException = Array.isArray(alias.exceptionSourceRowIds) && alias.exceptionSourceRowIds.length > 0;
+              const exception = isException(alias);
               const isUnresolved = alias.status !== "approved" || alias.targetMasterId === null;
               return (
-                <div key={alias.id} className={`border rounded p-3 space-y-2 ${isException ? "bg-amber-50/30 border-amber-300/50" : ""}`}>
+                <div key={alias.id} className={`border rounded p-3 space-y-2 ${exception ? "bg-amber-50/30 border-amber-300/50" : ""}`}>
                   <div className="flex justify-between text-sm">
                     <div className="font-medium">
                       <LtrValue>{alias.sourceLabel}</LtrValue>
-                      {isException && (
+                      {exception && (
                         <span className="ml-2 text-xs px-1.5 py-0.5 rounded border border-amber-500/50 text-amber-700 bg-amber-50 font-semibold">
                           استثناء
                         </span>
@@ -457,9 +472,9 @@ export function AliasMappingPanel({
                       </div>
                     )}
                   </div>
-                  {isException && alias.exceptionSourceRowIds && alias.exceptionSourceRowIds.length > 0 && (
+                  {exception && alias.exceptionSourceRowIds && alias.exceptionSourceRowIds.length > 0 && (
                     <div className="text-xs border border-amber-300/50 bg-amber-50 rounded p-2">
-                      <span className="text-muted-foreground">صفوف الاستثناء:</span>{" "}
+                      <span className="text-muted-foreground">صفوف الاستثناء (UUIDs):</span>{" "}
                       <LtrValue>{alias.exceptionSourceRowIds.join(", ")}</LtrValue>
                     </div>
                   )}
