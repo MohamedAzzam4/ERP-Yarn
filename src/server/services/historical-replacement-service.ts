@@ -178,65 +178,106 @@ export class HistoricalReplacementService {
       throw new HistoricalReplacementError("VALIDATION_FAILED", "storagePath must not contain tokens, passwords, or secret values.");
     }
 
-    // Read batch + verify tenant match + lifecycle guard — BEFORE idempotency claim.
+    // Read batch + verify tenant match — BEFORE idempotency claim.
+    // (Tenant match is a STRUCTURAL/SECURITY check — always pre-claim.)
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
     if (!batch) throw new HistoricalReplacementError("BATCH_NOT_FOUND", `Batch '${input.importBatchId}' not found.`);
     requireTenantMatch(user, batch.tenantId);
 
-    // Reject committed batches — post-commit changes use HistoricalCorrectionService.
-    if (batch.status === "committed") {
-      throw new HistoricalReplacementError(
-        "COMMITTED_BATCH_IMMUTABLE",
-        `Batch '${input.importBatchId}' is committed. Committed batches are immutable — use HistoricalCorrectionService for post-commit corrections.`,
-      );
-    }
+    // WP-08-01F DEC-081 recovery — Contract 06 §7 invariant:
+    //   "A TERMINAL stored idempotency outcome (succeeded or business_failed)
+    //    for the SAME request/key must not be silently replaced by a later
+    //    mutable-state error."
+    //
+    // Historically, the mutable batch state checks (committed, committing,
+    // validation_in_progress, etc.) fired BEFORE claimIdempotency. This meant
+    // a second same-key call on a now-committed batch would throw a fresh
+    // COMMITTED_BATCH_IMMUTABLE error instead of replaying the stored
+    // business_failed record. The test COM-REAL-RACE-1 passed by coincidence
+    // (same error code), not because the replay path was actually exercised.
+    //
+    // Fix: peek the stored idempotency record BEFORE the mutable checks. If
+    // a TERMINAL record exists for this key, skip the mutable batch state
+    // checks so claimIdempotency can replay the stored outcome (or return
+    // "conflict" if the request body differs — which is also a stored-result
+    // decision, not a fresh mutable-state evaluation).
+    //
+    // This preserves zero-effect behavior for FRESH keys on committed batches
+    // (no record exists → mutable checks fire → throw pre-claim → no record
+    // created). It only changes behavior when a terminal record already exists
+    // for this key — exactly the scenario Contract 06 §7 protects.
+    //
+    // The REQUEST-INVARIANT ZERO-EFFECT check (SAME_HASH_CONFLICT) and the
+    // STRUCTURAL/SECURITY checks (permission, tenant, file existence, file
+    // batch/type match) remain pre-claim — they cannot mask a stored terminal
+    // outcome because they depend only on the request body and immutable
+    // file metadata, which are identical on replay.
+    const existingRecord = await this.deps.idempotency.findByTenantScopeKey(
+      user.tenantId,
+      "historical_file.replace",
+      input.idempotencyKey,
+    );
+    const hasTerminalRecord = existingRecord !== null
+      && (existingRecord.state === "succeeded" || existingRecord.state === "business_failed");
 
-    // Reject `committing` — concurrent commit in progress.
-    if (batch.status === "committing") {
-      throw new HistoricalReplacementError(
-        "CONCURRENT_COMMIT",
-        `Batch '${input.importBatchId}' is in 'committing' state — concurrent commit in progress. Replacement is locked.`,
-      );
-    }
+    // MUTABLE BUSINESS STATE checks — skipped when a terminal record exists
+    // so claimIdempotency can replay/conflict the stored outcome.
+    if (!hasTerminalRecord) {
+      // Reject committed batches — post-commit changes use HistoricalCorrectionService.
+      if (batch.status === "committed") {
+        throw new HistoricalReplacementError(
+          "COMMITTED_BATCH_IMMUTABLE",
+          `Batch '${input.importBatchId}' is committed. Committed batches are immutable — use HistoricalCorrectionService for post-commit corrections.`,
+        );
+      }
 
-    // WP-08-01F R2: Reject `validation_in_progress` — concurrent validation
-    // must not race with replacement. A replacement during active validation
-    // would corrupt the in-flight validation report.
-    if (batch.status === "validation_in_progress") {
-      throw new HistoricalReplacementError(
-        "CONCURRENT_VALIDATION",
-        `Batch '${input.importBatchId}' is in 'validation_in_progress' state — concurrent validation in progress. Replacement is locked to prevent race conditions.`,
-      );
-    }
+      // Reject `committing` — concurrent commit in progress.
+      if (batch.status === "committing") {
+        throw new HistoricalReplacementError(
+          "CONCURRENT_COMMIT",
+          `Batch '${input.importBatchId}' is in 'committing' state — concurrent commit in progress. Replacement is locked.`,
+        );
+      }
 
-    // WP-08-01F R2: Reject `reconciliation_in_progress` — concurrent
-    // reconciliation must not race with replacement. A replacement during
-    // active reconciliation would corrupt the in-flight reconciliation report.
-    if (batch.status === "reconciliation_in_progress") {
-      throw new HistoricalReplacementError(
-        "CONCURRENT_RECONCILIATION",
-        `Batch '${input.importBatchId}' is in 'reconciliation_in_progress' state — concurrent reconciliation in progress. Replacement is locked to prevent race conditions.`,
-      );
-    }
+      // WP-08-01F R2: Reject `validation_in_progress` — concurrent validation
+      // must not race with replacement. A replacement during active validation
+      // would corrupt the in-flight validation report.
+      if (batch.status === "validation_in_progress") {
+        throw new HistoricalReplacementError(
+          "CONCURRENT_VALIDATION",
+          `Batch '${input.importBatchId}' is in 'validation_in_progress' state — concurrent validation in progress. Replacement is locked to prevent race conditions.`,
+        );
+      }
 
-    // Reject terminal states (rejected, cancelled) with a clear message.
-    if (batch.status === "rejected" || batch.status === "cancelled") {
-      throw new HistoricalReplacementError(
-        "BATCH_TERMINAL",
-        `Batch '${input.importBatchId}' is in terminal state '${batch.status}'. Replacement is not allowed on terminal batches.`,
-      );
-    }
+      // WP-08-01F R2: Reject `reconciliation_in_progress` — concurrent
+      // reconciliation must not race with replacement. A replacement during
+      // active reconciliation would corrupt the in-flight reconciliation report.
+      if (batch.status === "reconciliation_in_progress") {
+        throw new HistoricalReplacementError(
+          "CONCURRENT_RECONCILIATION",
+          `Batch '${input.importBatchId}' is in 'reconciliation_in_progress' state — concurrent reconciliation in progress. Replacement is locked to prevent race conditions.`,
+        );
+      }
 
-    // Reject `draft` — nothing to replace yet.
-    if (batch.status === "draft") {
-      throw new HistoricalReplacementError(
-        "NO_FILE_TO_REPLACE",
-        `Batch '${input.importBatchId}' is in 'draft' state — no file to replace yet. Use ordinary initial upload instead.`,
-      );
-    }
+      // Reject terminal states (rejected, cancelled) with a clear message.
+      if (batch.status === "rejected" || batch.status === "cancelled") {
+        throw new HistoricalReplacementError(
+          "BATCH_TERMINAL",
+          `Batch '${input.importBatchId}' is in terminal state '${batch.status}'. Replacement is not allowed on terminal batches.`,
+        );
+      }
 
-    // Apply the authoritative replacement lifecycle guard.
-    guardReplaceFile(batch);
+      // Reject `draft` — nothing to replace yet.
+      if (batch.status === "draft") {
+        throw new HistoricalReplacementError(
+          "NO_FILE_TO_REPLACE",
+          `Batch '${input.importBatchId}' is in 'draft' state — no file to replace yet. Use ordinary initial upload instead.`,
+        );
+      }
+
+      // Apply the authoritative replacement lifecycle guard.
+      guardReplaceFile(batch);
+    }
 
     // Verify the file being replaced exists, belongs to this batch+tenant, and is current.
     // This happens BEFORE the idempotency claim so that same-hash conflict and
@@ -309,12 +350,16 @@ export class HistoricalReplacementService {
     // Now check isCurrent — on replay this is skipped (returned above).
     // On a fresh execute, the old file must still be current.
     if ((oldFile as ImportFile & { isCurrent?: boolean }).isCurrent === false) {
+      // WP-08-01F DEC-081 recovery — store with the SAME { code, message }
+      // shape used by the outer-catch markBusinessFailed path, so the
+      // business_failed replay code below can reconstruct the exact error.
+      const errorMessage = `File '${input.replaceFileId}' is already superseded — cannot replace a non-current file.`;
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
         responseCode: 409,
-        responseBody: { error: "FILE_ALREADY_SUPERSEDED" },
+        responseBody: { code: "FILE_ALREADY_SUPERSEDED", message: errorMessage },
         lastErrorClass: "FILE_ALREADY_SUPERSEDED",
       }, claim.record.ownerToken!, now);
-      throw new HistoricalReplacementError("FILE_ALREADY_SUPERSEDED", `File '${input.replaceFileId}' is already superseded — cannot replace a non-current file.`);
+      throw new HistoricalReplacementError("FILE_ALREADY_SUPERSEDED", errorMessage);
     }
 
     // Compute the new file_version (old + 1).

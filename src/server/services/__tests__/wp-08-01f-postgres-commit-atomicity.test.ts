@@ -1701,12 +1701,54 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     });
 
     // ----- Construct replacementService with custom replacementRunner -----
+    // WP-08-01F DEC-081 recovery — INSTRUMENTATION:
+    // Wrap `idempotency` (root handle, used by claimIdempotency + peek +
+    // markSucceeded/markBusinessFailed/markRetryableFailed) and
+    // `transactionRunner` with call counters. This lets the second same-key
+    // call prove the stored business_failed record is REPLAYED (claim IS
+    // invoked, claim.action === "replay", transactionRunner NOT invoked,
+    // attempt_count unchanged, stored response used) rather than freshly
+    // evaluated by the pre-claim mutable-state guards.
     const stagingRepo = new HistoricalStagingDbRepository(db);
+    const realIdem = idem;
+    const idemCallCounts = {
+      findByTenantScopeKey: 0,    // peek + claim both call this
+      claimIdempotency: 0,         // incremented when claimIdempotency is invoked
+    };
+    // We need to count claimIdempotency calls specifically. claimIdempotency
+    // calls findByTenantScopeKey internally, but the peek also calls it. So
+    // counting findByTenantScopeKey over-counts. Instead we count
+    // updateState calls (markSucceeded/markBusinessFailed/markRetryableFailed
+    // each call updateState exactly once) and insert calls (claim execute
+    // calls insert exactly once).
+    const idemUpdateStateCount = { value: 0 };
+    const idemInsertCount = { value: 0 };
+    const instrumentedIdem: IdempotencyTransactionHandle = {
+      findByTenantScopeKey: async (t, s, k) => {
+        idemCallCounts.findByTenantScopeKey++;
+        return realIdem.findByTenantScopeKey(t, s, k);
+      },
+      insert: async (r) => {
+        idemInsertCount.value++;
+        return realIdem.insert(r);
+      },
+      claimExpiredLease: (id, a, b, c) => realIdem.claimExpiredLease(id, a, b, c),
+      updateState: async (id, update) => {
+        idemUpdateStateCount.value++;
+        return realIdem.updateState(id, update);
+      },
+      heartbeat: (id, n) => realIdem.heartbeat(id, n),
+    };
+    const replacementTxCount = { value: 0 };
+    const instrumentedReplacementRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => {
+      replacementTxCount.value++;
+      return replacementRunner(work);
+    };
     const replacementService = new HistoricalReplacementService({
       repository: stagingRepo,
       audit,
-      idempotency: idem,
-      transactionRunner: replacementRunner,
+      idempotency: instrumentedIdem,
+      transactionRunner: instrumentedReplacementRunner,
       createStagingRepository: (tx: unknown) => new HistoricalStagingDbRepository(tx as any),
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
       createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
@@ -1841,6 +1883,32 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
     expect(replaceIdemState!.state).not.toBe("in_progress");
     expect(replaceIdemState!.state).not.toBe("retryable_failed");
 
+    // ===== STORED REPLAY PROOF (DEC-081 recovery) =====
+    // Capture instrumentation counters + idempotency record state BEFORE the
+    // second same-key call. Then assert that the second call:
+    //   A. Invokes claimIdempotency (idempotency.findByTenantScopeKey is
+    //      called at least once for the claim path, NOT just the peek).
+    //   B. Returns claim.action === "replay" with record.state === "business_failed".
+    //   C. Does NOT invoke transactionRunner (no re-execution).
+    //   D. Does NOT increment attempt_count (no claimExpiredLease).
+    //   E. Uses the stored responseCode/responseBody/lastErrorClass (not a
+    //      freshly-evaluated COMMITTED_BATCH_IMMUTABLE from the pre-claim
+    //      mutable-state guard).
+    //
+    // NOTE: the second call uses the SAME request body (same reworkReason)
+    // as the first call. This is required for claimIdempotency to return
+    // "replay" (same request hash). Using a different reworkReason would
+    // produce a different request hash → "conflict" instead of "replay".
+    const idemRecordBeforeReplay = await sql`
+      SELECT id, state, attempt_count, response_code, response_body, last_error_class, owner_token
+      FROM idempotency_records
+      WHERE tenant_id = ${scope.tenantId} AND idempotency_key = ${replaceIdemKey}`;
+    const recordBefore = idemRecordBeforeReplay[0]!;
+    const findByCountBeforeReplay = idemCallCounts.findByTenantScopeKey;
+    const updateStateCountBeforeReplay = idemUpdateStateCount.value;
+    const insertCountBeforeReplay = idemInsertCount.value;
+    const replacementTxCountBeforeReplay = replacementTxCount.value;
+
     // - Same-key replay: durable business failure is replayed.
     //   The replacement transaction is NOT executed again; no new effects.
     const filesBeforeReplay = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
@@ -1860,7 +1928,9 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
           columns: { name: "Acme Corp", code: "AC001", entity_type: "customer", quantity: "100", date: "2024-01-01" },
         }],
         templateType: "opening_balance_inventory",
-        reworkReason: "COM-REAL-RACE-1: same-key replay (should be rejected)",
+        // SAME reworkReason as the first call — required for replay (same
+        // request hash). A different reworkReason would yield "conflict".
+        reworkReason: "COM-REAL-RACE-1: replace after commit race",
         idempotencyKey: replaceIdemKey, // SAME key
       },
     ).then(
@@ -1874,6 +1944,52 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
       expect(replayErr).toBeInstanceOf(HistoricalReplacementError);
       expect((replayErr as any)?.code).toBe("COMMITTED_BATCH_IMMUTABLE");
     }
+
+    // ===== REPLAY PROOF ASSERTIONS =====
+    // A. claimIdempotency IS invoked on the second call. The peek calls
+    //    findByTenantScopeKey once; claimIdempotency calls it again. So the
+    //    count must have increased by at least 1 (peek) + 1 (claim) = 2.
+    //    A freshly-evaluated throw (pre-claim mutable-state guard) would
+    //    only increase by 1 (peek alone, then throw before claim).
+    const findByCountAfterReplay = idemCallCounts.findByTenantScopeKey;
+    const findByIncrement = findByCountAfterReplay - findByCountBeforeReplay;
+    expect(findByIncrement,
+      `findByTenantScopeKey must be called at least twice on replay (peek + claim); got increment=${findByIncrement}`,
+    ).toBeGreaterThanOrEqual(2);
+
+    // B. claim.action === "replay" is verified indirectly: no insert, no
+    //    updateState, no transactionRunner invocation (see C). The fact
+    //    that findByTenantScopeKey was called twice but no insert/updateState
+    //    followed proves claim returned "replay" (not "execute" which would
+    //    insert, not "in_progress" which would not throw).
+    // D. attempt_count unchanged — no claimExpiredLease was called.
+    const idemRecordAfterReplay = await sql`
+      SELECT id, state, attempt_count, response_code, response_body, last_error_class, owner_token
+      FROM idempotency_records
+      WHERE tenant_id = ${scope.tenantId} AND idempotency_key = ${replaceIdemKey}`;
+    const recordAfter = idemRecordAfterReplay[0]!;
+    expect(recordAfter.id).toBe(recordBefore.id);              // same record
+    expect(recordAfter.state).toBe("business_failed");          // still business_failed
+    expect(recordAfter.attempt_count).toBe(recordBefore.attempt_count); // unchanged
+    expect(recordAfter.owner_token).toBe(recordBefore.owner_token);    // owner unchanged
+    expect(recordAfter.response_code).toBe(recordBefore.response_code); // stored code reused
+    expect(recordAfter.last_error_class).toBe(recordBefore.last_error_class); // stored class reused
+
+    // C. transactionRunner IS NOT invoked again on replay.
+    expect(replacementTxCount.value,
+      `transactionRunner must NOT be invoked on replay; got increment=${replacementTxCount.value - replacementTxCountBeforeReplay}`,
+    ).toBe(replacementTxCountBeforeReplay);
+
+    // E. No new insert (claim.action === "replay", not "execute").
+    expect(idemInsertCount.value,
+      `idempotency.insert must NOT be called on replay; got increment=${idemInsertCount.value - insertCountBeforeReplay}`,
+    ).toBe(insertCountBeforeReplay);
+    // No new updateState (no markSucceeded/markBusinessFailed/markRetryableFailed
+    // on replay — the stored response is used directly).
+    expect(idemUpdateStateCount.value,
+      `idempotency.updateState must NOT be called on replay; got increment=${idemUpdateStateCount.value - updateStateCountBeforeReplay}`,
+    ).toBe(updateStateCountBeforeReplay);
+
     // Zero duplicate effects: file count unchanged after replay attempt.
     const filesAfterReplay = await sql`SELECT count(*)::int AS c FROM import_files WHERE tenant_id = ${scope.tenantId} AND import_batch_id = ${batchId}`;
     expect(filesAfterReplay[0]?.c).toBe(filesBeforeReplay[0]?.c);
@@ -2097,27 +2213,144 @@ describeOrSkip("WP-08-01F Milestone B — Commit atomicity PostgreSQL proofs (CO
 
     // ----- Step 5: prove commit is BLOCKED at insert boundary -----
     // commitReachedCutoverInsert fired; commitPassedCutoverInsert has NOT.
-    // Query pg_locks/pg_stat_activity for independent PostgreSQL lock evidence.
-    const lockEvidence = await sql`
-      SELECT EXISTS (
-        SELECT 1 FROM pg_locks gl
+    //
+    // WP-08-01F DEC-081 recovery — REAL PostgreSQL lock evidence.
+    // Query pg_stat_activity + pg_locks via a SEPARATE PostgreSQL observer
+    // connection (the test's main `sql` handle) to prove the commit backend
+    // is waiting on a Lock while the replacement holds the conflicting
+    // transaction/row state.
+    //
+    // We capture the ACTUAL observed rows (sanitized for the report):
+    //   - commit backend PID
+    //   - pg_stat_activity.wait_event_type
+    //   - pg_stat_activity.wait_event
+    //   - relevant pg_locks.locktype
+    //   - pg_locks.mode
+    //   - pg_locks.granted
+    //
+    // PostgreSQL may represent this wait via tuple lock, transactionid, or
+    // relation lock depending on the FK FOR KEY SHARE mechanism. We accept
+    // any of these as proof — the conclusion is based on actual PostgreSQL
+    // state, not absence-of-completion.
+    //
+    // NOTE: the replacement backend is in `idle in transaction` state at
+    // this point — it has acquired the FOR UPDATE lock and is now waiting
+    // on a JS Promise (`releaseReplacementPromise`). It is NOT running a
+    // SQL query, so pg_stat_activity.query may be empty or show the last
+    // executed query. We find the replacement backend by querying
+    // pg_locks for the granted lock holder on `import_batches`, NOT by
+    // filtering pg_stat_activity.query.
+    const observerSql = postgres(DATABASE_URL!, { prepare: false, max: 2, idle_timeout: 5, connect_timeout: 10 });
+    try {
+      // Find the commit backend: it's running an INSERT into import_cutover_locks
+      // and is currently waiting on a Lock (state=active, wait_event_type=Lock).
+      const commitBackend = await observerSql`
+        SELECT pid, wait_event_type, wait_event, state,
+               left(query, 120) AS query_snippet
+        FROM pg_stat_activity
+        WHERE state = 'active'
+          AND query ILIKE '%import_cutover_locks%'
+          AND pid <> pg_backend_pid()
+        ORDER BY pid`;
+
+      // Find the replacement backend via pg_locks: it HOLDS a granted lock
+      // on import_batches (the FOR UPDATE). The backend may be in
+      // `idle in transaction` state (waiting on a JS Promise), so we don't
+      // filter on pg_stat_activity.query.
+      const replacementLockHolders = await observerSql`
+        SELECT gl.pid, gl.locktype, gl.mode, gl.granted,
+               gl.relation::regclass::text AS relation_name,
+               psa.state AS backend_state,
+               psa.wait_event_type AS backend_wait_event_type,
+               psa.wait_event AS backend_wait_event,
+               left(psa.query, 120) AS query_snippet
+        FROM pg_locks gl
         JOIN pg_stat_activity psa ON psa.pid = gl.pid
-        WHERE gl.locktype = 'tuple'
-          AND gl.relation::regclass::text = 'import_batches'
-          AND gl.granted = false
-      ) AS blocked_on_batch_row;
-    `;
-    // Also check wait_event_type = 'Lock' in pg_stat_activity
-    const waitEvidence = await sql`
-      SELECT count(*)::int AS waiting_backends
-      FROM pg_stat_activity
-      WHERE wait_event_type = 'Lock'
-        AND state = 'active'
-        AND query ILIKE '%import_cutover_locks%'
-    `;
-    // At least one backend should be waiting on a lock related to the batch row.
-    // If pg_stat_activity query returns 0 (timing/permission), the 300ms watchdog
-    // serves as a deadlock safety fallback.
+        WHERE gl.relation::regclass::text = 'import_batches'
+          AND gl.granted = true
+          AND gl.locktype IN ('relation', 'tuple')
+          AND gl.pid <> pg_backend_pid()
+        ORDER BY gl.pid`;
+
+      // All relevant locks (granted + ungranted) on import_batches or
+      // transactionid, for either the commit or replacement backend.
+      const allRelevantLocks = await observerSql`
+        SELECT gl.pid, gl.locktype, gl.mode, gl.granted,
+               gl.relation::regclass::text AS relation_name,
+               gl.transactionid::text AS txn_id,
+               psa.state AS backend_state,
+               psa.wait_event_type AS backend_wait_event_type,
+               psa.query ILIKE '%import_cutover_locks%' AS is_commit_backend
+        FROM pg_locks gl
+        JOIN pg_stat_activity psa ON psa.pid = gl.pid
+        WHERE psa.pid <> pg_backend_pid()
+          AND (
+            gl.relation::regclass::text IN ('import_batches', 'import_cutover_locks')
+            OR gl.locktype = 'transactionid'
+          )
+          AND (psa.query ILIKE '%import_cutover_locks%'
+               OR gl.relation::regclass::text = 'import_batches')
+        ORDER BY gl.pid, gl.locktype, gl.granted DESC`;
+
+      // ===== ASSERTIONS BASED ON ACTUAL PostgreSQL STATE =====
+      // 1. At least one commit backend is waiting on a Lock.
+      const commitWaiting = commitBackend.filter((r: any) => r.wait_event_type === "Lock");
+      expect(commitWaiting.length,
+        `Expected at least one commit backend waiting on Lock; got: ${JSON.stringify(commitBackend)}`,
+      ).toBeGreaterThanOrEqual(1);
+
+      // 2. The replacement backend HOLDS a granted lock on import_batches.
+      expect(replacementLockHolders.length,
+        `Expected granted lock holder on import_batches (replacement's FOR UPDATE); got: ${JSON.stringify(replacementLockHolders)}`,
+      ).toBeGreaterThanOrEqual(1);
+
+      // 3. There exists at least one ungranted lock row (the commit's wait).
+      const ungrantedLocks = allRelevantLocks.filter((r: any) => r.granted === false);
+      expect(ungrantedLocks.length,
+        `Expected at least one ungranted lock row (commit waiting); got locks: ${JSON.stringify(allRelevantLocks)}`,
+      ).toBeGreaterThanOrEqual(1);
+
+      // 4. There exists at least one granted lock row on import_batches
+      //    (the replacement's FOR UPDATE).
+      const grantedBatchLocks = allRelevantLocks.filter(
+        (r: any) => r.granted === true && r.relation_name === "import_batches",
+      );
+      expect(grantedBatchLocks.length,
+        `Expected granted lock on import_batches (replacement's FOR UPDATE); got: ${JSON.stringify(allRelevantLocks)}`,
+      ).toBeGreaterThanOrEqual(1);
+
+      // ===== EVIDENCE SUMMARY (for the report) =====
+      const evidenceSummary = {
+        commit_backend_pids: commitBackend.map((r: any) => r.pid),
+        commit_wait_event_types: commitBackend.map((r: any) => r.wait_event_type),
+        commit_wait_events: commitBackend.map((r: any) => r.wait_event),
+        replacement_backend_pids: replacementLockHolders.map((r: any) => r.pid),
+        replacement_backend_states: replacementLockHolders.map((r: any) => r.backend_state),
+        replacement_backend_wait_event_types: replacementLockHolders.map((r: any) => r.backend_wait_event_type),
+        ungranted_locktypes: ungrantedLocks.map((r: any) => ({
+          locktype: r.locktype, mode: r.mode, relation: r.relation_name, txn_id: r.txn_id,
+        })),
+        granted_batch_lock_modes: grantedBatchLocks.map((r: any) => ({
+          locktype: r.locktype, mode: r.mode,
+        })),
+      };
+      // Sanity-assert that the evidence is non-empty (proves we observed
+      // real PostgreSQL state, not absence-of-completion).
+      expect(evidenceSummary.commit_backend_pids.length).toBeGreaterThan(0);
+      expect(evidenceSummary.ungranted_locktypes.length).toBeGreaterThan(0);
+      expect(evidenceSummary.granted_batch_lock_modes.length).toBeGreaterThan(0);
+      // The commit backend MUST be waiting on a Lock (not BufferPin, not LWLock,
+      // not NULL). This is the primary locking proof.
+      for (const wet of evidenceSummary.commit_wait_event_types) {
+        expect(wet).toBe("Lock");
+      }
+    } finally {
+      await observerSql.end();
+    }
+
+    // 300ms watchdog remains ONLY for test deadlock safety — NOT as the
+    // primary locking proof (which is provided by pg_stat_activity/pg_locks
+    // observations above).
     const passedBeforeRelease = await Promise.race([
       commitPassedCutoverInsertPromise.then(() => true),
       new Promise<boolean>(r => setTimeout(() => r(false), 300)),
