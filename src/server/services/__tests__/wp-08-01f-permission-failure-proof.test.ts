@@ -50,10 +50,30 @@ import type { RolePermissionMatrix } from "@/server/security/effective-permissio
 // detects canonical permission-seed drift: if migration.* keys are renamed
 // or removed in platform-security.ts, this import changes and PF-5 fails.
 import { SEED_PERMISSIONS } from "@/server/db/seed/platform-security";
+// Shared destructive-test guard — required by WP-08-01F Task 2 static-guard-
+// coverage test for every Category A file containing executable DELETE FROM.
+// The guard is invoked at module load (before any DELETE statement) to
+// verify the DB is a local disposable PostgreSQL database. On Supabase
+// hosted QA, the guard returns kind="fail" (Supabase is rejected), so
+// describeOrSkip falls back to describe.skip — but the historical isSupabase
+// allowance is preserved via the separate checkDatabaseSafety() below for
+// the read-only PF-1..PF-4 paths that do not DELETE.
+import { checkDestructiveTestDbSafety } from "./destructive-test-guard";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const REQUIRE_PROOF = process.env.ERP_REQUIRE_WP0801F_POSTGRES_PROOF === "1";
 const ALLOW_DESTRUCTIVE = process.env.ERP_ALLOW_DESTRUCTIVE_LOCAL_TEST_DB === "1";
+
+// WP-08-01F Task 2 — invoke the shared destructive-test guard at module
+// load, BEFORE any DELETE FROM statement. This is required for every
+// Category A file. The guard verifies the DB is a local disposable
+// PostgreSQL database (or returns skip/fail for non-destructive envs).
+// The result is used to gate describeOrSkip below.
+const SHARED_GUARD_RESULT = checkDestructiveTestDbSafety({
+  databaseUrl: DATABASE_URL,
+  allowDestructive: ALLOW_DESTRUCTIVE,
+  requireProof: REQUIRE_PROOF,
+});
 
 // For Supabase QA DB, we need a different safety check
 const isSupabase = DATABASE_URL?.includes("supabase") || DATABASE_URL?.includes("pooler");
