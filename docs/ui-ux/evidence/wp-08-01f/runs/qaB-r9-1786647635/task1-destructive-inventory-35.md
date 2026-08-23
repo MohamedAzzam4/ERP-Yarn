@@ -28,9 +28,9 @@ contains test fixtures (intentionally unguarded / correctly guarded
 sample files) used by the static-guard-coverage test. These fixtures
 are test DATA, not real scripts that need the guard.
 
-## Discovered Count: 41 paths
+## Discovered Count: 42 paths
 
-The canonical search now discovers 41 paths:
+The canonical search now discovers 42 paths:
 - 35 executable destructive test/QA harness files (Category A)
 - 2 comment/fixture-only files (Category D)
 - 1 new Category A file: wp-08-01f-postgres-reconciliation-atomicity.test.ts
@@ -38,15 +38,16 @@ The canonical search now discovers 41 paths:
 - 1 new Category A file: wp-08-01f-postgres-submission-atomicity.test.ts
 - 1 new Category A file: wp-08-01f-postgres-commit-atomicity.test.ts
 - 1 new Category A file: wp-08-01f-postgres-alias-atomicity.test.ts (WP-08-01F DEFECT 1-8 closure)
+- 1 new Category A file: wp-08-01f-postgres-dec081-recovery.test.ts (WP-08-01F DEC-081 recovery)
 
 ## Category Counts
 
-- Category A (executable destructive test/QA harness): 39
+- Category A (executable destructive test/QA harness): 40
 - Category B (legitimate production domain deletion): 0
 - Category C (migration/setup): 0
 - Category D (comment / fixture string only — no executable DELETE): 2
 
-A + B + C + D = 39 + 0 + 0 + 2 = 41 = discovered count ✓
+A + B + C + D = 40 + 0 + 0 + 2 = 42 = discovered count ✓
 
 ## Category Definitions
 
@@ -102,6 +103,7 @@ A + B + C + D = 39 + 0 + 0 + 2 = 41 = discovered count ✓
 | 39 | src/server/services/__tests__/wp-08-01f-postgres-submission-atomicity.test.ts | 262-275 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Task 5 (commit 59efe37) — SUB-1 through SUB-8 submission atomicity proofs. Uses per-test unique tenants; audit_logs left immutable. |
 | 40 | src/server/services/__tests__/wp-08-01f-postgres-commit-atomicity.test.ts | ~200-220 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in Milestone B — COM-1 through COM-8 commit atomicity proofs. Uses per-test unique tenants; audit_logs left immutable. |
 | 41 | src/server/services/__tests__/wp-08-01f-postgres-alias-atomicity.test.ts | ~165-180 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, inventory_items, product_types, fiber_types, customers, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in WP-08-01F DEFECT 1-8 closure — PG-ALIAS-1 through PG-ALIAS-12 alias atomicity proofs. Uses per-test unique tenants; audit_logs left immutable. |
+| 42 | src/server/services/__tests__/wp-08-01f-postgres-dec081-recovery.test.ts | 205-217 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (NOT audit_logs/users/tenants) | A | Shared guard | Created in WP-08-01F DEC-081 recovery (commit d98b3c3) — DEC081-1 through DEC081-3B replacement idempotency + failure-mark fencing proofs. Uses per-test unique tenants (RUN_ID = randomUUID); audit_logs left immutable. |
 
 ## Root Cause of the Previous 35-vs-34 Contradiction
 

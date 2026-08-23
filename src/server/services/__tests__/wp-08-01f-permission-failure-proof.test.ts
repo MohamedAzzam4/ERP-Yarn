@@ -130,6 +130,80 @@ describeOrSkip("WP-08-01F Task 5 — Permission-query failure proof", () => {
     // Verify connection
     const result = await sql`SELECT 1 AS ok`;
     if (result[0]?.ok !== 1) throw new Error("DB connection failed");
+
+    // WP-08-01F DEC-081 recovery — seed the QA_TENANT + its role_permissions
+    // when running against a fresh-migrated local disposable DB.
+    //
+    // Root cause: QA_TENANT (00000000-0000-0000-0000-000000081e50) is the
+    // browser-QA tenant seeded via scripts/wp-08-01e-browser-qa/setup-fixtures.ts
+    // against a Supabase-hosted QA database. When ERP_REQUIRE_WP0801F_POSTGRES_PROOF=1
+    // runs against a fresh-migrated local disposable DB, this tenant does NOT
+    // exist, so loadMatrixWithFailure(QA_TENANT, "none") returns an empty
+    // matrix and PF-5 fails.
+    //
+    // Fix: seed the QA_TENANT with the 5 system roles + the migration
+    // permission keys + the Owner role_permissions in beforeAll. This makes
+    // PF-5 self-contained — it doesn't depend on a separate browser-QA setup
+    // script having been run. The assertions in PF-5 are NOT weakened: it
+    // still proves the real DB query returns the expected permission matrix
+    // for Owner (migration.prepare, migration.review, migration.approve,
+    // migration.commit).
+    //
+    // This seeding is idempotent (ON CONFLICT DO NOTHING) and scoped to the
+    // QA_TENANT — it does NOT affect any other test's data.
+    const QA_TENANT = "00000000-0000-0000-0000-000000081e50";
+    const ownerRoleId = "00000000-0000-0000-0000-000000080101";
+    const accountantRoleId = "00000000-0000-0000-0000-000000080102";
+    const warehouseRoleId = "00000000-0000-0000-0000-000000080103";
+    const productionRoleId = "00000000-0000-0000-0000-000000080104";
+    const qualityRoleId = "00000000-0000-0000-0000-000000080105";
+
+    // Permission IDs (deterministic, matching platform-security.ts convention).
+    // migration.* permissions are at indices 54-57 in the SEED_PERMISSIONS array
+    // (0-indexed), so their IDs are 00000000-0000-0000-0000-0000000002xx where
+    // xx = 200 + index.
+    const migrationPreparePermId = "00000000-0000-0000-0000-000000000255"; // index 54
+    const migrationReviewPermId = "00000000-0000-0000-0000-000000000256";  // index 55
+    const migrationApprovePermId = "00000000-0000-0000-0000-000000000257"; // index 56
+    const migrationCommitPermId = "00000000-0000-0000-0000-000000000258";  // index 57
+
+    // Seed QA tenant
+    await sql`
+      INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status)
+      VALUES (${QA_TENANT}, ${"QA Browser Tenant"}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"})
+      ON CONFLICT (id) DO NOTHING`;
+
+    // Seed QA tenant roles (5 system roles)
+    await sql`
+      INSERT INTO roles (id, tenant_id, role_code, name_ar, name_en, is_system_role, system_flag)
+      VALUES
+        (${ownerRoleId}, ${QA_TENANT}, ${"owner"}, ${"المالك"}, ${"Owner"}, true, ${"system"}),
+        (${accountantRoleId}, ${QA_TENANT}, ${"accountant"}, ${"المحاسب"}, ${"Accountant"}, true, ${"system"}),
+        (${warehouseRoleId}, ${QA_TENANT}, ${"warehouse_employee"}, ${"موظف المخزن"}, ${"Warehouse Employee"}, true, ${"system"}),
+        (${productionRoleId}, ${QA_TENANT}, ${"production_employee"}, ${"موظف التشغيل"}, ${"Production Employee"}, true, ${"system"}),
+        (${qualityRoleId}, ${QA_TENANT}, ${"quality_employee"}, ${"موظف الجودة"}, ${"Quality Employee"}, true, ${"system"})
+      ON CONFLICT (id) DO NOTHING`;
+
+    // Seed QA tenant permissions (migration.* — the ones PF-5 checks)
+    await sql`
+      INSERT INTO permissions (id, tenant_id, permission_key, module, action, description)
+      VALUES
+        (${migrationPreparePermId}, ${QA_TENANT}, ${"migration.prepare"}, ${"migration"}, ${"prepare"}, ${"Prepare migration batch"}),
+        (${migrationReviewPermId}, ${QA_TENANT}, ${"migration.review"}, ${"migration"}, ${"review"}, ${"Review migration batch"}),
+        (${migrationApprovePermId}, ${QA_TENANT}, ${"migration.approve"}, ${"migration"}, ${"approve"}, ${"Approve migration batch"}),
+        (${migrationCommitPermId}, ${QA_TENANT}, ${"migration.commit"}, ${"migration"}, ${"commit"}, ${"Commit historical import"})
+      ON CONFLICT (id) DO NOTHING`;
+
+    // Seed QA tenant role_permissions — Owner gets all 4 migration permissions
+    // (per Contract 11 §7, Owner has all permissions).
+    await sql`
+      INSERT INTO role_permissions (role_id, permission_id, tenant_id)
+      VALUES
+        (${ownerRoleId}, ${migrationPreparePermId}, ${QA_TENANT}),
+        (${ownerRoleId}, ${migrationReviewPermId}, ${QA_TENANT}),
+        (${ownerRoleId}, ${migrationApprovePermId}, ${QA_TENANT}),
+        (${ownerRoleId}, ${migrationCommitPermId}, ${QA_TENANT})
+      ON CONFLICT DO NOTHING`;
   }, 30000);
 
   afterAll(async () => {
