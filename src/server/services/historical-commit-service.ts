@@ -1577,24 +1577,52 @@ export class HistoricalCommitService {
       // The resolver is built from the SAME alias mappings revalidated above
       // (commitDefaultAliasMappings + commitExceptionMappings) which are
       // already loaded inside the locked transaction.
+      //
+      // BLOCKER A FIX: Generalize to ALL alias-bearing entity types, not
+      // just party types. The resolved target drives:
+      //   customer/supplier/factory → ownerId (SubledgerService)
+      //   item → itemId (InventoryLedgerService)
+      //   location → locationId (InventoryLedgerService, when the alias
+      //             represents a location canonical master)
+      //
+      // BLOCKER B FIX: For every UUID in every current EXCEPTION mapping,
+      // independently revalidate that the actual staging row's detected
+      // entityType and sourceLabel match the exception's group. Do NOT
+      // merely verify the row exists — verify GROUP MEMBERSHIP.
       // =====================================================================
 
-      // Build a map: stagingRowId → resolvedTargetMasterId, for entity types
-      // whose operational posting requires alias resolution.
-      // Only party entity types (customer, supplier, factory) use alias
-      // resolution for the ownerId field in the posting loop.
-      const aliasResolvedTargets = new Map<string, string>();
+      // Resolved alias representation: stagingRowId → full resolution info.
+      interface AliasResolution {
+        entityType: string;
+        sourceLabel: string;
+        targetMasterId: string;
+        mappingKind: "default" | "exception";
+        mappingId: string;
+      }
+      const aliasResolvedTargets = new Map<string, AliasResolution>();
 
-      // Build a lookup: (entityType|sourceLabel) → defaultTargetMasterId
-      const defaultTargetsByGroup = new Map<string, string>();
+      // Build a lookup: (entityType|sourceLabel) → DEFAULT mapping
+      const defaultMappingByGroup = new Map<string, ImportAliasMapping>();
       for (const a of commitDefaultAliasMappings) {
         const key = `${a.entityType}|${a.sourceLabel}`;
-        defaultTargetsByGroup.set(key, a.targetMasterId!);
+        defaultMappingByGroup.set(key, a);
+      }
+
+      // Build a staging row lookup: rowId → row (for provenance verification)
+      const stagingRowById = new Map<string, typeof rows[number]>();
+      for (const r of rows) {
+        stagingRowById.set(r.id, r);
       }
 
       // Build a lookup: stagingRowId → exceptionTargetMasterId
       // Each staging row UUID can appear in at most ONE current approved
       // exception. If it appears in multiple, we fail closed.
+      //
+      // BLOCKER B FIX: For each UUID in exceptionSourceRowIds, independently
+      // verify:
+      //   1. The staging row exists in the current batch snapshot.
+      //   2. The row's detected entityType matches the exception's entityType.
+      //   3. The row's source label (name) matches the exception's sourceLabel.
       const exceptionTargetsByRowId = new Map<string, { targetMasterId: string; exceptionId: string }>();
       for (const exc of commitExceptionMappings) {
         const sourceRowIds = exc.exceptionSourceRowIds as string[] | null;
@@ -1608,6 +1636,40 @@ export class HistoricalCommitService {
               `Staging row '${rowId}' appears in multiple current exception mappings. Each row may belong to at most one exception.`,
             );
           }
+
+          // BLOCKER B FIX: Provenance + group membership verification.
+          const stagingRow = stagingRowById.get(rowId);
+          if (!stagingRow) {
+            throw new HistoricalCommitError(
+              "ALIAS_EXCEPTION_PROVENANCE_INVALID",
+              `Exception mapping '${exc.id}' references staging row '${rowId}' which is not in the current batch snapshot.`,
+            );
+          }
+
+          // Verify the row's detected entityType matches the exception's entityType.
+          const rowData = (stagingRow.transformedRowJson ?? stagingRow.rawRowJson) as Record<string, unknown> | null;
+          if (!rowData || !rowData.name) {
+            throw new HistoricalCommitError(
+              "ALIAS_EXCEPTION_PROVENANCE_INVALID",
+              `Exception mapping '${exc.id}' references staging row '${rowId}' which has no source label (name). Cannot verify group membership.`,
+            );
+          }
+          const rowEntityType = detectEntityType(rowData);
+          const rowSourceLabel = String(rowData.name);
+
+          if (rowEntityType !== exc.entityType) {
+            throw new HistoricalCommitError(
+              "ALIAS_EXCEPTION_GROUP_MISMATCH",
+              `Exception mapping '${exc.id}' (entityType='${exc.entityType}', sourceLabel='${exc.sourceLabel}') references staging row '${rowId}' whose detected entityType is '${rowEntityType}'. Entity type mismatch.`,
+            );
+          }
+          if (rowSourceLabel !== exc.sourceLabel) {
+            throw new HistoricalCommitError(
+              "ALIAS_EXCEPTION_GROUP_MISMATCH",
+              `Exception mapping '${exc.id}' (entityType='${exc.entityType}', sourceLabel='${exc.sourceLabel}') references staging row '${rowId}' whose source label is '${rowSourceLabel}'. Source label mismatch.`,
+            );
+          }
+
           exceptionTargetsByRowId.set(rowId, {
             targetMasterId: exc.targetMasterId!,
             exceptionId: exc.id,
@@ -1615,26 +1677,14 @@ export class HistoricalCommitService {
         }
       }
 
-      // Verify exception provenance: every exception's sourceRowIds must
-      // reference actual staging rows in this batch. If an exception
-      // references a row outside the current batch/snapshot, fail closed.
-      const stagingRowIdSet = new Set(rows.map((r) => r.id));
-      for (const exc of commitExceptionMappings) {
-        const sourceRowIds = exc.exceptionSourceRowIds as string[] | null;
-        if (!sourceRowIds || !Array.isArray(sourceRowIds)) continue;
-        for (const rowId of sourceRowIds) {
-          if (typeof rowId !== "string") continue;
-          if (!stagingRowIdSet.has(rowId)) {
-            throw new HistoricalCommitError(
-              "ALIAS_EXCEPTION_PROVENANCE_INVALID",
-              `Exception mapping '${exc.id}' references staging row '${rowId}' which is not in the current batch snapshot.`,
-            );
-          }
-        }
-      }
-
       // Resolve each staging row that has a `name` field (alias-bearing row)
       // to its approved canonical target.
+      // BLOCKER A FIX: Resolve for ALL alias-bearing entity types, not just
+      // party types. The posting loop below uses the resolved target for
+      // the corresponding operational field:
+      //   customer/supplier/factory → ownerId
+      //   item → itemId
+      //   location → locationId
       for (const row of rows) {
         const data = (row.transformedRowJson ?? row.rawRowJson) as Record<string, unknown> | null;
         if (!data || !data.name) continue;
@@ -1642,27 +1692,28 @@ export class HistoricalCommitService {
         const sourceLabel = String(data.name);
         const entityType = detectEntityType(data);
         const groupKey = `${entityType}|${sourceLabel}`;
-        const defaultTarget = defaultTargetsByGroup.get(groupKey);
-
-        // If this entity type does not require alias resolution (e.g.
-        // inventory items, locations), skip — the posting loop uses the
-        // staged ID directly.
-        // Party entity types (customer, supplier, factory) require alias
-        // resolution for the ownerId field.
-        const isPartyType =
-          entityType === "customer" ||
-          entityType === "supplier" ||
-          entityType === "factory";
-        if (!isPartyType) continue;
+        const defaultMapping = defaultMappingByGroup.get(groupKey);
 
         // Check if this row is in an exception.
         const exceptionEntry = exceptionTargetsByRowId.get(row.id);
         if (exceptionEntry) {
           // Use exception target.
-          aliasResolvedTargets.set(row.id, exceptionEntry.targetMasterId);
-        } else if (defaultTarget) {
+          aliasResolvedTargets.set(row.id, {
+            entityType,
+            sourceLabel,
+            targetMasterId: exceptionEntry.targetMasterId,
+            mappingKind: "exception",
+            mappingId: exceptionEntry.exceptionId,
+          });
+        } else if (defaultMapping) {
           // Use default target.
-          aliasResolvedTargets.set(row.id, defaultTarget);
+          aliasResolvedTargets.set(row.id, {
+            entityType,
+            sourceLabel,
+            targetMasterId: defaultMapping.targetMasterId!,
+            mappingKind: "default",
+            mappingId: defaultMapping.id,
+          });
         } else {
           // No DEFAULT mapping exists for this group — this should have
           // been caught by the required-alias-groups check above. But if
@@ -1684,6 +1735,7 @@ export class HistoricalCommitService {
         staging_rows_committed: 0,
       };
       let committedRows = 0;
+      const committedRowIds = new Set<string>();
       const year = now.getUTCFullYear();
       const movementDate = now.toISOString().slice(0, 10);
 
@@ -1698,39 +1750,100 @@ export class HistoricalCommitService {
 
         // ---- Inventory opening balance ----
         // Requires: itemId, locationId, quantityKg
-        if (data.item_id && data.location_id && data.quantity != null) {
-          if (!invLedger || !docSeq) {
-            throw new HistoricalCommitError(
-              "DOMAIN_SERVICES_REQUIRED",
-              "InventoryLedgerService and DocumentSequence are required for inventory opening balance commit but were not provided.",
-            );
+        //
+        // BLOCKER A FIX: Use alias-resolved targets for item and location
+        // when the staging row has an alias-bearing name field.
+        //   item alias → drives itemId
+        //   location alias → drives locationId (when the row's alias entity
+        //                   type is "location")
+        if (data.quantity != null) {
+          // Resolve itemId: use alias target if the row has an item alias,
+          // otherwise use the staged item_id.
+          let resolvedItemId: string | null = null;
+          if (data.name) {
+            const aliasTarget = aliasResolvedTargets.get(stagingRowId);
+            if (aliasTarget && aliasTarget.entityType === "item") {
+              resolvedItemId = aliasTarget.targetMasterId;
+              // If staged item_id exists and conflicts, fail closed.
+              if (data.item_id !== undefined && data.item_id !== null && String(data.item_id) !== resolvedItemId) {
+                throw new HistoricalCommitError(
+                  "ALIAS_CONFLICTS_WITH_STAGED_ID",
+                  `Staging row '${stagingRowId}' has staged item_id='${String(data.item_id)}' which conflicts with the approved alias target '${resolvedItemId}'. Approved alias resolution must drive the canonical operational target.`,
+                );
+              }
+            }
           }
-          const docNoResult = await allocateDocumentNumber(docSeq, {
-            tenantId: user.tenantId, documentType: "adjustment", year, entityType: "stock_movement",
-          });
-          const result = await invLedger.postOpeningBalanceMovement(
-            user.tenantId, user.userId,
-            {
-              itemId: String(data.item_id),
-              locationId: String(data.location_id),
-              quantityKg: String(data.quantity),
-              movementDate,
-              docNo: docNoResult.docNo,
-              sourceDocumentType,
-              sourceDocumentId: stagingRowId,
-              idempotencyKey: rowIdempotencyKey,
-            },
-          );
-          await repo.updateStagingRowCommitLink(user.tenantId, stagingRowId, {
-            committedEntityType: "stock_movement",
-            committedEntityId: result.movementId,
-            updatedBy: user.userId,
-          });
-          effectCounts.inventory_movements = (effectCounts.inventory_movements ?? 0) + 1;
-          committedRows++;
+          if (resolvedItemId === null) {
+            if (!data.item_id) {
+              // No item_id and no item alias — skip to party check.
+            } else {
+              resolvedItemId = String(data.item_id);
+            }
+          }
+
+          // Resolve locationId: use alias target if the row has a location alias.
+          let resolvedLocationId: string | null = null;
+          if (data.name) {
+            const aliasTarget = aliasResolvedTargets.get(stagingRowId);
+            if (aliasTarget && aliasTarget.entityType === "location") {
+              resolvedLocationId = aliasTarget.targetMasterId;
+              // If staged location_id exists and conflicts, fail closed.
+              if (data.location_id !== undefined && data.location_id !== null && String(data.location_id) !== resolvedLocationId) {
+                throw new HistoricalCommitError(
+                  "ALIAS_CONFLICTS_WITH_STAGED_ID",
+                  `Staging row '${stagingRowId}' has staged location_id='${String(data.location_id)}' which conflicts with the approved alias target '${resolvedLocationId}'. Approved alias resolution must drive the canonical operational target.`,
+                );
+              }
+            }
+          }
+          if (resolvedLocationId === null) {
+            if (!data.location_id) {
+              resolvedLocationId = null;
+            } else {
+              resolvedLocationId = String(data.location_id);
+            }
+          }
+
+          // Only post if we have both itemId and locationId.
+          if (resolvedItemId && resolvedLocationId) {
+            if (!invLedger || !docSeq) {
+              throw new HistoricalCommitError(
+                "DOMAIN_SERVICES_REQUIRED",
+                "InventoryLedgerService and DocumentSequence are required for inventory opening balance commit but were not provided.",
+              );
+            }
+            const docNoResult = await allocateDocumentNumber(docSeq, {
+              tenantId: user.tenantId, documentType: "adjustment", year, entityType: "stock_movement",
+            });
+            const result = await invLedger.postOpeningBalanceMovement(
+              user.tenantId, user.userId,
+              {
+                itemId: resolvedItemId,
+                locationId: resolvedLocationId,
+                quantityKg: String(data.quantity),
+                movementDate,
+                docNo: docNoResult.docNo,
+                sourceDocumentType,
+                sourceDocumentId: stagingRowId,
+                idempotencyKey: rowIdempotencyKey,
+              },
+            );
+            await repo.updateStagingRowCommitLink(user.tenantId, stagingRowId, {
+              committedEntityType: "stock_movement",
+              committedEntityId: result.movementId,
+              updatedBy: user.userId,
+            });
+            effectCounts.inventory_movements = (effectCounts.inventory_movements ?? 0) + 1;
+            committedRows++;
+            committedRowIds.add(stagingRowId);
+          }
         }
         // ---- Party opening balance (customer/supplier/factory) ----
         // Requires: ownerType, ownerId, amountSigned
+        // NOTE: This is a separate `if` (not `else if`) because a party row
+        // may also have a `quantity` field but no item_id/location_id — in
+        // that case the inventory block above was entered but did not post.
+        // The party check must still run.
         //
         // DEFECT 1 FIX (independent review): Use the alias-resolved canonical
         // target master ID instead of the raw `data.owner_id` from the staging
@@ -1745,7 +1858,8 @@ export class HistoricalCommitService {
         //
         // If the staging row does NOT have a `name` field (non-alias-bearing
         // party row), fall through to the original `data.owner_id` behavior.
-        else if ((entityType.includes("customer") || entityType.includes("supplier") || entityType.includes("factory"))
+        // Track whether this row was already committed by the inventory branch.
+        if (!committedRowIds.has(stagingRowId) && (entityType.includes("customer") || entityType.includes("supplier") || entityType.includes("factory"))
                    && data.balance != null) {
           if (!subledger || !docSeq) {
             throw new HistoricalCommitError(
@@ -1762,13 +1876,13 @@ export class HistoricalCommitService {
             // This is an alias-bearing row — the alias resolution must
             // drive the operational target.
             const aliasTarget = aliasResolvedTargets.get(stagingRowId);
-            if (!aliasTarget) {
+            if (!aliasTarget || (aliasTarget.entityType !== "customer" && aliasTarget.entityType !== "supplier" && aliasTarget.entityType !== "factory")) {
               throw new HistoricalCommitError(
                 "ALIAS_UNRESOLVED_FOR_ROW",
-                `Staging row '${stagingRowId}' has a source label '${String(data.name)}' but no resolved alias target. The batch may have an unresolved alias mapping.`,
+                `Staging row '${stagingRowId}' has a source label '${String(data.name)}' but no resolved party alias target. The batch may have an unresolved alias mapping.`,
               );
             }
-            resolvedOwnerId = aliasTarget;
+            resolvedOwnerId = aliasTarget.targetMasterId;
 
             // If the staged row also contains owner_id and it conflicts
             // with the approved alias target, FAIL CLOSED.
@@ -1820,9 +1934,10 @@ export class HistoricalCommitService {
           });
           effectCounts.account_entries = (effectCounts.account_entries ?? 0) + 1;
           committedRows++;
+          committedRowIds.add(stagingRowId);
         }
         // ---- Unknown/unhandled row type — skip with warning ----
-        else {
+        if (!committedRowIds.has(stagingRowId)) {
           // Mark as committed with no domain effect (metadata-only row)
           await repo.updateStagingRowCommitLink(user.tenantId, stagingRowId, {
             committedEntityType: "unhandled",

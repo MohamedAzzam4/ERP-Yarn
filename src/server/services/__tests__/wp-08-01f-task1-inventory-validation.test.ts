@@ -122,7 +122,7 @@ describe("WP-08-01F Task 1 — Destructive inventory matches canonical search", 
     // (34 original Category A + RCA test + RW test + SUB test + COM test
     // + alias-atomicity test + DEC081-recovery test + PF-5 fixture cleanup
     // + schema-regression test + 2 Category D).
-    expect(discovered.length).toBe(46);
+    expect(discovered.length).toBe(47);
   });
 
   it("inventory row count equals discovered path count", () => {

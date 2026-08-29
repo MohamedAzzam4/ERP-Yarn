@@ -28,9 +28,9 @@ contains test fixtures (intentionally unguarded / correctly guarded
 sample files) used by the static-guard-coverage test. These fixtures
 are test DATA, not real scripts that need the guard.
 
-## Discovered Count: 46 paths
+## Discovered Count: 47 paths
 
-The canonical search now discovers 46 paths:
+The canonical search now discovers 47 paths:
 - 35 executable destructive test/QA harness files (Category A)
 - 2 comment/fixture-only files (Category D)
 - 1 new Category A file: wp-08-01f-postgres-reconciliation-atomicity.test.ts
@@ -43,15 +43,16 @@ The canonical search now discovers 46 paths:
 - 1 new Category A file: wp-08-01f-postgres-schema-regression.test.ts (BLOCKED-2..6 live-DB proofs)
 - 1 new Category A file: wp-08-01f-postgres-alias-application.test.ts (DEFECT 1 alias resolution proof)
 - 1 new Category A file: wp-08-01f-postgres-defect2-conflict.test.ts (DEFECT 2 replacement conflict proofs)
+- 1 new Category A file: wp-08-01f-postgres-alias-generalized.test.ts (BLOCKER A/B/C generalized alias + real domain proof)
 
 ## Category Counts
 
-- Category A (executable destructive test/QA harness): 44
+- Category A (executable destructive test/QA harness): 45
 - Category B (legitimate production domain deletion): 0
 - Category C (migration/setup): 0
 - Category D (comment / fixture string only — no executable DELETE): 2
 
-A + B + C + D = 44 + 0 + 0 + 2 = 46 = discovered count ✓
+A + B + C + D = 45 + 0 + 0 + 2 = 47 = discovered count ✓
 
 ## Category Definitions
 
@@ -112,6 +113,7 @@ A + B + C + D = 44 + 0 + 0 + 2 = 46 = discovered count ✓
 | 44 | src/server/db/__tests__/wp-08-01f-postgres-schema-regression.test.ts | 129-132, 198-201, 268-273, 327-331 | DELETE import_batch_approvals, import_batches, users, tenants, import_validation_errors, import_staging_rows, import_files, import_reconciliation_results (run-scoped tenant cleanup) | A | Shared guard (checkDestructiveTestDbSafety) | Created for BLOCKED-2..6 live-DB schema regression proofs. Uses run-scoped tenants (randomUUID); cleanup deletes only test-owned tenant data; audit_logs left immutable. |
 | 45 | src/server/services/__tests__/wp-08-01f-postgres-alias-application.test.ts | 201-217 | DELETE account_entries, cutover_locks, backup_evidence, approvals, recon, alias_mappings, staging_rows, files, batches, customers, document_sequences, idempotency (run-scoped tenant cleanup; audit_logs NOT deleted) | A | Shared guard (checkDestructiveTestDbSafety) | Created for DEFECT 1 alias resolution application proof. Uses run-scoped tenants; audit_logs/users/tenants NOT deleted (FK from immutable audit_logs). |
 | 46 | src/server/services/__tests__/wp-08-01f-postgres-defect2-conflict.test.ts | 156-167 | DELETE cutover_locks, backup_evidence, approvals, recon, review, findings, staging, files, manifests, batches, idempotency (run-scoped tenant cleanup; NOT audit_logs/users/tenants) | A | Shared guard (checkDestructiveTestDbSafety) | Created for DEFECT 2 replacement conflict proofs. Uses run-scoped tenants; audit_logs left immutable. |
+| 47 | src/server/services/__tests__/wp-08-01f-postgres-alias-generalized.test.ts | 129-148 | DELETE inventory_balances, stock_movements, account_entries, accounts, cutover_locks, backup_evidence, approvals, recon, alias_mappings, staging, files, batches, customers, suppliers, inventory_items, document_sequences, idempotency (run-scoped cleanup; audit_logs/users/tenants NOT deleted) | A | Shared guard (checkDestructiveTestDbSafety) | Created for BLOCKER A/B/C generalized alias resolution + real domain-service integration proof. Uses run-scoped tenants; audit_logs left immutable. |
 
 ## Root Cause of the Previous 35-vs-34 Contradiction
 
