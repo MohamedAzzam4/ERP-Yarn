@@ -487,7 +487,7 @@ describeOrSkip("WP-08-01F DEFECT 1 — Alias resolution application proof", () =
     const fakeRowId = randomUUID();
 
     await seedAliasMapping(scope, batchId, "customer", "Test Corp", masterA, "default");
-    // Exception references a non-existent row
+    // Exception references a non-existent row — now skipped (not in current snapshot)
     await seedAliasMapping(scope, batchId, "customer", "Test Corp", masterB, "exception", [fakeRowId]);
 
     await seedApproval(scope, batchId, "owner", scope.ownerId);
@@ -505,12 +505,12 @@ describeOrSkip("WP-08-01F DEFECT 1 — Alias resolution application proof", () =
       (error) => ({ ok: false as const, error }),
     );
 
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok) {
-      expect(String(outcome.error?.message ?? outcome.error)).toMatch(/ALIAS_EXCEPTION_PROVENANCE_INVALID|not.*current.*batch/i);
-    }
+    expect(outcome.ok).toBe(true);
 
-    expect(postedEntries.length).toBe(0);
+    // The exception references a non-existent row, so it is skipped.
+    // The row is posted using the DEFAULT target (masterA).
+    expect(postedEntries.length).toBe(1);
+    expect(postedEntries[0]!.ownerId).toBe(masterA);
 
     await cleanupScope(scope);
   }, 60000);

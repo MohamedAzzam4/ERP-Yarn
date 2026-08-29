@@ -195,6 +195,12 @@ export interface HistoricalCommitRepository {
 
   // ---- Staging rows (read + commit link update) ----
   findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
+  /**
+   * Returns ONLY current (is_current=true) staging rows for the batch.
+   * Superseded rows (is_current=false) are excluded.
+   * Used by commit-time operations that must operate on the approved/current snapshot.
+   */
+  findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
   updateStagingRowCommitLink(
     tenantId: string,
     stagingRowId: string,

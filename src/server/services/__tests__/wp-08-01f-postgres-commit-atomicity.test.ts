@@ -165,6 +165,7 @@ function makeCommitFirstWriteFailureRepoWrapper(realRepo: HistoricalCommitReposi
     releaseCutoverLock: (t: string, id: string, p: any) => realRepo.releaseCutoverLock(t, id, p),
     releaseAllLocksForBatch: (t: string, id: string, p: any) => realRepo.releaseAllLocksForBatch(t, id, p),
     findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+    findCurrentStagingRowsForBatch: (t: string, id: string) => realRepo.findCurrentStagingRowsForBatch(t, id),
     updateStagingRowCommitLink: async (t: string, id: string, p: any) => {
       const result = await realRepo.updateStagingRowCommitLink(t, id, p);
       callCount++;

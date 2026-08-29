@@ -341,6 +341,20 @@ export class HistoricalCommitDbRepository implements HistoricalCommitRepository 
       ));
   }
 
+  /**
+   * Returns ONLY current (is_current=true) staging rows for the batch.
+   * Superseded rows (is_current=false) are excluded — they are immutable
+   * provenance evidence and must never receive new operational commit links.
+   */
+  async findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
+    return this.db.select().from(importStagingRows)
+      .where(and(
+        eq(importStagingRows.tenantId, tenantId),
+        eq(importStagingRows.importBatchId, importBatchId),
+        eq(importStagingRows.isCurrent, true),
+      ));
+  }
+
   async updateStagingRowCommitLink(
     tenantId: string,
     stagingRowId: string,

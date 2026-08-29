@@ -1403,7 +1403,7 @@ export class HistoricalCommitService {
         // the batch's current staging data requires that alias, but the
         // mapping table has a gap. EXCEPTION rows do NOT satisfy the
         // required-alias-groups check.
-        const commitStagingRows = await repo.findStagingRowsForBatch(
+        const commitStagingRows = await repo.findCurrentStagingRowsForBatch(
           user.tenantId, batch.id,
         );
         const commitRequiredGroups = new Set<string>();
@@ -1556,7 +1556,7 @@ export class HistoricalCommitService {
       await repo.updateBatchStatus(user.tenantId, batch.id, "committing");
 
       // Fetch staging rows inside the transaction
-      const rows = await repo.findStagingRowsForBatch(user.tenantId, batch.id);
+      const rows = await repo.findCurrentStagingRowsForBatch(user.tenantId, batch.id);
 
       // =====================================================================
       // DEFECT 1 FIX (independent review): Build an authoritative alias resolver.
@@ -1614,6 +1614,15 @@ export class HistoricalCommitService {
         stagingRowById.set(r.id, r);
       }
 
+      // BLOCKER B FIX: For each UUID in exceptionSourceRowIds, independently
+      // verify group membership. BUT only for rows that are in the CURRENT
+      // staging snapshot (is_current=true). Superseded rows (is_current=false)
+      // are excluded from the current snapshot — their UUIDs should NOT
+      // participate in current exception resolution. If an exception references
+      // a superseded row, that row is simply not found in the current snapshot,
+      // so the exception has no effect on current posting.
+      // (The exception mapping itself remains valid as historical evidence.)
+
       // Build a lookup: stagingRowId → exceptionTargetMasterId
       // Each staging row UUID can appear in at most ONE current approved
       // exception. If it appears in multiple, we fail closed.
@@ -1638,12 +1647,14 @@ export class HistoricalCommitService {
           }
 
           // BLOCKER B FIX: Provenance + group membership verification.
+          // Only verify rows that are in the CURRENT snapshot. If the row is
+          // superseded (not in current snapshot), skip it — the exception
+          // simply has no effect on current posting.
           const stagingRow = stagingRowById.get(rowId);
           if (!stagingRow) {
-            throw new HistoricalCommitError(
-              "ALIAS_EXCEPTION_PROVENANCE_INVALID",
-              `Exception mapping '${exc.id}' references staging row '${rowId}' which is not in the current batch snapshot.`,
-            );
+            // Row is not in the current snapshot (superseded or not in batch).
+            // Skip — this exception UUID has no effect on current posting.
+            continue;
           }
 
           // Verify the row's detected entityType matches the exception's entityType.

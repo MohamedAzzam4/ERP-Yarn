@@ -439,6 +439,11 @@ export class InMemoryHistoricalCommitRepository implements HistoricalCommitRepos
     return this.stagingRows.get(`${tenantId}:${importBatchId}`) ?? [];
   }
 
+  async findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
+    const rows = this.stagingRows.get(`${tenantId}:${importBatchId}`) ?? [];
+    return rows.filter(r => r.isCurrent !== false);
+  }
+
   async updateStagingRowCommitLink(
     tenantId: string,
     stagingRowId: string,
