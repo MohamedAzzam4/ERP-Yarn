@@ -61,6 +61,8 @@ import {
   markSucceeded,
   markBusinessFailed,
   markRetryableFailed,
+  computeRequestHash,
+  requestHashesMatch,
   type IdempotencyTransactionHandle,
 } from "./idempotency-service";
 import { guardReplaceFile } from "./migration-lifecycle-guard";
@@ -189,34 +191,54 @@ export class HistoricalReplacementService {
     //    for the SAME request/key must not be silently replaced by a later
     //    mutable-state error."
     //
-    // Historically, the mutable batch state checks (committed, committing,
-    // validation_in_progress, etc.) fired BEFORE claimIdempotency. This meant
-    // a second same-key call on a now-committed batch would throw a fresh
-    // COMMITTED_BATCH_IMMUTABLE error instead of replaying the stored
-    // business_failed record. The test COM-REAL-RACE-1 passed by coincidence
-    // (same error code), not because the replay path was actually exercised.
+    // DEFECT 2 FIX (independent review): If an existing record exists (terminal
+    // OR non-terminal), compare the canonical request hash IMMEDIATELY using
+    // the SAME canonical hashing path used by claimIdempotency
+    // (computeRequestHash from request-hash.ts). If the key exists but the
+    // request differs, throw IDEMPOTENCY_CONFLICT BEFORE any structural file
+    // checks (FILE_NOT_FOUND, FILE_BATCH_MISMATCH, SAME_HASH_CONFLICT, etc.).
     //
-    // Fix: peek the stored idempotency record BEFORE the mutable checks. If
-    // a TERMINAL record exists for this key, skip the mutable batch state
-    // checks so claimIdempotency can replay the stored outcome (or return
-    // "conflict" if the request body differs — which is also a stored-result
-    // decision, not a fresh mutable-state evaluation).
+    // This ensures:
+    //   - same key + same request → claimIdempotency replays/conflicts normally
+    //   - same key + different request → IDEMPOTENCY_CONFLICT (not FILE_NOT_FOUND
+    //     or SAME_HASH_CONFLICT)
+    //   - fresh key + same-hash → SAME_HASH_CONFLICT (zero idempotency effects)
+    //   - fresh key + different file → normal replacement flow
     //
-    // This preserves zero-effect behavior for FRESH keys on committed batches
-    // (no record exists → mutable checks fire → throw pre-claim → no record
-    // created). It only changes behavior when a terminal record already exists
-    // for this key — exactly the scenario Contract 06 §7 protects.
-    //
-    // The REQUEST-INVARIANT ZERO-EFFECT check (SAME_HASH_CONFLICT) and the
-    // STRUCTURAL/SECURITY checks (permission, tenant, file existence, file
-    // batch/type match) remain pre-claim — they cannot mask a stored terminal
-    // outcome because they depend only on the request body and immutable
-    // file metadata, which are identical on replay.
+    // The canonical request body for replacement is the SAME shape used by
+    // claimIdempotency at line 311 (importBatchId, replaceFileId, fileHash,
+    // fileType, reworkReason). We reuse computeRequestHash to avoid duplicating
+    // hashing logic.
     const existingRecord = await this.deps.idempotency.findByTenantScopeKey(
       user.tenantId,
       "historical_file.replace",
       input.idempotencyKey,
     );
+
+    if (existingRecord) {
+      // Compute the canonical request hash for THIS request using the SAME
+      // canonical hashing path that claimIdempotency will use internally.
+      const canonicalRequestBody: Record<string, unknown> = {
+        importBatchId: input.importBatchId,
+        replaceFileId: input.replaceFileId,
+        fileHash: input.fileHash,
+        fileType: input.fileType,
+        reworkReason: input.reworkReason,
+      };
+      const currentRequestHash = computeRequestHash(canonicalRequestBody);
+
+      // If the key exists but the request hash differs, this is a
+      // same-key/different-request conflict. Throw IDEMPOTENCY_CONFLICT
+      // IMMEDIATELY — before ANY structural file checks that could
+      // return FILE_NOT_FOUND, FILE_BATCH_MISMATCH, or SAME_HASH_CONFLICT.
+      if (!requestHashesMatch(existingRecord.requestHash, currentRequestHash)) {
+        throw new HistoricalReplacementError(
+          "IDEMPOTENCY_CONFLICT",
+          "Idempotency key conflict — same key with different request body.",
+        );
+      }
+    }
+
     const hasTerminalRecord = existingRecord !== null
       && (existingRecord.state === "succeeded" || existingRecord.state === "business_failed");
 

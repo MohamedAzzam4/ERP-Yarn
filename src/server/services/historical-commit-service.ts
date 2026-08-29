@@ -1257,6 +1257,10 @@ export class HistoricalCommitService {
       const inTransaction = txScoped !== null;
 
       // ---- Re-fetch batch under FOR UPDATE lock (real DB path only) ----
+      // DEFECT 1 FIX: hoist alias mapping variables so they're accessible
+      // in the posting loop below (outside the alias revalidation try block).
+      let commitDefaultAliasMappings: ImportAliasMapping[] = [];
+      let commitExceptionMappings: ImportAliasMapping[] = [];
       // Similar to submitForApproval: re-read the authoritative batch state
       // under a row lock so concurrent mutations are visible.
       let lockedBatch: ImportBatch = batch;
@@ -1389,7 +1393,7 @@ export class HistoricalCommitService {
         // EXCEPTION rows are independently approved and tracked separately
         // — every current EXCEPTION row must also be approved with a
         // non-null targetMasterId (an unresolved exception blocks commit).
-        const commitDefaultAliasMappings = await repo.findCurrentDefaultAliasMappingsForBatch(
+        commitDefaultAliasMappings = await repo.findCurrentDefaultAliasMappingsForBatch(
           user.tenantId, batch.id,
         );
 
@@ -1444,7 +1448,7 @@ export class HistoricalCommitService {
           commitExceptionGroups.add(`${a.entityType}|${a.sourceLabel}`);
         }
         const commitUnresolvedExceptions: ImportAliasMapping[] = [];
-        const commitExceptionMappings: ImportAliasMapping[] = [];
+        // DEFECT 1 FIX: assign to the hoisted variable instead of declaring.
         for (const key of commitExceptionGroups) {
           const [entityType, sourceLabel] = key.split("|", 2);
           if (!entityType || !sourceLabel) continue;
@@ -1554,6 +1558,119 @@ export class HistoricalCommitService {
       // Fetch staging rows inside the transaction
       const rows = await repo.findStagingRowsForBatch(user.tenantId, batch.id);
 
+      // =====================================================================
+      // DEFECT 1 FIX (independent review): Build an authoritative alias resolver.
+      //
+      // Contract 08 §§8.4.5–8.4.8 require that the approved alias decision
+      // drives the canonical operational target. The posting loop below
+      // previously trusted `data.owner_id` / `data.item_id` directly from
+      // the staging row JSON — which could differ from the approved alias
+      // target. Now we build a resolver that maps each staging row UUID to
+      // its approved canonical master via:
+      //   1. Detect the row's alias group (entityType, sourceLabel).
+      //   2. Find the approved current DEFAULT mapping for that group.
+      //   3. Check whether this staging row UUID appears in any current
+      //      approved EXCEPTION mapping's exceptionSourceRowIds.
+      //   4. If the row is in an exception: use exception.targetMasterId.
+      //   5. Otherwise: use default.targetMasterId.
+      //
+      // The resolver is built from the SAME alias mappings revalidated above
+      // (commitDefaultAliasMappings + commitExceptionMappings) which are
+      // already loaded inside the locked transaction.
+      // =====================================================================
+
+      // Build a map: stagingRowId → resolvedTargetMasterId, for entity types
+      // whose operational posting requires alias resolution.
+      // Only party entity types (customer, supplier, factory) use alias
+      // resolution for the ownerId field in the posting loop.
+      const aliasResolvedTargets = new Map<string, string>();
+
+      // Build a lookup: (entityType|sourceLabel) → defaultTargetMasterId
+      const defaultTargetsByGroup = new Map<string, string>();
+      for (const a of commitDefaultAliasMappings) {
+        const key = `${a.entityType}|${a.sourceLabel}`;
+        defaultTargetsByGroup.set(key, a.targetMasterId!);
+      }
+
+      // Build a lookup: stagingRowId → exceptionTargetMasterId
+      // Each staging row UUID can appear in at most ONE current approved
+      // exception. If it appears in multiple, we fail closed.
+      const exceptionTargetsByRowId = new Map<string, { targetMasterId: string; exceptionId: string }>();
+      for (const exc of commitExceptionMappings) {
+        const sourceRowIds = exc.exceptionSourceRowIds as string[] | null;
+        if (!sourceRowIds || !Array.isArray(sourceRowIds)) continue;
+        for (const rowId of sourceRowIds) {
+          if (typeof rowId !== "string") continue;
+          if (exceptionTargetsByRowId.has(rowId)) {
+            // A staging row appears in multiple current exceptions — fail closed.
+            throw new HistoricalCommitError(
+              "ALIAS_EXCEPTION_CONFLICT",
+              `Staging row '${rowId}' appears in multiple current exception mappings. Each row may belong to at most one exception.`,
+            );
+          }
+          exceptionTargetsByRowId.set(rowId, {
+            targetMasterId: exc.targetMasterId!,
+            exceptionId: exc.id,
+          });
+        }
+      }
+
+      // Verify exception provenance: every exception's sourceRowIds must
+      // reference actual staging rows in this batch. If an exception
+      // references a row outside the current batch/snapshot, fail closed.
+      const stagingRowIdSet = new Set(rows.map((r) => r.id));
+      for (const exc of commitExceptionMappings) {
+        const sourceRowIds = exc.exceptionSourceRowIds as string[] | null;
+        if (!sourceRowIds || !Array.isArray(sourceRowIds)) continue;
+        for (const rowId of sourceRowIds) {
+          if (typeof rowId !== "string") continue;
+          if (!stagingRowIdSet.has(rowId)) {
+            throw new HistoricalCommitError(
+              "ALIAS_EXCEPTION_PROVENANCE_INVALID",
+              `Exception mapping '${exc.id}' references staging row '${rowId}' which is not in the current batch snapshot.`,
+            );
+          }
+        }
+      }
+
+      // Resolve each staging row that has a `name` field (alias-bearing row)
+      // to its approved canonical target.
+      for (const row of rows) {
+        const data = (row.transformedRowJson ?? row.rawRowJson) as Record<string, unknown> | null;
+        if (!data || !data.name) continue;
+
+        const sourceLabel = String(data.name);
+        const entityType = detectEntityType(data);
+        const groupKey = `${entityType}|${sourceLabel}`;
+        const defaultTarget = defaultTargetsByGroup.get(groupKey);
+
+        // If this entity type does not require alias resolution (e.g.
+        // inventory items, locations), skip — the posting loop uses the
+        // staged ID directly.
+        // Party entity types (customer, supplier, factory) require alias
+        // resolution for the ownerId field.
+        const isPartyType =
+          entityType === "customer" ||
+          entityType === "supplier" ||
+          entityType === "factory";
+        if (!isPartyType) continue;
+
+        // Check if this row is in an exception.
+        const exceptionEntry = exceptionTargetsByRowId.get(row.id);
+        if (exceptionEntry) {
+          // Use exception target.
+          aliasResolvedTargets.set(row.id, exceptionEntry.targetMasterId);
+        } else if (defaultTarget) {
+          // Use default target.
+          aliasResolvedTargets.set(row.id, defaultTarget);
+        } else {
+          // No DEFAULT mapping exists for this group — this should have
+          // been caught by the required-alias-groups check above. But if
+          // we reach here, fail closed.
+          throw new CommitUnresolvedAliasError(batch.id, 1, [groupKey]);
+        }
+      }
+
       // Post opening balance effects through domain services.
       // Contract 08 §8.10 step 3: "creates records through inventory,
       //   production, subledger... domain services rather than table-copy logic"
@@ -1614,8 +1731,22 @@ export class HistoricalCommitService {
         }
         // ---- Party opening balance (customer/supplier/factory) ----
         // Requires: ownerType, ownerId, amountSigned
+        //
+        // DEFECT 1 FIX (independent review): Use the alias-resolved canonical
+        // target master ID instead of the raw `data.owner_id` from the staging
+        // row JSON. The alias resolver was built above from the approved
+        // DEFAULT + EXCEPTION mappings.
+        //
+        // If the staging row has a `name` field (alias-bearing row), the
+        // alias-resolved target MUST be used. If the staging row also
+        // contains `owner_id` and it CONFLICTS with the approved alias
+        // target, FAIL CLOSED — do not silently post to the conflicting
+        // staged ID.
+        //
+        // If the staging row does NOT have a `name` field (non-alias-bearing
+        // party row), fall through to the original `data.owner_id` behavior.
         else if ((entityType.includes("customer") || entityType.includes("supplier") || entityType.includes("factory"))
-                   && data.owner_id && data.balance != null) {
+                   && data.balance != null) {
           if (!subledger || !docSeq) {
             throw new HistoricalCommitError(
               "DOMAIN_SERVICES_REQUIRED",
@@ -1624,6 +1755,48 @@ export class HistoricalCommitService {
           }
           const ownerType = entityType.includes("customer") ? "customer"
             : entityType.includes("supplier") ? "supplier" : "factory";
+
+          // DEFECT 1 FIX: Use alias-resolved target for alias-bearing rows.
+          let resolvedOwnerId: string;
+          if (data.name) {
+            // This is an alias-bearing row — the alias resolution must
+            // drive the operational target.
+            const aliasTarget = aliasResolvedTargets.get(stagingRowId);
+            if (!aliasTarget) {
+              throw new HistoricalCommitError(
+                "ALIAS_UNRESOLVED_FOR_ROW",
+                `Staging row '${stagingRowId}' has a source label '${String(data.name)}' but no resolved alias target. The batch may have an unresolved alias mapping.`,
+              );
+            }
+            resolvedOwnerId = aliasTarget;
+
+            // If the staged row also contains owner_id and it conflicts
+            // with the approved alias target, FAIL CLOSED.
+            if (data.owner_id !== undefined && data.owner_id !== null && String(data.owner_id) !== resolvedOwnerId) {
+              throw new HistoricalCommitError(
+                "ALIAS_CONFLICTS_WITH_STAGED_ID",
+                `Staging row '${stagingRowId}' has staged owner_id='${String(data.owner_id)}' which conflicts with the approved alias target '${resolvedOwnerId}'. Approved alias resolution must drive the canonical operational target.`,
+              );
+            }
+          } else {
+            // Non-alias-bearing party row — use the staged owner_id directly.
+            if (!data.owner_id) {
+              // No owner_id and no alias — skip as unhandled.
+              await repo.updateStagingRowCommitLink(user.tenantId, stagingRowId, {
+                committedEntityType: "unhandled",
+                committedEntityId: stagingRowId,
+                updatedBy: user.userId,
+              });
+              committedRows++;
+              // Skip the rest of the loop body for this row.
+              if (input.faultInjection === "after_first_post" && committedRows === 1) {
+                throw new CommitFaultInjectedError("after_first_post", inTransaction);
+              }
+              continue;
+            }
+            resolvedOwnerId = String(data.owner_id);
+          }
+
           const docNoResult = await allocateDocumentNumber(docSeq, {
             tenantId: user.tenantId, documentType: "opening_balance", year, entityType: "account_entry",
           });
@@ -1631,7 +1804,7 @@ export class HistoricalCommitService {
             user.tenantId, user.userId,
             {
               ownerType: ownerType as "customer" | "supplier" | "factory",
-              ownerId: String(data.owner_id),
+              ownerId: resolvedOwnerId,
               amountSigned: String(data.balance),
               entryDate: movementDate,
               entryNo: docNoResult.docNo,
