@@ -41,6 +41,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
 } from "./idempotency-service";
@@ -811,8 +812,18 @@ export class HistoricalStagingService {
       now,
     });
     if (claim.action === "replay") {
-      const responseBody = claim.record.responseBody as Partial<FinalizeCutoverManifestResult> | null;
-      if (responseBody?.batchId) return { ...responseBody, action: "replayed" } as FinalizeCutoverManifestResult;
+      // BLOCKER 1 FIX: Handle replay based on IDEMPOTENCY RECORD STATE.
+      if (claim.record.state === "succeeded") {
+        const responseBody = claim.record.responseBody as Partial<FinalizeCutoverManifestResult> | null;
+        if (responseBody?.batchId) return { ...responseBody, action: "replayed" } as FinalizeCutoverManifestResult;
+      }
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
+        throw new HistoricalStagingError(
+          errorBody?.code ?? "BUSINESS_FAILED",
+          errorBody?.message ?? "Previous business failure (durable).",
+        );
+      }
     }
     if (claim.action === "conflict") throw new HistoricalStagingError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
     if (claim.action === "in_progress") throw new HistoricalStagingError("OPERATION_IN_PROGRESS", "Operation in progress.");
@@ -1028,6 +1039,18 @@ export class HistoricalStagingService {
         } catch {
           // If markBusinessFailed fails, the record remains in_progress
           // and will expire via lease.
+        }
+      } else {
+        // BLOCKER 2 FIX: Technical/unexpected failure → markRetryableFailed.
+        // Same-key same-request immediate retry is eligible to re-execute.
+        try {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 500,
+            responseBody: { error: "TRANSACTION_FAILED", message: e instanceof Error ? e.message : String(e) },
+            lastErrorClass: (e as Error)?.name || "TRANSACTION_FAILED",
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // If markRetryableFailed fails, record remains in_progress → lease expiry.
         }
       }
       throw e;
