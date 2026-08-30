@@ -161,6 +161,7 @@ function makeFirstWriteFailureRepoWrapper(realRepo: HistoricalReconciliationDbRe
     updateBatchReconciliationStatus: (t: string, id: string, s: string, u: string) => realRepo.updateBatchReconciliationStatus(t, id, s, u),
     resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
     findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+    findCurrentStagingRowsForBatch: (t: string, id: string) => realRepo.findCurrentStagingRowsForBatch(t, id),
     findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
     insertReconciliationResult: async (row: any) => {
       const result = await realRepo.insertReconciliationResult(row);
@@ -1085,9 +1086,10 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     await seedStagedBatch(scope, batchId);
     await seedFileAndStagingRow(scope, batchId);
 
-    // Track whether the NON-tx repository's findStagingRowsForBatch is
-    // called. On the atomic production path, it must NOT be called —
-    // staging reads must go through the tx-scoped repository.
+    // Track whether the NON-tx repository's findStagingRowsForBatch OR
+    // findCurrentStagingRowsForBatch is called. On the atomic production
+    // path, neither must be called — staging reads must go through the
+    // tx-scoped repository.
     let nonTxStagingReadCount = 0;
 
     const reconRepo = new HistoricalReconciliationDbRepository(db);
@@ -1096,13 +1098,15 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     const idem = new IdempotencyDbRepository(db);
 
     // Wrap the NON-tx repo to count staging reads. Use a Proxy to intercept
-    // only findStagingRowsForBatch while delegating everything else.
+    // BOTH findStagingRowsForBatch AND findCurrentStagingRowsForBatch
+    // (the production path now uses findCurrentStagingRowsForBatch for the
+    // authoritative snapshot read) while delegating everything else.
     const wrappedNonTxRepo = new Proxy(reconRepo, {
       get(target, prop, receiver) {
-        if (prop === "findStagingRowsForBatch") {
+        if (prop === "findStagingRowsForBatch" || prop === "findCurrentStagingRowsForBatch") {
           return async (tenantId: string, importBatchId: string) => {
             nonTxStagingReadCount++;
-            return target.findStagingRowsForBatch(tenantId, importBatchId);
+            return (target as any)[prop](tenantId, importBatchId);
           };
         }
         return Reflect.get(target, prop, receiver);
@@ -1129,9 +1133,10 @@ describeOrSkip("WP-08-01F Task 4 — Reconciliation atomicity PostgreSQL proofs 
     expect(result.reportVersion).toBe(1);
     expect(result.totalMetrics).toBeGreaterThan(0);
 
-    // CRITICAL: The NON-tx repository's findStagingRowsForBatch must NOT
-    // have been called. The staging read must go through the tx-scoped
-    // repository (createReconciliationRepository), not the non-tx one.
+    // CRITICAL: The NON-tx repository's findStagingRowsForBatch OR
+    // findCurrentStagingRowsForBatch must NOT have been called. The
+    // staging read must go through the tx-scoped repository
+    // (createReconciliationRepository), not the non-tx one.
     // If this count is > 0, the production path has regressed to reading
     // staging data before the lock.
     expect(nonTxStagingReadCount).toBe(0);

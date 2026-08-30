@@ -132,6 +132,15 @@ export interface HistoricalStagingRepository {
   insertImportFile(row: NewImportFileInput): Promise<ImportFile>;
   findImportFileByHash(tenantId: string, importBatchId: string, fileHash: string, fileType: string): Promise<ImportFile | null>;
   findImportFilesForBatch(tenantId: string, importBatchId: string): Promise<ImportFile[]>;
+  /**
+   * WP-08-01F R1 — Find ONLY current (non-superseded) import files for a
+   * batch. Filters `is_current = true`. Used by commands that bind the
+   * batch to a snapshot of the CURRENT file set (e.g. finalizeCutoverManifest)
+   * so that superseded file versions do NOT contribute to the manifest hash.
+   * Use `findImportFilesForBatch` for historical/display reads that should
+   * show all versions.
+   */
+  findCurrentImportFilesForBatch(tenantId: string, importBatchId: string): Promise<ImportFile[]>;
   findImportFileById(tenantId: string, id: string): Promise<ImportFile | null>;
   updateFileSuperseded(tenantId: string, fileId: string, supersededById: string): Promise<ImportFile | null>;
   /**
@@ -205,6 +214,17 @@ export interface HistoricalStagingRepository {
   // Staging row methods
   insertStagingRow(row: NewStagingRowInput): Promise<ImportStagingRow>;
   findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
+  /**
+   * WP-08-01F R1 — Find ONLY current (non-superseded) staging rows for a
+   * batch. Filters `is_current = true`. Used by commands that bind the
+   * batch to a snapshot of the CURRENT staging rows (e.g. finalizeStaging's
+   * staged-data hash, runReconciliation's metric computation, alias-group
+   * derivation in submitForApproval) so that superseded rows do NOT
+   * contribute to the snapshot.
+   * Use `findStagingRowsForBatch` for historical/display reads that should
+   * show all versions.
+   */
+  findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
   findStagingRowById(tenantId: string, id: string): Promise<ImportStagingRow | null>;
 
   // WP-08-01F DEFECT 1A: Cutover manifest methods

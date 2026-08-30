@@ -121,6 +121,7 @@ function makeFirstWriteFailureRepoWrapper(realRepo: HistoricalReconciliationRepo
       return result;
     },
     findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+    findCurrentStagingRowsForBatch: (t: string, id: string) => realRepo.findCurrentStagingRowsForBatch(t, id),
     findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
     insertReconciliationResult: (row: any) => realRepo.insertReconciliationResult(row),
     insertReviewItem: (row: any) => realRepo.insertReviewItem(row),

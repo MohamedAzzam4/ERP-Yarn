@@ -896,7 +896,12 @@ export class HistoricalReconciliationService {
       // tx-scoped repo AFTER the lock. This ensures the metrics are
       // computed from the authoritative staging state, not a stale
       // pre-lock snapshot.
-      const rows = await repo.findStagingRowsForBatch(user.tenantId, input.importBatchId);
+      //
+      // WP-08-01F R1: Use findCurrentStagingRowsForBatch so superseded
+      // staging rows (from prior file replacements) do NOT contribute to
+      // the reconciliation metrics. Only CURRENT staging rows represent
+      // the authoritative snapshot for reconciliation.
+      const rows = await repo.findCurrentStagingRowsForBatch(user.tenantId, input.importBatchId);
 
       // Compute reconciliation metrics from the authoritative staging read.
       const metrics = computeReconciliationMetrics(rows, input.expectedTotals);
@@ -1496,7 +1501,12 @@ export class HistoricalReconciliationService {
         // — the group is still required by the current staging data, but
         // the current mapping table has a gap. EXCEPTION rows do NOT
         // satisfy the required-alias-groups check.
-        const stagingRows = await repo.findStagingRowsForBatch(
+        //
+        // WP-08-01F R1: Use findCurrentStagingRowsForBatch so superseded
+        // staging rows (from prior file replacements) do NOT contribute
+        // alias-group requirements. Only CURRENT staging rows represent
+        // the authoritative snapshot for submission.
+        const stagingRows = await repo.findCurrentStagingRowsForBatch(
           user.tenantId, input.importBatchId,
         );
         const requiredGroups = extractRequiredAliasGroups(stagingRows);

@@ -55,6 +55,7 @@ import type {
   ImportStagingRow,
 } from "@/server/db/schema/migration";
 import { guardRegisterFileInitial, guardInsertStagingRow } from "./migration-lifecycle-guard";
+import { sql as drizzleSql } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -660,50 +661,77 @@ export class HistoricalStagingService {
     if (replayClaim.action === "conflict") throw new HistoricalStagingError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
     if (replayClaim.action === "in_progress") throw new HistoricalStagingError("OPERATION_IN_PROGRESS", "Operation in progress.");
 
+    // WP-08-01F R1: Verify batch exists + tenant match BEFORE the transaction
+    // for a fail-fast user-error path. The AUTHORITATIVE lifecycle re-check
+    // happens INSIDE the transaction after the batch row lock.
     const batch = await this.deps.repository.findImportBatchById(user.tenantId, input.importBatchId);
     if (!batch) throw new BatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // Require exact predecessor state: source_uploaded or normalized
-    if (batch.status !== "source_uploaded" && batch.status !== "normalized") {
-      throw new HistoricalStagingError(
-        "INVALID_BATCH_STATUS",
-        `Cannot finalize staging on batch '${input.importBatchId}' in status '${batch.status}'. ` +
-          `Must be 'source_uploaded' or 'normalized'.`,
-      );
-    }
-
-    // Require at least one staging row
-    const rows = await this.deps.repository.findStagingRowsForBatch(user.tenantId, input.importBatchId);
-    if (rows.length === 0) {
-      throw new HistoricalStagingError("VALIDATION_FAILED", "Cannot finalize staging — no staging rows found.");
-    }
-
     const claim = replayClaim; // use the claim acquired above
 
-    // Server-side hash derivation: SHA-256 of all staging row IDs + transformed JSON
-    const crypto = await import("node:crypto");
-    const hashInput = rows
-      .map(r => `${r.id}:${JSON.stringify(r.transformedRowJson ?? r.rawRowJson)}`)
-      .sort()
-      .join("|");
-    const stagedDataHash = crypto.createHash("sha256").update(hashInput).digest("hex");
-
-    const result: FinalizeStagingResult = {
-      action: "finalized",
-      batchId: input.importBatchId,
-      previousStatus: batch.status,
-      newStatus: "staged",
-      stagedDataHash,
-      stagedRowCount: rows.length,
-    };
-
-    // WP-08-01F Milestone C Task 2: Execute ALL writes in a single transaction.
-    // transactionRunner + tx-scoped factories are mandatory (compile-time enforced).
+    // WP-08-01F Milestone C Task 2: Execute ALL writes (and the authoritative
+    // batch read + staging row read + hash computation) in a single
+    // transaction. transactionRunner + tx-scoped factories are mandatory
+    // (compile-time enforced).
+    //
+    // SNAPSHOT CONSISTENCY (WP-08-01F R1):
+    //   - The batch row is locked with SELECT ... FOR UPDATE.
+    //   - The batch is RE-READ after the lock and the lifecycle guard is
+    //     re-checked against the authoritative locked state.
+    //   - The staging rows are read INSIDE the transaction through the
+    //     tx-scoped repository, using findCurrentStagingRowsForBatch so
+    //     that superseded rows do NOT contribute to the staged-data hash.
+    //   - At least one current row is required.
     return await this.deps.transactionRunner(async (tx: unknown) => {
       const txRepo = this.deps.createStagingRepository(tx);
       const txAudit = this.deps.createAudit(tx);
       const txIdem = this.deps.createIdempotency(tx);
+
+      // Lock the batch row and RE-READ its current status.
+      const batchRows = await (tx as any).execute(
+        drizzleSql`SELECT id, status FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+      );
+      if (!batchRows || (batchRows as any[]).length === 0) {
+        throw new BatchNotFoundError(input.importBatchId);
+      }
+      const lockedBatchRow = (batchRows as any[])[0]!;
+      const lockedStatus = lockedBatchRow.status as string;
+
+      // AUTHORITATIVE lifecycle guard: re-check against the locked state.
+      // Require exact predecessor state: source_uploaded or normalized.
+      if (lockedStatus !== "source_uploaded" && lockedStatus !== "normalized") {
+        throw new HistoricalStagingError(
+          "INVALID_BATCH_STATUS",
+          `Cannot finalize staging on batch '${input.importBatchId}' in status '${lockedStatus}'. ` +
+            `Must be 'source_uploaded' or 'normalized'.`,
+        );
+      }
+
+      // WP-08-01F R1: Read ONLY current (non-superseded) staging rows
+      // through the tx-scoped repo AFTER the lock. This ensures the hash
+      // is bound to the authoritative CURRENT snapshot.
+      const rows = await txRepo.findCurrentStagingRowsForBatch(user.tenantId, input.importBatchId);
+      if (rows.length === 0) {
+        throw new HistoricalStagingError("VALIDATION_FAILED", "Cannot finalize staging — no current staging rows found.");
+      }
+
+      // Server-side hash derivation: SHA-256 of all staging row IDs + transformed JSON
+      const crypto = await import("node:crypto");
+      const hashInput = rows
+        .map(r => `${r.id}:${JSON.stringify(r.transformedRowJson ?? r.rawRowJson)}`)
+        .sort()
+        .join("|");
+      const stagedDataHash = crypto.createHash("sha256").update(hashInput).digest("hex");
+
+      const result: FinalizeStagingResult = {
+        action: "finalized",
+        batchId: input.importBatchId,
+        previousStatus: lockedStatus,
+        newStatus: "staged",
+        stagedDataHash,
+        stagedRowCount: rows.length,
+      };
 
       // Business writes (tx-scoped)
       await txRepo.updateBatchStagedDataHash(user.tenantId, input.importBatchId, stagedDataHash, user.userId);
@@ -716,7 +744,7 @@ export class HistoricalStagingService {
         entityId: input.importBatchId,
         actionType: "historical_staging.finalize",
         newValuesJson: {
-          previousStatus: batch.status,
+          previousStatus: lockedStatus,
           newStatus: "staged",
           stagedDataHash,
           stagedRowCount: rows.length,
@@ -785,56 +813,116 @@ export class HistoricalStagingService {
     if (claim.action === "conflict") throw new HistoricalStagingError("IDEMPOTENCY_CONFLICT", "Idempotency key conflict.");
     if (claim.action === "in_progress") throw new HistoricalStagingError("OPERATION_IN_PROGRESS", "Operation in progress.");
 
-    // Server-side manifest hash derivation from CANONICAL persisted facts.
-    // WP-08-01F TASK 2: The hash includes ALL material persisted facts:
-    //   - batch ID, import mode, template type/version
-    //   - current file IDs, versions and hashes
-    //   - current staging version/hash/row count
-    //   - normalized cutover date/scope
-    //   - validation report version and persisted status
-    //   - reconciliation report version and persisted status
-    //   - warning summary and accepted-warning version
-    // Client inputs (domain, cutoffDate, etc.) are included as descriptive
-    // fields but the hash is primarily derived from persisted DB facts.
-    const crypto = await import("node:crypto");
-    const files = await this.deps.repository.findImportFilesForBatch(user.tenantId, input.importBatchId);
-    const fileHashes = files.map((f: any) => f.fileHash).sort().join(",");
-    const fileIds = files.map((f: any) => f.id).sort().join(",");
-    const manifestHashInput = JSON.stringify({
-      // Batch facts (persisted)
-      batchId: input.importBatchId,
-      batchStatus: batch.status,
-      importMode: batch.cutoverImportMode,
-      templateType: batch.templateName ?? "",
-      templateVersion: batch.templateVersion ?? "",
-      // Staging facts (persisted)
-      stagedRowCount: batch.stagedRowCount,
-      stagedDataHash: batch.stagedDataHash ?? "",
-      // File facts (persisted)
-      fileIds,
-      fileHashes,
-      // Validation/reconciliation facts (persisted)
-      validationStatus: batch.validationStatus ?? "",
-      reconciliationStatus: batch.reconciliationStatus ?? "",
-      // Warning facts (persisted)
-      warningCount: batch.warningCount,
-      acceptedWarningCount: batch.acceptedWarningCount,
-      warningSummary: batch.warningSummary ?? "",
-      // Descriptive fields (client-supplied, validated, stored in manifest)
-      domain: input.domain,
-      cutoffDate: input.cutoffDate ?? "",
-      sourceCoverage: input.sourceCoverage ?? "",
-      openingBalanceBasis: input.openingBalanceBasis ?? "",
-      liveSystemStartBoundary: input.liveSystemStartBoundary ?? "",
-    });
-    const manifestHash = crypto.createHash("sha256").update(manifestHashInput).digest("hex");
-
-    // WP-08-01F Milestone C Task 3: Execute ALL writes in a single transaction.
-    // transactionRunner + tx-scoped factories are mandatory (compile-time enforced).
+    // WP-08-01F Milestone C Task 3: Execute ALL writes (and the authoritative
+    // batch read + file read + manifest hash computation) in a single
+    // transaction. transactionRunner + tx-scoped factories are mandatory
+    // (compile-time enforced).
+    //
+    // SNAPSHOT CONSISTENCY (WP-08-01F R1):
+    //   - The batch row is locked with SELECT ... FOR UPDATE.
+    //   - The batch is RE-READ after the lock and the lifecycle state is
+    //     re-checked against the authoritative locked state.
+    //   - The CURRENT files are read INSIDE the transaction through the
+    //     tx-scoped repository, using findCurrentImportFilesForBatch so
+    //     that superseded file versions do NOT contribute to the manifest
+    //     hash.
     return await this.deps.transactionRunner(async (tx: unknown) => {
       const txRepo = this.deps.createStagingRepository(tx);
       const txAudit = this.deps.createAudit(tx);
       const txIdem = this.deps.createIdempotency(tx);
+
+      // Lock the batch row and RE-READ its current authoritative state.
+      const batchRows = await (tx as any).execute(
+        drizzleSql`SELECT id, status, cutover_import_mode, template_name, template_version,
+                   staged_row_count, staged_data_hash, validation_status, reconciliation_status,
+                   warning_count, accepted_warning_count, warning_summary
+                   FROM import_batches WHERE tenant_id = ${user.tenantId} AND id = ${input.importBatchId} FOR UPDATE`,
+      );
+      if (!batchRows || (batchRows as any[]).length === 0) {
+        throw new BatchNotFoundError(input.importBatchId);
+      }
+      const lockedBatchRow = (batchRows as any[])[0]!;
+      const lockedBatch: ImportBatch = {
+        ...batch,
+        status: lockedBatchRow.status as any,
+        cutoverImportMode: lockedBatchRow.cutover_import_mode as any,
+        templateName: lockedBatchRow.template_name,
+        templateVersion: lockedBatchRow.template_version,
+        stagedRowCount: lockedBatchRow.staged_row_count,
+        stagedDataHash: lockedBatchRow.staged_data_hash,
+        validationStatus: lockedBatchRow.validation_status,
+        reconciliationStatus: lockedBatchRow.reconciliation_status,
+        warningCount: lockedBatchRow.warning_count,
+        acceptedWarningCount: lockedBatchRow.accepted_warning_count,
+        warningSummary: lockedBatchRow.warning_summary,
+      };
+
+      // AUTHORITATIVE lifecycle re-check under lock. finalizeCutoverManifest
+      // is allowed only after the batch has been staged — the manifest hash
+      // binds to staged_data_hash, so staged status or later pre-commit
+      // rework states are accepted. Terminal/committing states fail closed.
+      const allowedStatuses = new Set([
+        "staged",
+        "validation_complete",
+        "reconciliation_in_progress",
+        "review_required",
+        "pending_dual_approval",
+        "approved_for_commit",
+      ]);
+      if (!allowedStatuses.has(lockedBatch.status)) {
+        throw new HistoricalStagingError(
+          "INVALID_BATCH_STATUS",
+          `Cannot finalize cutover manifest on batch '${input.importBatchId}' in status '${lockedBatch.status}'. ` +
+            `Must be staged or a later pre-commit rework state.`,
+        );
+      }
+
+      // Server-side manifest hash derivation from CANONICAL persisted facts.
+      // WP-08-01F TASK 2: The hash includes ALL material persisted facts:
+      //   - batch ID, import mode, template type/version
+      //   - current file IDs, versions and hashes
+      //   - current staging version/hash/row count
+      //   - normalized cutover date/scope
+      //   - validation report version and persisted status
+      //   - reconciliation report version and persisted status
+      //   - warning summary and accepted-warning version
+      // Client inputs (domain, cutoffDate, etc.) are included as descriptive
+      // fields but the hash is primarily derived from persisted DB facts.
+      const crypto = await import("node:crypto");
+      // WP-08-01F R1: Read ONLY current (non-superseded) files through the
+      // tx-scoped repo AFTER the lock. Superseded file versions must NOT
+      // contribute to the manifest hash.
+      const files = await txRepo.findCurrentImportFilesForBatch(user.tenantId, input.importBatchId);
+      const fileHashes = files.map((f: any) => f.fileHash).sort().join(",");
+      const fileIds = files.map((f: any) => f.id).sort().join(",");
+      const manifestHashInput = JSON.stringify({
+        // Batch facts (persisted)
+        batchId: input.importBatchId,
+        batchStatus: lockedBatch.status,
+        importMode: lockedBatch.cutoverImportMode,
+        templateType: lockedBatch.templateName ?? "",
+        templateVersion: lockedBatch.templateVersion ?? "",
+        // Staging facts (persisted)
+        stagedRowCount: lockedBatch.stagedRowCount,
+        stagedDataHash: lockedBatch.stagedDataHash ?? "",
+        // File facts (persisted — current only)
+        fileIds,
+        fileHashes,
+        // Validation/reconciliation facts (persisted)
+        validationStatus: lockedBatch.validationStatus ?? "",
+        reconciliationStatus: lockedBatch.reconciliationStatus ?? "",
+        // Warning facts (persisted)
+        warningCount: lockedBatch.warningCount,
+        acceptedWarningCount: lockedBatch.acceptedWarningCount,
+        warningSummary: lockedBatch.warningSummary ?? "",
+        // Descriptive fields (client-supplied, validated, stored in manifest)
+        domain: input.domain,
+        cutoffDate: input.cutoffDate ?? "",
+        sourceCoverage: input.sourceCoverage ?? "",
+        openingBalanceBasis: input.openingBalanceBasis ?? "",
+        liveSystemStartBoundary: input.liveSystemStartBoundary ?? "",
+      });
+      const manifestHash = crypto.createHash("sha256").update(manifestHashInput).digest("hex");
 
       // Insert cutover manifest (tx-scoped)
       const manifest = await txRepo.insertCutoverManifest({

@@ -128,6 +128,22 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
       ));
   }
 
+  /**
+   * WP-08-01F R1 — Find ONLY current (non-superseded) import files for a
+   * batch. Filters `is_current = true`. Used by finalizeCutoverManifest so
+   * the manifest hash binds to the CURRENT file set; superseded file
+   * versions remain as historical audit evidence and do NOT contribute to
+   * the manifest.
+   */
+  async findCurrentImportFilesForBatch(tenantId: string, importBatchId: string): Promise<ImportFile[]> {
+    return this.db.select().from(importFiles)
+      .where(and(
+        eq(importFiles.tenantId, tenantId),
+        eq(importFiles.importBatchId, importBatchId),
+        eq(importFiles.isCurrent, true),
+      ));
+  }
+
   async findImportFileById(tenantId: string, id: string): Promise<ImportFile | null> {
     const [result] = await this.db.select().from(importFiles)
       .where(and(
@@ -365,6 +381,23 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
       .where(and(
         eq(importStagingRows.tenantId, tenantId),
         eq(importStagingRows.importBatchId, importBatchId),
+      ));
+  }
+
+  /**
+   * WP-08-01F R1 — Find ONLY current (non-superseded) staging rows for a
+   * batch. Filters `is_current = true`. Used by finalizeStaging's
+   * staged-data hash computation, runReconciliation's metric computation,
+   * and submitForApproval's alias-group derivation — all of which must
+   * bind to the CURRENT staging snapshot. Superseded staging rows remain
+   * as immutable historical evidence and do NOT contribute to the snapshot.
+   */
+  async findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
+    return this.db.select().from(importStagingRows)
+      .where(and(
+        eq(importStagingRows.tenantId, tenantId),
+        eq(importStagingRows.importBatchId, importBatchId),
+        eq(importStagingRows.isCurrent, true),
       ));
   }
 

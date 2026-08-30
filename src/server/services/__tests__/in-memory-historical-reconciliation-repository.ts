@@ -199,6 +199,18 @@ export class InMemoryHistoricalReconciliationRepository implements HistoricalRec
     return this.stagingRows.get(`${tenantId}:${importBatchId}`) ?? [];
   }
 
+  /**
+   * WP-08-01F R1 — Find ONLY current (non-superseded) staging rows for a
+   * batch. The in-memory store keeps seeding simple — seeded rows are
+   * considered current by default (test fixtures control is_current via
+   * the row payload itself). Used by runReconciliation and submitForApproval
+   * so superseded rows do NOT contribute to the snapshot.
+   */
+  async findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
+    const all = this.stagingRows.get(`${tenantId}:${importBatchId}`) ?? [];
+    return all.filter((r) => (r as any).isCurrent !== false);
+  }
+
   async findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null> {
     return this.batches.get(`${tenantId}:${id}`) ?? null;
   }

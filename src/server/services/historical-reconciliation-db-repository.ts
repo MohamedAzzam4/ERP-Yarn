@@ -24,9 +24,15 @@ import type {
 } from "@/server/db/schema/migration";
 
 type Db = NonNullable<typeof DbType>;
+/**
+ * WP-08-01F R1 — The repository accepts either the root Db or a Drizzle
+ * transaction. This lets the reconciliation service run all reads/writes
+ * inside ONE PostgreSQL transaction with tx-scoped idempotency/audit.
+ */
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export class HistoricalReconciliationDbRepository implements HistoricalReconciliationRepository {
-  constructor(private readonly db: Db) {}
+  constructor(private readonly db: DbOrTx) {}
 
   async insertReconciliationResult(row: NewReconciliationResultInput): Promise<ImportReconciliationResult> {
     const [result] = await this.db.insert(importReconciliationResults).values({
@@ -160,6 +166,22 @@ export class HistoricalReconciliationDbRepository implements HistoricalReconcili
   async findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
     return this.db.select().from(importStagingRows)
       .where(and(eq(importStagingRows.tenantId, tenantId), eq(importStagingRows.importBatchId, importBatchId)));
+  }
+
+  /**
+   * WP-08-01F R1 — Find ONLY current (non-superseded) staging rows for a
+   * batch. Filters `is_current = true`. Used by runReconciliation's metric
+   * computation and submitForApproval's alias-group derivation — both bind
+   * to the CURRENT staging snapshot. Superseded staging rows remain as
+   * immutable historical evidence and do NOT contribute to the snapshot.
+   */
+  async findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]> {
+    return this.db.select().from(importStagingRows)
+      .where(and(
+        eq(importStagingRows.tenantId, tenantId),
+        eq(importStagingRows.importBatchId, importBatchId),
+        eq(importStagingRows.isCurrent, true),
+      ));
   }
 
   async findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null> {

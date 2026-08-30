@@ -89,6 +89,17 @@ export interface HistoricalReconciliationRepository {
 
   // Staging row access (read-only)
   findStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
+  /**
+   * WP-08-01F R1 — Find ONLY current (non-superseded) staging rows for a
+   * batch. Filters `is_current = true`. Used by runReconciliation's metric
+   * computation and submitForApproval's alias-group derivation — both of
+   * which must bind to the CURRENT staging snapshot. Superseded staging
+   * rows remain as immutable historical evidence and do NOT contribute to
+   * the snapshot.
+   * Use `findStagingRowsForBatch` for historical/display reads that should
+   * show all versions.
+   */
+  findCurrentStagingRowsForBatch(tenantId: string, importBatchId: string): Promise<ImportStagingRow[]>;
 
   // Batch access
   findImportBatchById(tenantId: string, id: string): Promise<ImportBatch | null>;

@@ -134,6 +134,7 @@ function makeSubmitFirstWriteFailureRepoWrapper(realRepo: HistoricalReconciliati
     updateBatchReconciliationStatus: (t: string, id: string, s: string, u: string) => realRepo.updateBatchReconciliationStatus(t, id, s, u),
     resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
     findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+    findCurrentStagingRowsForBatch: (t: string, id: string) => realRepo.findCurrentStagingRowsForBatch(t, id),
     findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
     insertReconciliationResult: (row: any) => realRepo.insertReconciliationResult(row),
     insertReviewItem: (row: any) => realRepo.insertReviewItem(row),
@@ -1485,6 +1486,7 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
         updateBatchReconciliationStatus: (t: string, id: string, s: string, u: string) => realRepo.updateBatchReconciliationStatus(t, id, s, u),
         resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
         findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+        findCurrentStagingRowsForBatch: (t: string, id: string) => realRepo.findCurrentStagingRowsForBatch(t, id),
         findLatestReportVersion: async () => 1, // STUB: claim version 1 exists.
         insertReconciliationResult: (row: any) => realRepo.insertReconciliationResult(row),
         insertReviewItem: (row: any) => realRepo.insertReviewItem(row),
@@ -1672,6 +1674,7 @@ describeOrSkip("WP-08-01F Task 4 — Submission atomicity PostgreSQL proofs (SUB
         updateBatchReconciliationStatus: (t: string, id: string, s: string, u: string) => realRepo.updateBatchReconciliationStatus(t, id, s, u),
         resetBatchValidationAndReconciliationStatuses: (t: string, id: string) => realRepo.resetBatchValidationAndReconciliationStatuses(t, id),
         findStagingRowsForBatch: (t: string, id: string) => realRepo.findStagingRowsForBatch(t, id),
+        findCurrentStagingRowsForBatch: (t: string, id: string) => realRepo.findCurrentStagingRowsForBatch(t, id),
         findLatestReportVersion: (t: string, id: string) => realRepo.findLatestReportVersion(t, id),
         insertReconciliationResult: (row: any) => realRepo.insertReconciliationResult(row),
         insertReviewItem: (row: any) => realRepo.insertReviewItem(row),
