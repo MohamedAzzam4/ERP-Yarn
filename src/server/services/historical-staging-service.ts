@@ -791,7 +791,7 @@ export class HistoricalStagingService {
     if (!batch) throw new BatchNotFoundError(input.importBatchId);
     requireTenantMatch(user, batch.tenantId);
 
-    // Claim idempotency
+    // Claim idempotency — BLOCKER 1 FIX: include ALL material request fields
     const now = new Date();
     const claim = await claimIdempotency(this.deps.idempotency, {
       tenantId: user.tenantId,
@@ -801,6 +801,9 @@ export class HistoricalStagingService {
         importBatchId: input.importBatchId,
         domain: input.domain,
         cutoffDate: input.cutoffDate,
+        sourceCoverage: input.sourceCoverage,
+        openingBalanceBasis: input.openingBalanceBasis,
+        liveSystemStartBoundary: input.liveSystemStartBoundary,
       } as Record<string, unknown>,
       initiatedBy: user.userId,
       leaseDurationMs: 30000,
@@ -860,20 +863,25 @@ export class HistoricalStagingService {
       // AUTHORITATIVE lifecycle re-check under lock. finalizeCutoverManifest
       // is allowed only after the batch has been staged — the manifest hash
       // binds to staged_data_hash, so staged status or later pre-commit
-      // rework states are accepted. Terminal/committing states fail closed.
+      // rework states are accepted.
+      //
+      // BLOCKER 2 FIX: pending_dual_approval and approved_for_commit are
+      // REJECTED. A material manifest change after approval requires
+      // explicit reopenBatchForRework first. Do NOT silently auto-reopen
+      // from a preparation command.
       const allowedStatuses = new Set([
         "staged",
         "validation_complete",
         "reconciliation_in_progress",
         "review_required",
-        "pending_dual_approval",
-        "approved_for_commit",
       ]);
       if (!allowedStatuses.has(lockedBatch.status)) {
         throw new HistoricalStagingError(
           "INVALID_BATCH_STATUS",
           `Cannot finalize cutover manifest on batch '${input.importBatchId}' in status '${lockedBatch.status}'. ` +
-            `Must be staged or a later pre-commit rework state.`,
+            `Material manifest changes require explicit reopenBatchForRework when the batch is in ` +
+            `pending_dual_approval or approved_for_commit. ` +
+            `Allowed statuses: staged, validation_complete, reconciliation_in_progress, review_required.`,
         );
       }
 
@@ -924,6 +932,23 @@ export class HistoricalStagingService {
       });
       const manifestHash = crypto.createHash("sha256").update(manifestHashInput).digest("hex");
 
+      // BLOCKER 3: Per-domain supersession — supersede ONLY the current
+      // manifest for THIS domain, not all domains. Other domains' current
+      // manifests remain untouched.
+      const existingCurrentManifest = await txRepo.findCurrentCutoverManifestForDomain(
+        user.tenantId, input.importBatchId, input.domain,
+      );
+      let manifestVersion = 1;
+      if (existingCurrentManifest) {
+        manifestVersion = (existingCurrentManifest.manifestVersion ?? 1) + 1;
+        // Supersede old manifest (will set supersededBy after insert)
+        await txRepo.supersedeCurrentCutoverManifestForDomain(
+          user.tenantId, input.importBatchId, input.domain,
+          null, // placeholder — will not be used; old manifest is already non-current
+          now,
+        );
+      }
+
       // Insert cutover manifest (tx-scoped)
       const manifest = await txRepo.insertCutoverManifest({
         tenantId: user.tenantId,
@@ -935,6 +960,7 @@ export class HistoricalStagingService {
         openingBalanceBasis: input.openingBalanceBasis,
         liveSystemStartBoundary: input.liveSystemStartBoundary,
         manifestHash,
+        manifestVersion,
         isApproved: true,
         createdBy: user.userId,
       });

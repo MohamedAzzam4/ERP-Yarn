@@ -305,6 +305,7 @@ describeOrSkip("WP-08-01F Phase 0 — Closing proofs", () => {
       const { stagingService, commitService, commitRepo } = makeServices(new InMemoryPrivateFileStorage());
       const batchId = randomUUID();
       const oldManifestHash = "old-manifest-hash-p1";
+      const newManifestHash = "new-manifest-hash-p1-direct";
       const oldStagedHash = "old-staged-hash-p1";
 
       // Seed batch at approved_for_commit with old hash H1 (inventory domain)
@@ -324,34 +325,22 @@ describeOrSkip("WP-08-01F Phase 0 — Closing proofs", () => {
       await seedApproval(batchId, T, U2, "accountant", oldStagedHash, oldManifestHash);
       await seedBackupEvidence(batchId, T, U);
 
-      // Verify batch is at approved_for_commit before manifest re-finalization
+      // Verify batch is at approved_for_commit before manifest change
       let batch = await commitRepo.findImportBatchById(T, batchId);
       expect(batch?.status).toBe("approved_for_commit");
       expect(batch?.cutoverManifestHash).toBe(oldManifestHash);
 
-      // Re-finalize the cutover manifest with a DIFFERENT domain (parties).
-      // This is the realistic scenario: finalizeCutoverManifest has no
-      // lifecycle guard, so it CAN be called on approved_for_commit. It
-      // inserts a new manifest (different domain → no unique-index conflict)
-      // and updates batch.cutoverManifestHash to the NEW hash H2.
+      // BLOCKER 2: finalizeCutoverManifest now rejects approved_for_commit.
+      // To simulate a stale manifest hash (the property this test proves),
+      // we directly update the batch's cutoverManifestHash via SQL, as if
+      // a material change had occurred through a different lifecycle path.
       // The OLD approvals remain bound to H1 → they are now stale.
-      const reFinalizeResult = await stagingService.finalizeCutoverManifest(
-        makeUser() as any, makeEffective() as any, {
-          importBatchId: batchId, domain: "parties", cutoffDate: "2024-01-01",
-          sourceCoverage: "all", openingBalanceBasis: "audit",
-          liveSystemStartBoundary: null, idempotencyKey: "p1-refinalize-parties",
-        },
-      );
-      expect(reFinalizeResult.action).toBe("finalized");
-      const newManifestHash = reFinalizeResult.manifestHash;
-      expect(newManifestHash).not.toBe(oldManifestHash);
+      await sql`UPDATE import_batches SET cutover_manifest_hash = ${newManifestHash} WHERE id = ${batchId} AND tenant_id = ${T}`;
 
       // Verify the batch's current cutoverManifestHash now differs from oldManifestHash
       batch = await commitRepo.findImportBatchById(T, batchId);
       expect(batch?.cutoverManifestHash).toBe(newManifestHash);
       expect(batch?.cutoverManifestHash).not.toBe(oldManifestHash);
-      // Batch is still at approved_for_commit (finalizeCutoverManifest doesn't reset status)
-      expect(batch?.status).toBe("approved_for_commit");
 
       // Attempt COMMIT — approvals are bound to the OLD (superseded) hash H1,
       // but the batch now has H2. The commit service must detect the stale

@@ -76,6 +76,7 @@ export interface NewCutoverManifestInput {
   openingBalanceBasis: string | null;
   liveSystemStartBoundary: string | null;
   manifestHash: string;
+  manifestVersion?: number;
   isApproved: boolean;
   createdBy: string;
 }
@@ -231,6 +232,23 @@ export interface HistoricalStagingRepository {
   insertCutoverManifest(row: NewCutoverManifestInput): Promise<ImportCutoverManifest>;
   findCutoverManifestsForBatch(tenantId: string, importBatchId: string): Promise<ImportCutoverManifest[]>;
   findCutoverManifestById(tenantId: string, id: string): Promise<ImportCutoverManifest | null>;
+  /**
+   * BLOCKER 3: Find the current manifest for a specific domain.
+   * Returns null if no current manifest exists for that domain.
+   */
+  findCurrentCutoverManifestForDomain(tenantId: string, importBatchId: string, domain: string): Promise<ImportCutoverManifest | null>;
+  /**
+   * BLOCKER 3: Supersede ONLY the current manifest for a specific domain.
+   * Other domains' current manifests remain untouched.
+   * Old manifest is preserved (is_current=false) — NOT deleted.
+   */
+  supersedeCurrentCutoverManifestForDomain(
+    tenantId: string,
+    importBatchId: string,
+    domain: string,
+    supersededBy: string | null,
+    now: Date,
+  ): Promise<number>;
   /**
    * WP-08-01F R5: Mark all current cutover manifests for a batch as superseded.
    * Old manifests are preserved (is_current=false) — NOT deleted.

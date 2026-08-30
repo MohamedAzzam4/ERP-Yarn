@@ -448,6 +448,49 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
     return result ?? null;
   }
 
+  /**
+   * BLOCKER 3: Find the current manifest for a specific domain.
+   */
+  async findCurrentCutoverManifestForDomain(tenantId: string, importBatchId: string, domain: string): Promise<ImportCutoverManifest | null> {
+    const [result] = await this.db.select().from(importCutoverManifests)
+      .where(and(
+        eq(importCutoverManifests.tenantId, tenantId),
+        eq(importCutoverManifests.importBatchId, importBatchId),
+        eq(importCutoverManifests.domain, domain),
+        eq(importCutoverManifests.isCurrent, true),
+      ))
+      .limit(1);
+    return result ?? null;
+  }
+
+  /**
+   * BLOCKER 3: Supersede ONLY the current manifest for a specific domain.
+   * Other domains' current manifests remain untouched.
+   */
+  async supersedeCurrentCutoverManifestForDomain(
+    tenantId: string,
+    importBatchId: string,
+    domain: string,
+    supersededBy: string | null,
+    now: Date,
+  ): Promise<number> {
+    const result = await this.db.update(importCutoverManifests)
+      .set({
+        isCurrent: false,
+        supersededAt: now,
+        supersededBy: supersededBy as any,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(importCutoverManifests.tenantId, tenantId),
+        eq(importCutoverManifests.importBatchId, importBatchId),
+        eq(importCutoverManifests.domain, domain),
+        eq(importCutoverManifests.isCurrent, true),
+      ))
+      .returning();
+    return result.length;
+  }
+
   async markCutoverManifestsSupersededForBatch(
     tenantId: string,
     importBatchId: string,

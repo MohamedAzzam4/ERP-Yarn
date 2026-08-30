@@ -435,6 +435,39 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
     return this.cutoverManifests.get(`${tenantId}:${id}`) ?? null;
   }
 
+  async findCurrentCutoverManifestForDomain(tenantId: string, importBatchId: string, domain: string): Promise<ImportCutoverManifest | null> {
+    for (const m of this.cutoverManifests.values()) {
+      if (m.tenantId === tenantId && m.importBatchId === importBatchId && m.domain === domain && (m as any).isCurrent !== false) {
+        return { ...m };
+      }
+    }
+    return null;
+  }
+
+  async supersedeCurrentCutoverManifestForDomain(
+    tenantId: string,
+    importBatchId: string,
+    domain: string,
+    supersededBy: string | null,
+    now: Date,
+  ): Promise<number> {
+    let count = 0;
+    for (const [key, m] of this.cutoverManifests.entries()) {
+      if (m.tenantId === tenantId && m.importBatchId === importBatchId && m.domain === domain && (m as any).isCurrent !== false) {
+        const updated = {
+          ...m,
+          isCurrent: false,
+          supersededAt: now,
+          supersededBy: supersededBy as any,
+          updatedAt: now,
+        } as ImportCutoverManifest;
+        this.cutoverManifests.set(key, updated);
+        count++;
+      }
+    }
+    return count;
+  }
+
   async markCutoverManifestsSupersededForBatch(
     tenantId: string,
     importBatchId: string,
