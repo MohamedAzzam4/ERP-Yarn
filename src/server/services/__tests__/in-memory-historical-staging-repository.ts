@@ -398,7 +398,7 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
   // WP-08-01F DEFECT 1A: Cutover manifest methods (in-memory)
 
   async insertCutoverManifest(row: NewCutoverManifestInput): Promise<ImportCutoverManifest> {
-    const id = `cm-${randomUUID().slice(0, 8)}`;
+    const id = row.id ?? `cm-${randomUUID().slice(0, 8)}`;
     const manifest: ImportCutoverManifest = {
       id,
       tenantId: row.tenantId,
@@ -412,7 +412,7 @@ export class InMemoryHistoricalStagingRepository implements HistoricalStagingRep
       reconciliationOwner: null,
       manifestHash: row.manifestHash,
       isApproved: row.isApproved,
-      manifestVersion: 1,
+      manifestVersion: row.manifestVersion ?? 1,
       isCurrent: true,
       supersededAt: null,
       supersededBy: null,

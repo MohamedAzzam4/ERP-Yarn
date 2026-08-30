@@ -415,6 +415,7 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
 
   async insertCutoverManifest(row: NewCutoverManifestInput): Promise<ImportCutoverManifest> {
     const [result] = await this.db.insert(importCutoverManifests).values({
+      id: row.id ?? undefined,
       tenantId: row.tenantId,
       importBatchId: row.importBatchId,
       domain: row.domain,
@@ -424,6 +425,7 @@ export class HistoricalStagingDbRepository implements HistoricalStagingRepositor
       openingBalanceBasis: row.openingBalanceBasis,
       liveSystemStartBoundary: row.liveSystemStartBoundary,
       manifestHash: row.manifestHash,
+      manifestVersion: row.manifestVersion ?? 1,
       isApproved: row.isApproved,
       createdBy: row.createdBy,
     }).returning();

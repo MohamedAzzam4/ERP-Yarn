@@ -79,6 +79,8 @@ export interface NewCutoverManifestInput {
   manifestVersion?: number;
   isApproved: boolean;
   createdBy: string;
+  /** Optional pre-generated ID (for supersession link in same transaction). */
+  id?: string;
 }
 
 // WP-08-01F R1 — Replacement input. The replacement file is registered as a

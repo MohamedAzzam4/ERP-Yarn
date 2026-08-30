@@ -28,6 +28,7 @@
  */
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import type { ErpUserContext } from "@/server/auth/erp-context";
 import {
   requirePermission,
@@ -829,6 +830,13 @@ export class HistoricalStagingService {
     //     tx-scoped repository, using findCurrentImportFilesForBatch so
     //     that superseded file versions do NOT contribute to the manifest
     //     hash.
+    //
+    // BLOCKER D FIX: Wrap transaction body in try/catch to terminalize
+    // business failures as business_failed (durable). Without this, an
+    // INVALID_BATCH_STATUS thrown inside the transaction leaves the
+    // idempotency record as in_progress, causing same-key retry to receive
+    // OPERATION_IN_PROGRESS until lease expiry.
+    try {
     return await this.deps.transactionRunner(async (tx: unknown) => {
       const txRepo = this.deps.createStagingRepository(tx);
       const txAudit = this.deps.createAudit(tx);
@@ -935,22 +943,30 @@ export class HistoricalStagingService {
       // BLOCKER 3: Per-domain supersession — supersede ONLY the current
       // manifest for THIS domain, not all domains. Other domains' current
       // manifests remain untouched.
+      //
+      // BLOCKER B FIX: Pre-generate the new manifest UUID so we can set
+      // supersededBy on the old manifest in the SAME transaction, before
+      // inserting the new one. This preserves the append-only provenance
+      // link (old.superseded_by = new.id) without creating a period where
+      // two current manifests exist.
       const existingCurrentManifest = await txRepo.findCurrentCutoverManifestForDomain(
         user.tenantId, input.importBatchId, input.domain,
       );
       let manifestVersion = 1;
+      const newManifestId = randomUUID();
       if (existingCurrentManifest) {
         manifestVersion = (existingCurrentManifest.manifestVersion ?? 1) + 1;
-        // Supersede old manifest (will set supersededBy after insert)
+        // Supersede old manifest with supersededBy = new manifest ID
         await txRepo.supersedeCurrentCutoverManifestForDomain(
           user.tenantId, input.importBatchId, input.domain,
-          null, // placeholder — will not be used; old manifest is already non-current
+          newManifestId,
           now,
         );
       }
 
-      // Insert cutover manifest (tx-scoped)
+      // Insert cutover manifest (tx-scoped) with pre-generated ID
       const manifest = await txRepo.insertCutoverManifest({
+        id: newManifestId,
         tenantId: user.tenantId,
         importBatchId: input.importBatchId,
         domain: input.domain,
@@ -999,6 +1015,23 @@ export class HistoricalStagingService {
 
       return result;
     });
+    } catch (e) {
+      // BLOCKER D FIX: Terminalize business failures as business_failed.
+      const isBusinessError = e instanceof HistoricalStagingError;
+      if (isBusinessError) {
+        try {
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409,
+            responseBody: { code: (e as HistoricalStagingError).code ?? "BUSINESS_FAILED", message: (e as Error).message },
+            lastErrorClass: (e as Error).name ?? "HistoricalStagingError",
+          }, claim.record.ownerToken!, now);
+        } catch {
+          // If markBusinessFailed fails, the record remains in_progress
+          // and will expire via lease.
+        }
+      }
+      throw e;
+    }
   }
 
   /**
