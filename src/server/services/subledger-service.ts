@@ -871,6 +871,12 @@ export class SubledgerService {
     entryId: string,
     settlementStatus: "unsettled" | "partially_settled" | "settled" | "reversed",
   ): Promise<AccountEntry | null> {
+    // WP-07-04 cutover coordination: settlement status mutation is a live
+    // subledger-affecting operation. Acquire the tenant/subledger advisory
+    // lock before mutating account_entries. This ensures a concurrent
+    // historical migration cutover cannot cross the boundary while a
+    // settlement is in progress.
+    await this.requireCutoverLock(tenantId);
     return this.deps.subledger.updateEntrySettlementStatus(tenantId, entryId, settlementStatus);
   }
 

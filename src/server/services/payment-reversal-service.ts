@@ -39,6 +39,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
 } from "./idempotency-service";
@@ -106,6 +107,25 @@ export interface PaymentReversalServiceDeps {
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
+  /**
+   * Optional transaction runner. When provided, all DB writes in reversePayment
+   * are wrapped in a single DB transaction — REQUIRED for WP-07-04 cutover
+   * coordination correctness (the advisory lock must span the reversal entry
+   * creation AND the payment status update AND audit AND idempotency
+   * terminalization). When absent (unit tests), runs without a boundary.
+   */
+  transactionRunner?: PaymentReversalTransactionRunner;
+  txFactories?: PaymentReversalTransactionScopedFactories;
+}
+
+export type PaymentReversalTransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+export interface PaymentReversalTransactionScopedFactories {
+  createSubledger: (tx: unknown) => SubledgerService;
+  createPaymentRepository: (tx: unknown) => PaymentRepository;
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
+  createDocumentSequence: (tx: unknown) => DocumentSequenceTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +220,9 @@ export class PaymentReversalService {
     if (!payment.postedEntryId) {
       throw new PaymentReversalError("INTERNAL_TRANSACTION_FAILED", `Payment '${payment.id}' has no posted entry.`);
     }
+    // Capture the non-null postedEntryId so the closure below preserves
+    // TypeScript's narrowing (closures don't preserve control-flow narrowing).
+    const postedEntryId: string = payment.postedEntryId;
 
     // Step 5: fetch original entry + lock it + lock all settlements
     const originalEntry = await this.deps.subledger.findEntryById(user.tenantId, payment.postedEntryId);
@@ -214,119 +237,146 @@ export class PaymentReversalService {
     // Only reverse settlements that are currently 'settled' (not already reversed)
     const activeSettlements = existingSettlements.filter(s => s.settlementStatus === "settled");
 
-    // Step 6: create reversal entry (opposite signed, entryType='reversal')
-    const year = now.getUTCFullYear();
-    const reversalDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
-      tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
-    });
+    // Step 6-11: create reversal entry, reverse settlements, update entry
+    // settlement statuses, mark payment reversed, audit, mark idempotency.
+    //
+    // WP-07-04 cutover coordination (r11): ALL of these writes MUST share the
+    // SAME db.transaction() so the cutover advisory lock (acquired inside
+    // SubledgerService.postReversalEntry) protects the FULL reversal flow.
+    const executeReversal = async (txScoped: {
+      subledger: SubledgerService; paymentRepository: PaymentRepository;
+      audit: AuditTransactionHandle; idempotency: IdempotencyTransactionHandle;
+      documentSequence: DocumentSequenceTransactionHandle;
+    } | null): Promise<ReversePaymentResult> => {
+      const subledger = txScoped?.subledger ?? this.deps.subledger;
+      const paymentRepo = txScoped?.paymentRepository ?? this.deps.paymentRepository;
+      const audit = txScoped?.audit ?? this.deps.audit;
+      const idempotency = txScoped?.idempotency ?? this.deps.idempotency;
+      const documentSequence = txScoped?.documentSequence ?? this.deps.documentSequence;
 
-    const reversalEntry = await this.deps.subledger.postReversalEntry(user, effective, {
-      originalEntryId: originalEntry.id,
-      accountId: originalEntry.accountId,
-      originalAmountSigned: originalEntry.amountSigned,
-      entryDate: payment.paymentDate,
-      paymentId: payment.id,
-      docNo: reversalDocNo.docNo,
-      idempotencyKey: `${input.idempotencyKey}:reversal_entry`,
-      notes: input.notes ?? undefined,
-    });
-
-    // Step 7: reverse each active settlement by inserting a NEW settlement row
-    // with status='reversed' (original rows remain immutable; only their
-    // settlement_status transitions to 'reversed').
-    const reversedSettlementIds: string[] = [];
-    for (const s of activeSettlements) {
-      // Insert a reversal settlement row (links the reversal entry to the same target)
-      const reversalSettlement = await this.deps.paymentRepository.insertSettlement({
-        tenantId: user.tenantId,
-        paymentEntryId: reversalEntry.entryId,
-        settledEntryId: s.settledEntryId,
-        settledAmount: s.settledAmount,  // same positive amount
-        settlementStatus: "reversed",
-        createdBy: user.userId,
+      const year = now.getUTCFullYear();
+      const reversalDocNo = await allocateDocumentNumber(documentSequence, {
+        tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
       });
-      reversedSettlementIds.push(reversalSettlement.id);
 
-      // Mark the ORIGINAL settlement row's status as 'reversed'.
-      // Since payment_settlements are immutable in our current schema (no update method),
-      // we rely on the new reversal row's existence + the original entry's
-      // settlement_status transition to indicate the unallocation.
-      // For a complete implementation, we'd add an updateSettlementStatus method.
-      // For MVP WP-05-04, the reversal settlement row + audit trail is sufficient.
-    }
+      const reversalEntry = await subledger.postReversalEntry(user, effective, {
+        originalEntryId: originalEntry.id,
+        accountId: originalEntry.accountId,
+        originalAmountSigned: originalEntry.amountSigned,
+        entryDate: payment.paymentDate,
+        paymentId: payment.id,
+        docNo: reversalDocNo.docNo,
+        idempotencyKey: `${input.idempotencyKey}:reversal_entry`,
+        notes: input.notes ?? undefined,
+      });
 
-    // Step 8: update entry settlement statuses
-    // - Original payment entry: settlement_status → 'reversed'
-    await this.deps.subledger.updateEntrySettlementStatusPublic(
-      user.tenantId, payment.postedEntryId, "reversed",
-    );
-    // - Each target entry that was settled: recompute its settlement status
-    //   based on remaining active (non-reversed) settlements.
-    for (const s of activeSettlements) {
-      const remainingSettlements = await this.deps.paymentRepository.listSettlementsForSettledEntry(
-        user.tenantId, s.settledEntryId,
+      const reversedSettlementIds: string[] = [];
+      for (const s of activeSettlements) {
+        const reversalSettlement = await paymentRepo.insertSettlement({
+          tenantId: user.tenantId,
+          paymentEntryId: reversalEntry.entryId,
+          settledEntryId: s.settledEntryId,
+          settledAmount: s.settledAmount,
+          settlementStatus: "reversed",
+          createdBy: user.userId,
+        });
+        reversedSettlementIds.push(reversalSettlement.id);
+      }
+
+      await subledger.updateEntrySettlementStatusPublic(
+        user.tenantId, postedEntryId, "reversed",
       );
-      const stillActive = remainingSettlements.filter(rs => rs.settlementStatus === "settled" && rs.id !== s.id);
-      // If there are other active settlements on this target, it's still partially_settled
-      // Otherwise, it's back to unsettled
-      const targetEntry = await this.deps.subledger.findEntryById(user.tenantId, s.settledEntryId);
-      if (targetEntry) {
-        const newStatus = stillActive.length > 0 ? "partially_settled" : "unsettled";
-        // Only transition back if the target isn't already reversed/fully settled by other payments
-        if (targetEntry.settlementStatus !== "reversed" && targetEntry.settlementStatus !== "settled") {
-          await this.deps.subledger.updateEntrySettlementStatusPublic(
-            user.tenantId, s.settledEntryId, newStatus,
-          );
+      for (const s of activeSettlements) {
+        const remainingSettlements = await paymentRepo.listSettlementsForSettledEntry(
+          user.tenantId, s.settledEntryId,
+        );
+        const stillActive = remainingSettlements.filter(rs => rs.settlementStatus === "settled" && rs.id !== s.id);
+        const targetEntry = await subledger.findEntryById(user.tenantId, s.settledEntryId);
+        if (targetEntry) {
+          const newStatus = stillActive.length > 0 ? "partially_settled" : "unsettled";
+          if (targetEntry.settlementStatus !== "reversed" && targetEntry.settlementStatus !== "settled") {
+            await subledger.updateEntrySettlementStatusPublic(
+              user.tenantId, s.settledEntryId, newStatus,
+            );
+          }
         }
       }
-    }
 
-    // Step 9: mark payment as reversed + link reversal
-    const updatedPayment = await this.deps.paymentRepository.updatePaymentStatus(
-      user.tenantId, payment.id,
-      { status: "reversed", reversalOfPaymentId: payment.id, isLocked: true, updatedBy: user.userId },
-      ["posted"],
-    );
-    if (!updatedPayment) {
-      throw new PaymentReversalError("INTERNAL_TRANSACTION_FAILED", `Payment '${payment.id}' could not be transitioned to reversed.`);
-    }
+      const updatedPayment = await paymentRepo.updatePaymentStatus(
+        user.tenantId, payment.id,
+        { status: "reversed", reversalOfPaymentId: payment.id, isLocked: true, updatedBy: user.userId },
+        ["posted"],
+      );
+      if (!updatedPayment) {
+        throw new PaymentReversalError("INTERNAL_TRANSACTION_FAILED", `Payment '${payment.id}' could not be transitioned to reversed.`);
+      }
 
-    // Step 10: audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: PAYMENT_ENTITY_TYPE,
-      entityId: payment.id,
-      actionType: "payment.reverse",
-      newValuesJson: {
-        paymentNo: payment.paymentNo,
+      await appendAuditLog(audit, user.tenantId, user.userId, {
+        entityType: PAYMENT_ENTITY_TYPE,
+        entityId: payment.id,
+        actionType: "payment.reverse",
+        newValuesJson: {
+          paymentNo: payment.paymentNo,
+          reversalEntryId: reversalEntry.entryId,
+          reversalEntryNo: reversalEntry.entryNo,
+          reversalAmountSigned: reversalEntry.amountSigned,
+          originalEntryId: originalEntry.id,
+          originalAmountSigned: originalEntry.amountSigned,
+          reversedSettlementIds,
+          reason: input.reason,
+          status: "reversed",
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result: ReversePaymentResult = {
+        action: "reversed",
+        paymentId: payment.id,
         reversalEntryId: reversalEntry.entryId,
         reversalEntryNo: reversalEntry.entryNo,
         reversalAmountSigned: reversalEntry.amountSigned,
-        originalEntryId: originalEntry.id,
-        originalAmountSigned: originalEntry.amountSigned,
         reversedSettlementIds,
-        reason: input.reason,
-        status: "reversed",
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+        originalEntryImmutable: true,
+      };
+      await markSucceeded(idempotency, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: PAYMENT_ENTITY_TYPE,
+        entityId: payment.id,
+      }, claim.record.ownerToken!, now);
 
-    // Step 11: mark idempotency succeeded
-    const result: ReversePaymentResult = {
-      action: "reversed",
-      paymentId: payment.id,
-      reversalEntryId: reversalEntry.entryId,
-      reversalEntryNo: reversalEntry.entryNo,
-      reversalAmountSigned: reversalEntry.amountSigned,
-      reversedSettlementIds,
-      originalEntryImmutable: true,
+      return result;
     };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: PAYMENT_ENTITY_TYPE,
-      entityId: payment.id,
-    }, claim.record.ownerToken!, now);
 
-    return result;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        return await this.deps.transactionRunner(async (tx: unknown) => {
+          const txSubledger = this.deps.txFactories!.createSubledger(tx);
+          const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency(tx);
+          const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+          return executeReversal({
+            subledger: txSubledger, paymentRepository: txPaymentRepo,
+            audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
+          });
+        });
+      } else {
+        return executeReversal(null);
+      }
+    } catch (txError) {
+      // WP-07-04/BLOCKER 4: technical failure (including cutover lock wait
+      // timeout) → terminalize as retryable_failed for immediate same-key retry.
+      try {
+        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500,
+          responseBody: { message: "Payment reversal transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch {
+        // If markRetryableFailed fails, record remains in_progress → lease expiry.
+      }
+      throw txError;
+    }
   }
 }

@@ -1,5 +1,24 @@
 /**
- * WP-07-04 dependency correction — Contract 08 §12.4 real PostgreSQL race proofs.
+ * WP-07-04 — Contract 08 §12.4 PRIMITIVE advisory-lock race proofs.
+ *
+ * These tests prove the PostgreSQL advisory-lock primitive itself:
+ *   - pg_advisory_xact_lock is transaction-scoped
+ *   - it is re-entrant in the same transaction
+ *   - it is atomic (no TOCTOU)
+ *   - it is tenant/domain-scoped
+ *   - it auto-releases on COMMIT and ROLLBACK
+ *
+ * IMPORTANT: these are PRIMITIVE tests, NOT service-level proofs.
+ * They do NOT use the real HistoricalCommitService or real live posting
+ * commands. They use raw pg_advisory_xact_lock on held-open transactions
+ * and real live InventoryLedgerService/SubledgerService methods.
+ *
+ * The SERVICE-LEVEL proofs (which use real HistoricalCommitService.commitBatch
+ * against real live commands) are in wp-07-04-service-race.test.ts
+ * (SVC-RACE-1 through SVC-RACE-5).
+ *
+ * Only the SVC-RACE tests can close Contract 08 §12.4. These primitive
+ * tests provide supporting evidence for the lock primitive's correctness.
  *
  * Contract 08 §8.1.1: "During final validation and commit, an audited
  *   tenant/domain cutover lock prevents concurrent live postings in
@@ -12,21 +31,15 @@
  *   respect the cutover lock/boundary."
  *
  * Test identifiers (contract-traceable, NOT invented labels):
- *   CUTVER-RACE-A  — migration owns inventory cutover first, live post blocked
- *   CUTVER-RACE-B  — live posting starts first, migration serialized/blocked
- *   CUTVER-RACE-C  — subledger/account scope mutual exclusion
- *   CUTVER-RACE-D  — unrelated scope (cross-tenant, cross-domain) remains available
- *   CUTVER-RACE-E  — two migration batches same tenant/domain cannot both own cutover
- *   CUTVER-RACE-F  — technical failure after cutover acquired, safe release/recovery
- *
- * Implementation under test:
- *   - pg_advisory_xact_lock(namespace, hash(tenant, domain)) acquired in:
- *     - HistoricalCommitService (inside its operational transaction, for both
- *       "inventory" and "subledger" domains)
- *     - InventoryLedgerService (every live posting method, for "inventory")
- *     - SubledgerService (every live posting method, for "subledger")
- *   - The lock is transaction-scoped, re-entrant, atomic, and tenant/domain-scoped.
- *
+ *   CUTVER-RACE-A  — [PRIMITIVE] migration owns inventory cutover first, live post blocked
+ *   CUTVER-RACE-B  — [PRIMITIVE] live posting starts first, migration serialized/blocked
+ *   CUTVER-RACE-C  — [PRIMITIVE] subledger/account scope mutual exclusion
+ *   CUTVER-RACE-D  — [PRIMITIVE] unrelated scope (cross-tenant, cross-domain) remains available
+ *   CUTVER-RACE-E  — [PRIMITIVE] two migration batches same tenant/domain cannot both own cutover
+ *   CUTVER-RACE-F  — [PRIMITIVE] technical failure after cutover acquired, safe release/recovery
+ */
+
+/**
  * Concurrency mechanism:
  *   - Real PostgreSQL transactions on independent connections.
  *   - Deterministic barrier: a held-open transaction that acquires the advisory

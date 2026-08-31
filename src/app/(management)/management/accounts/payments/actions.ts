@@ -213,11 +213,13 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
     documentSequence,
   });
 
-  // Build the transaction runner + tx factories (used by future
-  // service-internal transactional composition; documented here for
-  // symmetry with the WP-08-01C sales-orders pattern).
-  void makeTransactionRunner();
-  void makeTxFactories(audit, idempotency, documentSequence);
+  // WP-07-04 cutover coordination (r11): wire the transaction runner + tx
+  // factories so PaymentService.postPayment wraps its full posting flow
+  // (account entry + payment status update + audit + idempotency) in a
+  // single db.transaction(). This is REQUIRED for the cutover advisory
+  // lock to protect the entire payment posting, not just the account entry.
+  const transactionRunner = makeTransactionRunner();
+  const txFactories = makeTxFactories(audit, idempotency, documentSequence);
 
   const service = new PaymentService({
     paymentRepository,
@@ -225,6 +227,14 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories: {
+      createSubledger: txFactories.createSubledger,
+      createPaymentRepository: txFactories.createPayment,
+      createAudit: txFactories.createAudit,
+      createIdempotency: txFactories.createIdempotency,
+      createDocumentSequence: txFactories.createDocumentSequence,
+    },
   });
 
   await service.postPayment(authResult as any, effective, {
@@ -295,14 +305,22 @@ export async function settlePaymentAction(formData: FormData): Promise<void> {
     documentSequence,
   });
 
-  void makeTransactionRunner();
-  void makeTxFactories(audit, idempotency, documentSequence);
+  // WP-07-04 cutover coordination (r11): wire transaction runner + tx factories.
+  const transactionRunner = makeTransactionRunner();
+  const txFactories = makeTxFactories(audit, idempotency, documentSequence);
 
   const service = new SettlementService({
     paymentRepository,
     subledger,
     audit,
     idempotency,
+    transactionRunner,
+    txFactories: {
+      createSubledger: txFactories.createSubledger,
+      createPaymentRepository: txFactories.createPayment,
+      createAudit: txFactories.createAudit,
+      createIdempotency: txFactories.createIdempotency,
+    },
   });
 
   await service.settlePayment(authResult as any, effective, {
@@ -368,8 +386,9 @@ export async function reversePaymentAction(formData: FormData): Promise<void> {
     documentSequence,
   });
 
-  void makeTransactionRunner();
-  void makeTxFactories(audit, idempotency, documentSequence);
+  // WP-07-04 cutover coordination (r11): wire transaction runner + tx factories.
+  const transactionRunner = makeTransactionRunner();
+  const txFactories = makeTxFactories(audit, idempotency, documentSequence);
 
   const service = new PaymentReversalService({
     paymentRepository,
@@ -377,6 +396,14 @@ export async function reversePaymentAction(formData: FormData): Promise<void> {
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories: {
+      createSubledger: txFactories.createSubledger,
+      createPaymentRepository: txFactories.createPayment,
+      createAudit: txFactories.createAudit,
+      createIdempotency: txFactories.createIdempotency,
+      createDocumentSequence: txFactories.createDocumentSequence,
+    },
   });
 
   await service.reversePayment(authResult as any, effective, {

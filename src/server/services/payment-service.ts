@@ -51,6 +51,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
 } from "./idempotency-service";
@@ -193,12 +194,51 @@ function deriveEntryTypeAndSign(
 // Service deps.
 // ---------------------------------------------------------------------------
 
+/**
+ * Transaction-scoped factory functions for PaymentService.
+ *
+ * WP-07-04 cutover coordination (r11): the cutover advisory lock acquired
+ * inside SubledgerService.postPaymentEntry is transaction-scoped. For the
+ * lock to protect the FULL payment posting (account entry + payment status
+ * update + audit + idempotency terminalization), ALL writes must share the
+ * SAME db.transaction(). These factories create tx-scoped handles so the
+ * entire payment posting is atomic with the cutover lock.
+ */
+export type PaymentTransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+export interface PaymentTransactionScopedFactories {
+  /** Create a SubledgerService bound to the transaction-scoped `tx`. */
+  createSubledger: (tx: unknown) => SubledgerService;
+  /** Create a PaymentRepository bound to the transaction-scoped `tx`. */
+  createPaymentRepository: (tx: unknown) => PaymentRepository;
+  /** Create an AuditTransactionHandle bound to the transaction-scoped `tx`. */
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+  /** Create an IdempotencyTransactionHandle bound to the transaction-scoped `tx`. */
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
+  /** Create a DocumentSequenceTransactionHandle bound to the transaction-scoped `tx`. */
+  createDocumentSequence: (tx: unknown) => DocumentSequenceTransactionHandle;
+}
+
 export interface PaymentServiceDeps {
   paymentRepository: PaymentRepository;
   subledger: SubledgerService;
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
+  /**
+   * Optional transaction runner. When provided, all DB writes in postPayment
+   * are wrapped in a single DB transaction — this is REQUIRED for WP-07-04
+   * cutover coordination correctness (the advisory lock must span the account
+   * entry creation AND the payment status update AND audit AND idempotency
+   * terminalization). When absent (unit tests with in-memory repos), the
+   * service runs without a DB transaction boundary.
+   */
+  transactionRunner?: PaymentTransactionRunner;
+  /**
+   * Factory functions for creating transaction-scoped services/repos.
+   * Required when `transactionRunner` is provided.
+   */
+  txFactories?: PaymentTransactionScopedFactories;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,71 +476,129 @@ export class PaymentService {
     const { entryType, signMultiplier } = deriveEntryTypeAndSign(ownerType, payment.paymentDirection);
     const amountSigned = signMultiplier === -1 ? negateMoney(payment.amount) : payment.amount;
 
-    // Step 6: allocate entry number + create account entry via SubledgerService
-    const year = now.getUTCFullYear();
-    const entryDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
-      tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
-    });
+    // Step 6-9: allocate entry number, create account entry via SubledgerService,
+    // update payment status, audit, mark idempotency succeeded.
+    //
+    // WP-07-04 cutover coordination (r11): ALL of these writes MUST share the
+    // SAME db.transaction() so the cutover advisory lock (acquired inside
+    // SubledgerService.postPaymentEntry) protects the FULL payment posting —
+    // not just the account entry creation. Without this, a concurrent
+    // historical migration cutover could cross the boundary between the
+    // account entry creation and the payment status update.
+    //
+    // When transactionRunner is provided (production), the entire block runs
+    // in one transaction. When absent (unit tests), it runs without a boundary.
+    const executePosting = async (txScoped: {
+      subledger: SubledgerService; paymentRepository: PaymentRepository;
+      audit: AuditTransactionHandle; idempotency: IdempotencyTransactionHandle;
+      documentSequence: DocumentSequenceTransactionHandle;
+    } | null): Promise<PostPaymentResult> => {
+      const subledger = txScoped?.subledger ?? this.deps.subledger;
+      const paymentRepo = txScoped?.paymentRepository ?? this.deps.paymentRepository;
+      const audit = txScoped?.audit ?? this.deps.audit;
+      const idempotency = txScoped?.idempotency ?? this.deps.idempotency;
+      const documentSequence = txScoped?.documentSequence ?? this.deps.documentSequence;
 
-    // SubledgerService.postPaymentEntry is a new tx-scoped method we add.
-    const entryResult = await this.deps.subledger.postPaymentEntry(user, effective, {
-      ownerType,
-      ownerId: ownerType, // not used — account already resolved via payment.accountId
-      accountId: payment.accountId,
-      amountSigned,
-      entryDate: payment.paymentDate,
-      entryType,
-      paymentId: payment.id,
-      docNo: entryDocNo.docNo,
-      idempotencyKey: `${input.idempotencyKey}:entry`,
-      notes: input.notes ?? undefined,
-    });
+      const year = now.getUTCFullYear();
+      const entryDocNo = await allocateDocumentNumber(documentSequence, {
+        tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
+      });
 
-    // Step 7: update payment status to posted + link postedEntryId
-    const updatedPayment = await this.deps.paymentRepository.updatePaymentStatus(
-      user.tenantId, payment.id,
-      { status: "posted", postedEntryId: entryResult.entryId, isLocked: true, updatedBy: user.userId },
-      ["draft"],
-    );
-    if (!updatedPayment) {
-      throw new PaymentError("INTERNAL_TRANSACTION_FAILED", `Payment '${payment.id}' could not be transitioned to posted.`);
-    }
+      const entryResult = await subledger.postPaymentEntry(user, effective, {
+        ownerType,
+        ownerId: ownerType, // not used — account already resolved via payment.accountId
+        accountId: payment.accountId,
+        amountSigned,
+        entryDate: payment.paymentDate,
+        entryType,
+        paymentId: payment.id,
+        docNo: entryDocNo.docNo,
+        idempotencyKey: `${input.idempotencyKey}:entry`,
+        notes: input.notes ?? undefined,
+      });
 
-    // Step 8: audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: PAYMENT_ENTITY_TYPE,
-      entityId: payment.id,
-      actionType: "payment.post",
-      newValuesJson: {
+      const updatedPayment = await paymentRepo.updatePaymentStatus(
+        user.tenantId, payment.id,
+        { status: "posted", postedEntryId: entryResult.entryId, isLocked: true, updatedBy: user.userId },
+        ["draft"],
+      );
+      if (!updatedPayment) {
+        throw new PaymentError("INTERNAL_TRANSACTION_FAILED", `Payment '${payment.id}' could not be transitioned to posted.`);
+      }
+
+      await appendAuditLog(audit, user.tenantId, user.userId, {
+        entityType: PAYMENT_ENTITY_TYPE,
+        entityId: payment.id,
+        actionType: "payment.post",
+        newValuesJson: {
+          paymentNo: payment.paymentNo,
+          postedEntryId: entryResult.entryId,
+          entryNo: entryResult.entryNo,
+          amountSigned: entryResult.amountSigned,
+          entryType,
+          status: "posted",
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result: PostPaymentResult = {
+        action: "posted",
+        paymentId: payment.id,
         paymentNo: payment.paymentNo,
+        status: "posted",
         postedEntryId: entryResult.entryId,
         entryNo: entryResult.entryNo,
         amountSigned: entryResult.amountSigned,
-        entryType,
-        status: "posted",
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+        accountId: payment.accountId,
+      };
+      await markSucceeded(idempotency, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: PAYMENT_ENTITY_TYPE,
+        entityId: payment.id,
+      }, claim.record.ownerToken!, now);
 
-    // Step 9: mark idempotency succeeded
-    const result: PostPaymentResult = {
-      action: "posted",
-      paymentId: payment.id,
-      paymentNo: payment.paymentNo,
-      status: "posted",
-      postedEntryId: entryResult.entryId,
-      entryNo: entryResult.entryNo,
-      amountSigned: entryResult.amountSigned,
-      accountId: payment.accountId,
+      return result;
     };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: PAYMENT_ENTITY_TYPE,
-      entityId: payment.id,
-    }, claim.record.ownerToken!, now);
 
-    return result;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        return await this.deps.transactionRunner(async (tx: unknown) => {
+          const txSubledger = this.deps.txFactories!.createSubledger(tx);
+          const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency(tx);
+          const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+          return executePosting({
+            subledger: txSubledger, paymentRepository: txPaymentRepo,
+            audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
+          });
+        });
+      } else {
+        // Unit test path — no transaction boundary
+        return executePosting(null);
+      }
+    } catch (txError) {
+      // WP-07-04/BLOCKER 4: the DB transaction rolled back (this includes the
+      // case where the cutover advisory lock acquisition blocked and timed
+      // out — SubledgerService.postPaymentEntry threw, the transaction rolled
+      // back, and the advisory lock was auto-released). Terminalize the
+      // idempotency record as retryable_failed so same-key retry can reclaim
+      // immediately (per idempotency contract: technical failure → retryable).
+      // Do NOT call markBusinessFailed here — that is for business precondition
+      // failures (handled above). This catch is for technical/system failures.
+      try {
+        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500,
+          responseBody: { message: "Payment posting transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch {
+        // If markRetryableFailed fails, the record remains in_progress
+        // and will expire via lease.
+      }
+      throw txError;
+    }
   }
 
   /**

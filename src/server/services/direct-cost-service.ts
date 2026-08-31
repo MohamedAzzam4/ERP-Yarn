@@ -56,6 +56,7 @@ import {
   claimIdempotency,
   markSucceeded,
   markBusinessFailed,
+  markRetryableFailed,
   type IdempotencyTransactionHandle,
   type IdempotencyClaimInput,
 } from "./idempotency-service";
@@ -190,6 +191,27 @@ export interface DirectCostServiceDeps {
   audit: AuditTransactionHandle;
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
+  /**
+   * Optional transaction runner. When provided, all DB writes in approveDirectCost
+   * are wrapped in a single DB transaction — REQUIRED for WP-07-04 cutover
+   * coordination correctness (the advisory lock acquired by
+   * SubledgerService.postDirectCostEntry must span the account entry creation
+   * AND the direct cost allocation AND the direct cost status update AND audit
+   * AND idempotency terminalization). When absent (unit tests), runs without
+   * a boundary.
+   */
+  transactionRunner?: DirectCostTransactionRunner;
+  txFactories?: DirectCostTransactionScopedFactories;
+}
+
+export type DirectCostTransactionRunner = <T>(work: (tx: unknown) => Promise<T>) => Promise<T>;
+
+export interface DirectCostTransactionScopedFactories {
+  createSubledger: (tx: unknown) => SubledgerService;
+  createDirectCostRepository: (tx: unknown) => DirectCostRepository;
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
+  createDocumentSequence: (tx: unknown) => DocumentSequenceTransactionHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,143 +462,180 @@ export class DirectCostService {
       }
     }
 
-    // Step 7: post subledger entry (only for customer/factory-borne)
-    let subledgerEntryId: string | null = null;
-    const confirmedAmount = normalizeMoney(input.amount);
+    // Step 7-12: post subledger entry, insert allocations, update direct cost
+    // review status, create profitability snapshot, audit, mark idempotency.
+    //
+    // WP-07-04 cutover coordination (r11): ALL of these writes MUST share the
+    // SAME db.transaction() so the cutover advisory lock (acquired by
+    // SubledgerService.postDirectCostEntry) protects the FULL review flow.
+    const executeReview = async (txScoped: {
+      subledger: SubledgerService; directCostRepository: DirectCostRepository;
+      audit: AuditTransactionHandle; idempotency: IdempotencyTransactionHandle;
+      documentSequence: DocumentSequenceTransactionHandle;
+    } | null): Promise<ReviewDirectCostResult> => {
+      const subledger = txScoped?.subledger ?? this.deps.subledger;
+      const directCostRepo = txScoped?.directCostRepository ?? this.deps.directCostRepository;
+      const audit = txScoped?.audit ?? this.deps.audit;
+      const idempotency = txScoped?.idempotency ?? this.deps.idempotency;
+      const documentSequence = txScoped?.documentSequence ?? this.deps.documentSequence;
 
-    if (input.costResponsibilityType === "customer" && input.linkedOwnerType === "customer" && input.linkedOwnerId) {
-      // Customer-borne: POSITIVE customer_direct_cost_receivable
-      const year = now.getUTCFullYear();
-      const entryDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
-        tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
-      });
-      const entryResult = await this.deps.subledger.postDirectCostEntry(user, effective, {
-        ownerType: "customer",
-        ownerId: input.linkedOwnerId,
-        amount: confirmedAmount,
-        entryDate: now.toISOString().slice(0, 10),
-        entryType: "customer_direct_cost_receivable",
-        directCostId: directCost.id,
-        docNo: entryDocNo.docNo,
-        idempotencyKey: `${input.idempotencyKey}:entry`,
-      });
-      subledgerEntryId = entryResult.entryId;
-    } else if (input.costResponsibilityType === "factory" && input.linkedOwnerType === "factory" && input.linkedOwnerId) {
-      // Factory-borne: POSITIVE factory_direct_cost_recovery
-      const year = now.getUTCFullYear();
-      const entryDocNo = await allocateDocumentNumber(this.deps.documentSequence, {
-        tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
-      });
-      const entryResult = await this.deps.subledger.postDirectCostEntry(user, effective, {
-        ownerType: "factory",
-        ownerId: input.linkedOwnerId,
-        amount: confirmedAmount,
-        entryDate: now.toISOString().slice(0, 10),
-        entryType: "factory_direct_cost_recovery",
-        directCostId: directCost.id,
-        docNo: entryDocNo.docNo,
-        idempotencyKey: `${input.idempotencyKey}:entry`,
-      });
-      subledgerEntryId = entryResult.entryId;
-    }
-    // company-borne, unknown, included_elsewhere, shared (allocations handle per-party): no single entry here
+      let subledgerEntryId: string | null = null;
+      const confirmedAmount = normalizeMoney(input.amount);
 
-    // Step 8: insert allocation rows (if shared)
-    if (input.costResponsibilityType === "shared" && input.allocations) {
-      for (const a of input.allocations) {
-        await this.deps.directCostRepository.insertAllocation({
-          tenantId: user.tenantId,
+      if (input.costResponsibilityType === "customer" && input.linkedOwnerType === "customer" && input.linkedOwnerId) {
+        const year = now.getUTCFullYear();
+        const entryDocNo = await allocateDocumentNumber(documentSequence, {
+          tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
+        });
+        const entryResult = await subledger.postDirectCostEntry(user, effective, {
+          ownerType: "customer",
+          ownerId: input.linkedOwnerId,
+          amount: confirmedAmount,
+          entryDate: now.toISOString().slice(0, 10),
+          entryType: "customer_direct_cost_receivable",
           directCostId: directCost.id,
-          responsiblePartyType: a.responsiblePartyType,
-          responsiblePartyId: a.responsiblePartyId,
-          shareAmount: normalizeMoney(a.shareAmount),
-          sharePercent: null,  // MVP: amount-based, not percent
-          subledgerEntryId: null,  // per-party entries deferred
-          createdBy: user.userId,
+          docNo: entryDocNo.docNo,
+          idempotencyKey: `${input.idempotencyKey}:entry`,
         });
+        subledgerEntryId = entryResult.entryId;
+      } else if (input.costResponsibilityType === "factory" && input.linkedOwnerType === "factory" && input.linkedOwnerId) {
+        const year = now.getUTCFullYear();
+        const entryDocNo = await allocateDocumentNumber(documentSequence, {
+          tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
+        });
+        const entryResult = await subledger.postDirectCostEntry(user, effective, {
+          ownerType: "factory",
+          ownerId: input.linkedOwnerId,
+          amount: confirmedAmount,
+          entryDate: now.toISOString().slice(0, 10),
+          entryType: "factory_direct_cost_recovery",
+          directCostId: directCost.id,
+          docNo: entryDocNo.docNo,
+          idempotencyKey: `${input.idempotencyKey}:entry`,
+        });
+        subledgerEntryId = entryResult.entryId;
       }
-    }
 
-    // Step 9: update direct cost review status to 'approved'
-    const updatedDirectCost = await this.deps.directCostRepository.updateDirectCostReview(
-      user.tenantId, directCost.id,
-      {
-        amount: confirmedAmount,
-        costResponsibilityType: input.costResponsibilityType,
-        actualPayerType: input.actualPayerType,
-        includedInProfitability: input.includedInProfitability,
+      if (input.costResponsibilityType === "shared" && input.allocations) {
+        for (const a of input.allocations) {
+          await directCostRepo.insertAllocation({
+            tenantId: user.tenantId,
+            directCostId: directCost.id,
+            responsiblePartyType: a.responsiblePartyType,
+            responsiblePartyId: a.responsiblePartyId,
+            shareAmount: normalizeMoney(a.shareAmount),
+            sharePercent: null,
+            subledgerEntryId: null,
+            createdBy: user.userId,
+          });
+        }
+      }
+
+      const updatedDirectCost = await directCostRepo.updateDirectCostReview(
+        user.tenantId, directCost.id,
+        {
+          amount: confirmedAmount,
+          costResponsibilityType: input.costResponsibilityType,
+          actualPayerType: input.actualPayerType,
+          includedInProfitability: input.includedInProfitability,
+          reviewStatus: "approved",
+          reviewedBy: user.userId,
+          reviewedAt: now,
+          notes: input.notes ?? directCost.notes,
+          updatedBy: user.userId,
+        },
+        ["needs_accountant_review"],
+      );
+      if (!updatedDirectCost) {
+        throw new DirectCostError("INTERNAL_TRANSACTION_FAILED", `Direct cost '${directCost.id}' could not be transitioned to approved.`);
+      }
+
+      let snapshotId: string | null = null;
+      let snapshotVersion: number | null = null;
+      if (input.includedInProfitability) {
+        const allApprovedIncluded = await directCostRepo.listApprovedIncludedDirectCosts(
+          user.tenantId, directCost.linkedEntityType, directCost.linkedEntityId,
+        );
+        const totalDirectCosts = allApprovedIncluded.reduce(
+          (sum, dc) => addMoney(sum, normalizeMoney(dc.amount!)), "0.00",
+        );
+        if (directCost.linkedEntityType === "sales_order") {
+          const snapshotResult = await this.deps.snapshotService.createLaterSnapshot(user, {
+            salesOrderId: directCost.linkedEntityId,
+            reviewedDirectCosts: totalDirectCosts,
+            calculationNotes: `Version includes ${allApprovedIncluded.length} approved direct cost(s) totaling ${totalDirectCosts}.`,
+          });
+          snapshotId = snapshotResult.snapshotId;
+          snapshotVersion = snapshotResult.version;
+        }
+      }
+
+      await appendAuditLog(audit, user.tenantId, user.userId, {
+        entityType: DIRECT_COST_ENTITY_TYPE,
+        entityId: directCost.id,
+        actionType: "direct_cost.review.approve",
+        newValuesJson: {
+          costNo: directCost.costNo,
+          confirmedAmount,
+          costResponsibilityType: input.costResponsibilityType,
+          actualPayerType: input.actualPayerType,
+          includedInProfitability: input.includedInProfitability,
+          subledgerEntryId,
+          snapshotId,
+          snapshotVersion,
+          reviewStatus: "approved",
+          reviewedBy: user.userId,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      const result: ReviewDirectCostResult = {
+        action: "reviewed",
+        directCostId: directCost.id,
         reviewStatus: "approved",
-        reviewedBy: user.userId,
-        reviewedAt: now,
-        notes: input.notes ?? directCost.notes,
-        updatedBy: user.userId,
-      },
-      ["needs_accountant_review"],
-    );
-    if (!updatedDirectCost) {
-      throw new DirectCostError("INTERNAL_TRANSACTION_FAILED", `Direct cost '${directCost.id}' could not be transitioned to approved.`);
-    }
-
-    // Step 10: if includedInProfitability, create later profitability snapshot version
-    let snapshotId: string | null = null;
-    let snapshotVersion: number | null = null;
-    if (input.includedInProfitability) {
-      // Sum all approved+included direct costs for this linked entity
-      const allApprovedIncluded = await this.deps.directCostRepository.listApprovedIncludedDirectCosts(
-        user.tenantId, directCost.linkedEntityType, directCost.linkedEntityId,
-      );
-      const totalDirectCosts = allApprovedIncluded.reduce(
-        (sum, dc) => addMoney(sum, normalizeMoney(dc.amount!)), "0.00",
-      );
-
-      // Only create snapshot if linked entity is a sales_order
-      if (directCost.linkedEntityType === "sales_order") {
-        const snapshotResult = await this.deps.snapshotService.createLaterSnapshot(user, {
-          salesOrderId: directCost.linkedEntityId,
-          reviewedDirectCosts: totalDirectCosts,
-          calculationNotes: `Version includes ${allApprovedIncluded.length} approved direct cost(s) totaling ${totalDirectCosts}.`,
-        });
-        snapshotId = snapshotResult.snapshotId;
-        snapshotVersion = snapshotResult.version;
-      }
-    }
-
-    // Step 11: audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: DIRECT_COST_ENTITY_TYPE,
-      entityId: directCost.id,
-      actionType: "direct_cost.review.approve",
-      newValuesJson: {
-        costNo: directCost.costNo,
-        confirmedAmount,
-        costResponsibilityType: input.costResponsibilityType,
-        actualPayerType: input.actualPayerType,
-        includedInProfitability: input.includedInProfitability,
         subledgerEntryId,
         snapshotId,
         snapshotVersion,
-        reviewStatus: "approved",
-        reviewedBy: user.userId,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+      };
+      await markSucceeded(idempotency, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: DIRECT_COST_ENTITY_TYPE,
+        entityId: directCost.id,
+      }, claim.record.ownerToken!, now);
 
-    // Step 12: mark idempotency succeeded
-    const result: ReviewDirectCostResult = {
-      action: "reviewed",
-      directCostId: directCost.id,
-      reviewStatus: "approved",
-      subledgerEntryId,
-      snapshotId,
-      snapshotVersion,
+      return result;
     };
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: result,
-      entityType: DIRECT_COST_ENTITY_TYPE,
-      entityId: directCost.id,
-    }, claim.record.ownerToken!, now);
 
-    return result;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        return await this.deps.transactionRunner(async (tx: unknown) => {
+          const txSubledger = this.deps.txFactories!.createSubledger(tx);
+          const txDirectCostRepo = this.deps.txFactories!.createDirectCostRepository(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency(tx);
+          const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+          return executeReview({
+            subledger: txSubledger, directCostRepository: txDirectCostRepo,
+            audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
+          });
+        });
+      } else {
+        return executeReview(null);
+      }
+    } catch (txError) {
+      // WP-07-04/BLOCKER 4: technical failure (including cutover lock wait
+      // timeout) → terminalize as retryable_failed for immediate same-key retry.
+      try {
+        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500,
+          responseBody: { message: "Direct cost review transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch {
+        // If markRetryableFailed fails, record remains in_progress → lease expiry.
+      }
+      throw txError;
+    }
   }
 }

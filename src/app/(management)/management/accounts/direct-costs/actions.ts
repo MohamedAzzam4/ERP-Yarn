@@ -360,11 +360,13 @@ export async function reviewDirectCostAction(
     audit,
   });
 
-  // Build the transaction runner + tx factories (used by future
-  // service-internal transactional composition; documented here for
-  // symmetry with the WP-08-01C sales-orders pattern).
-  void makeTransactionRunner();
-  void makeTxFactories(audit, idempotency, documentSequence);
+  // WP-07-04 cutover coordination (r11): wire transaction runner + tx factories
+  // so DirectCostService.reviewDirectCost wraps its full flow (subledger entry +
+  // allocation + direct cost status + snapshot + audit + idempotency) in a
+  // single db.transaction(). This is REQUIRED for the cutover advisory lock
+  // to protect the entire direct cost review flow.
+  const transactionRunner = makeTransactionRunner();
+  const txFactories = makeTxFactories(audit, idempotency, documentSequence);
 
   const service = new DirectCostService({
     directCostRepository,
@@ -373,6 +375,14 @@ export async function reviewDirectCostAction(
     audit,
     idempotency,
     documentSequence,
+    transactionRunner,
+    txFactories: {
+      createSubledger: txFactories.createSubledger,
+      createDirectCostRepository: txFactories.createDirectCost,
+      createAudit: txFactories.createAudit,
+      createIdempotency: txFactories.createIdempotency,
+      createDocumentSequence: txFactories.createDocumentSequence,
+    },
   });
 
   const input: ReviewDirectCostInput = {
