@@ -302,6 +302,16 @@ describeOrSkip("WP-08-01F r8 — Real mid-tx rollback + immediate retry + exact 
     const fileId = await seedFile(batchId);
     await seedStagingRow(batchId, fileId);
     const idemKey = "mt1-" + randomUUID();
+    // Capture test start timestamp BEFORE the service call so the
+    // future-lease proof below is exact and stable, not approximate.
+    // The production lease is leaseDurationMs=30000 (30s) set inside
+    // claimIdempotency using `new Date()` captured at finalizeCutoverManifest
+    // entry. Asserting lease_expires_at > testStartMs + 1000 proves the
+    // lease is genuinely at least 1s in the future relative to test start,
+    // with ~29s of tolerance for Node<->PG clock skew — strictly stronger
+    // than the prior `> Date.now() - 1000` which accepted a lease already
+    // expired by up to 1s.
+    const testStartMs = Date.now();
 
     // Use a flag-controlled faulty transactionRunner that throws BEFORE
     // work(tx) executes — this is the catch-classification proof
@@ -366,8 +376,11 @@ describeOrSkip("WP-08-01F r8 — Real mid-tx rollback + immediate retry + exact 
     // we read it again immediately before retry.
     const idemStateLeaseCheck = await sql`SELECT lease_expires_at FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
     expect(idemStateLeaseCheck[0]!.lease_expires_at).toEqual(leaseExpiresAtAfterFailure);
-    // Sanity: the lease is genuinely in the FUTURE (we never backdated it).
-    expect(new Date(leaseExpiresAtAfterFailure).getTime()).toBeGreaterThan(Date.now() - 1000);
+    // Sanity: the lease is genuinely in the FUTURE relative to the test
+    // start timestamp (we never backdated it). The production lease is
+    // 30000ms, so this allows ~29s of Node<->PG clock skew while still
+    // proving the lease is unambiguously future-dated.
+    expect(new Date(leaseExpiresAtAfterFailure).getTime()).toBeGreaterThan(testStartMs + 1000);
 
     // Second call: same key + same request — NO lease manipulation, NO clock advance.
     const outcome2 = await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
@@ -446,6 +459,13 @@ describeOrSkip("WP-08-01F r8 — Real mid-tx rollback + immediate retry + exact 
     const fileId = await seedFile(batchId);
     await seedStagingRow(batchId, fileId);
     const idemKey = "mtr-" + (opts.withSeededPriorManifest ? "seeded-" : "clean-") + randomUUID();
+    // Capture test start timestamp BEFORE the service call so the
+    // future-lease proof below is exact and stable (see MAN-TECH-1
+    // for the rationale). The production lease is 30000ms; asserting
+    // lease_expires_at > testStartMs + 1000 allows ~29s of Node<->PG
+    // clock skew while still proving the lease is unambiguously
+    // future-dated and never backdated.
+    const testStartMs = Date.now();
 
     // Optionally seed a prior current manifest for "inventory" so the
     // rollback test also proves supersession is undone.
@@ -583,8 +603,8 @@ describeOrSkip("WP-08-01F r8 — Real mid-tx rollback + immediate retry + exact 
     injectFailure = false;
     const leaseBeforeRetry = await sql`SELECT lease_expires_at FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${idemKey}`;
     // Negative assertion: lease is genuinely in the future and we
-    // did NOT backdate it.
-    expect(new Date(leaseBeforeRetry[0]!.lease_expires_at).getTime()).toBeGreaterThan(Date.now() - 1000);
+    // did NOT backdate it. Same exact/stable proof as MAN-TECH-1.
+    expect(new Date(leaseBeforeRetry[0]!.lease_expires_at).getTime()).toBeGreaterThan(testStartMs + 1000);
 
     const outcome2 = await stagingService.finalizeCutoverManifest(makeUser() as any, makeEffective() as any, {
       importBatchId: batchId, domain: "inventory", cutoffDate: "2024-01-01",
