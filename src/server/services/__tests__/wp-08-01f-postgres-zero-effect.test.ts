@@ -516,8 +516,8 @@ describeOrSkip("WP-08-01F TASK 4 — Real PostgreSQL service-level zero-effect p
     const txFactories = {
       createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
-      createInventoryLedger: () => ({} as any),
-      createSubledger: () => ({} as any),
+      createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any),
+      createSubledger: () => ({ requireCutoverLock: async () => {} } as any),
       createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
     };
     const commitService = new HistoricalCommitService({

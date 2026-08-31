@@ -649,6 +649,7 @@ describe("WP-02-03 source concurrency — advisory lock", () => {
       findEntryById: original.findEntryById.bind(original),
       listEntriesForAccount: original.listEntriesForAccount.bind(original),
       updateEntrySettlementStatus: original.updateEntrySettlementStatus.bind(original),
+      lockCutoverScope: original.lockCutoverScope.bind(original),
     };
 
     const trackedService = new SubledgerService({

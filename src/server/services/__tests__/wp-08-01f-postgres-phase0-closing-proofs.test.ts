@@ -252,8 +252,8 @@ function makeServices(storage: InMemoryPrivateFileStorage) {
   const txFactories = {
     createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
-    createInventoryLedger: () => ({} as any),
-    createSubledger: () => ({} as any),
+    createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any),
+    createSubledger: () => ({ requireCutoverLock: async () => {} } as any),
     createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
   };
   const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency: idem, transactionRunner, txFactories });

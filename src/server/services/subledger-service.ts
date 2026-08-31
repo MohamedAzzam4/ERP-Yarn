@@ -165,6 +165,25 @@ export interface SubledgerTransactionHandle {
    * In-memory test stores implement this as a no-op (single-threaded).
    */
   lockSourceEntry(tenantId: string, sourceDocumentType: string, sourceDocumentId: string): Promise<void>;
+
+  /**
+   * Acquire a transaction-scoped cutover coordination lock for the
+   * "subledger" domain of this tenant.
+   *
+   * Contract 08 §8.1.1/§8.10/§12.4: historical migration cutover and
+   * live operational posting in the same tenant/subledger scope MUST
+   * be mutually exclusive at the DB level.
+   *
+   * Implemented as pg_advisory_xact_lock(namespace, hash(tenant,"subledger"))
+   * — auto-released on COMMIT or ROLLBACK, re-entrant within the same
+   * transaction (the migration's own opening-balance entry posting can
+   * re-acquire without self-blocking), and atomic (no TOCTOU window).
+   *
+   * In-memory test stores implement this as a no-op (single-threaded).
+   *
+   * See src/server/services/cutover-coordination.ts for the full design.
+   */
+  lockCutoverScope(tenantId: string, domain: "inventory" | "subledger"): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +311,34 @@ export class SubledgerService {
   constructor(private readonly deps: SubledgerServiceDeps) {}
 
   /**
+   * Acquire the transaction-scoped cutover coordination advisory lock for
+   * this tenant's "subledger" domain.
+   *
+   * Contract 08 §8.1.1/§8.10/§12.4 + Contract 12 §11.4: historical migration
+   * cutover and live operational posting in the same tenant/subledger scope
+   * MUST be mutually exclusive at the DB level.
+   *
+   * This MUST be called AFTER the idempotency claim is granted (so replay
+   * does not block) and BEFORE any business write (so the lock is held
+   * before any operational effect). The lock is transaction-scoped
+   * (pg_advisory_xact_lock) — auto-released on COMMIT or ROLLBACK, re-entrant
+   * in the same transaction (the historical commit's own opening-balance
+   * entry posting re-acquires without self-blocking), and atomic (no TOCTOU).
+   *
+   * Central enforcement: every live posting method on SubledgerService
+   * calls this helper, so no caller can bypass cutover safety by forgetting
+   * a controller-level check.
+   *
+   * Visibility: public so the historical commit service can acquire the
+   * same lock BEFORE its own opening-balance entry posting, making the
+   * migration transaction the holder of the advisory lock. The subsequent
+   * postOpeningBalanceEntry call re-acquires (re-entrant — no-op).
+   */
+  async requireCutoverLock(tenantId: string): Promise<void> {
+    await this.deps.subledger.lockCutoverScope(tenantId, "subledger");
+  }
+
+  /**
    * Post a supplier payable entry (DEC-067 formula).
    *
    * Contract 07 §8: Supplier payable is NEGATIVE signed amount.
@@ -398,6 +445,10 @@ export class SubledgerService {
     }
 
     // claim.action === "execute"
+
+    // WP-07-04 cutover coordination: acquire tenant/subledger advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     // Step 4: Acquire transaction-scoped advisory lock on source document.
     // This prevents two concurrent transactions from posting entries for the
@@ -646,6 +697,10 @@ export class SubledgerService {
     }
 
     // claim.action === "execute"
+
+    // WP-07-04 cutover coordination: acquire tenant/subledger advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     // Acquire transaction-scoped advisory lock on source document.
     // Prevents two concurrent approvals from posting two payables for the
@@ -940,6 +995,10 @@ export class SubledgerService {
     const currency = input.currency ?? "EGP";
     const tenantId = user.tenantId;
 
+    // WP-07-04 cutover coordination: acquire tenant/subledger advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
+
     // The account already exists (created at draft time). We don't need to
     // re-resolve it, but we do need the account id for the entry.
     // PaymentService passes the accountId directly.
@@ -1014,6 +1073,10 @@ export class SubledgerService {
     const tenantId = user.tenantId;
     // Reversal entry has the OPPOSITE sign of the original
     const reversalAmountSigned = negateMoney(input.originalAmountSigned);
+
+    // WP-07-04 cutover coordination: acquire tenant/subledger advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     const entry = await this.deps.subledger.insertEntry({
       tenantId,
@@ -1104,6 +1167,10 @@ export class SubledgerService {
     const tenantId = user.tenantId;
     const amountSigned = normalizeMoney(input.amount);  // POSITIVE for both customer + factory
 
+    // WP-07-04 cutover coordination: acquire tenant/subledger advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
+
     // Get-or-create account
     const account = await this.getOrCreateAccount(user, input.ownerType, input.ownerId, currency);
 
@@ -1181,6 +1248,10 @@ export class SubledgerService {
     const tenantId = user.tenantId;
     // NEGATIVE = -returnCreditValue (customer gets credit)
     const amountSigned = negateMoney(normalizeMoney(input.returnCreditValue));
+
+    // WP-07-04 cutover coordination: acquire tenant/subledger advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     const account = await this.getOrCreateAccount(user, "customer", input.customerId, currency);
 
@@ -1270,6 +1341,15 @@ export class SubledgerService {
         `Opening balance amount must be non-zero, got '${input.amountSigned}'.`,
       );
     }
+
+    // WP-07-04 cutover coordination: acquire tenant/subledger advisory lock.
+    // This is the migration's own opening-balance entry posting path. The
+    // historical commit acquires the same advisory lock for "subledger"
+    // BEFORE calling this method, so this call is re-entrant (no-op in
+    // the same transaction). It exists as defense-in-depth for any future
+    // caller that might invoke this method outside a migration transaction.
+    // See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     // Find or create the party account
     let account = await this.deps.subledger.findAccount(tenantId, input.ownerType, input.ownerId, currency);

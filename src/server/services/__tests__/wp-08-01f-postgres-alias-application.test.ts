@@ -235,8 +235,9 @@ function makeCommitService() {
     txFactories: {
       createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
-      createInventoryLedger: () => ({} as any),
+      createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any),
       createSubledger: () => ({
+        requireCutoverLock: async () => {},
         postOpeningBalanceEntry: async (_t: string, _u: string, p: {
           ownerType: string; ownerId: string; amountSigned: string;
           entryDate: string; entryNo: string; sourceDocumentType: string;

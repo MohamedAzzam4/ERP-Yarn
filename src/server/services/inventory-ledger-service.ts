@@ -176,6 +176,25 @@ export interface InventoryLedgerTransactionHandle {
 
   /** List all balance rows for a tenant (for batch reconciliation). WP-03-01. */
   listAllBalances(tenantId: string): Promise<InventoryBalance[]>;
+
+  /**
+   * Acquire a transaction-scoped cutover coordination lock for the
+   * "inventory" domain of this tenant.
+   *
+   * Contract 08 §8.1.1/§8.10/§12.4: historical migration cutover and
+   * live operational posting in the same tenant/inventory scope MUST
+   * be mutually exclusive at the DB level.
+   *
+   * Implemented as pg_advisory_xact_lock(namespace, hash(tenant,"inventory"))
+   * — auto-released on COMMIT or ROLLBACK, re-entrant within the same
+   * transaction (the migration's own opening-balance posting can
+   * re-acquire without self-blocking), and atomic (no TOCTOU window).
+   *
+   * In-memory test stores implement this as a no-op (single-threaded).
+   *
+   * See src/server/services/cutover-coordination.ts for the full design.
+   */
+  lockCutoverScope(tenantId: string, domain: "inventory" | "subledger"): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +419,34 @@ export class InventoryLedgerService {
   }
 
   /**
+   * Acquire the transaction-scoped cutover coordination advisory lock for
+   * this tenant's "inventory" domain.
+   *
+   * Contract 08 §8.1.1/§8.10/§12.4 + Contract 12 §11.4: historical migration
+   * cutover and live operational posting in the same tenant/inventory scope
+   * MUST be mutually exclusive at the DB level.
+   *
+   * This MUST be called AFTER the idempotency claim is granted (so replay
+   * does not block) and BEFORE any business write (so the lock is held
+   * before any operational effect). The lock is transaction-scoped
+   * (pg_advisory_xact_lock) — auto-released on COMMIT or ROLLBACK, re-entrant
+   * in the same transaction (the historical commit's own opening-balance
+   * posting re-acquires without self-blocking), and atomic (no TOCTOU).
+   *
+   * Central enforcement: every live posting method on InventoryLedgerService
+   * calls this helper, so no caller can bypass cutover safety by forgetting
+   * a controller-level check.
+   *
+   * Visibility: public so the historical commit service can acquire the
+   * same lock BEFORE its own opening-balance posting, making the migration
+   * transaction the holder of the advisory lock. The subsequent
+   * postOpeningBalanceMovement call re-acquires (re-entrant — no-op).
+   */
+  async requireCutoverLock(tenantId: string): Promise<void> {
+    await this.deps.ledger.lockCutoverScope(tenantId, "inventory");
+  }
+
+  /**
    * Post a raw-receipt inventory effect.
    *
    * Movement matrix (Contract 04 §8): destination +qty, no reserved/WIP.
@@ -487,6 +534,10 @@ export class InventoryLedgerService {
     }
 
     // claim.action === "execute" — proceed with the posting
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     // Duplicate source guard (defense-in-depth, Contract 06 §7)
     const existingBySource = await this.deps.ledger.findMovementBySource(
@@ -730,6 +781,10 @@ export class InventoryLedgerService {
     if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
     if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
 
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
     // Duplicate source guard
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
@@ -852,6 +907,10 @@ export class InventoryLedgerService {
     if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
     if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
 
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, claim.record.ownerToken!, now);
@@ -947,6 +1006,10 @@ export class InventoryLedgerService {
     if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
     if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
 
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
     const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, { tenantId, documentType: "adjustment", year, entityType: "stock_movement" });
 
     let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.locationId);
@@ -1065,6 +1128,10 @@ export class InventoryLedgerService {
     if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
     if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
 
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
     // Duplicate source guard
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
@@ -1163,6 +1230,10 @@ export class InventoryLedgerService {
     if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key '${input.idempotencyKey}' conflict.`);
     if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation '${input.idempotencyKey}' in progress.`);
 
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
     // Duplicate source guard: prevent double reversal of the same movement.
     // sourceDocumentType='stock_movement', sourceDocumentId=originalMovementId.
     const existingReversal = await this.deps.ledger.findMovementBySource(tenantId, "stock_movement", input.originalMovementId);
@@ -1315,6 +1386,10 @@ export class InventoryLedgerService {
     if (claim.action === "conflict") throw new IdempotencyConflictLedgerError(`Idempotency key conflict.`);
     if (claim.action === "in_progress") throw new OperationInProgressLedgerError(`Operation in progress.`);
 
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
     const existingBySource = await this.deps.ledger.findMovementBySource(tenantId, input.sourceDocumentType, input.sourceDocumentId);
     if (existingBySource) {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, { responseCode: 409, responseBody: { message: "Duplicate source" }, lastErrorClass: "DuplicateSourceError" }, claim.record.ownerToken!, now);
@@ -1541,6 +1616,9 @@ export class InventoryLedgerService {
         `Operation '${input.idempotencyKey}' is still in progress.`,
       );
     }
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     // Duplicate source guard — defense-in-depth against double waste posting
     // for the same allocation. The orchestrator (ProductionReceiptApprovalService)
@@ -1715,6 +1793,9 @@ export class InventoryLedgerService {
         `Operation '${input.idempotencyKey}' is still in progress.`,
       );
     }
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     // Duplicate source guard — defense-in-depth against double return movement.
     const existingBySource = await this.deps.ledger.findMovementBySource(
@@ -1888,6 +1969,10 @@ export class InventoryLedgerService {
     const normalizedQty = normalizeKg(input.quantityKg);
     const now = new Date();
 
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock
+    // BEFORE any business write. See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
+
     // Lock source balance
     let balance = await this.deps.ledger.findBalanceForUpdate(tenantId, input.itemId, input.fromLocationId);
     if (!balance) {
@@ -2022,6 +2107,15 @@ export class InventoryLedgerService {
     }
 
     const now = new Date();
+
+    // WP-07-04 cutover coordination: acquire tenant/inventory advisory lock.
+    // This is the migration's own opening-balance posting path. The
+    // historical commit acquires the same advisory lock for "inventory"
+    // BEFORE calling this method, so this call is re-entrant (no-op in
+    // the same transaction). It exists as defense-in-depth for any future
+    // caller that might invoke this method outside a migration transaction.
+    // See requireCutoverLock for the full contract.
+    await this.requireCutoverLock(tenantId);
 
     // Duplicate-source guard: prevent two movements for the same staging row
     const existingBySource = await this.deps.ledger.findMovementBySource(

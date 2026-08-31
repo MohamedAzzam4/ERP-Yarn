@@ -280,6 +280,9 @@ export class TransactionalTestStore {
     listAllBalances: async (tenantId: string): Promise<InventoryBalance[]> => {
       return [...this.activeBalances.values()].filter((b) => b.tenantId === tenantId);
     },
+    lockCutoverScope: async (_tenantId: string, _domain: "inventory" | "subledger"): Promise<void> => {
+      // No-op in-memory — single-threaded, no real DB advisory lock.
+    },
   };
 
   // --- Audit handle (AuditTransactionHandle) ---

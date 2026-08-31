@@ -163,6 +163,9 @@ export class TransactionalSubledgerTestStore {
     lockSourceEntry: async (_tenantId, _sourceDocumentType, _sourceDocumentId) => {
       // No-op in single-threaded test store
     },
+    lockCutoverScope: async (_tenantId, _domain) => {
+      // No-op in single-threaded test store — no real DB advisory lock.
+    },
   };
 
   audit: AuditTransactionHandle = {

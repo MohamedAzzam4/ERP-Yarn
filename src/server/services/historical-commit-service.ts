@@ -2060,6 +2060,24 @@ export class HistoricalCommitService {
         const txIdem = this.deps.txFactories!.createIdempotency
           ? this.deps.txFactories!.createIdempotency!(tx)
           : this.deps.idempotency;
+
+        // WP-07-04 cutover coordination: acquire tenant/domain advisory
+        // locks INSIDE the migration's operational transaction, BEFORE any
+        // business write. This makes the migration transaction the holder
+        // of the advisory locks. The subsequent postOpeningBalanceMovement
+        // and postOpeningBalanceEntry calls re-acquire (re-entrant — no-op).
+        //
+        // Contract 08 §8.1.1/§8.10/§12.4 + Contract 12 §11.4: concurrent
+        // live operational posting in the same tenant/inventory or
+        // tenant/subledger scope MUST be blocked/serialized while the
+        // migration commit holds the cutover lock.
+        //
+        // The locks are transaction-scoped (pg_advisory_xact_lock) —
+        // auto-released on COMMIT or ROLLBACK, so a technical failure
+        // safely releases them with zero recovery code.
+        await txInvLedger.requireCutoverLock(user.tenantId);
+        await txSubledger.requireCutoverLock(user.tenantId);
+
         return executePosting({
           commitRepository: txRepo, audit: txAudit,
           inventoryLedger: txInvLedger, subledger: txSubledger,

@@ -73,7 +73,7 @@ function makeCommitServiceDeps() {
   const txRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work("tx");
   const txFactories = {
     createCommitRepository: () => commitRepo, createAudit: () => audit,
-    createInventoryLedger: () => ({} as any), createSubledger: () => ({} as any),
+    createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any), createSubledger: () => ({ requireCutoverLock: async () => {} } as any),
     createDocumentSequence: () => new InProcessDocumentSequenceStore(),
   };
   return { commitRepo, audit, idem, txRunner, txFactories };

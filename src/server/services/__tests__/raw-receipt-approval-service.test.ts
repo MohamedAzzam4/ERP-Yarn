@@ -146,6 +146,7 @@ class MockInventoryLedgerTransactionHandle implements InventoryLedgerTransaction
   }
   async listMovementsForBalance(): Promise<any[]> { return []; }
   async listAllBalances(): Promise<any[]> { return []; }
+  async lockCutoverScope(): Promise<void> {}
 }
 
 class MockSubledgerTransactionHandle implements SubledgerTransactionHandle {
@@ -159,6 +160,7 @@ class MockSubledgerTransactionHandle implements SubledgerTransactionHandle {
   async listEntriesForAccount(): Promise<any[]> { return []; }
   async updateEntrySettlementStatus(): Promise<any | null> { return null; }
   async lockSourceEntry(): Promise<void> {}
+  async lockCutoverScope(): Promise<void> {}
   async insertAccount(row: NewAccountInput): Promise<any> {
     this.insertAccountCalls.push(row);
     const acct: any = {

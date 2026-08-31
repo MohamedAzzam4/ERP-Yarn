@@ -775,6 +775,9 @@ describe("WP-02-02 locking — findBalanceForUpdate called before insert/update"
       listAllBalances: async (tenantId) => {
         return originalLedger.listAllBalances(tenantId);
       },
+      lockCutoverScope: async () => {
+        // No-op in unit tests — single-threaded, no real DB advisory lock.
+      },
     };
 
     const service = new InventoryLedgerService({

@@ -205,6 +205,18 @@ export class InMemoryInventoryLedgerRepository implements InventoryLedgerTransac
   }
 
   /**
+   * No-op in-memory implementation of cutover coordination lock.
+   *
+   * In production this acquires pg_advisory_xact_lock(namespace, hash(tenant, domain))
+   * for real DB-level mutual exclusion between historical migration cutover
+   * and live operational posting (Contract 08 §8.1.1/§8.10/§12.4).
+   * In-memory tests are single-threaded, so no real lock is needed.
+   */
+  async lockCutoverScope(_tenantId: string, _domain: "inventory" | "subledger"): Promise<void> {
+    // no-op
+  }
+
+  /**
    * WP-06-04 test helper: list all movements for a tenant.
    * Used by replacement workflow tests to verify no manual stock difference movements exist.
    */
