@@ -200,6 +200,12 @@ export class SettlementService {
       }
     }
 
+    // r14 BLOCKER C: fail-closed transaction configuration check BEFORE
+    // idempotency claim, DB locking, or business mutation.
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new SettlementError("CONFIGURATION_ERROR", "SettlementService.settlePayment requires transactionRunner and txFactories for production high-risk command execution.");
+    }
+
     // Step 2: fetch + lock payment
     const payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
     if (!payment) throw new PaymentNotFoundError(input.paymentId);

@@ -424,6 +424,15 @@ export class PaymentService {
     if (!input.paymentId?.trim()) throw new PaymentError("VALIDATION_FAILED", "paymentId is required.");
     if (!input.idempotencyKey?.trim()) throw new PaymentError("VALIDATION_FAILED", "idempotencyKey is required.");
 
+    // r14 BLOCKER C: fail-closed transaction configuration check BEFORE
+    // idempotency claim, DB locking, document allocation, or business mutation.
+    // A missing transactionRunner/txFactories is an internal configuration error
+    // that must NOT claim idempotency, consume attempt_count, create audit,
+    // or acquire row locks.
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new PaymentError("CONFIGURATION_ERROR", "PaymentService.postPayment requires transactionRunner and txFactories for production high-risk command execution.");
+    }
+
     // Step 2: fetch payment (pre-tx — will be re-locked/re-read inside tx)
     let payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
     if (!payment) throw new PaymentNotFoundError(input.paymentId);
@@ -445,25 +454,28 @@ export class PaymentService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r13 NEW BLOCKER: replay by STATE, not by responseBody shape.
-      // - state === "succeeded" → return stored successful result
-      // - state === "business_failed" → throw the exact stored business failure
-      //   (durable — same key + same request must return the same failure)
+      // r14 BLOCKER B: ALL terminal replay states must fail closed.
+      // No replay branch may silently fall through to business execution.
       if (claim.record.state === "succeeded") {
         const responseBody = claim.record.responseBody as Partial<PostPaymentResult> | null;
-        if (responseBody?.paymentId) {
-          return { ...responseBody, action: "replayed" } as PostPaymentResult;
+        // Validate complete PostPaymentResult — not just paymentId.
+        if (!responseBody?.paymentId || !responseBody?.paymentNo || !responseBody?.status
+            || !responseBody?.postedEntryId || !responseBody?.entryNo
+            || !responseBody?.amountSigned || !responseBody?.accountId) {
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
         }
+        return { ...responseBody, action: "replayed" } as PostPaymentResult;
       }
       if (claim.record.state === "business_failed") {
         const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
         if (!errorBody?.code || !errorBody?.message) {
-          // Malformed durable business-failure record — fail closed.
           throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable business failure record is malformed.");
         }
         // Throw the exact stored business failure — do NOT re-execute.
         throw new PaymentError(errorBody.code, errorBody.message);
       }
+      // Unexpected replay state — fail closed.
+      throw new PaymentError("IDEMPOTENCY_INCONSISTENT", `Unexpected replay state '${claim.record.state}'.`);
     }
     if (claim.action === "conflict") {
       throw new PaymentError("IDEMPOTENCY_CONFLICT", `Idempotency key '${input.idempotencyKey}' was used with a different request body.`);
@@ -472,20 +484,22 @@ export class PaymentService {
       throw new PaymentError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
     }
 
-    // Step 4: state check (pre-tx business failures — canonical {code, message} body)
+    // Step 4: state check (pre-tx business failures — persist EXACT error.code + error.message)
     if (payment.status === "posted") {
+      const error = new PaymentAlreadyPostedError(payment.id);
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 409, responseBody: { code: "PAYMENT_ALREADY_POSTED", message: `Payment '${payment.id}' is already posted.` },
-        lastErrorClass: "PaymentAlreadyPostedError",
+        responseCode: 409, responseBody: { code: error.code, message: error.message },
+        lastErrorClass: error.name,
       }, claim.record.ownerToken!, now);
-      throw new PaymentAlreadyPostedError(payment.id);
+      throw error;
     }
     if (payment.status !== "draft") {
+      const error = new PaymentNotPostableError(payment.id, payment.status);
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 409, responseBody: { code: "PAYMENT_NOT_POSTABLE", message: `Payment '${payment.id}' is in status '${payment.status}', not 'draft'.` },
-        lastErrorClass: "PaymentNotPostableError",
+        responseCode: 409, responseBody: { code: error.code, message: error.message },
+        lastErrorClass: error.name,
       }, claim.record.ownerToken!, now);
-      throw new PaymentNotPostableError(payment.id, payment.status);
+      throw error;
     }
 
     // Step 5: derive entry type + sign (pre-tx — may be overridden by
@@ -616,47 +630,34 @@ export class PaymentService {
     };
 
     try {
-      // BLOCKER 7 (r13): fail closed — high-risk production commands MUST
-      // have transactionRunner + txFactories. No silent non-transactional fallback.
-      if (!this.deps.transactionRunner || !this.deps.txFactories) {
-        throw new Error("CONFIGURATION_ERROR: transactionRunner and txFactories are required for this high-risk command.");
-      }
-      if (true) {
-        return await this.deps.transactionRunner(async (tx: unknown) => {
-          const txSubledger = this.deps.txFactories!.createSubledger(tx);
-          const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);
-          const txAudit = this.deps.txFactories!.createAudit(tx);
-          const txIdem = this.deps.txFactories!.createIdempotency(tx);
-          const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
-          return executePosting({
-            subledger: txSubledger, paymentRepository: txPaymentRepo,
-            audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
-          });
+      // r14 BLOCKER C: transactionRunner + txFactories are already verified
+      // at the top of this method. No dead non-transactional fallback.
+      return await this.deps.transactionRunner!(async (tx: unknown) => {
+        const txSubledger = this.deps.txFactories!.createSubledger(tx);
+        const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);
+        const txAudit = this.deps.txFactories!.createAudit(tx);
+        const txIdem = this.deps.txFactories!.createIdempotency(tx);
+        const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+        return executePosting({
+          subledger: txSubledger, paymentRepository: txPaymentRepo,
+          audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
         });
-      } else {
-        // Unit test path — no transaction boundary
-        return executePosting(null);
-      }
+      });
     } catch (txError) {
-      // r12 BLOCKER: classify business vs technical failures.
-      // Business failures (PaymentAlreadyPostedError, PaymentNotPostableError,
-      // PaymentNotFoundError) discovered under the lock inside the transaction
-      // are DURABLE — same-key retry must return the same stored failure.
-      // Technical/system failures (cutover lock wait timeout, DB error, etc.)
-      // are RETRYABLE — same-key retry can reclaim and re-execute.
+      // r14 BLOCKER A: classify business vs technical failures.
+      // Persist EXACT error.code + error.message — no remapping.
       const isBusinessError =
         txError instanceof PaymentAlreadyPostedError ||
         txError instanceof PaymentNotPostableError ||
         txError instanceof PaymentNotFoundError;
       try {
         if (isBusinessError) {
-          const code = txError instanceof PaymentAlreadyPostedError ? "PAYMENT_ALREADY_POSTED"
-            : txError instanceof PaymentNotPostableError ? "PAYMENT_NOT_POSTABLE"
-            : "PAYMENT_NOT_FOUND";
+          // Persist the exact error.code and error.message from the thrown error.
+          const error = txError as PaymentError;
           await markBusinessFailed(this.deps.idempotency, claim.record.id, {
             responseCode: 409,
-            responseBody: { code, message: (txError as Error).message },
-            lastErrorClass: (txError as Error).name,
+            responseBody: { code: error.code, message: error.message },
+            lastErrorClass: error.name,
           }, claim.record.ownerToken!, now);
         } else {
           // Technical failure → retryable_failed for immediate same-key retry.

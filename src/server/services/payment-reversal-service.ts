@@ -164,6 +164,12 @@ export class PaymentReversalService {
     if (!input.idempotencyKey?.trim()) throw new PaymentReversalError("VALIDATION_FAILED", "idempotencyKey is required.");
     if (!input.reason?.trim()) throw new ReversalReasonRequiredError();
 
+    // r14 BLOCKER C: fail-closed transaction configuration check BEFORE
+    // idempotency claim, DB locking, or business mutation.
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new PaymentReversalError("CONFIGURATION_ERROR", "PaymentReversalService.reversePayment requires transactionRunner and txFactories for production high-risk command execution.");
+    }
+
     // Step 2: fetch + lock payment
     const payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
     if (!payment) throw new PaymentNotFoundForReversalError(input.paymentId);

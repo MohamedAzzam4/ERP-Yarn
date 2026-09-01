@@ -382,6 +382,12 @@ export class DirectCostService {
       throw new DirectCostError("VALIDATION_FAILED", `Confirmed amount must be positive, got '${input.amount}'.`);
     }
 
+    // r14 BLOCKER C: fail-closed transaction configuration check BEFORE
+    // idempotency claim, DB locking, or business mutation.
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new DirectCostError("CONFIGURATION_ERROR", "DirectCostService.reviewDirectCost requires transactionRunner and txFactories for production high-risk command execution.");
+    }
+
     // Step 2: fetch + lock direct cost
     const directCost = await this.deps.directCostRepository.findDirectCostById(user.tenantId, input.directCostId);
     if (!directCost) throw new DirectCostNotFoundError(input.directCostId);
