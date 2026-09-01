@@ -349,7 +349,12 @@ export class PaymentReversalService {
     };
 
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
+      // BLOCKER 7 (r13): fail closed — high-risk production commands MUST
+      // have transactionRunner + txFactories. No silent non-transactional fallback.
+      if (!this.deps.transactionRunner || !this.deps.txFactories) {
+        throw new Error("CONFIGURATION_ERROR: transactionRunner and txFactories are required for this high-risk command.");
+      }
+      if (true) {
         return await this.deps.transactionRunner(async (tx: unknown) => {
           const txSubledger = this.deps.txFactories!.createSubledger(tx);
           const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);

@@ -105,8 +105,17 @@ function makeDeps() {
   const documentSequence = new InProcessDocumentSequenceStore();
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
   const snapshotService = new ProfitabilitySnapshotService({ snapshotRepository: snapshotRepo, salesRepository, audit });
+  const noopTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work(null);
   const directCostService = new DirectCostService({
     directCostRepository: directCostRepo, subledger, snapshotService, audit, idempotency, documentSequence,
+    transactionRunner: noopTxRunner,
+    txFactories: {
+      createSubledger: () => subledger,
+      createDirectCostRepository: () => directCostRepo,
+      createAudit: () => audit,
+      createIdempotency: () => idempotency,
+      createDocumentSequence: () => documentSequence,
+    },
   });
   return { directCostRepo, subledgerRepo, snapshotRepo, salesRepository, audit, idempotency, documentSequence, subledger, snapshotService, directCostService };
 }

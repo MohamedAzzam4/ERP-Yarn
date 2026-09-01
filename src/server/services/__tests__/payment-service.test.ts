@@ -103,9 +103,36 @@ function makeDeps() {
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
-  const paymentService = new PaymentService({ paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence });
-  const settlementService = new SettlementService({ paymentRepository: paymentRepo, subledger, audit, idempotency });
-  const reversalService = new PaymentReversalService({ paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence });
+  const noopTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work(null);
+  const paymentService = new PaymentService({ paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence,
+    transactionRunner: noopTxRunner,
+    txFactories: {
+      createSubledger: () => subledger,
+      createPaymentRepository: () => paymentRepo,
+      createAudit: () => audit,
+      createIdempotency: () => idempotency,
+      createDocumentSequence: () => documentSequence,
+    },
+  });
+  const settlementService = new SettlementService({ paymentRepository: paymentRepo, subledger, audit, idempotency,
+    transactionRunner: noopTxRunner,
+    txFactories: {
+      createSubledger: () => subledger,
+      createPaymentRepository: () => paymentRepo,
+      createAudit: () => audit,
+      createIdempotency: () => idempotency,
+    },
+  });
+  const reversalService = new PaymentReversalService({ paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence,
+    transactionRunner: noopTxRunner,
+    txFactories: {
+      createSubledger: () => subledger,
+      createPaymentRepository: () => paymentRepo,
+      createAudit: () => audit,
+      createIdempotency: () => idempotency,
+      createDocumentSequence: () => documentSequence,
+    },
+  });
   return { subledgerRepo, paymentRepo, audit, idempotency, documentSequence, subledger, paymentService, settlementService, reversalService };
 }
 

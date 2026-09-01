@@ -445,9 +445,24 @@ export class PaymentService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      const responseBody = claim.record.responseBody as Partial<PostPaymentResult> | null;
-      if (responseBody?.paymentId) {
-        return { ...responseBody, action: "replayed" } as PostPaymentResult;
+      // r13 NEW BLOCKER: replay by STATE, not by responseBody shape.
+      // - state === "succeeded" → return stored successful result
+      // - state === "business_failed" → throw the exact stored business failure
+      //   (durable — same key + same request must return the same failure)
+      if (claim.record.state === "succeeded") {
+        const responseBody = claim.record.responseBody as Partial<PostPaymentResult> | null;
+        if (responseBody?.paymentId) {
+          return { ...responseBody, action: "replayed" } as PostPaymentResult;
+        }
+      }
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
+        if (!errorBody?.code || !errorBody?.message) {
+          // Malformed durable business-failure record — fail closed.
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable business failure record is malformed.");
+        }
+        // Throw the exact stored business failure — do NOT re-execute.
+        throw new PaymentError(errorBody.code, errorBody.message);
       }
     }
     if (claim.action === "conflict") {
@@ -457,17 +472,17 @@ export class PaymentService {
       throw new PaymentError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
     }
 
-    // Step 4: state check
+    // Step 4: state check (pre-tx business failures — canonical {code, message} body)
     if (payment.status === "posted") {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 409, responseBody: { message: "Payment already posted." },
+        responseCode: 409, responseBody: { code: "PAYMENT_ALREADY_POSTED", message: `Payment '${payment.id}' is already posted.` },
         lastErrorClass: "PaymentAlreadyPostedError",
       }, claim.record.ownerToken!, now);
       throw new PaymentAlreadyPostedError(payment.id);
     }
     if (payment.status !== "draft") {
       await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 409, responseBody: { message: `Payment in status '${payment.status}'.` },
+        responseCode: 409, responseBody: { code: "PAYMENT_NOT_POSTABLE", message: `Payment '${payment.id}' is in status '${payment.status}', not 'draft'.` },
         lastErrorClass: "PaymentNotPostableError",
       }, claim.record.ownerToken!, now);
       throw new PaymentNotPostableError(payment.id, payment.status);
@@ -601,7 +616,12 @@ export class PaymentService {
     };
 
     try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
+      // BLOCKER 7 (r13): fail closed — high-risk production commands MUST
+      // have transactionRunner + txFactories. No silent non-transactional fallback.
+      if (!this.deps.transactionRunner || !this.deps.txFactories) {
+        throw new Error("CONFIGURATION_ERROR: transactionRunner and txFactories are required for this high-risk command.");
+      }
+      if (true) {
         return await this.deps.transactionRunner(async (tx: unknown) => {
           const txSubledger = this.deps.txFactories!.createSubledger(tx);
           const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);
