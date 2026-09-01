@@ -82,7 +82,7 @@ function makeServices() {
   const txRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work("tx");
   const txFactories = {
     createCommitRepository: () => commitRepo, createAudit: () => audit,
-    createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any), createSubledger: () => ({ requireCutoverLock: async () => {} } as any),
+    createInventoryLedger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any), createSubledger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any),
     createDocumentSequence: () => docSeq,
   };
   const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency: idem, transactionRunner: txRunner, txFactories });

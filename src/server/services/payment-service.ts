@@ -424,10 +424,12 @@ export class PaymentService {
     if (!input.paymentId?.trim()) throw new PaymentError("VALIDATION_FAILED", "paymentId is required.");
     if (!input.idempotencyKey?.trim()) throw new PaymentError("VALIDATION_FAILED", "idempotencyKey is required.");
 
-    // Step 2: fetch payment
-    const payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
+    // Step 2: fetch payment (pre-tx — will be re-locked/re-read inside tx)
+    let payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
     if (!payment) throw new PaymentNotFoundError(input.paymentId);
     requireTenantMatch(user, payment.tenantId);
+    // Capture non-null for closure narrowing (let variables can't be narrowed)
+    let paymentNonNull: Payment = payment;
 
     // Step 3: claim idempotency
     const now = new Date();
@@ -471,10 +473,11 @@ export class PaymentService {
       throw new PaymentNotPostableError(payment.id, payment.status);
     }
 
-    // Step 5: derive entry type + sign
-    const ownerType = await this.deriveOwnerTypeFromAccount(payment.accountId, user.tenantId);
-    const { entryType, signMultiplier } = deriveEntryTypeAndSign(ownerType, payment.paymentDirection);
-    const amountSigned = signMultiplier === -1 ? negateMoney(payment.amount) : payment.amount;
+    // Step 5: derive entry type + sign (pre-tx — may be overridden by
+    // locked re-read inside the transaction for TOCTOU safety)
+    let ownerType = await this.deriveOwnerTypeFromAccount(payment.accountId, user.tenantId);
+    let { entryType, signMultiplier } = deriveEntryTypeAndSign(ownerType, payment.paymentDirection);
+    let amountSigned = signMultiplier === -1 ? negateMoney(payment.amount) : payment.amount;
 
     // Step 6-9: allocate entry number, create account entry via SubledgerService,
     // update payment status, audit, mark idempotency succeeded.
@@ -499,6 +502,42 @@ export class PaymentService {
       const idempotency = txScoped?.idempotency ?? this.deps.idempotency;
       const documentSequence = txScoped?.documentSequence ?? this.deps.documentSequence;
 
+      // BLOCKER 5 (r12): lock the payment row INSIDE the transaction and
+      // re-read it from the tx-scoped repository. This prevents a TOCTOU
+      // race where another concurrent postPayment changes the payment
+      // status between the pre-tx check and the tx-internal write.
+      // The lockPayment method uses SELECT ... FOR UPDATE.
+      if (txScoped) {
+        const lockedPayment = await paymentRepo.lockPayment(user.tenantId, paymentNonNull.id);
+        if (!lockedPayment) {
+          throw new PaymentNotFoundError(paymentNonNull.id);
+        }
+        // Re-validate from the locked row. A concurrent post may have
+        // changed the status to "posted" between the pre-tx check and now.
+        if (lockedPayment.status === "posted") {
+          throw new PaymentAlreadyPostedError(lockedPayment.id);
+        }
+        if (lockedPayment.status !== "draft") {
+          throw new PaymentNotPostableError(lockedPayment.id, lockedPayment.status);
+        }
+        // Use the locked row's authoritative data for all subsequent writes.
+        // This prevents stale `payment` object from driving financial mutation.
+        paymentNonNull = lockedPayment;
+        // Re-derive entry type from the locked payment's account.
+        // Use the tx-scoped subledger (not the root one) to avoid self-deadlock
+        // when the connection pool has max: 1.
+        const lockedAccount = await subledger.findAccountById(user.tenantId, paymentNonNull.accountId);
+        if (!lockedAccount) {
+          throw new PaymentError("INTERNAL_TRANSACTION_FAILED", `Account '${paymentNonNull.accountId}' not found for payment.`);
+        }
+        const lockedOwnerType = lockedAccount.ownerType as AccountOwnerType;
+        const lockedDerived = deriveEntryTypeAndSign(lockedOwnerType, paymentNonNull.paymentDirection);
+        ownerType = lockedOwnerType;
+        entryType = lockedDerived.entryType;
+        signMultiplier = lockedDerived.signMultiplier;
+        amountSigned = signMultiplier === -1 ? negateMoney(paymentNonNull.amount) : paymentNonNull.amount;
+      }
+
       const year = now.getUTCFullYear();
       const entryDocNo = await allocateDocumentNumber(documentSequence, {
         tenantId: user.tenantId, documentType: "account_entry", year, entityType: "account_entry",
@@ -506,32 +545,32 @@ export class PaymentService {
 
       const entryResult = await subledger.postPaymentEntry(user, effective, {
         ownerType,
-        ownerId: ownerType, // not used — account already resolved via payment.accountId
-        accountId: payment.accountId,
+        ownerId: ownerType, // not used — account already resolved via paymentNonNull.accountId
+        accountId: paymentNonNull.accountId,
         amountSigned,
-        entryDate: payment.paymentDate,
+        entryDate: paymentNonNull.paymentDate,
         entryType,
-        paymentId: payment.id,
+        paymentId: paymentNonNull.id,
         docNo: entryDocNo.docNo,
         idempotencyKey: `${input.idempotencyKey}:entry`,
         notes: input.notes ?? undefined,
       });
 
       const updatedPayment = await paymentRepo.updatePaymentStatus(
-        user.tenantId, payment.id,
+        user.tenantId, paymentNonNull.id,
         { status: "posted", postedEntryId: entryResult.entryId, isLocked: true, updatedBy: user.userId },
         ["draft"],
       );
       if (!updatedPayment) {
-        throw new PaymentError("INTERNAL_TRANSACTION_FAILED", `Payment '${payment.id}' could not be transitioned to posted.`);
+        throw new PaymentError("INTERNAL_TRANSACTION_FAILED", `Payment '${paymentNonNull.id}' could not be transitioned to posted.`);
       }
 
       await appendAuditLog(audit, user.tenantId, user.userId, {
         entityType: PAYMENT_ENTITY_TYPE,
-        entityId: payment.id,
+        entityId: paymentNonNull.id,
         actionType: "payment.post",
         newValuesJson: {
-          paymentNo: payment.paymentNo,
+          paymentNo: paymentNonNull.paymentNo,
           postedEntryId: entryResult.entryId,
           entryNo: entryResult.entryNo,
           amountSigned: entryResult.amountSigned,
@@ -543,19 +582,19 @@ export class PaymentService {
 
       const result: PostPaymentResult = {
         action: "posted",
-        paymentId: payment.id,
-        paymentNo: payment.paymentNo,
+        paymentId: paymentNonNull.id,
+        paymentNo: paymentNonNull.paymentNo,
         status: "posted",
         postedEntryId: entryResult.entryId,
         entryNo: entryResult.entryNo,
         amountSigned: entryResult.amountSigned,
-        accountId: payment.accountId,
+        accountId: paymentNonNull.accountId,
       };
       await markSucceeded(idempotency, claim.record.id, {
         responseCode: 200,
         responseBody: result,
         entityType: PAYMENT_ENTITY_TYPE,
-        entityId: payment.id,
+        entityId: paymentNonNull.id,
       }, claim.record.ownerToken!, now);
 
       return result;
@@ -579,22 +618,36 @@ export class PaymentService {
         return executePosting(null);
       }
     } catch (txError) {
-      // WP-07-04/BLOCKER 4: the DB transaction rolled back (this includes the
-      // case where the cutover advisory lock acquisition blocked and timed
-      // out — SubledgerService.postPaymentEntry threw, the transaction rolled
-      // back, and the advisory lock was auto-released). Terminalize the
-      // idempotency record as retryable_failed so same-key retry can reclaim
-      // immediately (per idempotency contract: technical failure → retryable).
-      // Do NOT call markBusinessFailed here — that is for business precondition
-      // failures (handled above). This catch is for technical/system failures.
+      // r12 BLOCKER: classify business vs technical failures.
+      // Business failures (PaymentAlreadyPostedError, PaymentNotPostableError,
+      // PaymentNotFoundError) discovered under the lock inside the transaction
+      // are DURABLE — same-key retry must return the same stored failure.
+      // Technical/system failures (cutover lock wait timeout, DB error, etc.)
+      // are RETRYABLE — same-key retry can reclaim and re-execute.
+      const isBusinessError =
+        txError instanceof PaymentAlreadyPostedError ||
+        txError instanceof PaymentNotPostableError ||
+        txError instanceof PaymentNotFoundError;
       try {
-        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 500,
-          responseBody: { message: "Payment posting transaction failed and rolled back." },
-          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-        }, claim.record.ownerToken!, now);
+        if (isBusinessError) {
+          const code = txError instanceof PaymentAlreadyPostedError ? "PAYMENT_ALREADY_POSTED"
+            : txError instanceof PaymentNotPostableError ? "PAYMENT_NOT_POSTABLE"
+            : "PAYMENT_NOT_FOUND";
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 409,
+            responseBody: { code, message: (txError as Error).message },
+            lastErrorClass: (txError as Error).name,
+          }, claim.record.ownerToken!, now);
+        } else {
+          // Technical failure → retryable_failed for immediate same-key retry.
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 500,
+            responseBody: { message: "Payment posting transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        }
       } catch {
-        // If markRetryableFailed fails, the record remains in_progress
+        // If terminalization fails, the record remains in_progress
         // and will expire via lease.
       }
       throw txError;

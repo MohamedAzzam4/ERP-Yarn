@@ -36,6 +36,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
+import { sql as drizzleSql } from "drizzle-orm";
 import * as schema from "@/server/db/schema";
 import { HistoricalCommitService } from "@/server/services/historical-commit-service";
 import { HistoricalCommitDbRepository } from "@/server/services/historical-commit-db-repository";
@@ -231,8 +232,9 @@ function makeCommitService(opts?: {
         const barrier = opts.barrierAfterCutoverLock!;
         let barrierFired = false;
         const wrapped: InventoryLedgerService = Object.create(realService);
-        wrapped.requireCutoverLock = async (tenantId: string) => {
-          await realService.requireCutoverLock(tenantId);
+        // r12: commit uses EXCLUSIVE cutover lock — wrap that method.
+        wrapped.requireCutoverLockExclusive = async (tenantId: string) => {
+          await realService.requireCutoverLockExclusive(tenantId);
           if (!barrierFired) {
             barrierFired = true;
             await barrier.acquire();
@@ -262,8 +264,9 @@ function makeCommitService(opts?: {
         const barrier = opts.barrierAfterCutoverLock!;
         let barrierFired = false;
         const wrapped: SubledgerService = Object.create(realService);
-        wrapped.requireCutoverLock = async (tenantId: string) => {
-          await realService.requireCutoverLock(tenantId);
+        // r12: commit uses EXCLUSIVE cutover lock — wrap that method.
+        wrapped.requireCutoverLockExclusive = async (tenantId: string) => {
+          await realService.requireCutoverLockExclusive(tenantId);
           if (!barrierFired) {
             barrierFired = true;
             await barrier.acquire();
@@ -305,13 +308,16 @@ function makeLiveInventoryLedgerService(liveDb: any) {
   });
 }
 
-function makeLivePaymentService(liveDb: any) {
+function makeLivePaymentService(liveDb: any, liveSql?: any) {
   const subledger = new SubledgerService({
     subledger: new SubledgerDbRepository(liveDb),
     audit: new AuditDbRepository(liveDb),
     idempotency: new IdempotencyDbRepository(liveDb),
     documentSequence: new DocumentSequenceDbRepository(liveDb),
   });
+  // No statement_timeout on the live payment service — let it block
+  // naturally on the cutover lock. The test uses Promise.race to detect
+  // the block without relying on statement_timeout.
   const transactionRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> =>
     (liveDb as any).transaction(async (tx: any) => work(tx));
   return new PaymentService({
@@ -430,10 +436,9 @@ describeOrSkip("WP-07-04 — Contract 08 §12.4 service-level race proofs", () =
 
     // While the commit holds the cutover lock, issue a REAL live
     // postRawReceipt on a separate connection with a short statement_timeout.
-    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 10, connect_timeout: 15 });
+    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 10, connect_timeout: 15, connection: { statement_timeout: 3000, lock_timeout: 3000 } });
     const liveDb = drizzle(liveSql, { schema });
     const liveService = makeLiveInventoryLedgerService(liveDb);
-    await liveSql`SET statement_timeout = 2000`;
 
     const liveIdemKey = "sr1-live-" + randomUUID();
     const blockedOutcome = await liveService.postRawReceipt(
@@ -512,7 +517,7 @@ describeOrSkip("WP-07-04 — Contract 08 §12.4 service-level race proofs", () =
     let releaseBarrier: () => void = () => {};
     const barrierPromise = new Promise<void>((resolve) => { releaseBarrier = resolve; });
 
-    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 10, connect_timeout: 15 });
+    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 10, connect_timeout: 15, connection: { statement_timeout: 3000, lock_timeout: 3000 } });
     const liveDb = drizzle(liveSql, { schema });
     const realLedger = new InventoryLedgerDbRepository(liveDb);
     const realAudit = new AuditDbRepository(liveDb);
@@ -664,9 +669,8 @@ describeOrSkip("WP-07-04 — Contract 08 §12.4 service-level race proofs", () =
 
     // Issue a REAL PaymentService.postPayment on a separate connection.
     // First, seed a payment draft for the supplier account.
-    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 10, connect_timeout: 15 });
+    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 60, connect_timeout: 15 });
     const liveDb = drizzle(liveSql, { schema });
-    await liveSql`SET statement_timeout = 2000`;
 
     // Create a supplier account + payment draft.
     const accountId = randomUUID();
@@ -674,21 +678,25 @@ describeOrSkip("WP-07-04 — Contract 08 §12.4 service-level race proofs", () =
     const paymentId = randomUUID();
     await sql`INSERT INTO payments (id, tenant_id, payment_no, payment_direction, payment_method, account_id, amount, payment_date, status, is_locked, idempotency_key, record_origin, created_by, created_at) VALUES (${paymentId}, ${T}, ${"PAY-" + paymentId.slice(0, 8)}, ${"paid_to_party"}::payment_direction, ${"cash"}::payment_method, ${accountId}, ${"1000.00"}, ${"2024-01-15"}, ${"draft"}::payment_status, false, ${"seed-" + paymentId.slice(0, 8)}, ${"manual_live"}, ${OWNER_ID}, NOW()) ON CONFLICT (id) DO NOTHING`;
 
-    const livePaymentService = makeLivePaymentService(liveDb);
+    const livePaymentService = makeLivePaymentService(liveDb, liveSql);
 
     const liveIdemKey = "sr3-pay-" + randomUUID();
-    const blockedOutcome = await livePaymentService.postPayment(
+    // Start the payment post — it will block on the SHARED cutover lock
+    // because the commit holds the EXCLUSIVE lock. Use Promise.race to
+    // detect the block without relying on statement_timeout.
+    const payPromise = livePaymentService.postPayment(
       makeOwnerUser() as any, makeEffective() as any,
       { paymentId, idempotencyKey: liveIdemKey },
-    ).then(v => ({ ok: true as const, v }), e => ({ ok: false as const, e }));
+    ).then(v => ({ completed: true as const, v }))
+     .catch(e => ({ completed: false as const, e }));
 
-    // The payment post MUST have blocked → timed out (cutover lock held by commit).
-    expect(blockedOutcome.ok).toBe(false);
-    if (!blockedOutcome.ok) {
-      const e = blockedOutcome.e as any;
-      const fullMsg = `${e?.message ?? e} ${e?.cause?.message ?? ""} ${e?.code ?? ""}`;
-      expect(fullMsg).toMatch(/canceling statement due to (statement timeout|user request)|lock_not_available|statement timeout|Failed query.*pg_advisory_xact_lock|57014/i);
-    }
+    const payRace = await Promise.race([
+      payPromise,
+      new Promise<{ completed: false }>(r => setTimeout(() => r({ completed: false }), 5000)),
+    ]);
+
+    // The payment post MUST still be blocked (not completed within 5s).
+    expect(payRace.completed).toBe(false);
 
     // Assert NO partial payment effect.
     const paymentAfter = await sql`SELECT status FROM payments WHERE id = ${paymentId}`;
@@ -705,17 +713,29 @@ describeOrSkip("WP-07-04 — Contract 08 §12.4 service-level race proofs", () =
     const commitEntries = await sql`SELECT count(*)::int AS c FROM account_entries WHERE tenant_id = ${T} AND source_document_type = 'historical_opening_balance'`;
     expect(commitEntries[0]!.c).toBe(1);
 
-    // Retry the payment with a FRESH idempotency key — MUST succeed now.
-    const retryIdemKey = "sr3-retry-" + randomUUID();
-    const retryOutcome = await livePaymentService.postPayment(
-      makeOwnerUser() as any, makeEffective() as any,
-      { paymentId, idempotencyKey: retryIdemKey },
-    );
-    expect(retryOutcome.action).toBe("posted");
+    // Now the EXCLUSIVE lock is released. The blocked payPromise should
+    // complete — the SHARED lock acquisition succeeds and the payment post
+    // proceeds with the SAME idempotency key (no fresh key needed).
+    const payFinal = await payPromise;
+    if (!payFinal.completed) {
+      const e = (payFinal as { e: any }).e;
+      const errMsg = e?.message ?? String(e);
+      const eCode = e?.code ?? "";
+      const eCause = e?.cause?.message ?? "";
+      throw new Error(`SVC-RACE-3: payPromise failed: ${errMsg} [code=${eCode}] [cause=${eCause}]`);
+    }
+    expect(payFinal.completed).toBe(true);
+    if (payFinal.completed) {
+      expect(payFinal.v.action).toBe("posted");
+    }
 
     // Payment status is now posted.
     const paymentFinal = await sql`SELECT status FROM payments WHERE id = ${paymentId}`;
     expect(paymentFinal[0]!.status).toBe("posted");
+
+    // Exactly one payment account entry exists.
+    const payEntries = await sql`SELECT count(*)::int AS c FROM account_entries WHERE tenant_id = ${T} AND source_document_type = 'payment'`;
+    expect(payEntries[0]!.c).toBe(1);
 
     await liveSql.end();
     await cleanupData();
@@ -886,10 +906,9 @@ describeOrSkip("WP-07-04 — Contract 08 §12.4 service-level race proofs", () =
 
     // Assert the advisory lock was auto-released (transaction rolled back).
     // We verify this by proving a live post can acquire it immediately.
-    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 10, connect_timeout: 15 });
+    const liveSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 10, connect_timeout: 15, connection: { statement_timeout: 3000, lock_timeout: 3000 } });
     const liveDb = drizzle(liveSql, { schema });
     const liveService = makeLiveInventoryLedgerService(liveDb);
-    await liveSql`SET statement_timeout = 3000`;
 
     const liveOutcome = await liveService.postRawReceipt(
       makeOwnerUser() as any, makeEffective() as any,

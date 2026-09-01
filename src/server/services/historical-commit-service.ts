@@ -2098,10 +2098,14 @@ export class HistoricalCommitService {
           }
         }
         if (affectsInventory) {
-          await txInvLedger.requireCutoverLock(user.tenantId);
+          // r12: migration uses EXCLUSIVE cutover lock — blocks all live
+          // posting (shared) and other migrations in the same tenant/inventory.
+          // The migration's own postOpeningBalanceMovement re-enters with
+          // SHARED (compatible with the EXCLUSIVE held by the same tx).
+          await txInvLedger.requireCutoverLockExclusive(user.tenantId);
         }
         if (affectsSubledger) {
-          await txSubledger.requireCutoverLock(user.tenantId);
+          await txSubledger.requireCutoverLockExclusive(user.tenantId);
         }
 
         return executePosting({

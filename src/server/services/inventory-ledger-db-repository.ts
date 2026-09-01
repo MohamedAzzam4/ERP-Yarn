@@ -311,32 +311,29 @@ export class InventoryLedgerDbRepository implements InventoryLedgerTransactionHa
    * Acquire a transaction-scoped cutover coordination advisory lock for
    * this tenant + domain.
    *
-   * Contract 08 §8.1.1/§8.10/§12.4 + Contract 12 §11.4: historical
-   * migration cutover and live operational posting in the same
-   * tenant/domain scope MUST be mutually exclusive at the DB level.
+   * Mode (r12 shared/exclusive design):
+   *   - "shared" (default): pg_advisory_xact_lock_shared — used by ordinary
+   *     live posting. Multiple live transactions can coexist.
+   *   - "exclusive": pg_advisory_xact_lock — used by historical migration
+   *     cutover. Blocks ALL other locks (shared and exclusive).
    *
-   * Implementation: pg_advisory_xact_lock(namespace, hash(tenant, domain))
-   *   - Transaction-scoped: auto-released on COMMIT or ROLLBACK.
-   *   - Re-entrant in the same transaction: the migration's own
-   *     opening-balance posting re-acquires without self-blocking.
-   *   - Atomic: no check-then-write TOCTOU window — the lock acquisition
-   *     IS the synchronization point.
-   *   - Tenant/domain-scoped: independent tenants and unaffected domains
-   *     remain independent.
+   * Re-entry: a transaction holding EXCLUSIVE can acquire SHARED on the
+   * same key without blocking.
    *
-   * WP-07-04 dependency correction (r10): the prior implementation
-   * relied solely on the `import_cutover_locks` table whose unique
-   * partial index is (tenant_id, import_batch_id, lock_scope) — that
-   * prevented only concurrent historical commits on the same batch
-   * and did NOT block live operational posting in the same tenant/domain.
-   * This advisory lock provides the missing mutual exclusion.
+   * Contract 08 §8.1.1/§8.10/§12.4 + Contract 12 §11.4.
    */
-  async lockCutoverScope(tenantId: string, domain: "inventory" | "subledger"): Promise<void> {
+  async lockCutoverScope(tenantId: string, domain: "inventory" | "subledger", mode: "shared" | "exclusive" = "shared"): Promise<void> {
     assertCutoverDomain(domain);
     const key = computeCutoverLockKey(tenantId, domain);
-    await this.db.execute(
-      drizzleSql`SELECT pg_advisory_xact_lock(${CUTOVER_LOCK_NAMESPACE}, ${key})`,
-    );
+    if (mode === "exclusive") {
+      await this.db.execute(
+        drizzleSql`SELECT pg_advisory_xact_lock(${CUTOVER_LOCK_NAMESPACE}, ${key})`,
+      );
+    } else {
+      await this.db.execute(
+        drizzleSql`SELECT pg_advisory_xact_lock_shared(${CUTOVER_LOCK_NAMESPACE}, ${key})`,
+      );
+    }
   }
 }
 

@@ -177,8 +177,8 @@ describeOrSkip("WP-08-01F DEFECT 7 — Authoritative PostgreSQL production-path 
     const txFactories = {
       createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
       createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
-      createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any),
-      createSubledger: () => ({ requireCutoverLock: async () => {} } as any),
+      createInventoryLedger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any),
+      createSubledger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any),
       createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
     };
     const commitService = new HistoricalCommitService({ repository: commitRepo, audit, idempotency: idem, transactionRunner, txFactories });

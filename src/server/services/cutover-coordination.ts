@@ -109,3 +109,27 @@ export function assertCutoverDomain(domain: string): asserts domain is CutoverDo
     );
   }
 }
+
+/**
+ * Cutover lock mode.
+ *
+ * - "shared" (pg_advisory_xact_lock_shared): used by ordinary live
+ *   operational posting. Multiple live transactions in the same
+ *   tenant/domain can coexist. A pending or held EXCLUSIVE lock blocks
+ *   SHARED acquisition.
+ *
+ * - "exclusive" (pg_advisory_xact_lock): used by historical migration
+ *   cutover. Blocks ALL other locks (shared and exclusive) on the same
+ *   tenant/domain key. A pending or held SHARED lock blocks EXCLUSIVE
+ *   acquisition.
+ *
+ * Re-entry in the same transaction: a transaction holding EXCLUSIVE can
+ * also acquire SHARED on the same key without blocking (PostgreSQL
+ * advisory locks are re-entrant within the same session/transaction).
+ * This is critical for the migration: HistoricalCommitService acquires
+ * EXCLUSIVE, then its own opening-balance posting (via
+ * InventoryLedgerService / SubledgerService) acquires SHARED — the
+ * SHARED re-entry succeeds immediately because the same transaction
+ * already holds the EXCLUSIVE lock.
+ */
+export type CutoverLockMode = "shared" | "exclusive";

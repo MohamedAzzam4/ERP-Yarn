@@ -51,7 +51,7 @@ import type { SubledgerService } from "./subledger-service";
 import type { PaymentRepository } from "./payment-repository";
 import type { AccountEntry, Payment, PaymentSettlement } from "@/server/db/schema/subledger";
 import {
-  normalizeMoney, isPositiveMoney, addMoney, compareMoney, absMoney, isZeroMoney,
+  normalizeMoney, isPositiveMoney, addMoney, compareMoney, absMoney, isZeroMoney, subtractMoney,
 } from "./decimal-money";
 
 // ---------------------------------------------------------------------------
@@ -497,9 +497,11 @@ export class SettlementService {
  * Returns a POSITIVE string (or "0.00" if b >= |a|).
  */
 function subtractAbs(a: string, b: string): string {
+  // r12 BLOCKER 6: use contracted decimal-money operations instead of
+  // JavaScript floating point. Contract 07 prohibits parseFloat for money.
   const absA = absMoney(a);
-  const result = compareMoney(absA, b) >= 0
-    ? (parseFloat(absA) - parseFloat(b)).toFixed(2)
-    : "0.00";
-  return normalizeMoney(result);
+  if (compareMoney(absA, b) >= 0) {
+    return subtractMoney(absA, b);
+  }
+  return "0.00";
 }

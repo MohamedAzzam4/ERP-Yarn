@@ -202,28 +202,24 @@ export class SubledgerDbRepository implements SubledgerTransactionHandle {
    * Acquire a transaction-scoped cutover coordination advisory lock for
    * this tenant + domain.
    *
-   * Contract 08 §8.1.1/§8.10/§12.4 + Contract 12 §11.4: historical
-   * migration cutover and live operational posting in the same
-   * tenant/domain scope MUST be mutually exclusive at the DB level.
+   * Mode (r12 shared/exclusive design):
+   *   - "shared" (default): pg_advisory_xact_lock_shared
+   *   - "exclusive": pg_advisory_xact_lock
    *
-   * Implementation: pg_advisory_xact_lock(namespace, hash(tenant, domain))
-   *   - Transaction-scoped: auto-released on COMMIT or ROLLBACK.
-   *   - Re-entrant in the same transaction: the migration's own
-   *     opening-balance entry posting re-acquires without self-blocking.
-   *   - Atomic: no check-then-write TOCTOU window.
-   *   - Tenant/domain-scoped: independent tenants and unaffected domains
-   *     remain independent.
-   *
-   * WP-07-04 dependency correction (r10): provides the missing mutual
-   * exclusion between historical commit and live subledger posting in
-   * the same tenant/domain.
+   * Contract 08 §8.1.1/§8.10/§12.4 + Contract 12 §11.4.
    */
-  async lockCutoverScope(tenantId: string, domain: "inventory" | "subledger"): Promise<void> {
+  async lockCutoverScope(tenantId: string, domain: "inventory" | "subledger", mode: "shared" | "exclusive" = "shared"): Promise<void> {
     assertCutoverDomain(domain);
     const key = computeCutoverLockKey(tenantId, domain);
-    await this.db.execute(
-      sql`SELECT pg_advisory_xact_lock(${CUTOVER_LOCK_NAMESPACE}, ${key})`,
-    );
+    if (mode === "exclusive") {
+      await this.db.execute(
+        sql`SELECT pg_advisory_xact_lock(${CUTOVER_LOCK_NAMESPACE}, ${key})`,
+      );
+    } else {
+      await this.db.execute(
+        sql`SELECT pg_advisory_xact_lock_shared(${CUTOVER_LOCK_NAMESPACE}, ${key})`,
+      );
+    }
   }
 }
 

@@ -1340,8 +1340,8 @@ describeOrSkip("WP-08-01F DEFECT 1-8 — PostgreSQL alias atomicity proofs (PG-A
       txFactories: {
         createCommitRepository: (tx: unknown) => new HistoricalCommitDbRepository(tx as any),
         createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
-        createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any),
-        createSubledger: () => ({ requireCutoverLock: async () => {} } as any),
+        createInventoryLedger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any),
+        createSubledger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any),
         createDocumentSequence: (tx: unknown) => new DocumentSequenceDbRepository(tx as any),
         createIdempotency: (tx: unknown) => new IdempotencyDbRepository(tx as any),
       },

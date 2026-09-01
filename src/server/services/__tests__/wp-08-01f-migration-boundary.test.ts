@@ -60,8 +60,8 @@ function makeCommitDeps() {
   const txFactories = {
     createCommitRepository: () => repository,
     createAudit: () => audit,
-    createInventoryLedger: () => ({ requireCutoverLock: async () => {} } as any),
-    createSubledger: () => ({ requireCutoverLock: async () => {} } as any),
+    createInventoryLedger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any),
+    createSubledger: () => ({ requireCutoverLock: async () => {}, requireCutoverLockExclusive: async () => {} } as any),
     createDocumentSequence: () => new InProcessDocumentSequenceStore(),
   };
   const service = new HistoricalCommitService({ repository, audit, idempotency, transactionRunner, txFactories });

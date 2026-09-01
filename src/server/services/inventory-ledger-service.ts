@@ -179,22 +179,31 @@ export interface InventoryLedgerTransactionHandle {
 
   /**
    * Acquire a transaction-scoped cutover coordination lock for the
-   * "inventory" domain of this tenant.
+   * given tenant + domain.
    *
    * Contract 08 §8.1.1/§8.10/§12.4: historical migration cutover and
-   * live operational posting in the same tenant/inventory scope MUST
+   * live operational posting in the same tenant/domain scope MUST
    * be mutually exclusive at the DB level.
    *
-   * Implemented as pg_advisory_xact_lock(namespace, hash(tenant,"inventory"))
-   * — auto-released on COMMIT or ROLLBACK, re-entrant within the same
-   * transaction (the migration's own opening-balance posting can
-   * re-acquire without self-blocking), and atomic (no TOCTOU window).
+   * Mode (r12 shared/exclusive design):
+   *   - "shared" (default): used by ordinary live posting. Multiple live
+   *     transactions can coexist. Blocked by a held EXCLUSIVE lock.
+   *     Implemented as pg_advisory_xact_lock_shared.
+   *   - "exclusive": used by historical migration cutover. Blocks ALL
+   *     other locks (shared and exclusive). Implemented as
+   *     pg_advisory_xact_lock.
+   *
+   * Re-entry: a transaction holding EXCLUSIVE can acquire SHARED on the
+   * same key without blocking (PostgreSQL advisory locks are re-entrant).
+   * This is critical for the migration: HistoricalCommitService acquires
+   * EXCLUSIVE, then its own opening-balance posting acquires SHARED —
+   * the SHARED re-entry succeeds immediately.
    *
    * In-memory test stores implement this as a no-op (single-threaded).
    *
    * See src/server/services/cutover-coordination.ts for the full design.
    */
-  lockCutoverScope(tenantId: string, domain: "inventory" | "subledger"): Promise<void>;
+  lockCutoverScope(tenantId: string, domain: "inventory" | "subledger", mode?: "shared" | "exclusive"): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,9 +450,22 @@ export class InventoryLedgerService {
    * same lock BEFORE its own opening-balance posting, making the migration
    * transaction the holder of the advisory lock. The subsequent
    * postOpeningBalanceMovement call re-acquires (re-entrant — no-op).
+   *
+   * r12: uses SHARED mode by default (ordinary live posting). The migration
+   * uses requireCutoverLockExclusive instead.
    */
   async requireCutoverLock(tenantId: string): Promise<void> {
-    await this.deps.ledger.lockCutoverScope(tenantId, "inventory");
+    await this.deps.ledger.lockCutoverScope(tenantId, "inventory", "shared");
+  }
+
+  /**
+   * Acquire the EXCLUSIVE cutover coordination lock for this tenant's
+   * "inventory" domain. Used ONLY by HistoricalCommitService — blocks
+   * all live posting (shared) and other migrations (exclusive) in the
+   * same tenant/inventory domain.
+   */
+  async requireCutoverLockExclusive(tenantId: string): Promise<void> {
+    await this.deps.ledger.lockCutoverScope(tenantId, "inventory", "exclusive");
   }
 
   /**
