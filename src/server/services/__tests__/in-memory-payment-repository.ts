@@ -59,7 +59,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
 
   async insertPayment(row: NewPaymentInput): Promise<Payment> {
     this.paymentCounter++;
-    const id = nid("pay", this.paymentCounter);
+    const id = row.id ?? nid("pay", this.paymentCounter);
     const payment: Payment = {
       id,
       tenantId: row.tenantId,

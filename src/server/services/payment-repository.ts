@@ -24,6 +24,7 @@ import type { Payment, PaymentSettlement, AccountEntry } from "@/server/db/schem
 // ---------------------------------------------------------------------------
 
 export interface NewPaymentInput {
+  id?: string;
   tenantId: string;
   paymentNo: string;
   paymentDate: string;

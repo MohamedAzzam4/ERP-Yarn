@@ -200,6 +200,18 @@ export class SettlementService {
       }
     }
 
+    // r18 NEW BLOCKER: Reject duplicate settledEntryId in one settlement request.
+    // Contract 07 §14: settlement total cannot exceed available source amount.
+    // Duplicate target IDs would bypass per-target capacity checks.
+    // This is immutable request-shape validation — happens BEFORE idempotency claim.
+    const seenTargetIds = new Set<string>();
+    for (const a of input.allocations) {
+      if (seenTargetIds.has(a.settledEntryId)) {
+        throw new SettlementError("VALIDATION_FAILED", `Duplicate settledEntryId '${a.settledEntryId}' in settlement allocations. Each target entry may appear at most once per settlement request.`);
+      }
+      seenTargetIds.add(a.settledEntryId);
+    }
+
     // r14 BLOCKER C: fail-closed transaction configuration check BEFORE
     // idempotency claim, DB locking, or business mutation.
     if (!this.deps.transactionRunner || !this.deps.txFactories) {
@@ -226,13 +238,24 @@ export class SettlementService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r15 BLOCKER E: state-aware replay
+      // r18 Replay validation hardening: validate complete SettlePaymentResult
       if (claim.record.state === "succeeded") {
-        const responseBody = claim.record.responseBody as Partial<SettlePaymentResult> | null;
-        if (responseBody?.paymentId && responseBody?.settlementIds?.length) {
-          return { ...responseBody, action: "replayed" } as SettlePaymentResult;
+        const r = claim.record.responseBody as Partial<SettlePaymentResult> | null;
+        if (!r?.paymentId || !r?.settlementIds?.length || !r?.totalSettled
+            || !r?.paymentEntryRemaining || !r?.allocations) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
         }
-        throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
+        // Validate cardinality consistency
+        if (r.settlementIds.length !== r.allocations.length) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementIds.length !== allocations.length.");
+        }
+        // Validate each allocation has required fields
+        for (const a of r.allocations) {
+          if (!a?.settlementId || !a?.settledEntryId || !a?.settledAmount || !a?.settledEntryRemaining) {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation missing required fields.");
+          }
+        }
+        return { ...r, action: "replayed" } as SettlePaymentResult;
       }
       if (claim.record.state === "business_failed") {
         const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;

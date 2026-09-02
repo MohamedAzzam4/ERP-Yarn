@@ -191,13 +191,19 @@ export class PaymentReversalService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r15 BLOCKER D: state-aware replay (like accepted Payment pattern)
+      // r18 Replay validation hardening: validate complete ReversePaymentResult
       if (claim.record.state === "succeeded") {
-        const responseBody = claim.record.responseBody as Partial<ReversePaymentResult> | null;
-        if (responseBody?.paymentId && responseBody?.reversalEntryId) {
-          return { ...responseBody, action: "replayed" } as ReversePaymentResult;
+        const r = claim.record.responseBody as Partial<ReversePaymentResult> | null;
+        if (!r?.paymentId || !r?.reversalEntryId || !r?.reversalEntryNo
+            || !r?.reversalAmountSigned || !r?.reversedSettlementIds
+            || r.originalEntryImmutable !== true) {
+          throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
         }
-        throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
+        // reversedSettlementIds may be empty array (no prior settlements)
+        if (!Array.isArray(r.reversedSettlementIds)) {
+          throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversedSettlementIds is not an array.");
+        }
+        return { ...r, action: "replayed" } as ReversePaymentResult;
       }
       if (claim.record.state === "business_failed") {
         const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
@@ -338,7 +344,14 @@ export class PaymentReversalService {
       for (const targetId of uniqueTargetIds) {
         const targetEntry = await subledger.findEntryById(user.tenantId, targetId);
         if (targetEntry) {
-          if (targetEntry.settlementStatus === "reversed") continue;
+          // r18: Check CURRENT status — if the target entry was already set to
+          // "reversed" by the payment entry reversal above, skip (it's the
+          // payment's own entry, not a target). If the target was "reversed"
+          // from a prior separate entry reversal, also skip.
+          // BUT: a target that was "settled" before reversal should be
+          // recomputed to its true current state.
+          if (targetEntry.settlementStatus === "reversed" && targetId === postedEntryId) continue;
+          // Re-read current effective active settlements
           const remainingSettlements = await paymentRepo.listSettlementsForSettledEntry(
             user.tenantId, targetId,
           );
