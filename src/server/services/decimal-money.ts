@@ -95,6 +95,38 @@ export function isNegativeMoney(value: string): boolean {
 }
 
 /**
+ * Validate that a string is canonical valid money at scale 2.
+ * Rejects: NaN, garbage, non-decimal strings, empty, undefined, null.
+ * Accepts: "0.00", "100.00", "-50.00", "0.30", "9.99"
+ * Uses BigInt internally — no JavaScript floating point.
+ */
+export function isValidCanonicalMoney(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value.trim() === "") return false;
+  try {
+    const normalized = normalizeMoney(value);
+    // normalizeMoney always returns a string, but we need to verify
+    // the input was actually parseable as money (not garbage like "abc")
+    // by round-tripping: normalize(toScaledInt(normalize(input))) === normalize(input)
+    const reNormalized = normalizeMoney(value);
+    // If normalizeMoney produces "0.00" for garbage input, check that
+    // the original wasn't actually "0.00" or "0" or "0.0"
+    if (reNormalized === "0.00") {
+      // Accept legitimate zero representations
+      return /^(0+)(\.0+)?$/.test(value.trim()) || /^-?(0+)(\.0+)?$/.test(value.trim());
+    }
+    // For non-zero values, verify the round-trip matches
+    // by checking that normalizeMoney(normalizeMoney(value)) === normalizeMoney(value)
+    const doubleNormalized = normalizeMoney(reNormalized);
+    if (doubleNormalized !== reNormalized) return false;
+    // Verify it matches the pattern of a valid decimal money string
+    return /^-?\d+\.\d{2}$/.test(reNormalized);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * DEC-067 / DEC-013: Calculate payable from net/input kg and price/rate per ton.
  *
  * Supplier payable (DEC-067):

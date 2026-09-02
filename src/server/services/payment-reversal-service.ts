@@ -50,7 +50,7 @@ import {
 import type { SubledgerService } from "./subledger-service";
 import type { PaymentRepository } from "./payment-repository";
 import type { PaymentSettlement } from "@/server/db/schema/subledger";
-import { addMoney, isZeroMoney, absMoney, compareMoney, subtractMoney } from "./decimal-money";
+import { addMoney, isZeroMoney, absMoney, compareMoney, subtractMoney, isValidCanonicalMoney } from "./decimal-money";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -191,7 +191,7 @@ export class PaymentReversalService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r18 Replay validation hardening: validate complete ReversePaymentResult
+      // r19 BLOCKER B: Semantic replay validation using canonical money validator
       if (claim.record.state === "succeeded") {
         const r = claim.record.responseBody as Partial<ReversePaymentResult> | null;
         if (!r?.paymentId || !r?.reversalEntryId || !r?.reversalEntryNo
@@ -199,9 +199,17 @@ export class PaymentReversalService {
             || r.originalEntryImmutable !== true) {
           throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
         }
-        // reversedSettlementIds may be empty array (no prior settlements)
         if (!Array.isArray(r.reversedSettlementIds)) {
           throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversedSettlementIds is not an array.");
+        }
+        // r19: validate canonical money semantics
+        if (!isValidCanonicalMoney(r.reversalAmountSigned)) {
+          throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversalAmountSigned is not valid canonical money.");
+        }
+        for (const sid of r.reversedSettlementIds) {
+          if (typeof sid !== "string" || sid.trim() === "") {
+            throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversedSettlementId contains invalid entry.");
+          }
         }
         return { ...r, action: "replayed" } as ReversePaymentResult;
       }
@@ -344,13 +352,11 @@ export class PaymentReversalService {
       for (const targetId of uniqueTargetIds) {
         const targetEntry = await subledger.findEntryById(user.tenantId, targetId);
         if (targetEntry) {
-          // r18: Check CURRENT status — if the target entry was already set to
-          // "reversed" by the payment entry reversal above, skip (it's the
-          // payment's own entry, not a target). If the target was "reversed"
-          // from a prior separate entry reversal, also skip.
-          // BUT: a target that was "settled" before reversal should be
-          // recomputed to its true current state.
-          if (targetEntry.settlementStatus === "reversed" && targetId === postedEntryId) continue;
+          // r19 BLOCKER A: A target entry already in terminal 'reversed' state
+          // (from a separate entry reversal) must NOT be resurrected by
+          // payment unallocation. Skip ALL reversed targets, not just the
+          // payment's own entry.
+          if (targetEntry.settlementStatus === "reversed") continue;
           // Re-read current effective active settlements
           const remainingSettlements = await paymentRepo.listSettlementsForSettledEntry(
             user.tenantId, targetId,

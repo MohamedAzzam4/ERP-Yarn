@@ -23,6 +23,15 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   /** Test-only: tracks lockPaymentEntry / lockSettledEntry calls. */
   lockCalls: string[] = [];
 
+  /**
+   * Test-only: seed a payment with a specific ID directly into the in-memory store.
+   * This bypasses insertPayment's auto-ID generation for test fixtures.
+   * NOT part of the PaymentRepository interface — production code never calls this.
+   */
+  seedPayment(payment: Payment): void {
+    this.payments.set(`${payment.tenantId}:${payment.id}`, payment);
+  }
+
   // -------------------------------------------------------------------------
   // Snapshot/restore for transactional test rollback.
   // -------------------------------------------------------------------------
@@ -59,7 +68,7 @@ export class InMemoryPaymentRepository implements PaymentRepository {
 
   async insertPayment(row: NewPaymentInput): Promise<Payment> {
     this.paymentCounter++;
-    const id = row.id ?? nid("pay", this.paymentCounter);
+    const id = nid("pay", this.paymentCounter);
     const payment: Payment = {
       id,
       tenantId: row.tenantId,

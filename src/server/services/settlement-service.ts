@@ -51,7 +51,7 @@ import type { SubledgerService } from "./subledger-service";
 import type { PaymentRepository } from "./payment-repository";
 import type { AccountEntry, Payment, PaymentSettlement } from "@/server/db/schema/subledger";
 import {
-  normalizeMoney, isPositiveMoney, addMoney, compareMoney, absMoney, isZeroMoney, subtractMoney,
+  normalizeMoney, isPositiveMoney, addMoney, compareMoney, absMoney, isZeroMoney, subtractMoney, isValidCanonicalMoney,
 } from "./decimal-money";
 
 // ---------------------------------------------------------------------------
@@ -238,7 +238,7 @@ export class SettlementService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r18 Replay validation hardening: validate complete SettlePaymentResult
+      // r19 BLOCKER B: Semantic replay validation using canonical money validator
       if (claim.record.state === "succeeded") {
         const r = claim.record.responseBody as Partial<SettlePaymentResult> | null;
         if (!r?.paymentId || !r?.settlementIds?.length || !r?.totalSettled
@@ -249,10 +249,24 @@ export class SettlementService {
         if (r.settlementIds.length !== r.allocations.length) {
           throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementIds.length !== allocations.length.");
         }
-        // Validate each allocation has required fields
+        // r19: validate canonical money semantics
+        if (!isValidCanonicalMoney(r.totalSettled) || !isValidCanonicalMoney(r.paymentEntryRemaining)) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: money field is not valid canonical money.");
+        }
+        // Validate each allocation has required fields + canonical money
         for (const a of r.allocations) {
           if (!a?.settlementId || !a?.settledEntryId || !a?.settledAmount || !a?.settledEntryRemaining) {
             throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation missing required fields.");
+          }
+          if (!isValidCanonicalMoney(a.settledAmount) || !isValidCanonicalMoney(a.settledEntryRemaining)) {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation money field is not valid canonical money.");
+          }
+        }
+        // Validate settlementId membership: every allocation.settlementId must be in settlementIds
+        const settlementIdSet = new Set(r.settlementIds);
+        for (const a of r.allocations) {
+          if (!settlementIdSet.has(a.settlementId)) {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation settlementId not in settlementIds.");
           }
         }
         return { ...r, action: "replayed" } as SettlePaymentResult;

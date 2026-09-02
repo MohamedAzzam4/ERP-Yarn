@@ -310,7 +310,7 @@ describe("WP-07-04 r18 — Payment/Reversal/Settlement non-PG tests", () => {
       amountSigned: "-100.00", currency: "EGP", entryType: "customer_payment",
       sourceDocumentType: "payment", sourceDocumentId: paymentId, createdBy: user.userId,
     });
-    await deps.paymentRepo.insertPayment({
+    (deps.paymentRepo as any).seedPayment({
       id: paymentId, tenantId: T, paymentNo: "P-001",
       paymentDirection: "received_from_party", paymentMethod: "cash",
       accountId, amount: "100.00", paymentDate: "2024-01-01",
@@ -372,7 +372,7 @@ describe("WP-07-04 r18 — Payment/Reversal/Settlement non-PG tests", () => {
       amountSigned: "-40.00", currency: "EGP", entryType: "customer_payment",
       sourceDocumentType: "payment", sourceDocumentId: p1Id, createdBy: user.userId,
     });
-    await deps.paymentRepo.insertPayment({
+    (deps.paymentRepo as any).seedPayment({
       id: p1Id, tenantId: T, paymentNo: "P1",
       paymentDirection: "received_from_party", paymentMethod: "cash",
       accountId, amount: "40.00", paymentDate: "2024-01-01",
@@ -385,7 +385,7 @@ describe("WP-07-04 r18 — Payment/Reversal/Settlement non-PG tests", () => {
       amountSigned: "-60.00", currency: "EGP", entryType: "customer_payment",
       sourceDocumentType: "payment", sourceDocumentId: p2Id, createdBy: user.userId,
     });
-    await deps.paymentRepo.insertPayment({
+    (deps.paymentRepo as any).seedPayment({
       id: p2Id, tenantId: T, paymentNo: "P2",
       paymentDirection: "received_from_party", paymentMethod: "cash",
       accountId, amount: "60.00", paymentDate: "2024-01-01",
@@ -456,7 +456,7 @@ describe("WP-07-04 r18 — Payment/Reversal/Settlement non-PG tests", () => {
       amountSigned: "-100.00", currency: "EGP", entryType: "customer_payment",
       sourceDocumentType: "payment", sourceDocumentId: pId, createdBy: user.userId,
     });
-    await deps.paymentRepo.insertPayment({
+    (deps.paymentRepo as any).seedPayment({
       id: pId, tenantId: T, paymentNo: "P-003",
       paymentDirection: "received_from_party", paymentMethod: "cash",
       accountId, amount: "100.00", paymentDate: "2024-01-01",
@@ -508,7 +508,7 @@ describe("WP-07-04 r18 — Payment/Reversal/Settlement non-PG tests", () => {
       amountSigned: "-100.00", currency: "EGP", entryType: "customer_payment",
       sourceDocumentType: "payment", sourceDocumentId: pId, createdBy: user.userId,
     });
-    await deps.paymentRepo.insertPayment({
+    (deps.paymentRepo as any).seedPayment({
       id: pId, tenantId: T, paymentNo: "P-FAIL",
       paymentDirection: "received_from_party", paymentMethod: "cash",
       accountId, amount: "100.00", paymentDate: "2024-01-01",
