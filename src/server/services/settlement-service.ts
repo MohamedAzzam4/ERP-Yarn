@@ -206,12 +206,11 @@ export class SettlementService {
       throw new SettlementError("CONFIGURATION_ERROR", "SettlementService.settlePayment requires transactionRunner and txFactories for production high-risk command execution.");
     }
 
-    // Step 2: fetch + lock payment
+    // Step 2: fetch payment (pre-tx prefetch for tenant/security only —
+    // mutable business-state validation happens inside the tx after claim)
     const payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
     if (!payment) throw new PaymentNotFoundError(input.paymentId);
     requireTenantMatch(user, payment.tenantId);
-    if (payment.status === "reversed") throw new PaymentReversedException(payment.id);
-    if (payment.status !== "posted") throw new PaymentNotPostedError(payment.id, payment.status);
 
     // Step 3: claim idempotency
     const now = new Date();

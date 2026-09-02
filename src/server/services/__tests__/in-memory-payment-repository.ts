@@ -189,4 +189,12 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async lockPaymentEntry(tenantId: string, entryId: string): Promise<void> {
     this.lockCalls.push(`paymentEntry|${tenantId}|${entryId}`);
   }
+
+  async reverseSettlement(tenantId: string, settlementId: string, _updatedBy: string): Promise<PaymentSettlement | null> {
+    const s = this.settlements.get(`${tenantId}:${settlementId}`);
+    if (!s || s.settlementStatus !== "settled") return null;
+    const updated = { ...s, settlementStatus: "reversed" as const };
+    this.settlements.set(`${tenantId}:${settlementId}`, updated);
+    return updated;
+  }
 }

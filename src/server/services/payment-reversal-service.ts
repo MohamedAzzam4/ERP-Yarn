@@ -50,6 +50,7 @@ import {
 import type { SubledgerService } from "./subledger-service";
 import type { PaymentRepository } from "./payment-repository";
 import type { PaymentSettlement } from "@/server/db/schema/subledger";
+import { addMoney, isZeroMoney, absMoney, compareMoney, subtractMoney } from "./decimal-money";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -265,6 +266,15 @@ export class PaymentReversalService {
       // Step 8: derive active settlement state from locked data
       const activeSettlements = existingSettlements.filter(s => s.settlementStatus === "settled");
 
+      // r16 BLOCKER 1: Lock ALL affected target entries in deterministic
+      // sorted order BEFORE deriving/updating their settlement state.
+      // This prevents a race between reversal and a concurrent settlement
+      // on the same target entry.
+      const uniqueTargetIds = [...new Set(activeSettlements.map(s => s.settledEntryId))].sort();
+      for (const targetId of uniqueTargetIds) {
+        await paymentRepo.lockSettledEntry(user.tenantId, targetId);
+      }
+
       // Step 9: SHARED subledger cutover coordination (inside this tx)
       // postReversalEntry calls requireCutoverLock internally (SHARED mode).
 
@@ -286,9 +296,14 @@ export class PaymentReversalService {
         notes: input.notes ?? undefined,
       });
 
-      // Step 12: create reversal/unallocation settlement evidence
+      // Step 12: r16 BLOCKER 2 — reverse each active settlement row
+      // (settled → reversed) so it no longer consumes capacity.
+      // Also insert a reversal evidence row preserving history.
       const reversedSettlementIds: string[] = [];
       for (const s of activeSettlements) {
+        // Transition the original settlement row: settled → reversed
+        await paymentRepo.reverseSettlement(user.tenantId, s.id, user.userId);
+        // Insert reversal evidence row
         const reversalSettlement = await paymentRepo.insertSettlement({
           tenantId: user.tenantId,
           paymentEntryId: reversalEntry.entryId,
@@ -300,22 +315,27 @@ export class PaymentReversalService {
         reversedSettlementIds.push(reversalSettlement.id);
       }
 
-      // Step 13: update settlement statuses
+      // Step 13: update entry settlement statuses
+      // r16 BLOCKER 3: Recompute each target's status from CURRENT effective
+      // active settlements. Do NOT preserve 'settled' from pre-reversal state.
       await subledger.updateEntrySettlementStatusPublic(
         user.tenantId, postedEntryId, "reversed",
       );
-      for (const s of activeSettlements) {
-        const remainingSettlements = await paymentRepo.listSettlementsForSettledEntry(
-          user.tenantId, s.settledEntryId,
-        );
-        const stillActive = remainingSettlements.filter(rs => rs.settlementStatus === "settled" && rs.id !== s.id);
-        const targetEntry = await subledger.findEntryById(user.tenantId, s.settledEntryId);
+      for (const targetId of uniqueTargetIds) {
+        const targetEntry = await subledger.findEntryById(user.tenantId, targetId);
         if (targetEntry) {
-          const newStatus = stillActive.length > 0 ? "partially_settled" : "unsettled";
-          if (targetEntry.settlementStatus !== "reversed" && targetEntry.settlementStatus !== "settled") {
-            await subledger.updateEntrySettlementStatusPublic(
-              user.tenantId, s.settledEntryId, newStatus,
-            );
+          if (targetEntry.settlementStatus === "reversed") continue;
+          const remainingSettlements = await paymentRepo.listSettlementsForSettledEntry(
+            user.tenantId, targetId,
+          );
+          const activeOnTarget = remainingSettlements.filter(rs => rs.settlementStatus === "settled");
+          if (activeOnTarget.length === 0) {
+            await subledger.updateEntrySettlementStatusPublic(user.tenantId, targetId, "unsettled");
+          } else {
+            const totalActiveOnTarget = activeOnTarget.reduce((sum, rs) => addMoney(sum, rs.settledAmount), "0.00");
+            const targetRemaining = subtractAbs(targetEntry.amountSigned, totalActiveOnTarget);
+            const newStatus = isZeroMoney(targetRemaining) ? "settled" : "partially_settled";
+            await subledger.updateEntrySettlementStatusPublic(user.tenantId, targetId, newStatus);
           }
         }
       }
@@ -408,4 +428,13 @@ export class PaymentReversalService {
       throw txError;
     }
   }
+}
+
+// Local helper using contracted decimal-money operations (no floating point)
+function subtractAbs(a: string, b: string): string {
+  const absA = absMoney(a);
+  if (compareMoney(absA, b) >= 0) {
+    return subtractMoney(absA, b);
+  }
+  return "0.00";
 }

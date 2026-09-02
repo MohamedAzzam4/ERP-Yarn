@@ -129,6 +129,22 @@ export interface PaymentRepository {
    * Prevents two concurrent settlements from over-settling the same payment.
    */
   lockPaymentEntry(tenantId: string, entryId: string): Promise<void>;
+
+  /**
+   * Transition a settlement row's status from 'settled' to 'reversed'.
+   * Called during payment reversal to unallocate the settlement.
+   * The original row is preserved (immutable history) — only the
+   * settlement_status changes, so future capacity queries no longer
+   * count this allocation as active.
+   *
+   * Contract 07 §17: reversal unallocates settlements.
+   * The original settlement row is NOT deleted — its amount/account/source
+   * identity remain immutable. Only settlement_status transitions.
+   *
+   * Returns the updated row, or null if the row was not in 'settled' state
+   * (already reversed or not found).
+   */
+  reverseSettlement(tenantId: string, settlementId: string, updatedBy: string): Promise<PaymentSettlement | null>;
 }
 
 // ---------------------------------------------------------------------------

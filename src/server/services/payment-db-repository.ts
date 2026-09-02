@@ -341,6 +341,28 @@ export class PaymentDbRepository implements PaymentRepository {
       drizzleSql`SELECT pg_advisory_xact_lock(hashtext(${key}))`,
     );
   }
+
+  /**
+   * r16 BLOCKER 2: Transition a settlement row's status from 'settled' to
+   * 'reversed'. Called during payment reversal to unallocate the settlement.
+   * The original row is preserved (immutable history) — only settlement_status
+   * changes, so future capacity queries no longer count this allocation.
+   */
+  async reverseSettlement(tenantId: string, settlementId: string, updatedBy: string): Promise<PaymentSettlement | null> {
+    const [updated] = await this.db.update(paymentSettlements)
+      .set({
+        settlementStatus: "reversed" as any,
+        updatedAt: new Date(),
+        updatedBy,
+      })
+      .where(and(
+        eq(paymentSettlements.tenantId, tenantId),
+        eq(paymentSettlements.id, settlementId),
+        eq(paymentSettlements.settlementStatus, "settled" as any),
+      ))
+      .returning();
+    return updated ?? null;
+  }
 }
 
 /**
