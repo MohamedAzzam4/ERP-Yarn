@@ -265,7 +265,6 @@ export class PaymentService {
   ): Promise<{ paymentId: string; paymentNo: string; status: string }> {
     // Step 1: permission + reject body authority
     requirePermission(effective, "payments.create");
-    // Customer payments require balances.view_customer; supplier/factory require balances.view_supplier_factory
     if (input.ownerType === "customer") {
       requirePermission(effective, "balances.view_customer");
     } else {
@@ -283,11 +282,19 @@ export class PaymentService {
     if (!ALLOWED_DIRECTIONS.has(input.paymentDirection)) {
       throw new InvalidPaymentDirectionError(input.paymentDirection);
     }
+    // r23 BLOCKER A: Strict canonical money validation before idempotency claim.
+    if (!isValidCanonicalMoney(input.amount)) {
+      throw new PaymentError("VALIDATION_FAILED", `Payment amount '${input.amount}' is not valid canonical money (scale 2, NUMERIC(18,2)).`);
+    }
     if (!isPositiveMoney(input.amount)) {
       throw new InvalidPaymentAmountError(input.amount);
     }
-    // Direction/owner compatibility check (throws on mismatch)
     deriveEntryTypeAndSign(input.ownerType, input.paymentDirection);
+
+    // r23 BLOCKER C: Fail-closed transaction configuration check BEFORE idempotency.
+    if (!this.deps.transactionRunner || !this.deps.txFactories) {
+      throw new PaymentError("CONFIGURATION_ERROR", "PaymentService.createDraftPayment requires transactionRunner and txFactories for atomic draft creation.");
+    }
 
     // Step 3: claim idempotency
     const now = new Date();
@@ -300,7 +307,7 @@ export class PaymentService {
         ownerType: input.ownerType,
         ownerId: input.ownerId,
         paymentDate: input.paymentDate,
-        amount: normalizeMoney(input.amount),
+        amount: input.amount,
         paymentDirection: input.paymentDirection,
         paymentMethod: input.paymentMethod,
         notes: input.notes ?? null,
@@ -312,11 +319,26 @@ export class PaymentService {
 
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
+    // r23 BLOCKER B: State-aware terminal replay — fail closed
     if (claim.action === "replay") {
-      const responseBody = claim.record.responseBody as { paymentId?: string; paymentNo?: string; status?: string } | null;
-      if (responseBody?.paymentId) {
-        return { paymentId: responseBody.paymentId, paymentNo: responseBody.paymentNo!, status: responseBody.status! };
+      if (claim.record.state === "succeeded") {
+        const r = claim.record.responseBody as { paymentId?: unknown; paymentNo?: unknown; status?: unknown } | null;
+        if (typeof r?.paymentId !== "string" || r.paymentId.trim() === ""
+            || typeof r?.paymentNo !== "string" || r.paymentNo.trim() === ""
+            || typeof r?.status !== "string" || r.status !== "draft") {
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing or invalid required fields.");
+        }
+        return { paymentId: r.paymentId, paymentNo: r.paymentNo, status: r.status };
       }
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: unknown; message?: unknown } | null;
+        if (typeof errorBody?.code !== "string" || errorBody.code.trim() === ""
+            || typeof errorBody?.message !== "string" || errorBody.message.trim() === "") {
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable business failure record is malformed.");
+        }
+        throw new PaymentError(errorBody.code, errorBody.message);
+      }
+      throw new PaymentError("IDEMPOTENCY_INCONSISTENT", `Unexpected replay state '${claim.record.state}'.`);
     }
     if (claim.action === "conflict") {
       throw new PaymentError("IDEMPOTENCY_CONFLICT", `Idempotency key '${input.idempotencyKey}' was used with a different request body.`);
@@ -325,83 +347,99 @@ export class PaymentService {
       throw new PaymentError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
     }
 
-    // Step 4: allocate payment number + insert payment row
-    const year = now.getUTCFullYear();
-    const docNoResult = await allocateDocumentNumber(this.deps.documentSequence, {
-      tenantId: user.tenantId, documentType: "payment", year, entityType: PAYMENT_ENTITY_TYPE,
-    });
+    // r23 BLOCKER C: Atomic draft creation inside ONE transaction.
+    const executeDraft = async (txScoped: {
+      subledger: SubledgerService; paymentRepository: PaymentRepository;
+      audit: AuditTransactionHandle; idempotency: IdempotencyTransactionHandle;
+      documentSequence: DocumentSequenceTransactionHandle;
+    }): Promise<{ paymentId: string; paymentNo: string; status: string }> => {
+      const subledger = txScoped.subledger;
+      const paymentRepo = txScoped.paymentRepository;
+      const audit = txScoped.audit;
+      const idempotency = txScoped.idempotency;
+      const documentSequence = txScoped.documentSequence;
 
-    // Get-or-create the account for this owner
-    // We use SubledgerService's internal getOrCreateAccount via a public wrapper
-    // — but SubledgerService doesn't expose getOrCreateAccount publicly.
-    // Instead, we look up the account via the subledger handle and create if missing.
-    // For WP-05-04, we delegate account creation to SubledgerService by posting
-    // the entry through it (which get-or-creates the account internally).
-    // For a draft payment, we don't post an entry yet, so we need the account id.
-    // We resolve the account id at POST time, not at draft time.
-    // Draft payment stores accountId = null-equivalent... but the schema requires accountId NOT NULL.
-    // Solution: resolve the account at draft time via SubledgerService.getOrCreateAccount.
-    // Since that's not public, we add a public method on SubledgerService:
-    // `getOrCreateAccount(user, ownerType, ownerId, currency)`.
-    // For now, we use a workaround: insert a placeholder account via the
-    // payment repository's underlying subledger handle. But PaymentRepository
-    // doesn't have account methods.
-    //
-    // Correct solution: add getOrCreateAccount as a public method on SubledgerService.
-    // That's a small additive change. We'll do it in subledger-service.ts.
-    const account = await this.deps.subledger.getOrCreateAccount(
-      user, input.ownerType, input.ownerId, currency,
-    );
-    requireTenantMatch(user, account.tenantId);
+      const year = now.getUTCFullYear();
+      const docNoResult = await allocateDocumentNumber(documentSequence, {
+        tenantId: user.tenantId, documentType: "payment", year, entityType: PAYMENT_ENTITY_TYPE,
+      });
 
-    const payment = await this.deps.paymentRepository.insertPayment({
-      tenantId: user.tenantId,
-      paymentNo: docNoResult.docNo,
-      paymentDate: input.paymentDate,
-      accountId: account.id,
-      amount: normalizeMoney(input.amount),
-      paymentDirection: input.paymentDirection,
-      paymentMethod: input.paymentMethod,
-      status: "draft",
-      notes: input.notes ?? null,
-      postedEntryId: null,
-      idempotencyKey: input.idempotencyKey,
-      createdBy: user.userId,
-    });
+      const account = await subledger.getOrCreateAccount(user, input.ownerType, input.ownerId, currency);
+      requireTenantMatch(user, account.tenantId);
 
-    // Step 5: audit
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: PAYMENT_ENTITY_TYPE,
-      entityId: payment.id,
-      actionType: "payment.draft.create",
-      newValuesJson: {
-        paymentNo: payment.paymentNo,
-        ownerType: input.ownerType,
-        ownerId: input.ownerId,
-        amount: payment.amount,
-        paymentDirection: payment.paymentDirection,
-        paymentMethod: payment.paymentMethod,
-        paymentDate: payment.paymentDate,
-        accountId: payment.accountId,
+      const payment = await paymentRepo.insertPayment({
+        tenantId: user.tenantId,
+        paymentNo: docNoResult.docNo,
+        paymentDate: input.paymentDate,
+        accountId: account.id,
+        amount: input.amount,
+        paymentDirection: input.paymentDirection,
+        paymentMethod: input.paymentMethod,
         status: "draft",
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+        notes: input.notes ?? null,
+        postedEntryId: null,
+        idempotencyKey: input.idempotencyKey,
+        createdBy: user.userId,
+      });
 
-    // Step 6: mark idempotency succeeded
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: {
-        paymentId: payment.id,
-        paymentNo: payment.paymentNo,
-        status: payment.status,
-      },
-      entityType: PAYMENT_ENTITY_TYPE,
-      entityId: payment.id,
-    }, claim.record.ownerToken!, now);
+      await appendAuditLog(audit, user.tenantId, user.userId, {
+        entityType: PAYMENT_ENTITY_TYPE,
+        entityId: payment.id,
+        actionType: "payment.draft.create",
+        newValuesJson: {
+          paymentNo: payment.paymentNo,
+          ownerType: input.ownerType,
+          ownerId: input.ownerId,
+          amount: payment.amount,
+          paymentDirection: payment.paymentDirection,
+          paymentMethod: payment.paymentMethod,
+          paymentDate: payment.paymentDate,
+          accountId: payment.accountId,
+          status: "draft",
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
 
-    return { paymentId: payment.id, paymentNo: payment.paymentNo, status: payment.status };
+      const result = { paymentId: payment.id, paymentNo: payment.paymentNo, status: payment.status };
+      await markSucceeded(idempotency, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+        entityType: PAYMENT_ENTITY_TYPE,
+        entityId: payment.id,
+      }, claim.record.ownerToken!, now);
+
+      return result;
+    };
+
+    // r23 BLOCKER D: Technical failure → markRetryableFailed
+    try {
+      return await this.deps.transactionRunner!(async (tx: unknown) => {
+        const txSubledger = this.deps.txFactories!.createSubledger(tx);
+        const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);
+        const txAudit = this.deps.txFactories!.createAudit(tx);
+        const txIdem = this.deps.txFactories!.createIdempotency(tx);
+        const txDocSeq = this.deps.txFactories!.createDocumentSequence(tx);
+        return executeDraft({
+          subledger: txSubledger, paymentRepository: txPaymentRepo,
+          audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
+        });
+      });
+    } catch (txError) {
+      // r23 BLOCKER D: Draft creation has no mutable business-state rejection path.
+      // All failures are technical → retryable_failed.
+      try {
+        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500,
+          responseBody: { message: "Payment draft creation transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch {
+        // If terminalization fails, record remains in_progress → lease expiry.
+      }
+      throw txError;
+    }
   }
+
 
   /**
    * Post a draft payment — creates the immutable signed account entry.
