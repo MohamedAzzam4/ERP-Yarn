@@ -62,7 +62,7 @@ import {
 import type { SubledgerService } from "./subledger-service";
 import type { PaymentRepository } from "./payment-repository";
 import type { Payment, AccountEntry } from "@/server/db/schema/subledger";
-import { normalizeMoney, isPositiveMoney, negateMoney } from "./decimal-money";
+import { normalizeMoney, isPositiveMoney, negateMoney, isValidCanonicalMoney, isZeroMoney } from "./decimal-money";
 
 // ---------------------------------------------------------------------------
 // Types.
@@ -455,17 +455,26 @@ export class PaymentService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r14 BLOCKER B: ALL terminal replay states must fail closed.
-      // No replay branch may silently fall through to business execution.
+      // r21 BLOCKER F: Complete PostPaymentResult semantic validation
       if (claim.record.state === "succeeded") {
-        const responseBody = claim.record.responseBody as Partial<PostPaymentResult> | null;
-        // Validate complete PostPaymentResult — not just paymentId.
-        if (!responseBody?.paymentId || !responseBody?.paymentNo || !responseBody?.status
-            || !responseBody?.postedEntryId || !responseBody?.entryNo
-            || !responseBody?.amountSigned || !responseBody?.accountId) {
+        const r = claim.record.responseBody as Partial<PostPaymentResult> | null;
+        if (!r?.paymentId || !r?.paymentNo || !r?.status
+            || !r?.postedEntryId || !r?.entryNo
+            || !r?.amountSigned || !r?.accountId) {
           throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
         }
-        return { ...responseBody, action: "replayed" } as PostPaymentResult;
+        // r21: validate status exactly "posted"
+        if (r.status !== "posted") {
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: status is not 'posted'.");
+        }
+        // r21: validate canonical money + non-zero
+        if (!isValidCanonicalMoney(r.amountSigned)) {
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: amountSigned is not valid canonical money.");
+        }
+        if (isZeroMoney(r.amountSigned)) {
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: amountSigned is zero.");
+        }
+        return { ...r, action: "replayed" } as PostPaymentResult;
       }
       if (claim.record.state === "business_failed") {
         const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;

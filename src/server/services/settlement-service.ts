@@ -194,7 +194,12 @@ export class SettlementService {
     if (!input.paymentId?.trim()) throw new SettlementError("VALIDATION_FAILED", "paymentId is required.");
     if (!input.idempotencyKey?.trim()) throw new SettlementError("VALIDATION_FAILED", "idempotencyKey is required.");
     if (input.allocations.length === 0) throw new SettlementError("VALIDATION_FAILED", "At least one allocation is required.");
+    // r21 BLOCKER D: Strict input money validation — require canonical 18,2
+    // before idempotency claim. No silent normalization of malformed input.
     for (const a of input.allocations) {
+      if (!isValidCanonicalMoney(a.settledAmount)) {
+        throw new SettlementError("VALIDATION_FAILED", `Settlement allocation settledAmount '${a.settledAmount}' is not valid canonical money (scale 2, NUMERIC(18,2)).`);
+      }
       if (!isPositiveMoney(a.settledAmount)) {
         throw new InvalidSettlementAmountError(a.settledAmount);
       }
@@ -238,12 +243,18 @@ export class SettlementService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r19 BLOCKER B: Semantic replay validation using canonical money validator
+      // r21 BLOCKER B: Array shape fail-closed before .length/.map usage
       if (claim.record.state === "succeeded") {
         const r = claim.record.responseBody as Partial<SettlePaymentResult> | null;
-        if (!r?.paymentId || !r?.settlementIds?.length || !r?.totalSettled
-            || !r?.paymentEntryRemaining || !r?.allocations) {
+        if (!r?.paymentId || !r?.totalSettled || !r?.paymentEntryRemaining) {
           throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
+        }
+        // r21 BLOCKER B: require arrays before using .length
+        if (!Array.isArray(r.settlementIds) || !Array.isArray(r.allocations)) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementIds or allocations is not an array.");
+        }
+        if (r.settlementIds.length === 0 || r.allocations.length === 0) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementIds or allocations is empty.");
         }
         // Validate cardinality consistency
         if (r.settlementIds.length !== r.allocations.length) {
@@ -305,6 +316,11 @@ export class SettlementService {
           if (!settlementIdSet.has(sid)) {
             throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation settlementId not in settlementIds.");
           }
+        }
+        // r21 BLOCKER C: totalSettled must equal sum of allocations.settledAmount
+        const allocSum = r.allocations.reduce((sum, a) => addMoney(sum, a.settledAmount), "0.00");
+        if (compareMoney(r.totalSettled, allocSum) !== 0) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: totalSettled does not equal sum of allocation settledAmounts.");
         }
         return { ...r, action: "replayed" } as SettlePaymentResult;
       }
