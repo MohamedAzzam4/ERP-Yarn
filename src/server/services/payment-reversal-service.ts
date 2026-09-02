@@ -171,12 +171,9 @@ export class PaymentReversalService {
       throw new PaymentReversalError("CONFIGURATION_ERROR", "PaymentReversalService.reversePayment requires transactionRunner and txFactories for production high-risk command execution.");
     }
 
-    // Step 2: fetch payment (pre-tx — will be re-locked/re-read inside tx)
-    const payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
-    if (!payment) throw new PaymentNotFoundForReversalError(input.paymentId);
-    requireTenantMatch(user, payment.tenantId);
-
-    // Step 3: claim idempotency
+    // r17 BLOCKER B: idempotency claim BEFORE any mutable business-state check
+    // (including PaymentNotFound). This ensures business failures are durable.
+    // Step 2: claim idempotency
     const now = new Date();
     const idempotencyInput: IdempotencyClaimInput = {
       tenantId: user.tenantId,
@@ -259,21 +256,30 @@ export class PaymentReversalService {
         throw new PaymentReversalError("INTERNAL_TRANSACTION_FAILED", `Original entry '${postedEntryId}' not found.`);
       }
 
-      // Step 7: lock settlement rows in deterministic order
-      const existingSettlements = await paymentRepo.lockSettlementsForPaymentEntry(
+      // Step 7: Read settlement rows (without lock) to discover target IDs.
+      // r17 BLOCKER C: Lock order is payment → payment entry → targets (sorted)
+      // → settlement rows. We need settlement data to discover targets, but
+      // we lock targets BEFORE locking settlement rows for writes.
+      const existingSettlements = await paymentRepo.listSettlementsForPaymentEntry(
         user.tenantId, postedEntryId,
       );
-      // Step 8: derive active settlement state from locked data
+      // Step 8: derive active settlement state
       const activeSettlements = existingSettlements.filter(s => s.settlementStatus === "settled");
 
-      // r16 BLOCKER 1: Lock ALL affected target entries in deterministic
-      // sorted order BEFORE deriving/updating their settlement state.
-      // This prevents a race between reversal and a concurrent settlement
-      // on the same target entry.
+      // r16 BLOCKER 1 + r17 BLOCKER C: Lock ALL affected target entries in
+      // deterministic sorted order BEFORE locking settlement rows.
       const uniqueTargetIds = [...new Set(activeSettlements.map(s => s.settledEntryId))].sort();
       for (const targetId of uniqueTargetIds) {
         await paymentRepo.lockSettledEntry(user.tenantId, targetId);
       }
+
+      // Now lock settlement rows for writes (after target locks acquired)
+      await paymentRepo.lockSettlementsForPaymentEntry(user.tenantId, postedEntryId);
+      // Re-read under lock to get authoritative active settlement state
+      const lockedSettlements = await paymentRepo.listSettlementsForPaymentEntry(
+        user.tenantId, postedEntryId,
+      );
+      const activeSettlementsLocked = lockedSettlements.filter(s => s.settlementStatus === "settled");
 
       // Step 9: SHARED subledger cutover coordination (inside this tx)
       // postReversalEntry calls requireCutoverLock internally (SHARED mode).
@@ -299,10 +305,18 @@ export class PaymentReversalService {
       // Step 12: r16 BLOCKER 2 — reverse each active settlement row
       // (settled → reversed) so it no longer consumes capacity.
       // Also insert a reversal evidence row preserving history.
+      // r17 BLOCKER A: reverseSettlement MUST fail closed — if the
+      // transition returns null, the entire reversal must abort.
       const reversedSettlementIds: string[] = [];
-      for (const s of activeSettlements) {
+      for (const s of activeSettlementsLocked) {
         // Transition the original settlement row: settled → reversed
-        await paymentRepo.reverseSettlement(user.tenantId, s.id, user.userId);
+        const reversed = await paymentRepo.reverseSettlement(user.tenantId, s.id, user.userId);
+        if (!reversed) {
+          throw new PaymentReversalError(
+            "INTERNAL_TRANSACTION_FAILED",
+            `Settlement '${s.id}' could not be transitioned to reversed — it was not in 'settled' state under lock. The entire reversal will roll back.`,
+          );
+        }
         // Insert reversal evidence row
         const reversalSettlement = await paymentRepo.insertSettlement({
           tenantId: user.tenantId,

@@ -206,13 +206,9 @@ export class SettlementService {
       throw new SettlementError("CONFIGURATION_ERROR", "SettlementService.settlePayment requires transactionRunner and txFactories for production high-risk command execution.");
     }
 
-    // Step 2: fetch payment (pre-tx prefetch for tenant/security only —
-    // mutable business-state validation happens inside the tx after claim)
-    const payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
-    if (!payment) throw new PaymentNotFoundError(input.paymentId);
-    requireTenantMatch(user, payment.tenantId);
-
-    // Step 3: claim idempotency
+    // r17 BLOCKER B: idempotency claim BEFORE any mutable business-state check
+    // (including PaymentNotFound). This ensures business failures are durable.
+    // Step 2: claim idempotency
     const now = new Date();
     const idempotencyInput: IdempotencyClaimInput = {
       tenantId: user.tenantId,
@@ -267,13 +263,14 @@ export class SettlementService {
       const idempotency = txScoped.idempotency;
 
       // Step 4: lock payment + re-read
-      const lockedPayment = await paymentRepo.lockPayment(user.tenantId, payment.id);
-      if (!lockedPayment) throw new PaymentNotFoundError(payment.id);
+      const lockedPayment = await paymentRepo.lockPayment(user.tenantId, input.paymentId);
+      if (!lockedPayment) throw new PaymentNotFoundError(input.paymentId);
+      requireTenantMatch(user, lockedPayment.tenantId);
       // Validate posted/not reversed from locked row
-      if (lockedPayment.status === "reversed") throw new PaymentReversedException(payment.id);
-      if (lockedPayment.status !== "posted") throw new PaymentNotPostedError(payment.id, lockedPayment.status);
+      if (lockedPayment.status === "reversed") throw new PaymentReversedException(lockedPayment.id);
+      if (lockedPayment.status !== "posted") throw new PaymentNotPostedError(lockedPayment.id, lockedPayment.status);
       if (!lockedPayment.postedEntryId) {
-        throw new PaymentNotPostedError(payment.id, lockedPayment.status);
+        throw new PaymentNotPostedError(lockedPayment.id, lockedPayment.status);
       }
       const postedEntryId: string = lockedPayment.postedEntryId;
 
