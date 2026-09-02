@@ -230,8 +230,9 @@ export interface PaymentServiceDeps {
    * are wrapped in a single DB transaction — this is REQUIRED for WP-07-04
    * cutover coordination correctness (the advisory lock must span the account
    * entry creation AND the payment status update AND audit AND idempotency
-   * terminalization). When absent (unit tests with in-memory repos), the
-   * service runs without a DB transaction boundary.
+   * terminalization). When absent, high-risk command execution fails closed
+   * with CONFIGURATION_ERROR. Unit/in-memory tests MUST provide an explicit
+   * transaction adapter/factory.
    */
   transactionRunner?: PaymentTransactionRunner;
   /**
@@ -519,7 +520,7 @@ export class PaymentService {
     // account entry creation and the payment status update.
     //
     // When transactionRunner is provided (production), the entire block runs
-    // in one transaction. When absent (unit tests), it runs without a boundary.
+    // in one transaction. When absent, high-risk command execution fails closed with CONFIGURATION_ERROR. Unit tests MUST provide an explicit transaction adapter/factory.
     const executePosting = async (txScoped: {
       subledger: SubledgerService; paymentRepository: PaymentRepository;
       audit: AuditTransactionHandle; idempotency: IdempotencyTransactionHandle;

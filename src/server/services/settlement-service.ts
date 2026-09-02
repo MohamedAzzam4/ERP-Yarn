@@ -141,7 +141,7 @@ export interface SettlementServiceDeps {
    * coordination correctness (the advisory lock acquired by
    * updateEntrySettlementStatusPublic must span the settlement inserts AND
    * the entry status updates AND audit AND idempotency terminalization).
-   * When absent (unit tests), runs without a boundary.
+   * When absent, high-risk command execution fails closed with CONFIGURATION_ERROR. Unit/in-memory tests MUST provide an explicit transaction adapter/factory.
    */
   transactionRunner?: SettlementTransactionRunner;
   txFactories?: SettlementTransactionScopedFactories;
@@ -213,9 +213,6 @@ export class SettlementService {
     if (payment.status === "reversed") throw new PaymentReversedException(payment.id);
     if (payment.status !== "posted") throw new PaymentNotPostedError(payment.id, payment.status);
 
-    // Lock the payment row for the duration of the transaction
-    await this.deps.paymentRepository.lockPayment(user.tenantId, payment.id);
-
     // Step 3: claim idempotency
     const now = new Date();
     const idempotencyInput: IdempotencyClaimInput = {
@@ -234,10 +231,22 @@ export class SettlementService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      const responseBody = claim.record.responseBody as Partial<SettlePaymentResult> | null;
-      if (responseBody?.paymentId) {
-        return { ...responseBody, action: "replayed" } as SettlePaymentResult;
+      // r15 BLOCKER E: state-aware replay
+      if (claim.record.state === "succeeded") {
+        const responseBody = claim.record.responseBody as Partial<SettlePaymentResult> | null;
+        if (responseBody?.paymentId && responseBody?.settlementIds?.length) {
+          return { ...responseBody, action: "replayed" } as SettlePaymentResult;
+        }
+        throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
       }
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
+        if (!errorBody?.code || !errorBody?.message) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable business failure record is malformed.");
+        }
+        throw new SettlementError(errorBody.code, errorBody.message);
+      }
+      throw new SettlementError("IDEMPOTENCY_INCONSISTENT", `Unexpected replay state '${claim.record.state}'.`);
     }
     if (claim.action === "conflict") {
       throw new SettlementError("IDEMPOTENCY_CONFLICT", `Idempotency key '${input.idempotencyKey}' was used with a different request body.`);
@@ -246,146 +255,85 @@ export class SettlementService {
       throw new SettlementError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
     }
 
-    // Step 4: fetch + lock the payment's posted entry
-    if (!payment.postedEntryId) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 422, responseBody: { message: "Payment has no posted entry." },
-        lastErrorClass: "PaymentNotPostedError",
-      }, claim.record.ownerToken!, now);
-      throw new PaymentNotPostedError(payment.id, payment.status);
-    }
-    // Capture the non-null postedEntryId so the closure below preserves
-    // TypeScript's narrowing (closures don't preserve control-flow narrowing).
-    const postedEntryId: string = payment.postedEntryId;
-    await this.deps.paymentRepository.lockPaymentEntry(user.tenantId, postedEntryId);
-    const paymentEntry = await this.deps.subledger.findEntryById(user.tenantId, payment.postedEntryId);
-    if (!paymentEntry) {
-      throw new SettlementError("INTERNAL_TRANSACTION_FAILED", `Payment entry '${payment.postedEntryId}' not found.`);
-    }
-
-    // Step 5: fetch + validate each target entry; lock each
-    const targetEntries: AccountEntry[] = [];
-    for (const a of input.allocations) {
-      await this.deps.paymentRepository.lockSettledEntry(user.tenantId, a.settledEntryId);
-      const target = await this.deps.subledger.findEntryById(user.tenantId, a.settledEntryId);
-      if (!target) {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Target entry '${a.settledEntryId}' not found.` },
-          lastErrorClass: "SettlementTargetNotFoundError",
-        }, claim.record.ownerToken!, now);
-        throw new SettlementTargetNotFoundError(a.settledEntryId);
-      }
-      // Same tenant
-      requireTenantMatch(user, target.tenantId);
-      // Same account
-      if (target.accountId !== paymentEntry.accountId) {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Account mismatch: payment account ${paymentEntry.accountId} vs target account ${target.accountId}.` },
-          lastErrorClass: "SettlementIncompatibleError",
-        }, claim.record.ownerToken!, now);
-        throw new SettlementIncompatibleError(`payment account ${paymentEntry.accountId} != target account ${target.accountId}`);
-      }
-      // Same currency
-      if (target.currency !== paymentEntry.currency) {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Currency mismatch: ${paymentEntry.currency} vs ${target.currency}.` },
-          lastErrorClass: "SettlementIncompatibleError",
-        }, claim.record.ownerToken!, now);
-        throw new SettlementIncompatibleError(`currency mismatch: ${paymentEntry.currency} vs ${target.currency}`);
-      }
-      // Compatible signs: payment entry and target entry must have OPPOSITE signs
-      // (a customer payment is negative, a customer receivable is positive — they net to zero)
-      // OR both are advances (same sign) — but for MVP we require opposite signs.
-      const paymentSign = parseFloat(paymentEntry.amountSigned) > 0 ? 1 : -1;
-      const targetSign = parseFloat(target.amountSigned) > 0 ? 1 : -1;
-      if (paymentSign === targetSign) {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Incompatible signs: payment ${paymentEntry.amountSigned}, target ${target.amountSigned}.` },
-          lastErrorClass: "SettlementIncompatibleError",
-        }, claim.record.ownerToken!, now);
-        throw new SettlementIncompatibleError(`incompatible signs: payment ${paymentEntry.amountSigned}, target ${target.amountSigned}`);
-      }
-      // Target must not be already fully settled or reversed
-      if (target.settlementStatus === "settled") {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Target entry '${a.settledEntryId}' is already settled.` },
-          lastErrorClass: "OverSettlementError",
-        }, claim.record.ownerToken!, now);
-        throw new OverSettlementError("target", a.settledAmount, "0.00");
-      }
-      if (target.settlementStatus === "reversed") {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Target entry '${a.settledEntryId}' is reversed.` },
-          lastErrorClass: "SettlementIncompatibleError",
-        }, claim.record.ownerToken!, now);
-        throw new SettlementIncompatibleError(`target entry '${a.settledEntryId}' is reversed`);
-      }
-      targetEntries.push(target);
-    }
-
-    // Step 6: compute existing settlements + verify capacity
-    const existingPaymentSettlements = await this.deps.paymentRepository.listSettlementsForPaymentEntry(
-      user.tenantId, payment.postedEntryId,
-    );
-    // Only count non-reversed settlements toward capacity
-    const activePaymentSettlements = existingPaymentSettlements.filter(s => s.settlementStatus === "settled");
-    const alreadySettledOnPayment = activePaymentSettlements.reduce(
-      (sum, s) => addMoney(sum, s.settledAmount), "0.00",
-    );
-    const paymentCapacity = subtractAbs(paymentEntry.amountSigned, alreadySettledOnPayment);
-    const totalNewSettlement = input.allocations.reduce(
-      (sum, a) => addMoney(sum, normalizeMoney(a.settledAmount)), "0.00",
-    );
-    if (compareMoney(totalNewSettlement, paymentCapacity) > 0) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 422, responseBody: { message: `Over-settlement on payment: requested ${totalNewSettlement}, available ${paymentCapacity}.` },
-        lastErrorClass: "OverSettlementError",
-      }, claim.record.ownerToken!, now);
-      throw new OverSettlementError("payment", totalNewSettlement, paymentCapacity);
-    }
-
-    // For each target, compute existing settlements + verify capacity
-    const targetCapacities: Map<string, string> = new Map();
-    for (let i = 0; i < input.allocations.length; i++) {
-      const a = input.allocations[i]!;
-      const target = targetEntries[i]!;
-      const existingTargetSettlements = await this.deps.paymentRepository.listSettlementsForSettledEntry(
-        user.tenantId, a.settledEntryId,
-      );
-      const activeTargetSettlements = existingTargetSettlements.filter(s => s.settlementStatus === "settled");
-      const alreadySettledOnTarget = activeTargetSettlements.reduce(
-        (sum, s) => addMoney(sum, s.settledAmount), "0.00",
-      );
-      const targetCapacity = subtractAbs(target.amountSigned, alreadySettledOnTarget);
-      if (compareMoney(normalizeMoney(a.settledAmount), targetCapacity) > 0) {
-        await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 422, responseBody: { message: `Over-settlement on target '${a.settledEntryId}': requested ${a.settledAmount}, available ${targetCapacity}.` },
-          lastErrorClass: "OverSettlementError",
-        }, claim.record.ownerToken!, now);
-        throw new OverSettlementError("target", a.settledAmount, targetCapacity);
-      }
-      targetCapacities.set(a.settledEntryId, targetCapacity);
-    }
-
-    // Step 7-9: insert settlement rows, update entry settlement statuses,
-    // audit, mark idempotency succeeded.
-    //
-    // WP-07-04 cutover coordination (r11): ALL of these writes MUST share the
-    // SAME db.transaction() so the cutover advisory lock (acquired by
-    // updateEntrySettlementStatusPublic) protects the FULL settlement flow.
+    // Step 4-18: ALL authoritative state handling inside ONE transaction.
+    // r15 BLOCKER E: lock payment, re-read, validate, lock payment entry,
+    // lock targets, recompute capacity — ALL inside the transaction.
     const executeSettlement = async (txScoped: {
       subledger: SubledgerService; paymentRepository: PaymentRepository;
       audit: AuditTransactionHandle; idempotency: IdempotencyTransactionHandle;
-    } | null): Promise<SettlePaymentResult> => {
-      const subledger = txScoped?.subledger ?? this.deps.subledger;
-      const paymentRepo = txScoped?.paymentRepository ?? this.deps.paymentRepository;
-      const audit = txScoped?.audit ?? this.deps.audit;
-      const idempotency = txScoped?.idempotency ?? this.deps.idempotency;
+    }): Promise<SettlePaymentResult> => {
+      const subledger = txScoped.subledger;
+      const paymentRepo = txScoped.paymentRepository;
+      const audit = txScoped.audit;
+      const idempotency = txScoped.idempotency;
 
+      // Step 4: lock payment + re-read
+      const lockedPayment = await paymentRepo.lockPayment(user.tenantId, payment.id);
+      if (!lockedPayment) throw new PaymentNotFoundError(payment.id);
+      // Validate posted/not reversed from locked row
+      if (lockedPayment.status === "reversed") throw new PaymentReversedException(payment.id);
+      if (lockedPayment.status !== "posted") throw new PaymentNotPostedError(payment.id, lockedPayment.status);
+      if (!lockedPayment.postedEntryId) {
+        throw new PaymentNotPostedError(payment.id, lockedPayment.status);
+      }
+      const postedEntryId: string = lockedPayment.postedEntryId;
+
+      // Step 5: lock payment account entry + re-read
+      await paymentRepo.lockPaymentEntry(user.tenantId, postedEntryId);
+      const paymentEntry = await subledger.findEntryById(user.tenantId, postedEntryId);
+      if (!paymentEntry) throw new SettlementError("INTERNAL_TRANSACTION_FAILED", `Payment entry '${postedEntryId}' not found.`);
+
+      // Step 6: stable-sort target entry IDs for deterministic lock order
+      const sortedAllocations = [...input.allocations].sort((a, b) =>
+        a.settledEntryId.localeCompare(b.settledEntryId));
+
+      // Step 7: lock targets in deterministic order + re-read
+      const targetEntries: AccountEntry[] = [];
+      for (const a of sortedAllocations) {
+        await paymentRepo.lockSettledEntry(user.tenantId, a.settledEntryId);
+        const target = await subledger.findEntryById(user.tenantId, a.settledEntryId);
+        if (!target) throw new SettlementTargetNotFoundError(a.settledEntryId);
+        requireTenantMatch(user, target.tenantId);
+        if (target.accountId !== paymentEntry.accountId) throw new SettlementIncompatibleError(`payment account ${paymentEntry.accountId} != target account ${target.accountId}`);
+        if (target.currency !== paymentEntry.currency) throw new SettlementIncompatibleError(`currency mismatch: ${paymentEntry.currency} vs ${target.currency}`);
+        if (target.settlementStatus === "settled") throw new OverSettlementError("target", a.settledAmount, "0.00");
+        if (target.settlementStatus === "reversed") throw new SettlementIncompatibleError(`target entry '${a.settledEntryId}' is reversed`);
+        targetEntries.push(target);
+      }
+
+      // Step 8: lock/read settlement rows for capacity
+      const existingPaymentSettlements = await paymentRepo.listSettlementsForPaymentEntry(user.tenantId, postedEntryId);
+      const activePaymentSettlements = existingPaymentSettlements.filter(s => s.settlementStatus === "settled");
+
+      // Step 9: recompute payment remaining capacity from locked state
+      const alreadySettledOnPayment = activePaymentSettlements.reduce((sum, s) => addMoney(sum, s.settledAmount), "0.00");
+      const paymentCapacity = subtractAbs(paymentEntry.amountSigned, alreadySettledOnPayment);
+      const totalNewSettlement = sortedAllocations.reduce((sum, a) => addMoney(sum, normalizeMoney(a.settledAmount)), "0.00");
+      if (compareMoney(totalNewSettlement, paymentCapacity) > 0) {
+        throw new OverSettlementError("payment", totalNewSettlement, paymentCapacity);
+      }
+
+      // Step 10: recompute each target remaining capacity from locked state
+      for (let i = 0; i < sortedAllocations.length; i++) {
+        const a = sortedAllocations[i]!;
+        const target = targetEntries[i]!;
+        const existingTargetSettlements = await paymentRepo.listSettlementsForSettledEntry(user.tenantId, a.settledEntryId);
+        const activeTargetSettlements = existingTargetSettlements.filter(s => s.settlementStatus === "settled");
+        const alreadySettledOnTarget = activeTargetSettlements.reduce((sum, s) => addMoney(sum, s.settledAmount), "0.00");
+        const targetCapacity = subtractAbs(target.amountSigned, alreadySettledOnTarget);
+        if (compareMoney(normalizeMoney(a.settledAmount), targetCapacity) > 0) {
+          throw new OverSettlementError("target", a.settledAmount, targetCapacity);
+        }
+      }
+
+      // Step 11: SHARED subledger cutover coordination
+      // updateEntrySettlementStatusPublic calls requireCutoverLock internally.
+
+      // Step 12: insert settlement records
       const settlementIds: string[] = [];
       const allocationResults: SettlePaymentResult["allocations"] = [];
-      for (let i = 0; i < input.allocations.length; i++) {
-        const a = input.allocations[i]!;
+      for (let i = 0; i < sortedAllocations.length; i++) {
+        const a = sortedAllocations[i]!;
         const target = targetEntries[i]!;
         const settledAmount = normalizeMoney(a.settledAmount);
         const settlement = await paymentRepo.insertSettlement({
@@ -398,40 +346,29 @@ export class SettlementService {
         });
         settlementIds.push(settlement.id);
 
-        const existingTargetSettlements = await paymentRepo.listSettlementsForSettledEntry(
-          user.tenantId, a.settledEntryId,
-        );
+        // Step 13: update settlement statuses
+        const existingTargetSettlements = await paymentRepo.listSettlementsForSettledEntry(user.tenantId, a.settledEntryId);
         const activeTargetSettlements = existingTargetSettlements.filter(s => s.settlementStatus === "settled");
-        const totalSettledOnTarget = activeTargetSettlements.reduce(
-          (sum, s) => addMoney(sum, s.settledAmount), "0.00",
-        );
+        const totalSettledOnTarget = activeTargetSettlements.reduce((sum, s) => addMoney(sum, s.settledAmount), "0.00");
         const targetRemaining = subtractAbs(target.amountSigned, totalSettledOnTarget);
         const newTargetStatus = isZeroMoney(targetRemaining) ? "settled" : "partially_settled";
-        await subledger.updateEntrySettlementStatusPublic(
-          user.tenantId, a.settledEntryId, newTargetStatus,
-        );
-
-        allocationResults.push({
-          settlementId: settlement.id,
-          settledEntryId: a.settledEntryId,
-          settledAmount,
-          settledEntryRemaining: targetRemaining,
-        });
+        await subledger.updateEntrySettlementStatusPublic(user.tenantId, a.settledEntryId, newTargetStatus);
+        allocationResults.push({ settlementId: settlement.id, settledEntryId: a.settledEntryId, settledAmount, settledEntryRemaining: targetRemaining });
       }
 
+      // Update payment entry settlement status
       const totalSettledOnPayment = addMoney(alreadySettledOnPayment, totalNewSettlement);
       const paymentRemaining = subtractAbs(paymentEntry.amountSigned, totalSettledOnPayment);
       const newPaymentStatus = isZeroMoney(paymentRemaining) ? "settled" : "partially_settled";
-      await subledger.updateEntrySettlementStatusPublic(
-        user.tenantId, postedEntryId, newPaymentStatus,
-      );
+      await subledger.updateEntrySettlementStatusPublic(user.tenantId, postedEntryId, newPaymentStatus);
 
+      // Step 14: audit
       await appendAuditLog(audit, user.tenantId, user.userId, {
         entityType: SETTLEMENT_ENTITY_TYPE,
         entityId: settlementIds[0]!,
         actionType: "payment.settle",
         newValuesJson: {
-          paymentId: payment.id,
+          paymentId: lockedPayment.id,
           paymentEntryId: postedEntryId,
           settlementIds,
           allocations: allocationResults,
@@ -441,9 +378,10 @@ export class SettlementService {
         idempotencyKey: input.idempotencyKey,
       });
 
+      // Step 15: mark idempotency succeeded
       const result: SettlePaymentResult = {
         action: "settled",
-        paymentId: payment.id,
+        paymentId: lockedPayment.id,
         settlementIds,
         totalSettled: totalNewSettlement,
         paymentEntryRemaining: paymentRemaining,
@@ -460,13 +398,7 @@ export class SettlementService {
     };
 
     try {
-      // BLOCKER 7 (r13): fail closed — high-risk production commands MUST
-      // have transactionRunner + txFactories. No silent non-transactional fallback.
-      if (!this.deps.transactionRunner || !this.deps.txFactories) {
-        throw new Error("CONFIGURATION_ERROR: transactionRunner and txFactories are required for this high-risk command.");
-      }
-      if (true) {
-        return await this.deps.transactionRunner(async (tx: unknown) => {
+      return await this.deps.transactionRunner!(async (tx: unknown) => {
           const txSubledger = this.deps.txFactories!.createSubledger(tx);
           const txPaymentRepo = this.deps.txFactories!.createPaymentRepository(tx);
           const txAudit = this.deps.txFactories!.createAudit(tx);
@@ -476,20 +408,32 @@ export class SettlementService {
             audit: txAudit, idempotency: txIdem,
           });
         });
-      } else {
-        return executeSettlement(null);
-      }
     } catch (txError) {
-      // WP-07-04/BLOCKER 4: technical failure (including cutover lock wait
-      // timeout) → terminalize as retryable_failed for immediate same-key retry.
+      // r15 BLOCKER E: classify business vs technical failures.
+      const isBusinessError =
+        txError instanceof OverSettlementError ||
+        txError instanceof SettlementTargetNotFoundError ||
+        txError instanceof SettlementIncompatibleError ||
+        txError instanceof PaymentNotPostedError ||
+        txError instanceof PaymentReversedException ||
+        txError instanceof PaymentNotFoundError;
       try {
-        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
-          responseCode: 500,
-          responseBody: { message: "Settlement transaction failed and rolled back." },
-          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-        }, claim.record.ownerToken!, now);
+        if (isBusinessError) {
+          const error = txError as Error & { code?: string };
+          await markBusinessFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 422,
+            responseBody: { code: (error as any).code ?? "SETTLEMENT_FAILED", message: error.message },
+            lastErrorClass: error.name,
+          }, claim.record.ownerToken!, now);
+        } else {
+          await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+            responseCode: 500,
+            responseBody: { message: "Settlement transaction failed and rolled back." },
+            lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+          }, claim.record.ownerToken!, now);
+        }
       } catch {
-        // If markRetryableFailed fails, record remains in_progress → lease expiry.
+        // If terminalization fails, record remains in_progress → lease expiry.
       }
       throw txError;
     }

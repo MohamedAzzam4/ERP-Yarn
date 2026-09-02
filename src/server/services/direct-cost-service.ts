@@ -197,8 +197,9 @@ export interface DirectCostServiceDeps {
    * coordination correctness (the advisory lock acquired by
    * SubledgerService.postDirectCostEntry must span the account entry creation
    * AND the direct cost allocation AND the direct cost status update AND audit
-   * AND idempotency terminalization). When absent (unit tests), runs without
-   * a boundary.
+   * AND idempotency terminalization). When absent, high-risk command execution
+   * fails closed with CONFIGURATION_ERROR. Unit/in-memory tests MUST provide
+   * an explicit transaction adapter/factory.
    */
   transactionRunner?: DirectCostTransactionRunner;
   txFactories?: DirectCostTransactionScopedFactories;
@@ -614,13 +615,9 @@ export class DirectCostService {
     };
 
     try {
-      // BLOCKER 7 (r13): fail closed — high-risk production commands MUST
-      // have transactionRunner + txFactories. No silent non-transactional fallback.
-      if (!this.deps.transactionRunner || !this.deps.txFactories) {
-        throw new Error("CONFIGURATION_ERROR: transactionRunner and txFactories are required for this high-risk command.");
-      }
-      if (true) {
-        return await this.deps.transactionRunner(async (tx: unknown) => {
+      // r15 BLOCKER C: transactionRunner + txFactories already verified
+      // at the top of this method. No dead non-transactional fallback.
+      return await this.deps.transactionRunner!(async (tx: unknown) => {
           const txSubledger = this.deps.txFactories!.createSubledger(tx);
           const txDirectCostRepo = this.deps.txFactories!.createDirectCostRepository(tx);
           const txAudit = this.deps.txFactories!.createAudit(tx);
@@ -631,9 +628,6 @@ export class DirectCostService {
             audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
           });
         });
-      } else {
-        return executeReview(null);
-      }
     } catch (txError) {
       // WP-07-04/BLOCKER 4: technical failure (including cutover lock wait
       // timeout) → terminalize as retryable_failed for immediate same-key retry.
