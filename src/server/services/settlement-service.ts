@@ -51,7 +51,7 @@ import type { SubledgerService } from "./subledger-service";
 import type { PaymentRepository } from "./payment-repository";
 import type { AccountEntry, Payment, PaymentSettlement } from "@/server/db/schema/subledger";
 import {
-  normalizeMoney, isPositiveMoney, addMoney, compareMoney, absMoney, isZeroMoney, subtractMoney, isValidCanonicalMoney,
+  normalizeMoney, isPositiveMoney, addMoney, compareMoney, absMoney, isZeroMoney, subtractMoney, isValidCanonicalMoney, isNegativeMoney,
 } from "./decimal-money";
 
 // ---------------------------------------------------------------------------
@@ -249,11 +249,20 @@ export class SettlementService {
         if (r.settlementIds.length !== r.allocations.length) {
           throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementIds.length !== allocations.length.");
         }
-        // r19: validate canonical money semantics
+        // r20 BLOCKER B: strict canonical money validation
         if (!isValidCanonicalMoney(r.totalSettled) || !isValidCanonicalMoney(r.paymentEntryRemaining)) {
           throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: money field is not valid canonical money.");
         }
-        // Validate each allocation has required fields + canonical money
+        // r20 BLOCKER C: sign/range semantics
+        // totalSettled must be > 0
+        if (!isPositiveMoney(r.totalSettled)) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: totalSettled is not positive.");
+        }
+        // paymentEntryRemaining must be >= 0 (not negative)
+        if (isNegativeMoney(r.paymentEntryRemaining)) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: paymentEntryRemaining is negative.");
+        }
+        // Validate each allocation has required fields + canonical money + sign/range
         for (const a of r.allocations) {
           if (!a?.settlementId || !a?.settledEntryId || !a?.settledAmount || !a?.settledEntryRemaining) {
             throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation missing required fields.");
@@ -261,11 +270,39 @@ export class SettlementService {
           if (!isValidCanonicalMoney(a.settledAmount) || !isValidCanonicalMoney(a.settledEntryRemaining)) {
             throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation money field is not valid canonical money.");
           }
+          // settledAmount must be > 0
+          if (!isPositiveMoney(a.settledAmount)) {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation settledAmount is not positive.");
+          }
+          // settledEntryRemaining must be >= 0
+          if (isNegativeMoney(a.settledEntryRemaining)) {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation settledEntryRemaining is negative.");
+          }
         }
-        // Validate settlementId membership: every allocation.settlementId must be in settlementIds
+        // r20 BLOCKER D: settlement ID bijection
+        // Every settlementId must be non-empty
+        for (const sid of r.settlementIds) {
+          if (typeof sid !== "string" || sid.trim() === "") {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementId contains invalid entry.");
+          }
+        }
+        // No duplicates in settlementIds
         const settlementIdSet = new Set(r.settlementIds);
-        for (const a of r.allocations) {
-          if (!settlementIdSet.has(a.settlementId)) {
+        if (settlementIdSet.size !== r.settlementIds.length) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementIds contains duplicates.");
+        }
+        // No duplicates in allocation settlementIds
+        const allocSettlementIds = r.allocations.map(a => a.settlementId);
+        const allocSet = new Set(allocSettlementIds);
+        if (allocSet.size !== allocSettlementIds.length) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation settlementIds contain duplicates.");
+        }
+        // Exact set equality: settlementIds and allocation settlementIds must be the same set
+        if (settlementIdSet.size !== allocSet.size) {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: settlementIds and allocation settlementIds sets differ.");
+        }
+        for (const sid of allocSettlementIds) {
+          if (!settlementIdSet.has(sid)) {
             throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation settlementId not in settlementIds.");
           }
         }

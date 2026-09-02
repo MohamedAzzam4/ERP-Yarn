@@ -202,9 +202,13 @@ export class PaymentReversalService {
         if (!Array.isArray(r.reversedSettlementIds)) {
           throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversedSettlementIds is not an array.");
         }
-        // r19: validate canonical money semantics
+        // r20 BLOCKER C: validate canonical money + non-zero reversal amount
         if (!isValidCanonicalMoney(r.reversalAmountSigned)) {
           throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversalAmountSigned is not valid canonical money.");
+        }
+        // Reversal amount must be non-zero
+        if (isZeroMoney(r.reversalAmountSigned)) {
+          throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversalAmountSigned is zero.");
         }
         for (const sid of r.reversedSettlementIds) {
           if (typeof sid !== "string" || sid.trim() === "") {
