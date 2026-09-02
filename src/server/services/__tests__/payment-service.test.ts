@@ -49,6 +49,7 @@ import { InMemoryPaymentRepository } from "./in-memory-payment-repository";
 import { InProcessAuditStore } from "../audit-service";
 import { InProcessIdempotencyStore } from "../idempotency-service";
 import { InProcessDocumentSequenceStore } from "../document-sequence-service";
+import { InMemoryOwnerAuthorityLookup } from "../owner-authority-lookup";
 import { TEST_USERS, getTestEffectivePermissions } from "@/server/security/role-fixtures";
 import { PermissionDeniedError } from "@/server/security/guards";
 
@@ -103,8 +104,17 @@ function makeDeps() {
   const idempotency = new InProcessIdempotencyStore();
   const documentSequence = new InProcessDocumentSequenceStore();
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
+  // r24 BLOCKER C: seed the in-memory owner authority with the canonical
+  // test fixtures so createDraftPayment's owner-validation passes for
+  // TEST_CUSTOMER_ID / TEST_SUPPLIER_ID / TEST_FACTORY_ID. The lookup is
+  // tenant-scoped — a foreign-tenant id returns null → OwnerNotFoundError.
+  const ownerAuthority = new InMemoryOwnerAuthorityLookup();
+  ownerAuthority.seed({ tenantId: TEST_TENANT_ID, ownerType: "customer", ownerId: TEST_CUSTOMER_ID, status: "active" });
+  ownerAuthority.seed({ tenantId: TEST_TENANT_ID, ownerType: "supplier", ownerId: TEST_SUPPLIER_ID, status: "active" });
+  ownerAuthority.seed({ tenantId: TEST_TENANT_ID, ownerType: "factory", ownerId: TEST_FACTORY_ID, status: "active" });
   const noopTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work(null);
   const paymentService = new PaymentService({ paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence,
+    ownerAuthority,
     transactionRunner: noopTxRunner,
     txFactories: {
       createSubledger: () => subledger,

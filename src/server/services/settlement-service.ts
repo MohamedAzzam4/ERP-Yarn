@@ -258,11 +258,15 @@ export class SettlementService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r21 BLOCKER B: Array shape fail-closed before .length/.map usage
+      // r21 BLOCKER B + r24 BLOCKER F: Array shape fail-closed before
+      // .length/.map usage, with hardened runtime identifier types — every
+      // ID field must be an actual non-empty runtime string.
       if (claim.record.state === "succeeded") {
         const r = claim.record.responseBody as Partial<SettlePaymentResult> | null;
-        if (!r?.paymentId || !r?.totalSettled || !r?.paymentEntryRemaining) {
-          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
+        if (typeof r?.paymentId !== "string" || r.paymentId.trim() === ""
+            || typeof r?.totalSettled !== "string" || r.totalSettled.trim() === ""
+            || typeof r?.paymentEntryRemaining !== "string" || r.paymentEntryRemaining.trim() === "") {
+          throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing or invalid required fields.");
         }
         // r21 BLOCKER B: require arrays before using .length
         if (!Array.isArray(r.settlementIds) || !Array.isArray(r.allocations)) {
@@ -290,8 +294,15 @@ export class SettlementService {
         }
         // Validate each allocation has required fields + canonical money + sign/range
         for (const a of r.allocations) {
-          if (!a?.settlementId || !a?.settledEntryId || !a?.settledAmount || !a?.settledEntryRemaining) {
-            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation missing required fields.");
+          if (!a || typeof a !== "object") {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation is not an object.");
+          }
+          // r24 BLOCKER F: hardened runtime identifier types
+          if (typeof a.settlementId !== "string" || a.settlementId.trim() === ""
+              || typeof a.settledEntryId !== "string" || a.settledEntryId.trim() === ""
+              || typeof a.settledAmount !== "string" || a.settledAmount.trim() === ""
+              || typeof a.settledEntryRemaining !== "string" || a.settledEntryRemaining.trim() === "") {
+            throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation missing required fields or fields are not non-empty strings.");
           }
           if (!isValidCanonicalMoney(a.settledAmount) || !isValidCanonicalMoney(a.settledEntryRemaining)) {
             throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: allocation money field is not valid canonical money.");
@@ -340,8 +351,11 @@ export class SettlementService {
         return { ...r, action: "replayed" } as SettlePaymentResult;
       }
       if (claim.record.state === "business_failed") {
-        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
-        if (!errorBody?.code || !errorBody?.message) {
+        // r24 BLOCKER E: hardened runtime type check — must be non-empty
+        // strings, not just truthy.
+        const errorBody = claim.record.responseBody as { code?: unknown; message?: unknown } | null;
+        if (typeof errorBody?.code !== "string" || errorBody.code.trim() === ""
+            || typeof errorBody?.message !== "string" || errorBody.message.trim() === "") {
           throw new SettlementError("IDEMPOTENCY_INCONSISTENT", "Durable business failure record is malformed.");
         }
         throw new SettlementError(errorBody.code, errorBody.message);

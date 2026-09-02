@@ -146,6 +146,58 @@ export class PaymentDirectionOwnerMismatchError extends PaymentError {
   }
 }
 
+/**
+ * r24 BLOCKER C: Owner master existence / active validation.
+ *
+ * Contract 07: account `owner_id` corresponds to a customer/supplier/factory
+ * master. Inactive owner records retain history but cannot be selected for
+ * new transactions.
+ *
+ * We delegate the existence + active lookup to a canonical
+ * OwnerAuthorityLookup so PaymentService does NOT duplicate master-data
+ * authority. Missing/inactive/foreign-tenant owners are a deterministic
+ * business/validation rejection (VALIDATION_FAILED) BEFORE idempotency claim
+ * — no claim, no payment, no account, no audit.
+ */
+export class OwnerNotFoundError extends PaymentError {
+  constructor(ownerType: string, ownerId: string) {
+    // Single message regardless of "missing" vs "foreign-tenant" to avoid
+    // cross-tenant disclosure (Contract 09 §5 / Contract 07 owner authority).
+    super("VALIDATION_FAILED",
+      `Owner '${ownerId}' of type '${ownerType}' was not found or is not selectable in this tenant.`);
+    this.name = "OwnerNotFoundError";
+  }
+}
+
+export class OwnerNotActiveError extends PaymentError {
+  constructor(ownerType: string, ownerId: string) {
+    super("VALIDATION_FAILED",
+      `Owner '${ownerId}' of type '${ownerType}' is inactive and cannot be selected for new transactions.`);
+    this.name = "OwnerNotActiveError";
+  }
+}
+
+/**
+ * r24 BLOCKER C: Canonical owner master authority — looks up customer /
+ * supplier / external-factory master records scoped by tenantId. Returns
+ * `{ status: "active" | "inactive" }` or `null` when the owner does not
+ * exist in the caller's tenant (the lookup is tenant-scoped, so a
+ * foreign-tenant id also returns null — the caller throws the same
+ * `OwnerNotFoundError` for both cases to avoid cross-tenant disclosure).
+ *
+ * The production implementation delegates to MasterDataRepository
+ * (`findCustomerById` / `findSupplierById` / `findExternalFactoryById`).
+ * In-memory tests inject an InMemoryOwnerAuthorityLookup backed by
+ * InMemoryMasterDataRepository.
+ */
+export interface OwnerAuthorityLookup {
+  findOwner(
+    tenantId: string,
+    ownerType: AccountOwnerType,
+    ownerId: string,
+  ): Promise<{ status: "active" | "inactive" } | null>;
+}
+
 // ---------------------------------------------------------------------------
 // Constants.
 // ---------------------------------------------------------------------------
@@ -159,6 +211,29 @@ const ALLOWED_METHODS: ReadonlySet<PaymentMethod> = new Set([
 const ALLOWED_DIRECTIONS: ReadonlySet<PaymentDirection> = new Set([
   "received_from_party", "paid_to_party",
 ]);
+
+/**
+ * r24 BLOCKER A: Effective-currency allowlist for createDraftPayment.
+ *
+ * The reviewer asks: "Before allowing non-EGP currency, inspect existing
+ * authority. If MVP explicitly forbids non-EGP transaction creation, validate
+ * that before idempotency instead of inventing multi-currency behavior."
+ *
+ * Inspecting the codebase: Contract 03 §12.2 stores `currency` on the
+ * accounts table (per-owner currency), and SubledgerService.getOrCreateAccount
+ * keys accounts by `unique(tenant, owner_type, owner_id, currency)`. However
+ * Contract 07 §13 (Payment stores direction/method/account/date/state) and
+ * Contract 11 §1 (MVP scope: single-currency Egyptian Pound operation) — the
+ * MVP explicitly operates on EGP only. The `currency?` field on
+ * CreateDraftPaymentInput is accepted for forward compatibility but the MVP
+ * reject boundary is: any non-EGP value is a deterministic
+ * `VALIDATION_FAILED` BEFORE idempotency claim.
+ *
+ * Effective currency resolution: `input.currency ?? "EGP"` (the same default
+ * SubledgerService already uses internally).
+ */
+const ALLOWED_CURRENCIES: ReadonlySet<string> = new Set(["EGP"]);
+const DEFAULT_CURRENCY = "EGP";
 
 /**
  * Mapping from (ownerType, direction) → entry type + sign.
@@ -226,6 +301,14 @@ export interface PaymentServiceDeps {
   idempotency: IdempotencyTransactionHandle;
   documentSequence: DocumentSequenceTransactionHandle;
   /**
+   * r24 BLOCKER C: Canonical owner master authority. Required for
+   * createDraftPayment — missing/inactive/foreign-tenant owners are
+   * rejected BEFORE idempotency claim (no claim, no payment, no account,
+   * no audit). Production wires a MasterDataOwnerAuthorityLookup backed by
+   * MasterDataRepository. In-memory tests inject an in-memory lookup.
+   */
+  ownerAuthority: OwnerAuthorityLookup;
+  /**
    * Optional transaction runner. When provided, all DB writes in postPayment
    * are wrapped in a single DB transaction — this is REQUIRED for WP-07-04
    * cutover coordination correctness (the advisory lock must span the account
@@ -291,6 +374,58 @@ export class PaymentService {
     }
     deriveEntryTypeAndSign(input.ownerType, input.paymentDirection);
 
+    // r24 BLOCKER A: Effective-currency validation BEFORE idempotency claim.
+    //
+    // The reviewer's canonical test (DRAFT-CURRENCY-IDEMP-2) requires that
+    // two requests with the SAME key but DIFFERENT effective currencies
+    // produce IDEMPOTENCY_CONFLICT. To make this contract enforceable we
+    // (1) validate the effective currency now (MVP: EGP only — non-EGP is a
+    // deterministic VALIDATION_FAILED before any claim), and (2) include
+    // the effective currency value in the idempotency requestBody below so
+    // a missing-currency ("EGP" by default) and an explicit `"EGP"` produce
+    // the same request body hash (DRAFT-CURRENCY-IDEMP-1).
+    //
+    // We resolve the effective currency ONCE here so the same value flows
+    // into both the validation check and the idempotency request body.
+    const effectiveCurrency = (input.currency ?? DEFAULT_CURRENCY).trim();
+    if (!ALLOWED_CURRENCIES.has(effectiveCurrency)) {
+      throw new PaymentError(
+        "VALIDATION_FAILED",
+        `Payment currency '${effectiveCurrency}' is not allowed. MVP allows only: EGP.`,
+      );
+    }
+
+    // r24 BLOCKER C: Owner master existence / active validation BEFORE
+    // idempotency claim. This is a deterministic business-validation boundary
+    // (Contract 07 owner authority + Contract 11 §1 MVP scope). It runs
+    // BEFORE any claim so a missing/inactive/foreign-tenant owner produces
+    // ZERO side effects: no idempotency record, no payment, no account, no
+    // audit. r24 BLOCKER D: because this is deterministic master eligibility
+    // (not a DB transaction failure), it is NOT classified as a technical
+    // retryable failure — it throws VALIDATION_FAILED directly, and a same-key
+    // retry will hit the same VALIDATION_FAILED result deterministically.
+    //
+    // We delegate to the canonical OwnerAuthorityLookup so PaymentService
+    // does NOT duplicate master-data authority (no separate customer/supplier/
+    // factory master tables). The lookup is tenant-scoped — a foreign-tenant
+    // ownerId returns null and is reported via the same OwnerNotFoundError
+    // message as a missing owner (no cross-tenant disclosure per Contract 09 §5).
+    if (!this.deps.ownerAuthority) {
+      throw new PaymentError(
+        "CONFIGURATION_ERROR",
+        "PaymentService.createDraftPayment requires ownerAuthority for owner master validation.",
+      );
+    }
+    const ownerRecord = await this.deps.ownerAuthority.findOwner(
+      user.tenantId, input.ownerType, input.ownerId,
+    );
+    if (!ownerRecord) {
+      throw new OwnerNotFoundError(input.ownerType, input.ownerId);
+    }
+    if (ownerRecord.status !== "active") {
+      throw new OwnerNotActiveError(input.ownerType, input.ownerId);
+    }
+
     // r23 BLOCKER C: Fail-closed transaction configuration check BEFORE idempotency.
     if (!this.deps.transactionRunner || !this.deps.txFactories) {
       throw new PaymentError("CONFIGURATION_ERROR", "PaymentService.createDraftPayment requires transactionRunner and txFactories for atomic draft creation.");
@@ -298,7 +433,14 @@ export class PaymentService {
 
     // Step 3: claim idempotency
     const now = new Date();
-    const currency = input.currency ?? "EGP";
+    // r24 BLOCKER A: include EFFECTIVE currency in the idempotency request body
+    // so a missing-currency call (defaults to "EGP") and an explicit "EGP"
+    // call produce the SAME request hash (DRAFT-CURRENCY-IDEMP-1), while a
+    // materially different effective currency produces IDEMPOTENCY_CONFLICT
+    // (DRAFT-CURRENCY-IDEMP-2). We use the same `effectiveCurrency` value
+    // resolved above — never `input.currency` directly (which would be
+    // `undefined` for the omitted case and would hash differently from
+    // the explicit `"EGP"` case).
     const idempotencyInput: IdempotencyClaimInput = {
       tenantId: user.tenantId,
       operationScope: "payment.create_draft",
@@ -310,6 +452,7 @@ export class PaymentService {
         amount: input.amount,
         paymentDirection: input.paymentDirection,
         paymentMethod: input.paymentMethod,
+        currency: effectiveCurrency,
         notes: input.notes ?? null,
       } as Record<string, unknown>,
       initiatedBy: user.userId,
@@ -331,6 +474,8 @@ export class PaymentService {
         return { paymentId: r.paymentId, paymentNo: r.paymentNo, status: r.status };
       }
       if (claim.record.state === "business_failed") {
+        // r24 BLOCKER E: hardened runtime type check — must be non-empty
+        // strings, not just truthy.
         const errorBody = claim.record.responseBody as { code?: unknown; message?: unknown } | null;
         if (typeof errorBody?.code !== "string" || errorBody.code.trim() === ""
             || typeof errorBody?.message !== "string" || errorBody.message.trim() === "") {
@@ -364,7 +509,7 @@ export class PaymentService {
         tenantId: user.tenantId, documentType: "payment", year, entityType: PAYMENT_ENTITY_TYPE,
       });
 
-      const account = await subledger.getOrCreateAccount(user, input.ownerType, input.ownerId, currency);
+      const account = await subledger.getOrCreateAccount(user, input.ownerType, input.ownerId, effectiveCurrency);
       requireTenantMatch(user, account.tenantId);
 
       const payment = await paymentRepo.insertPayment({
@@ -488,13 +633,19 @@ export class PaymentService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r21 BLOCKER F: Complete PostPaymentResult semantic validation
+      // r21 BLOCKER F + r24 BLOCKER F: Complete PostPaymentResult semantic
+      // validation with hardened runtime identifier types — every ID field
+      // must be an actual non-empty runtime string, not just truthy.
       if (claim.record.state === "succeeded") {
         const r = claim.record.responseBody as Partial<PostPaymentResult> | null;
-        if (!r?.paymentId || !r?.paymentNo || !r?.status
-            || !r?.postedEntryId || !r?.entryNo
-            || !r?.amountSigned || !r?.accountId) {
-          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
+        if (typeof r?.paymentId !== "string" || r.paymentId.trim() === ""
+            || typeof r?.paymentNo !== "string" || r.paymentNo.trim() === ""
+            || typeof r?.status !== "string" || r.status.trim() === ""
+            || typeof r?.postedEntryId !== "string" || r.postedEntryId.trim() === ""
+            || typeof r?.entryNo !== "string" || r.entryNo.trim() === ""
+            || typeof r?.amountSigned !== "string" || r.amountSigned.trim() === ""
+            || typeof r?.accountId !== "string" || r.accountId.trim() === "") {
+          throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing or invalid required fields.");
         }
         // r21: validate status exactly "posted"
         if (r.status !== "posted") {
@@ -510,8 +661,11 @@ export class PaymentService {
         return { ...r, action: "replayed" } as PostPaymentResult;
       }
       if (claim.record.state === "business_failed") {
-        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
-        if (!errorBody?.code || !errorBody?.message) {
+        // r24 BLOCKER E: hardened runtime type check — must be non-empty
+        // strings, not just truthy.
+        const errorBody = claim.record.responseBody as { code?: unknown; message?: unknown } | null;
+        if (typeof errorBody?.code !== "string" || errorBody.code.trim() === ""
+            || typeof errorBody?.message !== "string" || errorBody.message.trim() === "") {
           throw new PaymentError("IDEMPOTENCY_INCONSISTENT", "Durable business failure record is malformed.");
         }
         // Throw the exact stored business failure — do NOT re-execute.

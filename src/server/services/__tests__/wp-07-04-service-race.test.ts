@@ -49,6 +49,8 @@ import { SubledgerService } from "@/server/services/subledger-service";
 import { SubledgerDbRepository } from "@/server/services/subledger-db-repository";
 import { PaymentService } from "@/server/services/payment-service";
 import { PaymentDbRepository } from "@/server/services/payment-db-repository";
+import { MasterDataDbRepository } from "@/server/services/master-data-db-repository";
+import { MasterDataOwnerAuthorityLookup } from "@/server/services/owner-authority-lookup";
 import { resolveEffectivePermissions } from "@/server/security/effective-permissions";
 import { TEST_ROLE_PERMISSION_MATRIX } from "@/server/security/role-fixtures";
 import type { ErpUserContext } from "@/server/auth/erp-context";
@@ -326,6 +328,9 @@ function makeLivePaymentService(liveDb: any, liveSql?: any) {
     audit: new AuditDbRepository(liveDb),
     idempotency: new IdempotencyDbRepository(liveDb),
     documentSequence: new DocumentSequenceDbRepository(liveDb),
+    // r24 BLOCKER C: production owner authority — backed by the canonical
+    // MasterDataDbRepository.
+    ownerAuthority: new MasterDataOwnerAuthorityLookup(new MasterDataDbRepository(liveDb)),
     transactionRunner,
     txFactories: {
       createSubledger: (tx: unknown) => new SubledgerService({

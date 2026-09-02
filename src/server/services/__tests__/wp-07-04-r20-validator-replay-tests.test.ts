@@ -22,6 +22,7 @@ import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
 import { InProcessAuditStore } from "@/server/services/audit-service";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { InMemoryOwnerAuthorityLookup } from "@/server/services/owner-authority-lookup";
 import { computeRequestHash } from "@/server/services/request-hash";
 
 function makeUser(tenantId: string): ErpUserContext {
@@ -38,8 +39,10 @@ function makeDeps(tenantId: string) {
   const documentSequence = new InProcessDocumentSequenceStore();
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
   const noopTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work(null);
+  const ownerAuthority = new InMemoryOwnerAuthorityLookup();
   const paymentService = new PaymentService({
     paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence,
+    ownerAuthority,
     transactionRunner: noopTxRunner,
     txFactories: { createSubledger: () => subledger, createPaymentRepository: () => paymentRepo, createAudit: () => audit, createIdempotency: () => idempotency, createDocumentSequence: () => documentSequence },
   });
@@ -53,7 +56,7 @@ function makeDeps(tenantId: string) {
     transactionRunner: noopTxRunner,
     txFactories: { createSubledger: () => subledger, createPaymentRepository: () => paymentRepo, createAudit: () => audit, createIdempotency: () => idempotency },
   });
-  return { paymentRepo, subledgerRepo, audit, idempotency, documentSequence, subledger, paymentService, reversalService, settlementService };
+  return { paymentRepo, subledgerRepo, audit, idempotency, documentSequence, subledger, paymentService, reversalService, settlementService, ownerAuthority };
 }
 
 describe("WP-07-04 r20 — Validator + replay + decimal + strengthened tests", () => {
@@ -315,7 +318,7 @@ describe("WP-07-04 r20 — Validator + replay + decimal + strengthened tests", (
     const idempotency = new InProcessIdempotencyStore();
     const documentSequence = new InProcessDocumentSequenceStore();
     const subledger = new SubledgerService({ subledger: new InMemorySubledgerRepository(), audit, idempotency, documentSequence });
-    const service = new PaymentService({ paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence });
+    const service = new PaymentService({ paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence, ownerAuthority: new InMemoryOwnerAuthorityLookup() });
     const outcome = await service.postPayment(makeUser(T) as any, makeEffective() as any,
       { paymentId: randomUUID(), idempotencyKey: "fc-" + randomUUID() },
     ).then(v => ({ ok: true as const }), e => ({ ok: false as const, code: (e as PaymentError).code }));

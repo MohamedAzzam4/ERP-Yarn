@@ -48,6 +48,8 @@ import { AuditDbRepository } from "@/server/services/audit-db-repository";
 import { IdempotencyDbRepository } from "@/server/services/idempotency-db-repository";
 import { PaymentDbRepository } from "@/server/services/payment-db-repository";
 import { DocumentSequenceDbRepository } from "@/server/services/document-sequence-db-repository";
+import { MasterDataDbRepository } from "@/server/services/master-data-db-repository";
+import { MasterDataOwnerAuthorityLookup } from "@/server/services/owner-authority-lookup";
 import { db } from "@/server/db/client";
 
 // ---------------------------------------------------------------------------
@@ -105,7 +107,12 @@ function getSharedDeps() {
   const audit = new AuditDbRepository(db);
   const idempotency = new IdempotencyDbRepository(db);
   const documentSequence = new DocumentSequenceDbRepository(db);
-  return { db, audit, idempotency, documentSequence };
+  // r24 BLOCKER C: wire the canonical MasterDataRepository as the owner
+  // authority — PaymentService delegates owner existence/active checks to
+  // this lookup, never duplicating master-data authority.
+  const masterDataRepository = new MasterDataDbRepository(db);
+  const ownerAuthority = new MasterDataOwnerAuthorityLookup(masterDataRepository);
+  return { db, audit, idempotency, documentSequence, ownerAuthority };
 }
 
 /**
@@ -135,27 +142,36 @@ function makeTransactionRunner() {
  * symmetry and future use.
  */
 function makeTxFactories(
-  audit: AuditDbRepository,
+  _audit: AuditDbRepository,
   _idempotency: IdempotencyDbRepository,
   _documentSequence: DocumentSequenceDbRepository,
 ) {
   return {
     createIdempotency: (tx: unknown) =>
       new IdempotencyDbRepository(tx as any),
+    // r24 BLOCKER B: createAudit MUST be tx-scoped — using the root audit
+    // repository here would let nested SubledgerService audit writes
+    // (subledger.payment_entry.post, subledger.reversal_entry.post) commit
+    // outside the outer Payment/Reversal/Settlement transaction, violating
+    // Contract 03 important-audit-in-business-transaction and Contract 12
+    // audit-rollback/no-partial-effects.
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    // r24 BLOCKER B: createSubledger MUST construct its SubledgerService
+    // with a tx-scoped AuditDbRepository. The nested SubledgerService writes
+    // `subledger.payment_entry.post` and `subledger.reversal_entry.post`
+    // audit rows — those MUST roll back with the outer transaction.
     createSubledger: (tx: unknown) =>
       new SubledgerService({
         subledger: new SubledgerDbRepository(tx as any),
-        audit,
+        audit: new AuditDbRepository(tx as any),
         idempotency: new IdempotencyDbRepository(tx as any),
         documentSequence: new DocumentSequenceDbRepository(tx as any),
       }),
     createDocumentSequence: (tx: unknown) =>
       new DocumentSequenceDbRepository(tx as any),
-    // PRODUCTION: tx-scoped PaymentDbRepository for future service-internal
-    // transactional composition (when PaymentService/SettlementService/
-    // PaymentReversalService accept a transactionRunner like the
-    // SalesApprovalService pattern in WP-08-01C).
+    // PRODUCTION: tx-scoped PaymentDbRepository for service-internal
+    // transactional composition (PaymentService/SettlementService/
+    // PaymentReversalService all accept a transactionRunner).
     createPayment: (tx: unknown) => new PaymentDbRepository(tx as any),
   };
 }
@@ -201,7 +217,7 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
     );
   }
 
-  const { db: dbInstance, audit, idempotency, documentSequence } =
+  const { db: dbInstance, audit, idempotency, documentSequence, ownerAuthority } =
     getSharedDeps();
   // PRODUCTION: PaymentDbRepository — Drizzle-backed, persists payments +
   // payment_settlements to the live DB. NO in-memory test repositories.
@@ -227,6 +243,9 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
     audit,
     idempotency,
     documentSequence,
+    // r24 BLOCKER C: production owner authority — PaymentService delegates
+    // owner existence/active checks to the canonical MasterDataRepository.
+    ownerAuthority,
     transactionRunner,
     txFactories: {
       createSubledger: txFactories.createSubledger,
@@ -241,6 +260,101 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
     paymentId,
     idempotencyKey,
     notes,
+  });
+
+  revalidatePath("/management/accounts/payments");
+}
+
+// ---------------------------------------------------------------------------
+// Action 1b: Create a draft payment.
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a draft payment — no account entry yet. Posting happens later via
+ * postPaymentAction. Wires to PaymentService.createDraftPayment.
+ *
+ * r24: This action was added because r23 made createDraftPayment atomic
+ * (transactionRunner + txFactories + fail-closed). The draft flow validates
+ * owner master existence/active BEFORE idempotency claim (Blocker C) and
+ * includes the effective currency in the idempotency body (Blocker A).
+ *
+ * Permission: payments.create (Owner/Accountant only — Workers denied per
+ * Contract 11 §13).
+ */
+export async function createDraftPaymentAction(formData: FormData): Promise<void> {
+  const authResult = await getErpAuthContextWithRoles();
+  if (!authResult.authenticated) redirect("/login");
+  if (authResult.roles.length === 0) redirect("/login?error=no_role");
+
+  const effective = resolveAndRequirePermission(
+    authResult.roles,
+    (await loadRolePermissionMatrixForTenant(authResult.tenantId)),
+    "payments.create",
+  );
+
+  rejectForbiddenFields(formData, "payment draft create");
+
+  const ownerType = String(formData.get("ownerType") ?? "").trim();
+  const ownerId = String(formData.get("ownerId") ?? "").trim();
+  const paymentDate = String(formData.get("paymentDate") ?? "").trim();
+  const amount = String(formData.get("amount") ?? "").trim();
+  const paymentDirection = String(formData.get("paymentDirection") ?? "").trim();
+  const paymentMethod = String(formData.get("paymentMethod") ?? "").trim();
+  const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
+  const currency = formData.get("currency")
+    ? String(formData.get("currency")).trim()
+    : undefined;
+  const notes = formData.get("notes")
+    ? String(formData.get("notes"))
+    : null;
+
+  if (!ownerType || !ownerId || !paymentDate || !amount
+      || !paymentDirection || !paymentMethod || !idempotencyKey) {
+    throw new Error(
+      "VALIDATION_FAILED: required fields missing.",
+    );
+  }
+
+  const { db: dbInstance, audit, idempotency, documentSequence, ownerAuthority } =
+    getSharedDeps();
+  const paymentRepository = new PaymentDbRepository(dbInstance);
+  const subledger = new SubledgerService({
+    subledger: new SubledgerDbRepository(dbInstance),
+    audit,
+    idempotency,
+    documentSequence,
+  });
+
+  const transactionRunner = makeTransactionRunner();
+  const txFactories = makeTxFactories(audit, idempotency, documentSequence);
+
+  const service = new PaymentService({
+    paymentRepository,
+    subledger,
+    audit,
+    idempotency,
+    documentSequence,
+    ownerAuthority,
+    transactionRunner,
+    txFactories: {
+      createSubledger: txFactories.createSubledger,
+      createPaymentRepository: txFactories.createPayment,
+      createAudit: txFactories.createAudit,
+      createIdempotency: txFactories.createIdempotency,
+      createDocumentSequence: txFactories.createDocumentSequence,
+    },
+  });
+
+  await service.createDraftPayment(authResult as any, effective, {
+    ownerType: ownerType as any,
+    ownerId,
+    paymentDate,
+    amount,
+    paymentDirection: paymentDirection as any,
+    paymentMethod: paymentMethod as any,
+    notes,
+    idempotencyKey,
+    currency,
   });
 
   revalidatePath("/management/accounts/payments");
@@ -293,7 +407,7 @@ export async function settlePaymentAction(formData: FormData): Promise<void> {
     );
   }
 
-  const { db: dbInstance, audit, idempotency, documentSequence } =
+  const { db: dbInstance, audit, idempotency, documentSequence, ownerAuthority: _ownerAuthority } =
     getSharedDeps();
   // PRODUCTION: PaymentDbRepository — Drizzle-backed, persists payments +
   // payment_settlements to the live DB. NO in-memory test repositories.
@@ -374,7 +488,7 @@ export async function reversePaymentAction(formData: FormData): Promise<void> {
     );
   }
 
-  const { db: dbInstance, audit, idempotency, documentSequence } =
+  const { db: dbInstance, audit, idempotency, documentSequence, ownerAuthority: _ownerAuthority2 } =
     getSharedDeps();
   // PRODUCTION: PaymentDbRepository — Drizzle-backed, persists payments +
   // payment_settlements to the live DB. NO in-memory test repositories.

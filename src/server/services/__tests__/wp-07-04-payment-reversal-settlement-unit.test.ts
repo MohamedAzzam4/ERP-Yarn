@@ -31,6 +31,7 @@ import { InMemorySubledgerRepository } from "./in-memory-subledger-repository";
 import { InProcessAuditStore } from "@/server/services/audit-service";
 import { InProcessIdempotencyStore } from "@/server/services/idempotency-service";
 import { InProcessDocumentSequenceStore } from "@/server/services/document-sequence-service";
+import { InMemoryOwnerAuthorityLookup } from "@/server/services/owner-authority-lookup";
 import { SettlementError } from "@/server/services/settlement-service";
 import { normalizeMoney, subtractMoney, absMoney, compareMoney } from "@/server/services/decimal-money";
 
@@ -71,9 +72,12 @@ function makeDeps(tenantId: string) {
   const documentSequence = new InProcessDocumentSequenceStore();
   const subledger = new SubledgerService({ subledger: subledgerRepo, audit, idempotency, documentSequence });
   const noopTxRunner = async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work(null);
+  // r24 BLOCKER C: in-memory owner authority seeded per-test on demand.
+  const ownerAuthority = new InMemoryOwnerAuthorityLookup();
 
   const paymentService = new PaymentService({
     paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence,
+    ownerAuthority,
     transactionRunner: noopTxRunner,
     txFactories: {
       createSubledger: () => subledger,
@@ -105,7 +109,7 @@ function makeDeps(tenantId: string) {
     },
   });
   return { paymentRepo, subledgerRepo, audit, idempotency, documentSequence, subledger,
-    paymentService, reversalService, settlementService };
+    paymentService, reversalService, settlementService, ownerAuthority };
 }
 
 describe("WP-07-04 r18 — Payment/Reversal/Settlement non-PG tests", () => {
@@ -169,6 +173,7 @@ describe("WP-07-04 r18 — Payment/Reversal/Settlement non-PG tests", () => {
     });
     const service = new PaymentService({
       paymentRepository: paymentRepo, subledger, audit, idempotency, documentSequence,
+      ownerAuthority: new InMemoryOwnerAuthorityLookup(),
       // NO transactionRunner, NO txFactories
     });
 

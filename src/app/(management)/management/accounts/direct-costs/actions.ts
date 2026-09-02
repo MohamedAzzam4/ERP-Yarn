@@ -140,18 +140,21 @@ function makeTransactionRunner() {
  * WP-08-01C pattern.
  */
 function makeTxFactories(
-  audit: AuditDbRepository,
+  _audit: AuditDbRepository,
   _idempotency: IdempotencyDbRepository,
   _documentSequence: DocumentSequenceDbRepository,
 ) {
   return {
     createIdempotency: (tx: unknown) =>
       new IdempotencyDbRepository(tx as any),
+    // r24 BLOCKER B: createAudit MUST be tx-scoped.
     createAudit: (tx: unknown) => new AuditDbRepository(tx as any),
+    // r24 BLOCKER B: createSubledger MUST construct its SubledgerService with
+    // a tx-scoped AuditDbRepository — same fix as payments/actions.ts.
     createSubledger: (tx: unknown) =>
       new SubledgerService({
         subledger: new SubledgerDbRepository(tx as any),
-        audit,
+        audit: new AuditDbRepository(tx as any),
         idempotency: new IdempotencyDbRepository(tx as any),
         documentSequence: new DocumentSequenceDbRepository(tx as any),
       }),
@@ -159,13 +162,13 @@ function makeTxFactories(
       new ProfitabilitySnapshotService({
         snapshotRepository: new ProfitabilitySnapshotDbRepository(tx as any),
         salesRepository: new SalesDbRepository(tx as any),
-        audit,
+        // r24 BLOCKER B: snapshot service audit MUST be tx-scoped too.
+        audit: new AuditDbRepository(tx as any),
       }),
     createDocumentSequence: (tx: unknown) =>
       new DocumentSequenceDbRepository(tx as any),
-    // PRODUCTION: tx-scoped DirectCostDbRepository for future service-internal
-    // transactional composition (when DirectCostService accepts a
-    // transactionRunner like the SalesApprovalService pattern in WP-08-01C).
+    // PRODUCTION: tx-scoped DirectCostDbRepository for service-internal
+    // transactional composition.
     createDirectCost: (tx: unknown) => new DirectCostDbRepository(tx as any),
   };
 }

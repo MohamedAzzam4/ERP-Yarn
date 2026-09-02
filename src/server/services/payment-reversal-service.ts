@@ -191,16 +191,22 @@ export class PaymentReversalService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // r19 BLOCKER B: Semantic replay validation using canonical money validator
+      // r19 BLOCKER B + r24 BLOCKER F: Semantic replay validation using
+      // canonical money validator with hardened runtime identifier types —
+      // every ID field must be an actual non-empty runtime string.
       if (claim.record.state === "succeeded") {
         const r = claim.record.responseBody as Partial<ReversePaymentResult> | null;
-        if (!r?.paymentId || !r?.reversalEntryId || !r?.reversalEntryNo
-            || !r?.reversalAmountSigned || !r?.reversedSettlementIds
-            || r.originalEntryImmutable !== true) {
-          throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing required fields.");
+        if (typeof r?.paymentId !== "string" || r.paymentId.trim() === ""
+            || typeof r?.reversalEntryId !== "string" || r.reversalEntryId.trim() === ""
+            || typeof r?.reversalEntryNo !== "string" || r.reversalEntryNo.trim() === ""
+            || typeof r?.reversalAmountSigned !== "string" || r.reversalAmountSigned.trim() === "") {
+          throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record is malformed — missing or invalid required fields.");
         }
         if (!Array.isArray(r.reversedSettlementIds)) {
           throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: reversedSettlementIds is not an array.");
+        }
+        if (r.originalEntryImmutable !== true) {
+          throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable succeeded record: originalEntryImmutable must be true.");
         }
         // r20 BLOCKER C: validate canonical money + non-zero reversal amount
         if (!isValidCanonicalMoney(r.reversalAmountSigned)) {
@@ -218,8 +224,11 @@ export class PaymentReversalService {
         return { ...r, action: "replayed" } as ReversePaymentResult;
       }
       if (claim.record.state === "business_failed") {
-        const errorBody = claim.record.responseBody as { code?: string; message?: string } | null;
-        if (!errorBody?.code || !errorBody?.message) {
+        // r24 BLOCKER E: hardened runtime type check — must be non-empty
+        // strings, not just truthy.
+        const errorBody = claim.record.responseBody as { code?: unknown; message?: unknown } | null;
+        if (typeof errorBody?.code !== "string" || errorBody.code.trim() === ""
+            || typeof errorBody?.message !== "string" || errorBody.message.trim() === "") {
           throw new PaymentReversalError("IDEMPOTENCY_INCONSISTENT", "Durable business failure record is malformed.");
         }
         throw new PaymentReversalError(errorBody.code, errorBody.message);
