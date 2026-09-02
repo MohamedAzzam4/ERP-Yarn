@@ -434,14 +434,9 @@ export class PaymentService {
       throw new PaymentError("CONFIGURATION_ERROR", "PaymentService.postPayment requires transactionRunner and txFactories for production high-risk command execution.");
     }
 
-    // Step 2: fetch payment (pre-tx — will be re-locked/re-read inside tx)
-    let payment = await this.deps.paymentRepository.findPaymentById(user.tenantId, input.paymentId);
-    if (!payment) throw new PaymentNotFoundError(input.paymentId);
-    requireTenantMatch(user, payment.tenantId);
-    // Capture non-null for closure narrowing (let variables can't be narrowed)
-    let paymentNonNull: Payment = payment;
-
-    // Step 3: claim idempotency
+    // r22 BLOCKER D: Idempotency claim BEFORE mutable business-state check
+    // (including PaymentNotFound). This ensures business failures are durable.
+    // Step 2: claim idempotency
     const now = new Date();
     const idempotencyInput: IdempotencyClaimInput = {
       tenantId: user.tenantId,
@@ -494,31 +489,13 @@ export class PaymentService {
       throw new PaymentError("OPERATION_IN_PROGRESS", `Operation '${input.idempotencyKey}' is still in progress.`);
     }
 
-    // Step 4: state check (pre-tx business failures — persist EXACT error.code + error.message)
-    if (payment.status === "posted") {
-      const error = new PaymentAlreadyPostedError(payment.id);
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 409, responseBody: { code: error.code, message: error.message },
-        lastErrorClass: error.name,
-      }, claim.record.ownerToken!, now);
-      throw error;
-    }
-    if (payment.status !== "draft") {
-      const error = new PaymentNotPostableError(payment.id, payment.status);
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 409, responseBody: { code: error.code, message: error.message },
-        lastErrorClass: error.name,
-      }, claim.record.ownerToken!, now);
-      throw error;
-    }
+    // r22 BLOCKER E: ALL mutable business-state checks moved inside the tx.
+    // Pre-tx state checks removed — they were not durable (occurred before
+    // claim for PaymentNotFound, and were duplicated inside tx for others).
+    // The tx-internal lockPayment + re-read + state validation is the
+    // authoritative path. Business failures are classified in the catch block.
 
-    // Step 5: derive entry type + sign (pre-tx — may be overridden by
-    // locked re-read inside the transaction for TOCTOU safety)
-    let ownerType = await this.deriveOwnerTypeFromAccount(payment.accountId, user.tenantId);
-    let { entryType, signMultiplier } = deriveEntryTypeAndSign(ownerType, payment.paymentDirection);
-    let amountSigned = signMultiplier === -1 ? negateMoney(payment.amount) : payment.amount;
-
-    // Step 6-9: allocate entry number, create account entry via SubledgerService,
+    // Step 5-9: allocate entry number, create account entry via SubledgerService,
     // update payment status, audit, mark idempotency succeeded.
     //
     // WP-07-04 cutover coordination (r11): ALL of these writes MUST share the
@@ -534,48 +511,36 @@ export class PaymentService {
       subledger: SubledgerService; paymentRepository: PaymentRepository;
       audit: AuditTransactionHandle; idempotency: IdempotencyTransactionHandle;
       documentSequence: DocumentSequenceTransactionHandle;
-    } | null): Promise<PostPaymentResult> => {
-      const subledger = txScoped?.subledger ?? this.deps.subledger;
-      const paymentRepo = txScoped?.paymentRepository ?? this.deps.paymentRepository;
-      const audit = txScoped?.audit ?? this.deps.audit;
-      const idempotency = txScoped?.idempotency ?? this.deps.idempotency;
-      const documentSequence = txScoped?.documentSequence ?? this.deps.documentSequence;
+    }): Promise<PostPaymentResult> => {
+      const subledger = txScoped.subledger;
+      const paymentRepo = txScoped.paymentRepository;
+      const audit = txScoped.audit;
+      const idempotency = txScoped.idempotency;
+      const documentSequence = txScoped.documentSequence;
 
-      // BLOCKER 5 (r12): lock the payment row INSIDE the transaction and
-      // re-read it from the tx-scoped repository. This prevents a TOCTOU
-      // race where another concurrent postPayment changes the payment
-      // status between the pre-tx check and the tx-internal write.
-      // The lockPayment method uses SELECT ... FOR UPDATE.
-      if (txScoped) {
-        const lockedPayment = await paymentRepo.lockPayment(user.tenantId, paymentNonNull.id);
-        if (!lockedPayment) {
-          throw new PaymentNotFoundError(paymentNonNull.id);
-        }
-        // Re-validate from the locked row. A concurrent post may have
-        // changed the status to "posted" between the pre-tx check and now.
-        if (lockedPayment.status === "posted") {
-          throw new PaymentAlreadyPostedError(lockedPayment.id);
-        }
-        if (lockedPayment.status !== "draft") {
-          throw new PaymentNotPostableError(lockedPayment.id, lockedPayment.status);
-        }
-        // Use the locked row's authoritative data for all subsequent writes.
-        // This prevents stale `payment` object from driving financial mutation.
-        paymentNonNull = lockedPayment;
-        // Re-derive entry type from the locked payment's account.
-        // Use the tx-scoped subledger (not the root one) to avoid self-deadlock
-        // when the connection pool has max: 1.
-        const lockedAccount = await subledger.findAccountById(user.tenantId, paymentNonNull.accountId);
-        if (!lockedAccount) {
-          throw new PaymentError("INTERNAL_TRANSACTION_FAILED", `Account '${paymentNonNull.accountId}' not found for payment.`);
-        }
-        const lockedOwnerType = lockedAccount.ownerType as AccountOwnerType;
-        const lockedDerived = deriveEntryTypeAndSign(lockedOwnerType, paymentNonNull.paymentDirection);
-        ownerType = lockedOwnerType;
-        entryType = lockedDerived.entryType;
-        signMultiplier = lockedDerived.signMultiplier;
-        amountSigned = signMultiplier === -1 ? negateMoney(paymentNonNull.amount) : paymentNonNull.amount;
+      // r22 BLOCKER D: lock payment by requested ID — if absent, PaymentNotFoundError
+      // is thrown inside the tx and classified as business_failed by the catch block.
+      const lockedPayment = await paymentRepo.lockPayment(user.tenantId, input.paymentId);
+      if (!lockedPayment) {
+        throw new PaymentNotFoundError(input.paymentId);
       }
+      requireTenantMatch(user, lockedPayment.tenantId);
+      // r22 BLOCKER E: validate mutable state from locked row
+      if (lockedPayment.status === "posted") {
+        throw new PaymentAlreadyPostedError(lockedPayment.id);
+      }
+      if (lockedPayment.status !== "draft") {
+        throw new PaymentNotPostableError(lockedPayment.id, lockedPayment.status);
+      }
+      // Derive entry type from locked payment's account
+      const lockedAccount = await subledger.findAccountById(user.tenantId, lockedPayment.accountId);
+      if (!lockedAccount) {
+        throw new PaymentError("INTERNAL_TRANSACTION_FAILED", `Account '${lockedPayment.accountId}' not found for payment.`);
+      }
+      const ownerType = lockedAccount.ownerType as AccountOwnerType;
+      const { entryType, signMultiplier } = deriveEntryTypeAndSign(ownerType, lockedPayment.paymentDirection);
+      const amountSigned = signMultiplier === -1 ? negateMoney(lockedPayment.amount) : lockedPayment.amount;
+      const paymentNonNull = lockedPayment;
 
       const year = now.getUTCFullYear();
       const entryDocNo = await allocateDocumentNumber(documentSequence, {

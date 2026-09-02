@@ -193,7 +193,22 @@ export class SettlementService {
 
     if (!input.paymentId?.trim()) throw new SettlementError("VALIDATION_FAILED", "paymentId is required.");
     if (!input.idempotencyKey?.trim()) throw new SettlementError("VALIDATION_FAILED", "idempotencyKey is required.");
+    // r22 BLOCKER B: Immutable request-shape validation BEFORE idempotency claim
+    if (!Array.isArray(input.allocations)) {
+      throw new SettlementError("VALIDATION_FAILED", "allocations must be an array.");
+    }
     if (input.allocations.length === 0) throw new SettlementError("VALIDATION_FAILED", "At least one allocation is required.");
+    for (const a of input.allocations) {
+      if (!a || typeof a !== "object") {
+        throw new SettlementError("VALIDATION_FAILED", "Each allocation must be an object.");
+      }
+      if (typeof a.settledEntryId !== "string" || a.settledEntryId.trim() === "") {
+        throw new SettlementError("VALIDATION_FAILED", "Each allocation settledEntryId must be a non-empty string.");
+      }
+      if (typeof a.settledAmount !== "string") {
+        throw new SettlementError("VALIDATION_FAILED", "Each allocation settledAmount must be a string.");
+      }
+    }
     // r21 BLOCKER D: Strict input money validation — require canonical 18,2
     // before idempotency claim. No silent normalization of malformed input.
     for (const a of input.allocations) {

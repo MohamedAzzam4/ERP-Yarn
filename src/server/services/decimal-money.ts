@@ -126,14 +126,16 @@ export function isValidCanonicalMoney(value: unknown): value is string {
   // Strict pattern: optional "-", digits, ".", exactly 2 digits, no whitespace
   const match = /^(-?)(\d+)\.(\d{2})$/.exec(value);
   if (!match) return false;
-  // Enforce NUMERIC(18,2) range: integer part can have at most 16 digits
-  // (18 total significant digits - 2 fractional = 16 integer digits)
-  const intPart = match[2]!;
-  if (intPart.length > 16) return false;
-  // Verify it's actually parseable as a valid BigInt (no leading zeros that
-  // create ambiguity — but we accept leading zeros per DB convention)
-  // The regex already guarantees digits-only, so BigInt parsing will succeed.
-  return true;
+  // r22 BLOCKER A: Enforce NUMERIC(18,2) range using BigInt.
+  // Parse the full scaled absolute value (integer * 100 + fraction).
+  // Leading zeros are allowed per DB convention — they do not enlarge the
+  // numeric value. We check the numeric VALUE, not the string length.
+  // max NUMERIC(18,2) = 9999999999999999.99 → scaled = 999999999999999999
+  const intPart = BigInt(match[2]!);
+  const fracPart = BigInt(match[3]!);
+  const absScaled = intPart * 100n + fracPart;
+  const MAX_SCALED = 999999999999999999n; // 9999999999999999.99
+  return absScaled <= MAX_SCALED;
 }
 
 /**
