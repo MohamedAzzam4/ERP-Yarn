@@ -4,8 +4,8 @@
 
 - **Branch**: `review/wp-08-01f-independent-fixes-r26`
 - **START_HEAD**: `1401bec240d9a4cedab26422a6536850463c153c` (r25 final)
-- **FINAL_HEAD**: (recorded after commit)
-- **Remote SHA**: (verified after push)
+- **FINAL_HEAD**: `eb296c344d82ef1f7236893a1e6bc9acfe1ccf0c`
+- **Remote SHA**: `eb296c344d82ef1f7236893a1e6bc9acfe1ccf0c` (verified)
 
 ## PostgreSQL Identity
 
