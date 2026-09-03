@@ -352,9 +352,13 @@ describeOrSkip("WP-07-04 r26 — Deterministic PostgreSQL closure proofs", () =>
   }, 30000);
 
   // ===========================================================================
-  // SETTLE-RACE-1-DET — deterministic barrier: A holds lockPayment, B blocks
+  // SETTLE-PAYMENT-ROW-LOCK-WAIT (r27 relabeled from SETTLE-RACE-1-DET)
+  // r27 NOTE: This test uses RAW SQL "SELECT FOR UPDATE" as side A — it proves
+  // row-lock compliance, NOT the Contract 12 case "two simultaneous settlements
+  // against the same remaining amount." The real two-settlement race is
+  // SETTLE-RACE-1-SVC in wp-07-04-r27-postgres-closure.test.ts.
   // ===========================================================================
-  it("SETTLE-RACE-1-DET. A holds payment lock; B blocks; release A; B resumes and business-fails", async () => {
+  it("SETTLE-PAYMENT-ROW-LOCK-WAIT. A holds payment row lock via raw SQL; B (settlement) blocks; release A; B resumes (row-lock wait proof, NOT two-settlement race)", async () => {
     const deps = makeProductionDeps(db);
     const user = makeUser();
     const eff = makeEff();
@@ -448,9 +452,13 @@ describeOrSkip("WP-07-04 r26 — Deterministic PostgreSQL closure proofs", () =>
   }, 30000);
 
   // ===========================================================================
-  // SETTLE-RACE-2A-DET — settlement lock first, reversal waits
+  // SETTLE-RACE-2A-ROW-LOCK (r27 relabeled from SETTLE-RACE-2A-DET)
+  // r27 NOTE: This test uses RAW SQL row locking as side A — it proves
+  // Reversal B waits behind an externally held payment row lock, NOT that
+  // Settlement A (real service) holds the lock. The real settlement-first
+  // race is SETTLE-RACE-2A-SVC in wp-07-04-r27-postgres-closure.test.ts.
   // ===========================================================================
-  it("SETTLE-RACE-2A-DET. settlement acquires payment lock first; reversal waits; release; reversal succeeds", async () => {
+  it("SETTLE-RACE-2A-ROW-LOCK. A holds payment row lock via raw SQL; B (reversal) waits; release A; reversal succeeds (row-lock wait proof, NOT settlement-first race)", async () => {
     const deps = makeProductionDeps(db);
     const user = makeUser();
     const eff = makeEff();
@@ -528,9 +536,13 @@ describeOrSkip("WP-07-04 r26 — Deterministic PostgreSQL closure proofs", () =>
   }, 30000);
 
   // ===========================================================================
-  // SETTLE-RACE-2B-DET — reversal lock first, settlement waits → business_failed
+  // SETTLE-RACE-2B-SEQUENTIAL (r27 relabeled from SETTLE-RACE-2B-DET)
+  // r27 NOTE: This test is completely SEQUENTIAL — Reversal A completes first,
+  // THEN Settlement B starts. It is a reversed-payment rejection regression,
+  // NOT a reversal-first race. The real reversal-first race is
+  // SETTLE-RACE-2B-SVC in wp-07-04-r27-postgres-closure.test.ts.
   // ===========================================================================
-  it("SETTLE-RACE-2B-DET. reversal acquires payment lock first; settlement waits; release; settlement business_fails", async () => {
+  it("SETTLE-RACE-2B-SEQUENTIAL. reversal completes first; settlement starts after → business_failed (sequential regression, NOT reversal-first race)", async () => {
     const deps = makeProductionDeps(db);
     const user = makeUser();
     const eff = makeEff();
@@ -598,9 +610,13 @@ describeOrSkip("WP-07-04 r26 — Deterministic PostgreSQL closure proofs", () =>
   }, 30000);
 
   // ===========================================================================
-  // SETTLE-RACE-3-DET — target-lock contention: reverse P1 vs settle P2
+  // SETTLE-RACE-3-CONCURRENT-CAPABLE (r27 relabeled from SETTLE-RACE-3-DET)
+  // r27 NOTE: This test uses Promise.all for concurrent-capable behavior but
+  // has NO deterministic target-lock barrier. It is a no-over-settlement
+  // regression, NOT a deterministic target-lock contention proof. The real
+  // target-lock race is SETTLE-RACE-3-TARGET-SVC in wp-07-04-r27-postgres-closure.test.ts.
   // ===========================================================================
-  it("SETTLE-RACE-3-DET. P1 settles target T; reverse P1 + settle P2 same target; no over-settlement", async () => {
+  it("SETTLE-RACE-3-CONCURRENT-CAPABLE. reverse P1 + settle P2 same target; no over-settlement (concurrent-capable regression, NOT deterministic target-lock race)", async () => {
     const deps = makeProductionDeps(db);
     const user = makeUser();
     const eff = makeEff();
@@ -695,9 +711,14 @@ describeOrSkip("WP-07-04 r26 — Deterministic PostgreSQL closure proofs", () =>
   }, 60000);
 
   // ===========================================================================
-  // LIVE-LIVE-SHARED-SVC — two real PaymentService posts coexist (SHARED)
+  // LIVE-LIVE-SHARED-SVC-CONCURRENT (r27 relabeled from LIVE-LIVE-SHARED-SVC)
+  // r27 NOTE: This test runs two real PaymentService posts concurrently and both
+  // succeed — but that does NOT prove they held SHARED simultaneously. A broken
+  // EXCLUSIVE/EXCLUSIVE implementation could serialize A then B and still pass.
+  // The real simultaneous-SHARED proof is LIVE-LIVE-SHARED-SUBLEDGER-SVC-DET
+  // in wp-07-04-r27-postgres-closure.test.ts.
   // ===========================================================================
-  it("LIVE-LIVE-SHARED-SVC. two real PaymentService posts acquire SHARED cutover lock simultaneously", async () => {
+  it("LIVE-LIVE-SHARED-SVC-CONCURRENT. two real PaymentService posts both succeed (concurrent-capable regression, NOT proof of simultaneous SHARED possession)", async () => {
     const deps = makeProductionDeps(db);
     const user = makeUser();
     const eff = makeEff();

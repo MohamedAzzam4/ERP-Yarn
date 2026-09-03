@@ -118,12 +118,13 @@ describe("WP-08-01F Task 1 — Destructive inventory matches canonical search", 
 
   it("canonical search discovers a non-empty file set", () => {
     expect(discovered.length).toBeGreaterThan(0);
-    // Snapshot for visibility — should be 55 at the time of writing
+    // Snapshot for visibility — should be 56 at the time of writing
     // (34 original Category A + RCA test + RW test + SUB test + COM test
     // + alias-atomicity test + DEC081-recovery test + PF-5 fixture cleanup
     // + schema-regression test + 2 Category D + cutover-race + service-race
-    // + r24-postgres-closure + r25-postgres-closure + r26-postgres-closure).
-    expect(discovered.length).toBe(55);
+    // + r24-postgres-closure + r25-postgres-closure + r26-postgres-closure
+    // + r27-postgres-closure).
+    expect(discovered.length).toBe(56);
   });
 
   it("inventory row count equals discovered path count", () => {
