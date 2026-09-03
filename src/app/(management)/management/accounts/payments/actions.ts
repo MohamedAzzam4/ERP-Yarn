@@ -63,8 +63,22 @@ import { db } from "@/server/db/client";
  * Contract 09 §5: "Do not accept authoritative tenant_id, actor, role,
  * approval status, calculated balance, stock delta, cost, payable sign, or
  * profitability total from the request body."
+ *
+ * r25 BLOCKER A: The shared forbidden-field list was previously applied to
+ * ALL payment operations including createDraftPayment. That list contained
+ * `ownerType` and `ownerId`, which are LEGITIMATE user-selected domain
+ * references for draft creation (subsequently validated against canonical
+ * master authority via OwnerAuthorityLookup). The old guard rejected every
+ * legitimate draft form before the service executed.
+ *
+ * Fix: split into operation-specific forbidden-field sets. Draft creation
+ * allows ownerType + ownerId (they are user input, not authority fields).
+ * Post/settle/reverse continue rejecting all mutation-target authority
+ * fields because those operations reference an existing payment by ID only.
  */
-const FORBIDDEN_PAYMENT_FIELDS = [
+
+/** Truly authoritative fields forbidden in ALL payment operations. */
+const FORBIDDEN_AUTHORITY_FIELDS = [
   // Signed amount / entry type / settlement status are derived server-side
   "amountSigned",
   "entryType",
@@ -78,8 +92,6 @@ const FORBIDDEN_PAYMENT_FIELDS = [
   "paymentNo",
   "status",
   "accountId",
-  "ownerType",
-  "ownerId",
   "tenantId",
   "createdBy",
   "updatedBy",
@@ -88,8 +100,59 @@ const FORBIDDEN_PAYMENT_FIELDS = [
   "idempotencyRecordId",
 ];
 
-function rejectForbiddenFields(formData: FormData, operation: string): void {
-  for (const field of FORBIDDEN_PAYMENT_FIELDS) {
+/**
+ * Additional forbidden fields for post/settle/reverse operations.
+ * These operations reference an existing payment by `paymentId` only —
+ * the client must NOT submit ownerType/ownerId because the payment already
+ * has an account, and mutating the owner would be an authority violation.
+ */
+const FORBIDDEN_EXISTING_PAYMENT_FIELDS = [
+  "ownerType",
+  "ownerId",
+  "amount",
+  "paymentDirection",
+  "paymentMethod",
+  "paymentDate",
+];
+
+/**
+ * r25 BLOCKER A: Draft-create-specific forbidden-field guard.
+ *
+ * Draft creation legitimately accepts ownerType + ownerId (user-selected
+ * domain references validated against canonical master authority), plus
+ * amount, paymentDirection, paymentMethod, paymentDate. Only truly
+ * authoritative fields (tenantId, paymentNo, status, accountId, etc.) are
+ * rejected.
+ */
+function rejectForbiddenFieldsForDraftCreate(formData: FormData): void {
+  for (const field of FORBIDDEN_AUTHORITY_FIELDS) {
+    if (formData.has(field)) {
+      throw new Error(
+        `FORBIDDEN_FIELD: Field '${field}' is not allowed in payment draft create.`,
+      );
+    }
+  }
+}
+
+/**
+ * r25 BLOCKER A: Post/settle/reverse forbidden-field guard.
+ *
+ * These operations reference an existing payment by `paymentId` only. The
+ * client must NOT submit ownerType/ownerId/amount/paymentDirection/
+ * paymentMethod/paymentDate because the payment already has those fields
+ * assigned from draft creation. Mutating them would be an authority
+ * violation. Both the shared authority fields AND the existing-payment
+ * mutation fields are rejected.
+ */
+function rejectForbiddenFieldsForExistingPayment(
+  formData: FormData,
+  operation: string,
+): void {
+  const allForbidden = [
+    ...FORBIDDEN_AUTHORITY_FIELDS,
+    ...FORBIDDEN_EXISTING_PAYMENT_FIELDS,
+  ];
+  for (const field of allForbidden) {
     if (formData.has(field)) {
       throw new Error(
         `FORBIDDEN_FIELD: Field '${field}' is not allowed in ${operation}.`,
@@ -203,7 +266,10 @@ export async function postPaymentAction(formData: FormData): Promise<void> {
     "payments.approve",
   );
 
-  rejectForbiddenFields(formData, "payment post");
+  // r25 BLOCKER A: post/settle/reverse reject both authority fields AND
+  // existing-payment mutation fields (ownerType, ownerId, amount, etc.)
+  // because these operations reference an existing payment by ID only.
+  rejectForbiddenFieldsForExistingPayment(formData, "payment post");
 
   const paymentId = String(formData.get("paymentId") ?? "").trim();
   const idempotencyKey = String(formData.get("idempotencyKey") ?? "").trim();
@@ -292,7 +358,9 @@ export async function createDraftPaymentAction(formData: FormData): Promise<void
     "payments.create",
   );
 
-  rejectForbiddenFields(formData, "payment draft create");
+  // r25 BLOCKER A: use the draft-create-specific guard that allows
+  // ownerType/ownerId (legitimate user-selected domain references).
+  rejectForbiddenFieldsForDraftCreate(formData);
 
   const ownerType = String(formData.get("ownerType") ?? "").trim();
   const ownerId = String(formData.get("ownerId") ?? "").trim();
@@ -391,7 +459,7 @@ export async function settlePaymentAction(formData: FormData): Promise<void> {
     "payments.approve",
   );
 
-  rejectForbiddenFields(formData, "payment settlement");
+  rejectForbiddenFieldsForExistingPayment(formData, "payment settlement");
 
   const paymentId = String(formData.get("paymentId") ?? "").trim();
   const settledEntryId = String(formData.get("settledEntryId") ?? "").trim();
@@ -473,7 +541,7 @@ export async function reversePaymentAction(formData: FormData): Promise<void> {
     "payments.reverse",
   );
 
-  rejectForbiddenFields(formData, "payment reversal");
+  rejectForbiddenFieldsForExistingPayment(formData, "payment reversal");
 
   const paymentId = String(formData.get("paymentId") ?? "").trim();
   const reason = String(formData.get("reason") ?? "").trim();

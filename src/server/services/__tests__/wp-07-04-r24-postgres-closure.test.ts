@@ -14,7 +14,7 @@
  *                                prove no orphan audit, no payment entry, no outer payment audit
  *   REVERSAL-AUDIT-ROLLBACK-1  — equivalent proof for PaymentReversalService
  *   REV-CAPACITY-1   — P1 settles T; reverse P1; P2 settles freed capacity
- *   SETTLE-RACE-1    — two settlements compete for same capacity; only one wins
+ *   SETTLE-CAPACITY-SEQUENTIAL-1 — sequential over-settlement regression (NOT a race proof)
  *   PAY-REPLAY-1     — first call business_failed; same key replay returns exact same code+message
  *   PAY-RETRY-1      — technical failure (cutover timeout); same-key retry succeeds
  *   LIVE-LIVE-SHARED — inventory + subledger hold SHARED cutover lock simultaneously
@@ -251,12 +251,17 @@ describeOrSkip("WP-07-04 r24 — PostgreSQL closure proofs", () => {
 
   // ===========================================================================
   // DRAFT-ROLLBACK-1 — inject failure after payment insertion; rollback; retry succeeds
+  // r25 STRENGTHENED: added account count + document-sequence rollback checks
   // ===========================================================================
-  it("DRAFT-ROLLBACK-1. inject failure after payment insertion → rollback; retry succeeds with attempt_count=2", async () => {
+  it("DRAFT-ROLLBACK-1. inject failure after payment insertion → rollback; retry succeeds with attempt_count=2; account/doc-seq rolled back", async () => {
     const deps = makeProductionDeps(db);
     const user = makeUser();
     const eff = makeEff();
     const key = "draft-rollback-1-" + randomUUID();
+
+    // r25 STRENGTHENED: capture BEFORE state — account count, doc-seq count
+    const accountsBefore = await sql`SELECT count(*)::int AS c FROM accounts WHERE tenant_id = ${T}`;
+    const docSeqBefore = await sql`SELECT count(*)::int AS c FROM document_sequences WHERE tenant_id = ${T}`;
 
     // Inject failure AFTER payment insertion
     deps.setInjectedFailure({ afterPaymentInsert: true });
@@ -288,6 +293,14 @@ describeOrSkip("WP-07-04 r24 — PostgreSQL closure proofs", () => {
     const auditFail = await sql`SELECT id FROM audit_logs WHERE tenant_id = ${T} AND action_type = 'payment.draft.create'`;
     expect(auditFail.length).toBe(0);
 
+    // r25 STRENGTHENED: account count unchanged (no newly-created account survived)
+    const accountsAfterFail = await sql`SELECT count(*)::int AS c FROM accounts WHERE tenant_id = ${T}`;
+    expect((accountsAfterFail as any)[0]!.c).toBe((accountsBefore as any)[0]!.c);
+
+    // r25 STRENGTHENED: document-sequence state rolled back to pre-attempt state
+    const docSeqAfterFail = await sql`SELECT count(*)::int AS c FROM document_sequences WHERE tenant_id = ${T}`;
+    expect((docSeqAfterFail as any)[0]!.c).toBe((docSeqBefore as any)[0]!.c);
+
     // Retry with same key (lease is expired since the tx rolled back, so reclaim is immediate)
     deps.setInjectedFailure(null);
     const r2 = await deps.paymentService.createDraftPayment(user as any, eff as any, {
@@ -311,6 +324,14 @@ describeOrSkip("WP-07-04 r24 — PostgreSQL closure proofs", () => {
     // Exactly one successful audit
     const auditOk = await sql`SELECT id FROM audit_logs WHERE tenant_id = ${T} AND action_type = 'payment.draft.create'`;
     expect(auditOk.length).toBe(1);
+
+    // r25 STRENGTHENED: exactly one account created (the draft creates one)
+    const accountsAfterRetry = await sql`SELECT count(*)::int AS c FROM accounts WHERE tenant_id = ${T}`;
+    expect((accountsAfterRetry as any)[0]!.c).toBe((accountsBefore as any)[0]!.c + 1);
+
+    // r25 STRENGTHENED: document number/sequence advanced exactly once
+    const docSeqAfterRetry = await sql`SELECT count(*)::int AS c FROM document_sequences WHERE tenant_id = ${T}`;
+    expect((docSeqAfterRetry as any)[0]!.c).toBe((docSeqBefore as any)[0]!.c + 1);
   }, 30000);
 
   // ===========================================================================
@@ -476,26 +497,28 @@ describeOrSkip("WP-07-04 r24 — PostgreSQL closure proofs", () => {
   // ===========================================================================
   // LIVE-LIVE-SHARED — inventory + subledger hold SHARED cutover lock simultaneously
   // ===========================================================================
-  it("LIVE-LIVE-SHARED. inventory + subledger both hold SHARED cutover lock simultaneously (no self-block)", async () => {
-    // This test is a placeholder for the live-live SHARED proof. The full
-    // concurrency test would require spawning two parallel transactions and
-    // observing that they both complete without blocking each other.
+  it("LIVE-LIVE-SHARED-PLACEHOLDER. superseded by real proofs in r25 (kept for historical traceability)", async () => {
+    // r25 NOTE: This was a placeholder `expect(true).toBe(true)` in r24.
+    // The reviewer correctly identified this as NOT a closure proof.
+    // The REAL LIVE-LIVE-SHARED proofs now exist in:
+    //   wp-07-04-r25-postgres-closure.test.ts
+    //     - LIVE-LIVE-SHARED-INVENTORY
+    //     - LIVE-LIVE-SHARED-SUBLEDGER
+    // Those tests use two independent PostgreSQL connections and deterministic
+    // barriers to prove both transactions acquire the SHARED lock simultaneously.
     //
-    // The existing CUTVER-RACE tests in wp-07-04-cutover-race.test.ts already
-    // prove the SHARED-mode advisory lock primitive. The production wiring
-    // (SubledgerService + InventoryLedgerService both use SHARED mode for
-    // live posting) is already covered by the existing service-race tests
-    // (SVC-RACE-1..5).
-    //
-    // This test exists as a placeholder for the contract requirement; the
-    // full concurrency proof is in the existing race test files.
+    // This placeholder is kept here only for historical traceability — it is
+    // renamed to make clear it is NOT a proof and does NOT count as PASS.
     expect(true).toBe(true);
   }, 30000);
 
   // ===========================================================================
-  // SETTLE-RACE-1 — two settlements compete for same capacity; only one wins
+  // SETTLE-CAPACITY-SEQUENTIAL-1 — sequential over-settlement regression
+  // r25 NOTE: This is NOT a concurrency race proof. A completes, then B starts.
+  // The real SETTLE-RACE-1 (two concurrent SettlementService commands) is in
+  // wp-07-04-r25-postgres-closure.test.ts.
   // ===========================================================================
-  it("SETTLE-RACE-1. two settlements target same capacity; only one succeeds; no over-settlement", async () => {
+  it("SETTLE-CAPACITY-SEQUENTIAL-1. sequential: first settlement consumes capacity; second fails (regression, NOT a race)", async () => {
     const deps = makeProductionDeps(db);
     const user = makeUser();
     const eff = makeEff();
