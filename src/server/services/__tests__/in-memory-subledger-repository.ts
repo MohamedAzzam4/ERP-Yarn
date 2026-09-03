@@ -94,7 +94,8 @@ export class InMemorySubledgerRepository implements SubledgerTransactionHandle {
       sourceDocumentType: row.sourceDocumentType,
       sourceDocumentId: row.sourceDocumentId,
       settlementStatus: "unsettled",
-      reversalOfEntryId: null,
+      // r26 BLOCKER B: persist the schema-level reversal link.
+      reversalOfEntryId: row.reversalOfEntryId ?? null,
       notes: null,
       recordOrigin: "manual_live",
       recordPeriod: "live",

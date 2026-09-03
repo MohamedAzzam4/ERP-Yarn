@@ -116,6 +116,9 @@ export class SubledgerDbRepository implements SubledgerTransactionHandle {
         sourceDocumentType: row.sourceDocumentType,
         sourceDocumentId: row.sourceDocumentId,
         createdBy: row.createdBy,
+        // r26 BLOCKER B: persist the schema-level reversal link.
+        // Only set for entryType="reversal"; null for all other types.
+        reversalOfEntryId: row.reversalOfEntryId ?? null,
       })
       .returning();
     return result!;

@@ -1,61 +1,24 @@
 /**
- * WP-07-04 r25 — DRAFT-ACTION-OWNER-1: forbidden-field guard policy test.
+ * WP-07-04 r26 — DRAFT-ACTION-OWNER-1: forbidden-field guard policy test.
  *
- * r25 BLOCKER A: The r24 createDraftPaymentAction applied the shared
- * FORBIDDEN_PAYMENT_FIELDS list (which contained ownerType + ownerId) to
- * draft creation. This rejected every legitimate draft form before the
- * service executed, because ownerType/ownerId are REQUIRED user-selected
- * domain references for draft creation.
+ * r26 BLOCKER C: This test now imports the PRODUCTION guard from
+ * `src/server/services/payment-action-field-policy.ts` — the SAME module
+ * that `payments/actions.ts` imports. No duplicated policy.
  *
- * This test verifies the operation-specific forbidden-field guards as pure
- * helpers (extracted from the server action). Since server-action FormData
- * integration testing is impractical in this environment, we extract the
- * guard logic into testable pure functions and verify:
- *
- * DRAFT-ACTION-OWNER-1:
- *   - Draft create with ownerType + ownerId → NOT rejected (legitimate input)
- *   - Draft create with accountId/paymentNo/status/tenantId → REJECTED (authority)
- *
- * EXISTING-PAYMENT-1:
- *   - Post/settle/reverse with ownerType/ownerId → REJECTED (existing payment)
- *   - Post/settle/reverse with accountId/paymentNo/status/tenantId → REJECTED
+ * Test identifiers:
+ *   DRAFT-ACTION-OWNER-1: draft create allows ownerType + ownerId
+ *   DRAFT-ACTION-OWNER-2: draft create rejects authority fields
+ *   EXISTING-PAYMENT-1..5: post/settle/reverse reject ownerType + ownerId
+ *   DRAFT-ACTION-OWNER-3: currency allowed in draft create
+ *   DRAFT-ACTION-OWNER-4: notes allowed in draft create
  */
 import { describe, it, expect } from "vitest";
-
-// ---------------------------------------------------------------------------
-// Extracted guard logic — mirrors the production guards in payments/actions.ts.
-// We duplicate the logic here as pure functions so we can test it without
-// FormData/Next.js server-action overhead. The production code is the
-// authoritative source; this test verifies the policy is correct.
-// ---------------------------------------------------------------------------
-
-const FORBIDDEN_AUTHORITY_FIELDS = [
-  "amountSigned",
-  "entryType",
-  "entryNo",
-  "settlementStatus",
-  "postedEntryId",
-  "reversalOfPaymentId",
-  "reversalOfEntryId",
-  "isLocked",
-  "paymentNo",
-  "status",
-  "accountId",
-  "tenantId",
-  "createdBy",
-  "updatedBy",
-  "auditLogId",
-  "idempotencyRecordId",
-];
-
-const FORBIDDEN_EXISTING_PAYMENT_FIELDS = [
-  "ownerType",
-  "ownerId",
-  "amount",
-  "paymentDirection",
-  "paymentMethod",
-  "paymentDate",
-];
+import {
+  rejectForbiddenFieldsForDraftCreate,
+  rejectForbiddenFieldsForExistingPayment,
+  FORBIDDEN_AUTHORITY_FIELDS,
+  FORBIDDEN_EXISTING_PAYMENT_FIELDS,
+} from "@/server/services/payment-action-field-policy";
 
 function makeFormData(fields: Record<string, string>): FormData {
   const fd = new FormData();
@@ -65,34 +28,7 @@ function makeFormData(fields: Record<string, string>): FormData {
   return fd;
 }
 
-function rejectForbiddenFieldsForDraftCreate(formData: FormData): void {
-  for (const field of FORBIDDEN_AUTHORITY_FIELDS) {
-    if (formData.has(field)) {
-      throw new Error(
-        `FORBIDDEN_FIELD: Field '${field}' is not allowed in payment draft create.`,
-      );
-    }
-  }
-}
-
-function rejectForbiddenFieldsForExistingPayment(
-  formData: FormData,
-  operation: string,
-): void {
-  const allForbidden = [
-    ...FORBIDDEN_AUTHORITY_FIELDS,
-    ...FORBIDDEN_EXISTING_PAYMENT_FIELDS,
-  ];
-  for (const field of allForbidden) {
-    if (formData.has(field)) {
-      throw new Error(
-        `FORBIDDEN_FIELD: Field '${field}' is not allowed in ${operation}.`,
-      );
-    }
-  }
-}
-
-describe("WP-07-04 r25 — DRAFT-ACTION-OWNER-1: forbidden-field policy", () => {
+describe("WP-07-04 r26 — DRAFT-ACTION-OWNER-1: forbidden-field policy (imports production guard)", () => {
 
   // ===========================================================================
   // DRAFT-ACTION-OWNER-1: draft create allows ownerType + ownerId
@@ -116,11 +52,7 @@ describe("WP-07-04 r25 — DRAFT-ACTION-OWNER-1: forbidden-field policy", () => 
   // DRAFT-ACTION-OWNER-2: draft create still rejects authority fields
   // ===========================================================================
   it("DRAFT-ACTION-OWNER-2. draft create rejects accountId, paymentNo, status, tenantId", () => {
-    const authorityFields = ["accountId", "paymentNo", "status", "tenantId",
-      "postedEntryId", "amountSigned", "entryType", "entryNo",
-      "settlementStatus", "reversalOfPaymentId", "reversalOfEntryId",
-      "isLocked", "createdBy", "updatedBy", "auditLogId", "idempotencyRecordId"];
-    for (const field of authorityFields) {
+    for (const field of FORBIDDEN_AUTHORITY_FIELDS) {
       const fd = makeFormData({
         ownerType: "customer",
         ownerId: "cust-001",
@@ -138,7 +70,7 @@ describe("WP-07-04 r25 — DRAFT-ACTION-OWNER-1: forbidden-field policy", () => 
   });
 
   // ===========================================================================
-  // EXISTING-PAYMENT-1: post/settle/reverse reject ownerType + ownerId
+  // EXISTING-PAYMENT-1: post rejects ownerType + ownerId
   // ===========================================================================
   it("EXISTING-PAYMENT-1. post rejects ownerType + ownerId (existing payment mutation)", () => {
     const fd = makeFormData({
@@ -183,8 +115,7 @@ describe("WP-07-04 r25 — DRAFT-ACTION-OWNER-1: forbidden-field policy", () => 
   // EXISTING-PAYMENT-4: post/settle/reverse still reject authority fields
   // ===========================================================================
   it("EXISTING-PAYMENT-4. post rejects authority fields (accountId, paymentNo, status, tenantId)", () => {
-    const authorityFields = ["accountId", "paymentNo", "status", "tenantId"];
-    for (const field of authorityFields) {
+    for (const field of FORBIDDEN_AUTHORITY_FIELDS) {
       const fd = makeFormData({
         paymentId: "pay-001",
         idempotencyKey: "post-001",
@@ -200,8 +131,7 @@ describe("WP-07-04 r25 — DRAFT-ACTION-OWNER-1: forbidden-field policy", () => 
   // EXISTING-PAYMENT-5: post/settle/reverse reject amount/paymentDirection etc.
   // ===========================================================================
   it("EXISTING-PAYMENT-5. post rejects amount, paymentDirection, paymentMethod, paymentDate", () => {
-    const mutationFields = ["amount", "paymentDirection", "paymentMethod", "paymentDate"];
-    for (const field of mutationFields) {
+    for (const field of FORBIDDEN_EXISTING_PAYMENT_FIELDS) {
       const fd = makeFormData({
         paymentId: "pay-001",
         idempotencyKey: "post-001",

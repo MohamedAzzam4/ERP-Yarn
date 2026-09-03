@@ -28,9 +28,9 @@ contains test fixtures (intentionally unguarded / correctly guarded
 sample files) used by the static-guard-coverage test. These fixtures
 are test DATA, not real scripts that need the guard.
 
-## Discovered Count: 52 paths
+## Discovered Count: 55 paths
 
-The canonical search now discovers 52 paths:
+The canonical search now discovers 55 paths:
 - 35 executable destructive test/QA harness files (Category A)
 - 2 comment/fixture-only files (Category D)
 - 1 new Category A file: wp-08-01f-postgres-reconciliation-atomicity.test.ts
@@ -49,15 +49,18 @@ The canonical search now discovers 52 paths:
 - 1 new Category A file: wp-08-01f-postgres-manifest-r8.test.ts (manifest real mid-tx rollback + immediate retry without lease manipulation + exact durable replay)
 - 1 new Category A file: wp-07-04-cutover-race.test.ts (WP-07-04 Contract 08 §12.4 cutover vs live-post race proofs)
 - 1 new Category A file: wp-07-04-service-race.test.ts (WP-07-04 Contract 08 §12.4 service-level race proofs)
+- 1 new Category A file: wp-07-04-r24-postgres-closure.test.ts (WP-07-04 r24 payment closure PG proofs)
+- 1 new Category A file: wp-07-04-r25-postgres-closure.test.ts (WP-07-04 r25 real PG concurrency/rollback/replay proofs)
+- 1 new Category A file: wp-07-04-r26-postgres-closure.test.ts (WP-07-04 r26 deterministic PG concurrency/rollback/replay proofs)
 
 ## Category Counts
 
-- Category A (executable destructive test/QA harness): 50
+- Category A (executable destructive test/QA harness): 53
 - Category B (legitimate production domain deletion): 0
 - Category C (migration/setup): 0
 - Category D (comment / fixture string only — no executable DELETE): 2
 
-A + B + C + D = 50 + 0 + 0 + 2 = 52 = discovered count ✓
+A + B + C + D = 53 + 0 + 0 + 2 = 55 = discovered count ✓
 
 ## Category Definitions
 
@@ -124,6 +127,9 @@ A + B + C + D = 50 + 0 + 0 + 2 = 52 = discovered count ✓
 | 50 | src/server/services/__tests__/wp-08-01f-postgres-manifest-r8.test.ts | 129-134 | DELETE import_cutover_manifests, import_staging_rows, import_files, import_batches, idempotency_records, document_sequences (run-scoped tenant cleanup; audit_logs/users/tenants NOT deleted) | A | Shared guard (checkDestructiveTestDbSafety) | Reviewer correction pass r8 — replaces r7 file. Strengthens MAN-REPLAY-1 (exact stored response_body equality), removes lease_expires_at manipulation from MAN-TECH-1 retry, adds MAN-TECH-ROLLBACK-1a/1b (real mid-tx rollback after manifest insert + batch hash mutation + supersession + audit append). audit_logs left immutable. |
 | 51 | src/server/services/__tests__/wp-07-04-cutover-race.test.ts | 209-217 | DELETE inventory_balances, stock_movements, account_entries, accounts, idempotency_records, document_sequences, inventory_items, locations, suppliers (run-scoped tenant cleanup; audit_logs/users/tenants NOT deleted) | A | Shared guard (checkDestructiveTestDbSafety) | WP-07-04 Contract 08 §12.4 cutover vs live-post race proofs (CUTVER-RACE-A..F). Uses run-scoped tenants; audit_logs left immutable. |
 | 52 | src/server/services/__tests__/wp-07-04-service-race.test.ts | 329-349 | DELETE payment_settlements, payments, inventory_balances, stock_movements, account_entries, accounts, import_cutover_locks, import_cutover_manifests, import_backup_evidence, import_batch_approvals, import_reconciliation_results, import_staging_rows, import_files, import_batches, idempotency_records, document_sequences, inventory_items, locations, suppliers (run-scoped tenant cleanup; audit_logs/users/tenants NOT deleted) | A | Shared guard (checkDestructiveTestDbSafety) | WP-07-04 Contract 08 §12.4 SERVICE-LEVEL race proofs (SVC-RACE-1..5). Uses real HistoricalCommitService.commitBatch against real live commands. Uses run-scoped tenants; audit_logs left immutable. |
+| 53 | src/server/services/__tests__/wp-07-04-r24-postgres-closure.test.ts | 89-99, 241-247 | DELETE payment_settlements, payments, account_entries, accounts, audit_logs (with trigger disable), idempotency_records, document_sequences, customers, suppliers, users, tenants (run-scoped tenant cleanup) | A | Shared guard (checkDestructiveTestDbSafety) | WP-07-04 r24 payment closure PG proofs (DRAFT-ROLLBACK-1, DRAFT-REPLAY-1, SUBLEDGER-AUDIT-ROLLBACK-1, PAY-REPLAY-1, etc.). Uses run-scoped tenants (RUN_ID = randomUUID). Disables audit_logs_no_delete/no_update triggers temporarily for test cleanup, then re-enables. audit_logs trigger is ALWAYS re-enabled before the test exits. |
+| 54 | src/server/services/__tests__/wp-07-04-r25-postgres-closure.test.ts | 101-110, 296-302 | DELETE payment_settlements, payments, account_entries, accounts, audit_logs (with trigger disable), idempotency_records, document_sequences, customers, users, tenants (run-scoped tenant cleanup) | A | Shared guard (checkDestructiveTestDbSafety) | WP-07-04 r25 REAL PG concurrency/rollback/replay proofs (LIVE-LIVE-SHARED-INVENTORY/SUBLEDGER, SETTLE-RACE-1/2/3, REVERSAL-AUDIT-ROLLBACK-1, REV-TRANSITION-ROLLBACK-1, PAY-RETRY-1, REVERSAL/SETTLEMENT-DURABLE-REPLAY). Uses run-scoped tenants (RUN_ID = randomUUID). Disables audit_logs_no_delete/no_update triggers temporarily for test cleanup, then re-enables. |
+| 55 | src/server/services/__tests__/wp-07-04-r26-postgres-closure.test.ts | 81-90, 215-221 | DELETE payment_settlements, payments, account_entries, accounts, audit_logs (with trigger disable), idempotency_records, document_sequences, customers, users, tenants (run-scoped tenant cleanup) | A | Shared guard (checkDestructiveTestDbSafety) | WP-07-04 r26 DETERMINISTIC PG concurrency/rollback/replay proofs (REV-LINK-1/ROLLBACK/IDEMP, SETTLE-RACE-1-DET/2A-DET/2B-DET/3-DET, LIVE-LIVE-SHARED-SVC, SETTLEMENT/REVERSAL-DURABLE-REPLAY-2). Uses run-scoped tenants (RUN_ID = randomUUID). Disables audit_logs_no_delete/no_update triggers temporarily for test cleanup, then re-enables. |
 
 ## Root Cause of the Previous 35-vs-34 Contradiction
 

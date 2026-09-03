@@ -209,6 +209,19 @@ export interface NewEntryInput {
   sourceDocumentType: string;
   sourceDocumentId: string;
   createdBy: string;
+  /**
+   * r26 BLOCKER B: Schema-level reversal link.
+   *
+   * Contract 07 §9: correction uses an opposite linked entry. The
+   * `account_entries.reversal_of_entry_id` column already exists in the
+   * schema; this optional field lets `postReversalEntry()` populate it
+   * at insert time so the reversal entry directly references the original
+   * entry it corrects.
+   *
+   * Only set for entryType="reversal". Null/undefined for all other entry
+   * types (the original is never mutated).
+   */
+  reversalOfEntryId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,19 +1121,15 @@ export class SubledgerService {
       sourceDocumentType: "payment_reversal",
       sourceDocumentId: input.paymentId,
       createdBy: user.userId,
+      // r26 BLOCKER B: persist the schema-level reversal link.
+      // Contract 07 §9: the reversal entry directly references the original
+      // entry it corrects via reversal_of_entry_id.
+      reversalOfEntryId: input.originalEntryId,
     });
 
-    // Note: reversalOfEntryId is set via a separate update because insertEntry
-    // doesn't accept it. We add a dedicated method to the handle.
-    // For now, we rely on the SubledgerTransactionHandle.updateEntryReversalLink.
-    // Actually, the schema has reversal_of_entry_id on account_entries, but
-    // insertEntry doesn't set it. We need to extend insertEntry or add an update.
-    // Cleanest: extend NewEntryInput to include reversalOfEntryId.
-    // But that's a breaking change. Instead, we add a dedicated method.
-    // For simplicity in WP-05-04, we'll store the reversal link in a separate
-    // audit trail and not on the entry itself. The entry's source_document_type
-    // 'payment_reversal' + source_document_id (paymentId) is sufficient for
-    // traceability. The reversal_of_entry_id can be added in a follow-up.
+    // r26 BLOCKER B: reversal_of_entry_id is now persisted at insert time
+    // via NewEntryInput.reversalOfEntryId. The original entry is NEVER
+    // mutated — only the new reversal entry carries the link.
 
     await appendAuditLog(this.deps.audit, tenantId, user.userId, {
       entityType: "account_entry",
