@@ -75,13 +75,19 @@ function getService() {
   const txFactories = {
     createInventoryLedger: (tx: unknown) => new InventoryLedgerService({
       ledger: new InventoryLedgerDbRepository(tx as any),
-      audit,
+      // r29 BLOCKER B: tx-scoped audit — using root audit here would let
+      // nested InventoryLedgerService audit writes commit outside the outer
+      // transaction (same bug as r24 payments/actions.ts Blocker B).
+      audit: new AuditDbRepository(tx as any),
       idempotency: new IdempotencyDbRepository(tx as any),
       documentSequence: new DocumentSequenceDbRepository(tx as any),
     }),
     createSubledger: (tx: unknown) => new SubledgerService({
       subledger: new SubledgerDbRepository(tx as any),
-      audit,
+      // r29 BLOCKER B: tx-scoped audit — using root audit here would let
+      // nested SubledgerService audit writes commit outside the outer
+      // transaction.
+      audit: new AuditDbRepository(tx as any),
       idempotency: new IdempotencyDbRepository(tx as any),
       documentSequence: new DocumentSequenceDbRepository(tx as any),
     }),

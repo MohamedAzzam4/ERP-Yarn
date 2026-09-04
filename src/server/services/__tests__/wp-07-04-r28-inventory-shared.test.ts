@@ -1,41 +1,31 @@
 /**
- * WP-07-04 r28 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET
+ * WP-07-04 r28→r29 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET (CORRECTED)
  *
- * r27 closed the Payment/Reversal/Settlement concurrency tranche. The only
- * remaining WP-07-04/cutover proof is: two ACTUAL Inventory live commands
- * both pass the production SHARED cutover path simultaneously.
+ * r28 proof was INVALID: it created InventoryLedgerService with TOP-LEVEL
+ * Drizzle DB handles (auto-commit). `pg_advisory_xact_lock_shared(...)` is
+ * transaction-scoped — with auto-commit repos, the implicit transaction ends
+ * when the lock query returns, releasing the lock BEFORE the JS barrier.
  *
- * Existing committed SVC-RACE tests prove migration EXCLUSIVE vs live SHARED
- * mutual exclusion. r25 raw lock tests prove PostgreSQL SHARED primitive
- * semantics. Neither proves two ACTUAL InventoryLedgerService live commands
- * both acquire SHARED concurrently.
+ * r29 CORRECTION: Both A and B run `postRawReceipt` INSIDE explicit
+ * `db.transaction()` with ALL repos (ledger, audit, idempotency, documentSeq)
+ * constructed from `tx`. The advisory lock persists for the duration of the
+ * enclosing transaction.
  *
- * This test implements that proof.
+ * Pattern follows `wp-07-04-service-race.test.ts` which explicitly documents
+ * this exact issue.
  *
- * Barrier pattern (same as r27 LIVE-LIVE-SHARED-SUBLEDGER-SVC-DET):
- *   A: real InventoryLedgerService.postRawReceipt starts → real
- *      requireCutoverLock acquires SHARED → signal A_INVENTORY_SHARED_ACQUIRED
- *      → hold transaction at release barrier.
- *   B: independent connection/transaction → real
- *      InventoryLedgerService.postRawReceipt starts → real
- *      requireCutoverLock acquires SHARED → signal B_INVENTORY_SHARED_ACQUIRED
- *      WHILE A still holds SHARED.
- *
- * CRITICAL ASSERTION: B_INVENTORY_SHARED_ACQUIRED === true while A has NOT
- * been released. This proves SHARED/SHARED coexistence at the service level.
- *
- * Non-conflicting fixtures: different items, different locations, different
- * source documents — isolates cutover coordination, not business-row contention.
- *
- * Document-number allocation note: postRawReceipt allocates a "raw_receipt"
- * document number. If both A and B use the same tenant+year+documentType,
- * they serialize on the document_sequences row lock (by design — document
- * numbers must be sequential). To isolate the SHARED cutover lock proof,
- * we wrap requireCutoverLock on the service to signal AFTER the real SHARED
- * advisory lock acquires but BEFORE the document-number allocation runs.
- * The barrier holds A's transaction open after the SHARED lock but before
- * the document-sequence row lock, so B can independently acquire SHARED
- * without document-sequence serialization.
+ * Barrier sequence:
+ *   1. A enters indA.db.transaction(txA)
+ *   2. A constructs ALL repos from txA
+ *   3. A's real requireCutoverLock acquires real pg_advisory_xact_lock_shared
+ *      INSIDE txA (lock persists while txA is open)
+ *   4. A signals A_SHARED_ACQUIRED
+ *   5. A holds at release barrier (txA remains open, SHARED held)
+ *   6. B enters indB.db.transaction(txB)
+ *   7. B's real requireCutoverLock acquires SHARED INSIDE txB
+ *   8. B signals B_SHARED_ACQUIRED WHILE A has NOT been released
+ *   9. Release A → txA commits → A's postRawReceipt completes
+ *  10. B completes independently → txB commits
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -80,9 +70,9 @@ function makeEff() {
 
 async function seedTenantAndUsers() {
   const s = RUN_ID.slice(0, 8);
-  await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status) VALUES (${T}, ${"R28-" + s}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
-  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${OWNER_ID}, ${T}, ${"r28-o-" + s}, ${"R28 Owner"}, ${"r28-o-" + s + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
-  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${ACCOUNTANT_ID}, ${T}, ${"r28-a-" + s}, ${"R28 Accountant"}, ${"r28-a-" + s + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO tenants (id, company_name, default_language, currency_code, timezone, status) VALUES (${T}, ${"R29-" + s}, ${"ar"}, ${"EGP"}, ${"Africa/Cairo"}, ${"active"}) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${OWNER_ID}, ${T}, ${"r29-o-" + s}, ${"R29 Owner"}, ${"r29-o-" + s + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO users (id, tenant_id, auth_id, name, email, status, language_preference) VALUES (${ACCOUNTANT_ID}, ${T}, ${"r29-a-" + s}, ${"R29 Accountant"}, ${"r29-a-" + s + "@test.test"}, ${"active"}, ${"ar"}) ON CONFLICT (id) DO NOTHING`;
 }
 
 async function cleanupData() {
@@ -103,62 +93,26 @@ async function cleanupData() {
 
 async function seedItem(): Promise<string> {
   const id = randomUUID();
-  await sql`INSERT INTO inventory_items (id, tenant_id, item_kind, item_code, display_name_ar, display_name_en, quality_status, is_blocked, status, created_by, created_at) VALUES (${id}, ${T}, ${"raw_material"}, ${"R28-IT-" + id.slice(0, 8)}, ${"Test-" + id.slice(0, 8)}, ${"Test Item"}, ${"accepted"}, false, ${"active"}, ${OWNER_ID}, NOW()) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO inventory_items (id, tenant_id, item_kind, item_code, display_name_ar, display_name_en, quality_status, is_blocked, status, created_by, created_at) VALUES (${id}, ${T}, ${"raw_material"}, ${"R29-IT-" + id.slice(0, 8)}, ${"Test-" + id.slice(0, 8)}, ${"Test Item"}, ${"accepted"}, false, ${"active"}, ${OWNER_ID}, NOW()) ON CONFLICT (id) DO NOTHING`;
   return id;
 }
 
 async function seedLocation(): Promise<string> {
   const id = randomUUID();
-  await sql`INSERT INTO locations (id, tenant_id, location_code, name_ar, name_en, location_type, status, created_by, created_at) VALUES (${id}, ${T}, ${"R28-LOC-" + id.slice(0, 8)}, ${"LOC-" + id.slice(0, 8)}, ${"Test Location"}, ${"internal_warehouse"}::location_type, ${"active"}::master_data_status, ${OWNER_ID}, NOW()) ON CONFLICT (id) DO NOTHING`;
+  await sql`INSERT INTO locations (id, tenant_id, location_code, name_ar, name_en, location_type, status, created_by, created_at) VALUES (${id}, ${T}, ${"R29-LOC-" + id.slice(0, 8)}, ${"LOC-" + id.slice(0, 8)}, ${"Test Location"}, ${"internal_warehouse"}::location_type, ${"active"}::master_data_status, ${OWNER_ID}, NOW()) ON CONFLICT (id) DO NOTHING`;
   return id;
 }
 
 /**
- * Build a barrier-wrapped InventoryLedgerService. The wrapper delegates to
- * the real requireCutoverLock, signals AFTER the real SHARED advisory lock
- * acquires, and optionally holds at a release barrier.
+ * Create an independent connection + drizzle instance.
  */
-function makeBarrierInventoryLedgerService(liveDb: any, opts: {
-  onSharedAcquired?: () => void;
-  waitForRelease?: Promise<void>;
-}) {
-  const ledger = new InventoryLedgerDbRepository(liveDb);
-  const audit = new AuditDbRepository(liveDb);
-  const idem = new IdempotencyDbRepository(liveDb);
-  const docSeq = new DocumentSequenceDbRepository(liveDb);
-  const realService = new InventoryLedgerService({ ledger, audit, idempotency: idem, documentSequence: docSeq });
-
-  if (!opts.onSharedAcquired && !opts.waitForRelease) {
-    return realService;
-  }
-
-  // Wrap requireCutoverLock to signal after real SHARED acquisition
-  const wrapped: InventoryLedgerService = Object.create(realService);
-  let barrierFired = false;
-  (wrapped as any).requireCutoverLock = async (tenantId: string) => {
-    // Delegate to the REAL requireCutoverLock which calls
-    // ledger.lockCutoverScope(tenantId, "inventory", "shared")
-    await realService.requireCutoverLock(tenantId);
-    if (!barrierFired) {
-      barrierFired = true;
-      if (opts.onSharedAcquired) {
-        opts.onSharedAcquired();
-      }
-      if (opts.waitForRelease) {
-        await opts.waitForRelease;
-      }
-    }
-  };
-  return wrapped;
-}
-
 function makeIndependentDb() {
   const indSql = postgres(DATABASE_URL!, { prepare: false, max: 1, idle_timeout: 30, connect_timeout: 15 });
   const indDb = drizzle(indSql, { schema });
   return { db: indDb, sql: indSql };
 }
 
-describeOrSkip("WP-07-04 r28 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET", () => {
+describeOrSkip("WP-07-04 r29 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET (corrected with explicit transactions)", () => {
   beforeAll(async () => {
     if (SHARED_GUARD_RESULT.kind !== "ok") return;
     sql = postgres(DATABASE_URL!, { max: 10 });
@@ -175,7 +129,6 @@ describeOrSkip("WP-07-04 r28 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET", () => {
 
   beforeEach(async () => {
     if (SHARED_GUARD_RESULT.kind !== "ok") return;
-    // Kill any orphaned idle-in-transaction sessions from previous test failures
     await sql`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'erp_yarn_wp0801f_disposable' AND pid != pg_backend_pid() AND state = 'idle in transaction'`;
     await sql`SET statement_timeout = 10000`;
     await sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_delete`;
@@ -192,14 +145,11 @@ describeOrSkip("WP-07-04 r28 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET", () => {
     await sql`SET statement_timeout = 0`;
   }, 30000);
 
-  // ===========================================================================
-  // LIVE-LIVE-SHARED-INVENTORY-SVC-DET
-  // ===========================================================================
-  it("LIVE-LIVE-SHARED-INVENTORY-SVC-DET. A (real InventoryLedgerService.postRawReceipt) holds SHARED cutover; B acquires SHARED while A holds; both succeed", async () => {
+  it("LIVE-LIVE-SHARED-INVENTORY-SVC-DET. A (real postRawReceipt in explicit tx) holds SHARED; B acquires SHARED while A holds; both succeed", async () => {
     const user = makeUser();
     const eff = makeEff();
 
-    // Non-conflicting fixtures: different items, different locations, different sources
+    // Non-conflicting fixtures
     const itemA = await seedItem();
     const locationA = await seedLocation();
     const itemB = await seedItem();
@@ -207,104 +157,120 @@ describeOrSkip("WP-07-04 r28 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET", () => {
     const sourceA = randomUUID();
     const sourceB = randomUUID();
 
-    // Barrier for side A: signal after real SHARED acquisition, then hold
+    // Barrier for side A
     let aSharedAcquired = false;
     let releaseA: () => void = () => {};
     const aReleasePromise = new Promise<void>(res => { releaseA = res; });
 
     const indA = makeIndependentDb();
-    const serviceA = makeBarrierInventoryLedgerService(indA.db, {
-      onSharedAcquired: () => { aSharedAcquired = true; },
-      waitForRelease: aReleasePromise,
-    });
+    const keyA = "llsi-r29-a-" + randomUUID();
 
-    const keyA = "llsi-a-" + randomUUID();
+    // A: run postRawReceipt INSIDE indA.db.transaction() with ALL repos from tx.
+    // The advisory lock persists for the duration of the enclosing transaction.
+    const aPromise = (async () => {
+      return (indA.db as any).transaction(async (txA: any) => {
+        // Construct ALL repos from txA — NOT from the top-level indA.db
+        const txLedger = new InventoryLedgerDbRepository(txA);
+        const txAudit = new AuditDbRepository(txA);
+        const txIdem = new IdempotencyDbRepository(txA);
+        const txDocSeq = new DocumentSequenceDbRepository(txA);
+        const realService = new InventoryLedgerService({
+          ledger: txLedger, audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
+        });
 
-    // Start A: real InventoryLedgerService.postRawReceipt — will acquire SHARED,
-    // signal, hold transaction open at the barrier.
-    const aPromise = serviceA.postRawReceipt(
-      user as any, eff as any,
-      {
-        itemId: itemA,
-        toLocationId: locationA,
-        quantityKg: "100.000",
-        movementDate: "2026-09-03",
-        sourceDocumentType: "raw_material_batch",
-        sourceDocumentId: sourceA,
-        idempotencyKey: keyA,
-      },
-    ).then(v => ({ ok: true, v }), e => ({ ok: false, e }));
+        // Wrap requireCutoverLock to signal AFTER real SHARED acquisition
+        let aBarrierFired = false;
+        const realRequireCutoverLock = realService.requireCutoverLock.bind(realService);
+        (realService as any).requireCutoverLock = async (tenantId: string) => {
+          await realRequireCutoverLock(tenantId); // real pg_advisory_xact_lock_shared INSIDE txA
+          if (!aBarrierFired) {
+            aBarrierFired = true;
+            aSharedAcquired = true;
+            await aReleasePromise; // hold txA open (SHARED lock persists)
+          }
+        };
 
-    // Wait for A to acquire the SHARED cutover lock
+        return realService.postRawReceipt(user as any, eff as any, {
+          itemId: itemA,
+          toLocationId: locationA,
+          quantityKg: "100.000",
+          movementDate: "2026-09-03",
+          sourceDocumentType: "raw_material_batch",
+          sourceDocumentId: sourceA,
+          idempotencyKey: keyA,
+        });
+      });
+    })().then(v => ({ ok: true, v }), e => ({ ok: false, e }));
+
+    // Wait for A to acquire the SHARED cutover lock (inside txA)
     for (let i = 0; i < 200; i++) {
       if (aSharedAcquired) break;
-      // Check if A already failed
-      const aSettled = await Promise.race([
-        aPromise.then(() => true),
-        new Promise<boolean>(r => setTimeout(() => r(false), 50)),
-      ]);
-      if (aSettled) break;
+      await new Promise(r => setTimeout(r, 50));
     }
     if (!aSharedAcquired) {
-      // A failed before acquiring the SHARED lock — get the error for debugging
-      const aResult = await aPromise;
-      if (!aResult.ok) {
+      const aResult = await Promise.race([aPromise, new Promise<any>(r => setTimeout(() => r({ timedOut: true }), 1000))]);
+      if (aResult && !aResult.timedOut && !aResult.ok) {
         throw new Error(`A failed before acquiring SHARED lock: ${(aResult as any).e?.message ?? aResult}`);
       }
       throw new Error("A never acquired SHARED lock (timed out waiting for barrier signal)");
     }
-    expect(aSharedAcquired).toBe(true); // A genuinely holds SHARED inventory cutover lock
+    expect(aSharedAcquired).toBe(true); // A genuinely holds SHARED inside txA
 
-    // Start B: real InventoryLedgerService.postRawReceipt on independent connection.
-    // B acquires SHARED — must NOT block on A's SHARED.
+    // Start B: run postRawReceipt INSIDE indB.db.transaction() with ALL repos from tx.
     const indB = makeIndependentDb();
     let bSharedAcquired = false;
-    const serviceB = makeBarrierInventoryLedgerService(indB.db, {
-      onSharedAcquired: () => { bSharedAcquired = true; },
-    });
+    const keyB = "llsi-r29-b-" + randomUUID();
 
-    const keyB = "llsi-b-" + randomUUID();
+    const bPromise = (async () => {
+      return (indB.db as any).transaction(async (txB: any) => {
+        const txLedger = new InventoryLedgerDbRepository(txB);
+        const txAudit = new AuditDbRepository(txB);
+        const txIdem = new IdempotencyDbRepository(txB);
+        const txDocSeq = new DocumentSequenceDbRepository(txB);
+        const realService = new InventoryLedgerService({
+          ledger: txLedger, audit: txAudit, idempotency: txIdem, documentSequence: txDocSeq,
+        });
 
-    // B must acquire SHARED while A still holds it (SHARED doesn't block SHARED)
-    const bPromise = serviceB.postRawReceipt(
-      user as any, eff as any,
-      {
-        itemId: itemB,
-        toLocationId: locationB,
-        quantityKg: "200.000",
-        movementDate: "2026-09-03",
-        sourceDocumentType: "raw_material_batch",
-        sourceDocumentId: sourceB,
-        idempotencyKey: keyB,
-      },
-    ).then(v => ({ ok: true, v }), e => ({ ok: false, e }));
+        // Wrap requireCutoverLock to signal AFTER real SHARED acquisition
+        let bBarrierFired = false;
+        const realRequireCutoverLock = realService.requireCutoverLock.bind(realService);
+        (realService as any).requireCutoverLock = async (tenantId: string) => {
+          await realRequireCutoverLock(tenantId); // real pg_advisory_xact_lock_shared INSIDE txB
+          if (!bBarrierFired) {
+            bBarrierFired = true;
+            bSharedAcquired = true;
+            // B does NOT hold — signals and continues
+          }
+        };
 
-    // B should acquire SHARED quickly (SHARED coexists). Use a 10s timeout.
+        return realService.postRawReceipt(user as any, eff as any, {
+          itemId: itemB,
+          toLocationId: locationB,
+          quantityKg: "200.000",
+          movementDate: "2026-09-03",
+          sourceDocumentType: "raw_material_batch",
+          sourceDocumentId: sourceB,
+          idempotencyKey: keyB,
+        });
+      });
+    })().then(v => ({ ok: true, v }), e => ({ ok: false, e }));
+
+    // B should acquire SHARED quickly (SHARED coexists). 10s timeout.
     const bTimeout = new Promise<{ timedOut: true }>(res =>
       setTimeout(() => res({ timedOut: true }), 10000)
     );
     const bResult = await Promise.race([bPromise, bTimeout]);
 
-    // Debug: check if B failed before acquiring SHARED
-    if (!bSharedAcquired && "ok" in bResult && (bResult as any).ok === false) {
-      const bErr = (bResult as any).e as Error;
-      throw new Error(`B failed before acquiring SHARED: ${bErr?.message ?? bErr}`);
-    }
-    if (!bSharedAcquired && (bResult as any).timedOut) {
-      throw new Error("B timed out — B never acquired SHARED (blocked or failed before requireCutoverLock)");
-    }
-
     // CRITICAL ASSERTION: B acquired SHARED while A still held it
     expect(bSharedAcquired).toBe(true); // B acquired SHARED while A held it
-    expect((bResult as any).timedOut).toBeUndefined(); // B did not time out
+    expect((bResult as any).timedOut).toBeUndefined();
 
-    // Release A — A's transaction completes (movement + balance + audit + idempotency)
+    // Release A — txA commits, A's postRawReceipt completes
     releaseA();
     const aFinal = await aPromise;
     expect(aFinal.ok).toBe(true);
     if (aFinal.ok) {
       expect((aFinal as any).v.action).toBe("posted");
-      // Exact decimal-kg string
       expect((aFinal as any).v.onHandQtyKg).toBe("100.000");
     }
 
@@ -316,25 +282,22 @@ describeOrSkip("WP-07-04 r28 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET", () => {
       expect((bFinal as any).v.onHandQtyKg).toBe("200.000");
     }
 
-    // Exactly one movement for A
+    // Exactly one movement each (exact decimal-kg strings)
     const movementsA = await sql`SELECT id, quantity_kg FROM stock_movements WHERE tenant_id = ${T} AND source_document_id = ${sourceA}`;
     expect(movementsA.length).toBe(1);
     expect((movementsA as any)[0]!.quantity_kg).toBe("100.000");
 
-    // Exactly one movement for B
     const movementsB = await sql`SELECT id, quantity_kg FROM stock_movements WHERE tenant_id = ${T} AND source_document_id = ${sourceB}`;
     expect(movementsB.length).toBe(1);
     expect((movementsB as any)[0]!.quantity_kg).toBe("200.000");
 
-    // A's balance is correct
+    // Balances correct
     const balanceA = await sql`SELECT on_hand_qty_kg FROM inventory_balances WHERE tenant_id = ${T} AND item_id = ${itemA} AND location_id = ${locationA}`;
     expect((balanceA as any)[0]!.on_hand_qty_kg).toBe("100.000");
-
-    // B's balance is correct
     const balanceB = await sql`SELECT on_hand_qty_kg FROM inventory_balances WHERE tenant_id = ${T} AND item_id = ${itemB} AND location_id = ${locationB}`;
     expect((balanceB as any)[0]!.on_hand_qty_kg).toBe("200.000");
 
-    // Both idempotency records are succeeded
+    // Both idempotency records succeeded
     const idemA = await sql`SELECT state FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${keyA}`;
     expect((idemA as any)[0]!.state).toBe("succeeded");
     const idemB = await sql`SELECT state FROM idempotency_records WHERE tenant_id = ${T} AND idempotency_key = ${keyB}`;
@@ -342,7 +305,7 @@ describeOrSkip("WP-07-04 r28 — LIVE-LIVE-SHARED-INVENTORY-SVC-DET", () => {
 
     // No duplicate movements
     const allMovements = await sql`SELECT id FROM stock_movements WHERE tenant_id = ${T}`;
-    expect(allMovements.length).toBe(2); // exactly one per posting
+    expect(allMovements.length).toBe(2);
 
     await indA.sql.end();
     await indB.sql.end();

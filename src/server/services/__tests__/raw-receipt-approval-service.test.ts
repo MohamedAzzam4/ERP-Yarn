@@ -842,6 +842,8 @@ describe("WP-02-05 RawReceiptApprovalService — atomicity/rollback (V11)", () =
         createSubledger: () => failingSubledger,
         createApprovalRepository: () => base.approvalRepository,
         createDraftRepository: () => base.draftRepository,
+    createAudit: () => base.audit,
+    createIdempotency: () => base.idempotency,
       },
     });
 
@@ -928,6 +930,8 @@ describe("WP-02-05 RawReceiptApprovalService — atomicity/rollback (V11)", () =
         createSubledger: () => base.subledger,
         createApprovalRepository: () => failingApprovalRepo,
         createDraftRepository: () => base.draftRepository,
+    createAudit: () => base.audit,
+    createIdempotency: () => base.idempotency,
       },
     });
 
@@ -981,6 +985,8 @@ describe("WP-02-05 RawReceiptApprovalService — atomicity/rollback (V11)", () =
         createSubledger: () => base.subledger,
         createApprovalRepository: () => base.approvalRepository,
         createDraftRepository: () => base.draftRepository,
+    createAudit: () => base.audit,
+    createIdempotency: () => base.idempotency,
       },
     });
 

@@ -307,6 +307,10 @@ export interface TransactionScopedFactories {
   createApprovalRepository: (tx: unknown) => RawReceiptApprovalRepository;
   /** Create a RawReceiptDraftRepository that uses the transaction-scoped `tx`. */
   createDraftRepository: (tx: unknown) => RawReceiptDraftRepository;
+  /** r29: Create an AuditTransactionHandle bound to the transaction-scoped `tx`. */
+  createAudit: (tx: unknown) => AuditTransactionHandle;
+  /** r29: Create an IdempotencyTransactionHandle bound to the transaction-scoped `tx`. */
+  createIdempotency: (tx: unknown) => IdempotencyTransactionHandle;
 }
 
 export interface RawReceiptApprovalServiceDeps {
@@ -543,29 +547,56 @@ export class RawReceiptApprovalService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // Prior call with same key succeeded — return the stored result.
-      // The approval row should already be marked decided.
-      const refreshed = await this.deps.approvalRepository.findApprovalById(
-        user.tenantId,
-        input.approvalRequestId,
-      );
-      if (refreshed && refreshed.state === "decided" && refreshed.movementId) {
-        return {
-          action: "replayed",
-          approvalRequestId: refreshed.id,
-          draftId: refreshed.entityId,
-          movementId: refreshed.movementId,
-          movementDocNo: "",
-          balanceVersion: 0,
-          onHandQtyKg: "0.000",
-          payableEntryId: refreshed.payableEntryId,
-          payableEntryNo: "",
-          payableAmountSigned: null,
-          payableDeferred: refreshed.payableDeferred,
-        };
+      // r29 BLOCKER E: Use the stored terminal idempotency result as durable
+      // authority. Never re-enter execution. Never reconstruct a partial result
+      // from mutable DB rows.
+      if (claim.record.state === "succeeded") {
+        const r = claim.record.responseBody as Partial<ApproveRawReceiptResult> | null;
+        // r29 BLOCKER F: Validate runtime shape of stored response — every
+        // required field must be a non-empty string (or null for optional).
+        if (typeof r?.approvalRequestId !== "string" || r.approvalRequestId.trim() === ""
+            || typeof r?.draftId !== "string" || r.draftId.trim() === ""
+            || typeof r?.movementId !== "string" || r.movementId.trim() === ""
+            || typeof r?.movementDocNo !== "string" || r.movementDocNo.trim() === ""
+            || typeof r?.onHandQtyKg !== "string" || r.onHandQtyKg.trim() === ""
+            || typeof r?.payableDeferred !== "boolean") {
+          throw new RawReceiptApprovalError(
+            "IDEMPOTENCY_INCONSISTENT",
+            "Durable succeeded record is malformed — missing or invalid required fields.",
+          );
+        }
+        if (typeof r.balanceVersion !== "number") {
+          throw new RawReceiptApprovalError(
+            "IDEMPOTENCY_INCONSISTENT",
+            "Durable succeeded record: balanceVersion is not a number.",
+          );
+        }
+        // payableEntryId / payableEntryNo / payableAmountSigned can be null
+        if (r.payableEntryId !== null && typeof r.payableEntryId !== "string") {
+          throw new RawReceiptApprovalError(
+            "IDEMPOTENCY_INCONSISTENT",
+            "Durable succeeded record: payableEntryId is not string or null.",
+          );
+        }
+        return { ...r, action: "replayed" } as ApproveRawReceiptResult;
       }
-      // Idempotency says replay but approval not decided — fall through to execute
-      // (this can happen if the prior call failed after claiming idempotency).
+      if (claim.record.state === "business_failed") {
+        // r29 BLOCKER E: validate runtime types of code/message
+        const errorBody = claim.record.responseBody as { code?: unknown; message?: unknown } | null;
+        if (typeof errorBody?.code !== "string" || errorBody.code.trim() === ""
+            || typeof errorBody?.message !== "string" || errorBody.message.trim() === "") {
+          throw new RawReceiptApprovalError(
+            "IDEMPOTENCY_INCONSISTENT",
+            "Durable business failure record is malformed.",
+          );
+        }
+        throw new RawReceiptApprovalError(errorBody.code, errorBody.message);
+      }
+      // Unexpected terminal state — fail closed.
+      throw new RawReceiptApprovalError(
+        "IDEMPOTENCY_INCONSISTENT",
+        `Unexpected replay state '${claim.record.state}'.`,
+      );
     }
 
     if (claim.action === "conflict") {
@@ -664,11 +695,15 @@ export class RawReceiptApprovalService {
         inventoryLedger: InventoryLedgerService;
         subledger: SubledgerService;
         approvalRepository: RawReceiptApprovalRepository;
+        audit: AuditTransactionHandle;
+        idempotency: IdempotencyTransactionHandle;
       } | null,
-    ): Promise<{ stockResult: PostRawReceiptResult; payableResult: PostSupplierPayableResult | null; payableEntryId: string | null }> => {
+    ): Promise<ApproveRawReceiptResult> => {
       const invLedger = txScoped?.inventoryLedger ?? this.deps.inventoryLedger;
       const subledger = txScoped?.subledger ?? this.deps.subledger;
       const approvalRepo = txScoped?.approvalRepository ?? this.deps.approvalRepository;
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
 
       // Step 9: post stock via InventoryLedgerService.postRawReceipt.
       const stockResult: PostRawReceiptResult = await invLedger.postRawReceipt(
@@ -707,88 +742,98 @@ export class RawReceiptApprovalService {
       );
 
       if (!decided) {
-        // markDecided returns null when the conditional WHERE state='active'
-        // didn't match — meaning another concurrent transaction already
-        // decided this approval. The DB transaction will roll back (stock
-        // movement + balance + account entry all rolled back). Throw
-        // ApprovalAlreadyDecidedError so the caller gets a clear conflict.
         throw new ApprovalAlreadyDecidedError(approval.id, "decided (concurrent)");
       }
 
-      return { stockResult, payableResult, payableEntryId };
+      // r29 BLOCKER C: Audit + idempotency success INSIDE the same transaction
+      // (not after commit). This ensures no orphan audit/idempotency rows survive
+      // if the transaction rolls back.
+      const result: ApproveRawReceiptResult = {
+        action: "posted",
+        approvalRequestId: approval.id,
+        draftId: draft.id,
+        movementId: stockResult.movementId,
+        movementDocNo: stockResult.docNo,
+        balanceVersion: stockResult.balanceVersion,
+        onHandQtyKg: stockResult.onHandQtyKg,
+        payableEntryId,
+        payableEntryNo: payableResult?.entryNo ?? null,
+        payableAmountSigned: payableResult?.amountSigned ?? null,
+        payableDeferred,
+      };
+
+      // r29 BLOCKER C: Audit inside the transaction.
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
+        entityType: "approval_request",
+        entityId: approval.id,
+        actionType: "raw_receipt_approval.approve",
+        newValuesJson: {
+          draftId: draft.id,
+          movementId: stockResult.movementId,
+          movementDocNo: stockResult.docNo,
+          balanceVersion: stockResult.balanceVersion,
+          onHandQtyKg: stockResult.onHandQtyKg,
+          payableEntryId: payableEntryId,
+          payableDeferred,
+          payableAmountSigned: payableResult?.amountSigned ?? null,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
+
+      // r29 BLOCKER C + F: markSucceeded INSIDE the transaction with the
+      // COMPLETE result (not partial). This is the durable terminal result.
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+      }, claim.record.ownerToken!, now);
+
+      return result;
     };
 
-    let postingResult: { stockResult: PostRawReceiptResult; payableResult: PostSupplierPayableResult | null; payableEntryId: string | null };
+    let postingResult: ApproveRawReceiptResult;
 
     try {
       if (this.deps.transactionRunner && this.deps.txFactories) {
-        // Wrap all DB writes in a single outer transaction.
+        // r29 BLOCKER C: Wrap ALL writes (stock + payable + markDecided +
+        // audit + markSucceeded) in a single outer transaction. ONE commit.
         postingResult = await this.deps.transactionRunner(async (tx: unknown) => {
           const txInvLedger = this.deps.txFactories!.createInventoryLedger(tx);
           const txSubledger = this.deps.txFactories!.createSubledger(tx);
           const txApprovalRepo = this.deps.txFactories!.createApprovalRepository(tx);
-          return executePosting({ inventoryLedger: txInvLedger, subledger: txSubledger, approvalRepository: txApprovalRepo });
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency(tx);
+          return executePosting({
+            inventoryLedger: txInvLedger,
+            subledger: txSubledger,
+            approvalRepository: txApprovalRepo,
+            audit: txAudit,
+            idempotency: txIdem,
+          });
         });
       } else {
         // No transaction runner (unit tests with in-memory repos).
         postingResult = await executePosting(null);
       }
     } catch (txError) {
-      // The DB transaction rolled back. Mark idempotency as failed and re-throw.
-      // No partial DB state persists — stock_movement, inventory_balance,
-      // account_entry, approval_requests are all rolled back.
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 500,
-        responseBody: { message: "Posting transaction failed and rolled back." },
-        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, claim.record.ownerToken!, now);
+      // r29 BLOCKER D: The DB transaction rolled back. Terminalize idempotency
+      // as retryable_failed (NOT business_failed) for technical/system errors.
+      // This allows the SAME key to immediately retry.
+      // Deterministic business failures (ApprovalAlreadyDecidedError,
+      // RequesterCannotApproveOwnRequestError, etc.) are classified separately
+      // and already persisted as business_failed above.
+      try {
+        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500,
+          responseBody: { message: "Approval transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch {
+        // If terminalization fails, the record remains in_progress → lease expiry.
+      }
       throw txError;
     }
 
-    const { stockResult, payableResult, payableEntryId } = postingResult;
-
-    // Audit (in-process — does not participate in DB transaction, but records
-    // the outcome for observability).
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: "approval_request",
-      entityId: approval.id,
-      actionType: "raw_receipt_approval.approve",
-      newValuesJson: {
-        draftId: draft.id,
-        movementId: stockResult.movementId,
-        movementDocNo: stockResult.docNo,
-        balanceVersion: stockResult.balanceVersion,
-        onHandQtyKg: stockResult.onHandQtyKg,
-        payableEntryId: payableEntryId,
-        payableDeferred,
-        payableAmountSigned: payableResult?.amountSigned ?? null,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
-
-    // Step 11: mark idempotency succeeded (DB transaction already committed).
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: {
-        movementId: stockResult.movementId,
-        payableEntryId,
-        payableDeferred,
-      },
-    }, claim.record.ownerToken!, now);
-
-    return {
-      action: "posted",
-      approvalRequestId: approval.id,
-      draftId: draft.id,
-      movementId: stockResult.movementId,
-      movementDocNo: stockResult.docNo,
-      balanceVersion: stockResult.balanceVersion,
-      onHandQtyKg: stockResult.onHandQtyKg,
-      payableEntryId,
-      payableEntryNo: payableResult?.entryNo ?? null,
-      payableAmountSigned: payableResult?.amountSigned ?? null,
-      payableDeferred,
-    };
+    return postingResult;
   }
 
   /**
@@ -859,22 +904,36 @@ export class RawReceiptApprovalService {
     const claim = await claimIdempotency(this.deps.idempotency, idempotencyInput);
 
     if (claim.action === "replay") {
-      // Return prior result — the approval row should have payableEntryId set.
-      const refreshed = await this.deps.approvalRepository.findApprovalById(
-        user.tenantId,
-        input.approvalRequestId,
-      );
-      if (refreshed && refreshed.payableEntryId) {
-        return {
-          action: "replayed",
-          approvalRequestId: refreshed.id,
-          draftId: refreshed.entityId,
-          payableEntryId: refreshed.payableEntryId,
-          payableEntryNo: "",
-          payableAmountSigned: "",
-        };
+      // r29 BLOCKER H: Use stored terminal result. No fallthrough.
+      if (claim.record.state === "succeeded") {
+        const r = claim.record.responseBody as Partial<ConfirmLatePriceResult> | null;
+        if (typeof r?.approvalRequestId !== "string" || r.approvalRequestId.trim() === ""
+            || typeof r?.draftId !== "string" || r.draftId.trim() === ""
+            || typeof r?.payableEntryId !== "string" || r.payableEntryId.trim() === ""
+            || typeof r?.payableEntryNo !== "string" || r.payableEntryNo.trim() === ""
+            || typeof r?.payableAmountSigned !== "string" || r.payableAmountSigned.trim() === "") {
+          throw new RawReceiptApprovalError(
+            "IDEMPOTENCY_INCONSISTENT",
+            "Durable late-price succeeded record is malformed — missing or invalid required fields.",
+          );
+        }
+        return { ...r, action: "replayed" } as ConfirmLatePriceResult;
       }
-      // Fall through if replay but no payableEntryId (shouldn't happen).
+      if (claim.record.state === "business_failed") {
+        const errorBody = claim.record.responseBody as { code?: unknown; message?: unknown } | null;
+        if (typeof errorBody?.code !== "string" || errorBody.code.trim() === ""
+            || typeof errorBody?.message !== "string" || errorBody.message.trim() === "") {
+          throw new RawReceiptApprovalError(
+            "IDEMPOTENCY_INCONSISTENT",
+            "Durable late-price business failure record is malformed.",
+          );
+        }
+        throw new RawReceiptApprovalError(errorBody.code, errorBody.message);
+      }
+      throw new RawReceiptApprovalError(
+        "IDEMPOTENCY_INCONSISTENT",
+        `Unexpected replay state '${claim.record.state}'.`,
+      );
     }
 
     if (claim.action === "conflict") {
@@ -956,74 +1015,90 @@ export class RawReceiptApprovalService {
       txScoped: {
         subledger: SubledgerService;
         approvalRepository: RawReceiptApprovalRepository;
+        audit: AuditTransactionHandle;
+        idempotency: IdempotencyTransactionHandle;
       } | null,
-    ): Promise<PostSupplierPayableResult> => {
+    ): Promise<ConfirmLatePriceResult> => {
       const subledger = txScoped?.subledger ?? this.deps.subledger;
       const approvalRepo = txScoped?.approvalRepository ?? this.deps.approvalRepository;
+      const auditHandle = txScoped?.audit ?? this.deps.audit;
+      const idemHandle = txScoped?.idempotency ?? this.deps.idempotency;
 
       const payableResult = await subledger.postSupplierPayable(user, effective, payableInput);
 
-      // Update the approval row to record the payable entry (same transaction).
-      // Uses updatePayableInfo (not markDecided) because the approval is already
-      // in 'decided' state from the earlier approval. This only updates the
-      // payableEntryId + payableDeferred=false in the JSONB summary.
       await approvalRepo.updatePayableInfo(
         user.tenantId,
         approval.id,
         payableResult.entryId,
       );
 
-      return payableResult;
-    };
-
-    let payableResult: PostSupplierPayableResult;
-    try {
-      if (this.deps.transactionRunner && this.deps.txFactories) {
-        payableResult = await this.deps.transactionRunner(async (tx: unknown) => {
-          const txSubledger = this.deps.txFactories!.createSubledger(tx);
-          const txApprovalRepo = this.deps.txFactories!.createApprovalRepository(tx);
-          return executeLatePricePosting({ subledger: txSubledger, approvalRepository: txApprovalRepo });
-        });
-      } else {
-        payableResult = await executeLatePricePosting(null);
-      }
-    } catch (txError) {
-      await markBusinessFailed(this.deps.idempotency, claim.record.id, {
-        responseCode: 500,
-        responseBody: { message: "Late-price transaction failed and rolled back." },
-        lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
-      }, claim.record.ownerToken!, now);
-      throw txError;
-    }
-
-    await appendAuditLog(this.deps.audit, user.tenantId, user.userId, {
-      entityType: "approval_request",
-      entityId: approval.id,
-      actionType: "raw_receipt_late_price.confirm",
-      newValuesJson: {
+      // r29 BLOCKER G: Audit + idempotency success INSIDE the same transaction.
+      const result: ConfirmLatePriceResult = {
+        action: "posted",
+        approvalRequestId: approval.id,
         draftId: draft.id,
         payableEntryId: payableResult.entryId,
         payableEntryNo: payableResult.entryNo,
         payableAmountSigned: payableResult.amountSigned,
-        pricePerTon: input.pricePerTon,
-      },
-      idempotencyKey: input.idempotencyKey,
-    });
+      };
 
-    await markSucceeded(this.deps.idempotency, claim.record.id, {
-      responseCode: 200,
-      responseBody: {
-        payableEntryId: payableResult.entryId,
-      },
-    }, claim.record.ownerToken!, now);
+      await appendAuditLog(auditHandle, user.tenantId, user.userId, {
+        entityType: "approval_request",
+        entityId: approval.id,
+        actionType: "raw_receipt_late_price.confirm",
+        newValuesJson: {
+          draftId: draft.id,
+          payableEntryId: payableResult.entryId,
+          payableEntryNo: payableResult.entryNo,
+          payableAmountSigned: payableResult.amountSigned,
+          pricePerTon: input.pricePerTon,
+        },
+        idempotencyKey: input.idempotencyKey,
+      });
 
-    return {
-      action: "posted",
-      approvalRequestId: approval.id,
-      draftId: draft.id,
-      payableEntryId: payableResult.entryId,
-      payableEntryNo: payableResult.entryNo,
-      payableAmountSigned: payableResult.amountSigned,
+      // r29 BLOCKER G: markSucceeded INSIDE the transaction with COMPLETE result.
+      await markSucceeded(idemHandle, claim.record.id, {
+        responseCode: 200,
+        responseBody: result,
+      }, claim.record.ownerToken!, now);
+
+      return result;
     };
+
+    let latePriceResult: ConfirmLatePriceResult;
+    try {
+      if (this.deps.transactionRunner && this.deps.txFactories) {
+        // r29 BLOCKER G: Wrap ALL writes (payable + updatePayableInfo + audit +
+        // markSucceeded) in a single outer transaction. ONE commit.
+        latePriceResult = await this.deps.transactionRunner(async (tx: unknown) => {
+          const txSubledger = this.deps.txFactories!.createSubledger(tx);
+          const txApprovalRepo = this.deps.txFactories!.createApprovalRepository(tx);
+          const txAudit = this.deps.txFactories!.createAudit(tx);
+          const txIdem = this.deps.txFactories!.createIdempotency(tx);
+          return executeLatePricePosting({
+            subledger: txSubledger,
+            approvalRepository: txApprovalRepo,
+            audit: txAudit,
+            idempotency: txIdem,
+          });
+        });
+      } else {
+        latePriceResult = await executeLatePricePosting(null);
+      }
+    } catch (txError) {
+      // r29 BLOCKER D: Technical failure → retryable_failed (not business_failed).
+      try {
+        await markRetryableFailed(this.deps.idempotency, claim.record.id, {
+          responseCode: 500,
+          responseBody: { message: "Late-price transaction failed and rolled back." },
+          lastErrorClass: txError instanceof Error ? txError.name : "Unknown",
+        }, claim.record.ownerToken!, now);
+      } catch {
+        // If terminalization fails, the record remains in_progress → lease expiry.
+      }
+      throw txError;
+    }
+
+    return latePriceResult;
   }
 }
